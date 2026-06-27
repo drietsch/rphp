@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rphp-span",
+    "crates/rphp-source",
+    "crates/rphp-diagnostics",
+    "crates/rphp-intern",
+    "crates/rphp-value",
+    "crates/rphp-ast",
+    "crates/rphp-lexer",
+    "crates/rphp-bytecode",
+    "crates/rphp-parser",
+    "crates/rphp-compiler",
+    "crates/rphp-runtime",
+    "crates/rphp-sapi-cli",
+    "tools/rphp",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/drietsch/rphp"
+rust-version = "1.95"
+
+# Internal crates, referenced by path so the whole graph builds from source.
+[workspace.dependencies]
+rphp-span = { path = "crates/rphp-span" }
+rphp-source = { path = "crates/rphp-source" }
+rphp-diagnostics = { path = "crates/rphp-diagnostics" }
+rphp-intern = { path = "crates/rphp-intern" }
+rphp-value = { path = "crates/rphp-value" }
+rphp-ast = { path = "crates/rphp-ast" }
+rphp-lexer = { path = "crates/rphp-lexer" }
+rphp-bytecode = { path = "crates/rphp-bytecode" }
+rphp-parser = { path = "crates/rphp-parser" }
+rphp-compiler = { path = "crates/rphp-compiler" }
+rphp-runtime = { path = "crates/rphp-runtime" }
+rphp-sapi-cli = { path = "crates/rphp-sapi-cli" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

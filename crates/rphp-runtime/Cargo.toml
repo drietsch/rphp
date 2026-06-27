@@ -1,0 +1,15 @@
+[package]
+name = "rphp-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rphp-bytecode.workspace = true
+rphp-value.workspace = true
+
+[dev-dependencies]
+# Needed only by tests to construct `Function { name, span, .. }` by hand.
+rphp-intern.workspace = true
+rphp-span.workspace = true

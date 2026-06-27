@@ -1,0 +1,13 @@
+[package]
+name = "rphp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rphp"
+path = "src/main.rs"
+
+[dependencies]
+rphp-sapi-cli.workspace = true

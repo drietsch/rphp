@@ -1,0 +1,11 @@
+[package]
+name = "rphp-bytecode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rphp-span.workspace = true
+rphp-intern.workspace = true
+rphp-value.workspace = true

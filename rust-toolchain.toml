@@ -1,0 +1,8 @@
+# Pinned nightly toolchain (ADR-013): the threaded interpreter dispatch uses
+# `become` (explicit_tail_calls), which is nightly-only. The default build does
+# NOT require it — `become` is gated behind the `tailcall-dispatch` feature and
+# the portable `loop { match }` core is the default — so the workspace also
+# compiles on stable. Pinning nightly makes the `become` path reproducible.
+[toolchain]
+channel = "nightly-2026-02-17"
+components = ["rustfmt", "clippy"]

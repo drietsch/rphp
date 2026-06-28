@@ -484,6 +484,37 @@ fn named_function_declaration_still_works() {
     );
 }
 
+// ---- direct dynamic calls `$f(...)` ----------------------------------------
+
+#[test]
+fn dynamic_call_of_closure_variable() {
+    assert_eq!(eval_ok(b"<?php $d = fn($x) => $x * 2; echo $d(21);"), "42");
+    assert_eq!(
+        eval_ok(br#"<?php $g = function ($n) { return "v" . $n; }; echo $g(7);"#),
+        "v7"
+    );
+}
+
+#[test]
+fn dynamic_call_of_callable_string() {
+    assert_eq!(eval_ok(br#"<?php $u = 'strtoupper'; echo $u('hi');"#), "HI");
+    assert_eq!(eval_ok(b"<?php function inc($n) { return $n + 1; } $f = 'inc'; echo $f(41);"), "42");
+}
+
+#[test]
+fn immediately_invoked_closure() {
+    assert_eq!(eval_ok(b"<?php echo (fn($x) => $x + 1)(9);"), "10");
+}
+
+#[test]
+fn curried_and_chained_dynamic_calls() {
+    assert_eq!(
+        eval_ok(b"<?php $a = fn($x) => fn($y) => $x + $y; $add5 = $a(5); echo $add5(3);"),
+        "8"
+    );
+    assert_eq!(eval_ok(b"<?php $a = fn($x) => fn($y) => $x + $y; echo $a(10)(20);"), "30");
+}
+
 // ---- argument-handling tests through the public `run` entry point ----------
 
 fn write_temp(name: &str, contents: &[u8]) -> PathBuf {

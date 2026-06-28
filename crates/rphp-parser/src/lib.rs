@@ -492,22 +492,31 @@ impl<'a> Parser<'a> {
     /// `parse_assignment` recognize the append form.
     fn parse_postfix(&mut self) -> Expr {
         let mut e = self.parse_primary();
-        while self.at(TokenKind::LBracket) {
-            self.advance(); // `[`
-            let index = if self.at(TokenKind::RBracket) {
-                None
+        loop {
+            if self.at(TokenKind::LBracket) {
+                self.advance(); // `[`
+                let index = if self.at(TokenKind::RBracket) {
+                    None
+                } else {
+                    Some(Box::new(self.parse_expr()))
+                };
+                let end = if self.at(TokenKind::RBracket) {
+                    self.advance().span
+                } else {
+                    let span = self.cur_span();
+                    self.error(span, "expected `]`");
+                    span
+                };
+                let span = e.span().to(end);
+                e = Expr::Index { base: Box::new(e), index, span };
+            } else if self.at(TokenKind::LParen) {
+                // `expr(...)`: a dynamic call on a closure / callable value.
+                let start = e.span();
+                let (args, end) = self.parse_arg_list();
+                e = Expr::CallDynamic { callee: Box::new(e), args, span: start.to(end) };
             } else {
-                Some(Box::new(self.parse_expr()))
-            };
-            let end = if self.at(TokenKind::RBracket) {
-                self.advance().span
-            } else {
-                let span = self.cur_span();
-                self.error(span, "expected `]`");
-                span
-            };
-            let span = e.span().to(end);
-            e = Expr::Index { base: Box::new(e), index, span };
+                break;
+            }
         }
         e
     }
@@ -658,6 +667,13 @@ impl<'a> Parser<'a> {
             self.error(name_span, "expected `(` after name (bare constants unsupported in M0)");
             return Expr::Null(name_span);
         }
+        let (args, end_span) = self.parse_arg_list();
+        Expr::Call { name, args, span: name_span.to(end_span) }
+    }
+
+    /// `( arg, arg, ... )` starting at the `(`; returns the args and the closing
+    /// `)` span. A trailing comma is allowed.
+    fn parse_arg_list(&mut self) -> (Vec<Expr>, Span) {
         self.advance(); // `(`
         let mut args = Vec::new();
         if !self.at(TokenKind::RParen) {
@@ -679,7 +695,7 @@ impl<'a> Parser<'a> {
             self.error(span, "expected `)`");
             span
         };
-        Expr::Call { name, args, span: name_span.to(end_span) }
+        (args, end_span)
     }
 }
 
@@ -742,6 +758,12 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<IdentId>) {
             collect_free_vars(rhs, out);
         }
         Expr::Call { args, .. } => {
+            for a in args {
+                collect_free_vars(a, out);
+            }
+        }
+        Expr::CallDynamic { callee, args, .. } => {
+            collect_free_vars(callee, out);
             for a in args {
                 collect_free_vars(a, out);
             }
@@ -821,6 +843,18 @@ mod tests {
                 assert_eq!(uses.len(), 2);
             }
             other => panic!("expected a closure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dynamic_call_on_variable_parses() {
+        // `$f(1, 2)` is a dynamic call; the callee is the variable expression.
+        match one_expr(b"<?php $f(1, 2);") {
+            Expr::CallDynamic { callee, args, .. } => {
+                assert!(matches!(*callee, Expr::Var(_, _)));
+                assert_eq!(args.len(), 2);
+            }
+            other => panic!("expected a dynamic call, got {other:?}"),
         }
     }
 

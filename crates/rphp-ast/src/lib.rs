@@ -80,6 +80,9 @@ pub enum Expr {
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
     /// `name(args...)`
     Call { name: IdentId, args: Vec<Expr>, span: Span },
+    /// `callee(args...)` where the callee is itself an expression — a closure or
+    /// callable held in a variable (`$f(1, 2)`), or the result of another call.
+    CallDynamic { callee: Box<Expr>, args: Vec<Expr>, span: Span },
     /// `function (params) use ($a, $b) { body }`, or an arrow `fn (params) => e`
     /// desugared to the same node (its free variables become the `uses` list and
     /// the body a single `return e;`). Captures are by value.
@@ -117,6 +120,7 @@ impl Expr {
             | Expr::Unary { span: s, .. }
             | Expr::Binary { span: s, .. }
             | Expr::Call { span: s, .. }
+            | Expr::CallDynamic { span: s, .. }
             | Expr::Closure { span: s, .. }
             | Expr::Array { span: s, .. }
             | Expr::Index { span: s, .. } => *s,

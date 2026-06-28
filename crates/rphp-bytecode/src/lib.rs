@@ -113,6 +113,9 @@ pub enum Op {
     /// template: snapshot the captured registers and bind them to the closure's
     /// compiled function. Result -> `dst`.
     MakeClosure { dst: Reg, proto: u32 },
+    /// Call the callable in register `callee` (a closure or callable string) with
+    /// `argc` args staged in `base ..= base+argc-1`; result -> `dst`.
+    CallDynamic { dst: Reg, callee: Reg, base: Reg, argc: u16 },
     /// Return `src` (or null) to the caller.
     Ret { src: Option<Reg> },
 

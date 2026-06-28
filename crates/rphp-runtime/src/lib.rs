@@ -65,33 +65,40 @@ impl rphp_stdlib::Host for VmHost<'_> {
     }
 
     fn call(&mut self, callable: &Value, args: &[Value]) -> Result<Value, rphp_stdlib::NativeError> {
-        // A closure carries its own function + captured environment.
-        if let Value::Closure(c) = callable {
-            return exec_closure(self.module, c, args, &mut *self.out)
-                .map_err(|e| rphp_stdlib::NativeError::new(e.message));
-        }
-        // Otherwise a function-name string: a user function takes precedence over
-        // a builtin.
-        let name = callable.to_php_bytes();
-        if let Some(fid) = self.module.func_by_name(&name) {
-            let f = self.module.func(fid);
-            // Bind only the declared parameters (extra callback args are ignored,
-            // as in PHP); exec_function leaves any missing ones null.
-            let n = (f.num_params as usize).min(args.len());
-            exec_function(self.module, f, &args[..n], &mut *self.out)
-                .map_err(|e| rphp_stdlib::NativeError::new(e.message))
-        } else if let Some(nid) = rphp_stdlib::resolve(&name) {
-            let mut args = args.to_vec();
-            let mut host = VmHost { module: self.module, out: &mut *self.out };
-            let mut ctx = rphp_stdlib::Ctx { host: &mut host };
-            rphp_stdlib::call(nid, &mut ctx, &mut args)
-        } else {
-            Err(rphp_stdlib::NativeError::new(format!(
-                "call to undefined function {}()",
-                String::from_utf8_lossy(&name)
-            )))
-        }
+        invoke_value(self.module, callable, args, &mut *self.out)
+            .map_err(|e| rphp_stdlib::NativeError::new(e.message))
     }
+}
+
+/// Invoke a callable value with `args`: a closure, or a function-name string
+/// resolving to a user function (declared params only — extra args ignored, as in
+/// PHP) or a builtin. The single path shared by the `CallDynamic` opcode and the
+/// `Host::call` re-entry hook.
+fn invoke_value(
+    module: &Module,
+    callee: &Value,
+    args: &[Value],
+    out: &mut RunOutput,
+) -> Result<Value, RuntimeError> {
+    if let Value::Closure(c) = callee {
+        return exec_closure(module, c, args, out);
+    }
+    let name = callee.to_php_bytes();
+    if let Some(fid) = module.func_by_name(&name) {
+        let f = module.func(fid);
+        let n = (f.num_params as usize).min(args.len());
+        return exec_function(module, f, &args[..n], out);
+    }
+    if let Some(nid) = rphp_stdlib::resolve(&name) {
+        let mut args = args.to_vec();
+        let mut host = VmHost { module, out };
+        let mut ctx = rphp_stdlib::Ctx { host: &mut host };
+        return rphp_stdlib::call(nid, &mut ctx, &mut args)
+            .map_err(|e| RuntimeError { message: e.message });
+    }
+    Err(RuntimeError {
+        message: format!("call to undefined function {}()", String::from_utf8_lossy(&name)),
+    })
 }
 
 /// Execute `module` starting at its `main` function, returning captured output.
@@ -354,6 +361,13 @@ fn run_frame(
                 let captures: Vec<Value> =
                     proto.src_regs.iter().map(|&r| regs[r as usize].clone()).collect();
                 regs[dst as usize] = Value::Closure(rphp_value::Closure::new(proto.func, captures));
+            }
+            Op::CallDynamic { dst, callee, base, argc } => {
+                let base = base as usize;
+                let call_args: Vec<Value> =
+                    (0..argc as usize).map(|i| regs[base + i].clone()).collect();
+                let callee_val = regs[callee as usize].clone();
+                regs[dst as usize] = invoke_value(module, &callee_val, &call_args, out)?;
             }
             Op::Ret { src } => {
                 return Ok(src.map_or(Value::Null, |r| regs[r as usize].clone()));

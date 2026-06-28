@@ -464,6 +464,7 @@ impl<'a> FnCompiler<'a> {
                 }
             },
             Expr::Call { name, args, span } => self.compile_call(*name, args, *span),
+            Expr::CallDynamic { callee, args, .. } => self.compile_dynamic_call(callee, args),
             Expr::Closure { params, uses, body, span } => self.compile_closure(params, uses, body, *span),
             Expr::Array { items, .. } => self.compile_array(items),
             Expr::Index { base, index, span } => self.compile_index_read(base, index.as_deref(), *span),
@@ -781,6 +782,31 @@ impl<'a> FnCompiler<'a> {
 }
 
 impl FnCompiler<'_> {
+    /// Lower `callee(args...)` where the callee is a runtime value (a closure or
+    /// callable string). The callee is evaluated first and kept live below the
+    /// argument window; the runtime resolves and invokes it.
+    fn compile_dynamic_call(&mut self, callee: &Expr, args: &[Expr]) -> Reg {
+        let argc = args.len() as u16;
+        let callee_reg = self.compile_expr(callee);
+        // Stage args into a fresh window above the (still-live) callee register.
+        let base = self.temp_top;
+        self.set_top(base + argc);
+        for (i, arg) in args.iter().enumerate() {
+            let slot = base + i as Reg;
+            let mark = self.temp_top;
+            let r = self.compile_expr(arg);
+            if r != slot {
+                self.emit(Op::Move { dst: slot, src: r });
+            }
+            self.free_to(mark);
+        }
+        self.free_to(base);
+        let dst = self.alloc_temp();
+        debug_assert_eq!(dst, base);
+        self.emit(Op::CallDynamic { dst, callee: callee_reg, base, argc });
+        dst
+    }
+
     /// Lower a closure expression: capture the current values of its `use`
     /// variables from this frame, compile its body as its own function, and emit
     /// a `MakeClosure` that binds them together at runtime.
@@ -932,6 +958,12 @@ fn collect_expr(e: &Expr, vars: &mut HashMap<IdentId, Reg>, next: &mut Reg) {
             collect_expr(rhs, vars, next);
         }
         Expr::Call { args, .. } => {
+            for a in args {
+                collect_expr(a, vars, next);
+            }
+        }
+        Expr::CallDynamic { callee, args, .. } => {
+            collect_expr(callee, vars, next);
             for a in args {
                 collect_expr(a, vars, next);
             }

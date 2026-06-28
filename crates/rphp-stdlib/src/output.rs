@@ -8,7 +8,13 @@
 //! divergence axis until the dedicated serializer lands.
 use rphp_value::{ArrayKey, Str, Value};
 
-use crate::{Ctx, NativeResult};
+use crate::{nf, Ctx, NativeFn, NativeResult};
+
+/// This extension's registry contribution (see `lib.rs`).
+pub(crate) static FUNCTIONS: &[NativeFn] = &[
+    nf!("var_dump", 1, None, var_dump),
+    nf!("print_r", 1, Some(2), print_r),
+];
 
 /// PHP `var_dump(...$values)`: dump each argument's type and value. Returns null.
 pub(crate) fn var_dump(ctx: &mut Ctx, args: &[Value]) -> NativeResult {

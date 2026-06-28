@@ -3,7 +3,19 @@
 //! `min`) reuse the engine's spaceship ordering.
 use rphp_value::Value;
 
-use crate::{Ctx, NativeError, NativeResult};
+use crate::{nf, Ctx, NativeError, NativeFn, NativeResult};
+
+/// This extension's registry contribution (see `lib.rs`).
+pub(crate) static FUNCTIONS: &[NativeFn] = &[
+    nf!("abs", 1, Some(1), abs),
+    nf!("max", 1, None, max),
+    nf!("min", 1, None, min),
+    nf!("floor", 1, Some(1), floor),
+    nf!("ceil", 1, Some(1), ceil),
+    nf!("round", 1, Some(2), round),
+    nf!("sqrt", 1, Some(1), sqrt),
+    nf!("intdiv", 2, Some(2), intdiv),
+];
 
 pub(crate) fn abs(_: &mut Ctx, args: &[Value]) -> NativeResult {
     match args[0].to_number() {

@@ -2,7 +2,23 @@
 //! ordering, and loose/strict comparison match the engine exactly.
 use rphp_value::{array_key, Array, ArrayKey, Str, Value};
 
-use crate::{Ctx, NativeError, NativeResult};
+use crate::{nf, Ctx, NativeError, NativeFn, NativeResult};
+
+/// This extension's registry contribution (see `lib.rs`). Value-returning array
+/// functions live here; in-place mutators (sort, array_push, …) wait on
+/// by-reference parameters in the call ABI.
+pub(crate) static FUNCTIONS: &[NativeFn] = &[
+    nf!("count", 1, Some(2), count),
+    nf!("sizeof", 1, Some(2), count),
+    nf!("in_array", 2, Some(3), in_array),
+    nf!("array_key_exists", 2, Some(2), array_key_exists),
+    nf!("array_keys", 1, Some(1), array_keys),
+    nf!("array_values", 1, Some(1), array_values),
+    nf!("array_merge", 0, None, array_merge),
+    nf!("array_reverse", 1, Some(2), array_reverse),
+    nf!("array_sum", 1, Some(1), array_sum),
+    nf!("range", 2, Some(3), range),
+];
 
 /// Borrow an argument as an array, or produce PHP's TypeError message.
 fn want_array<'a>(func: &str, v: &'a Value) -> Result<&'a Array, NativeError> {

@@ -1,7 +1,28 @@
 //! Type-inspection and scalar-cast builtins.
 use rphp_value::Value;
 
-use crate::{Ctx, NativeResult};
+use crate::{nf, Ctx, NativeFn, NativeResult};
+
+/// This extension's registry contribution (see `lib.rs`).
+pub(crate) static FUNCTIONS: &[NativeFn] = &[
+    nf!("gettype", 1, Some(1), gettype),
+    nf!("is_int", 1, Some(1), is_int),
+    nf!("is_integer", 1, Some(1), is_int),
+    nf!("is_long", 1, Some(1), is_int),
+    nf!("is_string", 1, Some(1), is_string),
+    nf!("is_bool", 1, Some(1), is_bool),
+    nf!("is_float", 1, Some(1), is_float),
+    nf!("is_double", 1, Some(1), is_float),
+    nf!("is_array", 1, Some(1), is_array),
+    nf!("is_null", 1, Some(1), is_null),
+    nf!("is_numeric", 1, Some(1), is_numeric),
+    nf!("is_scalar", 1, Some(1), is_scalar),
+    nf!("intval", 1, Some(2), intval),
+    nf!("floatval", 1, Some(1), floatval),
+    nf!("doubleval", 1, Some(1), floatval),
+    nf!("strval", 1, Some(1), strval),
+    nf!("boolval", 1, Some(1), boolval),
+];
 
 pub(crate) fn gettype(_: &mut Ctx, args: &[Value]) -> NativeResult {
     let name: &[u8] = match &args[0] {

@@ -4,7 +4,32 @@
 //! (ICU-backed) and are a separate extension.
 use rphp_value::{Array, Str, Value};
 
-use crate::{Ctx, NativeError, NativeResult};
+use crate::{nf, Ctx, NativeError, NativeFn, NativeResult};
+
+/// This extension's registry contribution (see `lib.rs`). New byte-string
+/// functions are added here alongside their handler below.
+pub(crate) static FUNCTIONS: &[NativeFn] = &[
+    nf!("strlen", 1, Some(1), strlen),
+    nf!("strtoupper", 1, Some(1), strtoupper),
+    nf!("strtolower", 1, Some(1), strtolower),
+    nf!("ucfirst", 1, Some(1), ucfirst),
+    nf!("lcfirst", 1, Some(1), lcfirst),
+    nf!("str_repeat", 2, Some(2), str_repeat),
+    nf!("substr", 2, Some(3), substr),
+    nf!("strpos", 2, Some(3), strpos),
+    nf!("str_replace", 3, Some(3), str_replace),
+    nf!("trim", 1, Some(2), trim),
+    nf!("ltrim", 1, Some(2), ltrim),
+    nf!("rtrim", 1, Some(2), rtrim),
+    nf!("implode", 1, Some(2), implode),
+    nf!("join", 1, Some(2), implode),
+    nf!("explode", 2, Some(3), explode),
+    nf!("ord", 1, Some(1), ord),
+    nf!("chr", 1, Some(1), chr),
+    nf!("str_contains", 2, Some(2), str_contains),
+    nf!("str_starts_with", 2, Some(2), str_starts_with),
+    nf!("str_ends_with", 2, Some(2), str_ends_with),
+];
 
 /// The byte string an argument coerces to (the `(string)` cast). Lets every
 /// builtin accept any scalar the way PHP's weak typing does.

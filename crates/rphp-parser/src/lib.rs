@@ -13,7 +13,7 @@
 //! picture and the returned `Program` may be partial.
 #![forbid(unsafe_code)]
 
-use rphp_ast::{BinOp, Expr, Func, Param, Program, Stmt, UnOp};
+use rphp_ast::{ArrayItem, BinOp, Expr, Func, Param, Program, Stmt, UnOp};
 use rphp_diagnostics::{codes, Diagnostic};
 use rphp_intern::{IdentId, Interner};
 use rphp_lexer::{lex, Kw, LexResult, Token, TokenKind};
@@ -160,6 +160,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Kw::Echo) => Some(self.parse_echo(tok.span)),
             TokenKind::Keyword(Kw::If) => Some(self.parse_if(tok.span)),
             TokenKind::Keyword(Kw::While) => Some(self.parse_while(tok.span)),
+            TokenKind::Keyword(Kw::Foreach) => Some(self.parse_foreach(tok.span)),
             TokenKind::Keyword(Kw::Return) => Some(self.parse_return(tok.span)),
             TokenKind::Keyword(Kw::Function) => Some(self.parse_function(tok.span)),
             // Empty statement.
@@ -264,6 +265,36 @@ impl<'a> Parser<'a> {
         Stmt::While { cond, body, span }
     }
 
+    /// `foreach ( subject as [$k =>] $v ) body`
+    fn parse_foreach(&mut self, kw_span: Span) -> Stmt {
+        self.advance(); // `foreach`
+        self.expect(TokenKind::LParen, "expected `(` after `foreach`");
+        let subject = self.parse_expr();
+        self.expect(TokenKind::Keyword(Kw::As), "expected `as` in foreach");
+        let first = self.expect_variable("expected a variable after `as`");
+        let (key_var, value_var) = if self.eat(TokenKind::DoubleArrow) {
+            (Some(first), self.expect_variable("expected a value variable after `=>`"))
+        } else {
+            (None, first)
+        };
+        self.expect(TokenKind::RParen, "expected `)` after foreach header");
+        let body = self.parse_block_or_stmt();
+        let span = kw_span.to(self.prev_span());
+        Stmt::Foreach { subject, key_var, value_var, body, span }
+    }
+
+    /// Consume a `$variable` token, or report `msg` and return a placeholder id.
+    fn expect_variable(&mut self, msg: &str) -> IdentId {
+        if let TokenKind::Variable(id) = self.peek() {
+            self.advance();
+            id
+        } else {
+            let span = self.cur_span();
+            self.error(span, msg);
+            self.error_ident()
+        }
+    }
+
     fn parse_function(&mut self, kw_span: Span) -> Stmt {
         self.advance(); // `function`
         let name = if let TokenKind::Ident(id) = self.peek() {
@@ -324,13 +355,21 @@ impl<'a> Parser<'a> {
             let eq_span = self.cur_span();
             self.advance(); // `=`
             let value = self.parse_assignment(); // right assoc
+            let vspan = value.span();
             match lhs {
-                Expr::Var(id, var_span) => {
-                    let span = var_span.to(value.span());
-                    Expr::Assign { target: id, value: Box::new(value), span }
-                }
+                Expr::Var(id, var_span) => Expr::Assign {
+                    target: id,
+                    value: Box::new(value),
+                    span: var_span.to(vspan),
+                },
+                Expr::Index { base, index, span: ispan } => Expr::IndexAssign {
+                    base,
+                    index,
+                    value: Box::new(value),
+                    span: ispan.to(vspan),
+                },
                 other => {
-                    self.error(eq_span, "invalid assignment target (expected a variable)");
+                    self.error(eq_span, "invalid assignment target (expected a variable or array element)");
                     other // recover by keeping the parsed left-hand side
                 }
             }
@@ -373,7 +412,7 @@ impl<'a> Parser<'a> {
     /// `**` — right-associative and tighter than unary minus. The exponent is
     /// parsed as a unary expression so `2 ** -3` and `2 ** 3 ** 2` both work.
     fn parse_pow(&mut self) -> Expr {
-        let base = self.parse_primary();
+        let base = self.parse_postfix();
         if self.at(TokenKind::StarStar) {
             self.advance();
             let exp = self.parse_unary();
@@ -382,6 +421,32 @@ impl<'a> Parser<'a> {
         } else {
             base
         }
+    }
+
+    /// Postfix `[...]` subscripting, which binds tighter than `**`. A chain
+    /// `$a[$i][$j]` nests left-to-right. An empty subscript `$a[]` is only valid
+    /// as an assignment target; the `Index { index: None }` node lets
+    /// `parse_assignment` recognize the append form.
+    fn parse_postfix(&mut self) -> Expr {
+        let mut e = self.parse_primary();
+        while self.at(TokenKind::LBracket) {
+            self.advance(); // `[`
+            let index = if self.at(TokenKind::RBracket) {
+                None
+            } else {
+                Some(Box::new(self.parse_expr()))
+            };
+            let end = if self.at(TokenKind::RBracket) {
+                self.advance().span
+            } else {
+                let span = self.cur_span();
+                self.error(span, "expected `]`");
+                span
+            };
+            let span = e.span().to(end);
+            e = Expr::Index { base: Box::new(e), index, span };
+        }
+        e
     }
 
     fn parse_primary(&mut self) -> Expr {
@@ -420,6 +485,19 @@ impl<'a> Parser<'a> {
                 self.advance();
                 self.parse_call(id, tok.span)
             }
+            TokenKind::LBracket => {
+                self.advance(); // `[`
+                let items = self.parse_array_items(TokenKind::RBracket);
+                let end = self.close(TokenKind::RBracket, "expected `]` to close array");
+                Expr::Array { items, span: tok.span.to(end) }
+            }
+            TokenKind::Keyword(Kw::Array) => {
+                self.advance(); // `array`
+                self.expect(TokenKind::LParen, "expected `(` after `array`");
+                let items = self.parse_array_items(TokenKind::RParen);
+                let end = self.close(TokenKind::RParen, "expected `)` to close array");
+                Expr::Array { items, span: tok.span.to(end) }
+            }
             TokenKind::LParen => {
                 self.advance(); // `(`
                 let inner = self.parse_expr();
@@ -435,6 +513,37 @@ impl<'a> Parser<'a> {
                 self.error(tok.span, "expected expression");
                 Expr::Null(tok.span)
             }
+        }
+    }
+
+    /// Parse comma-separated array items up to (but not consuming) `close`.
+    /// Each item is `value` or `key => value`; a trailing comma is allowed.
+    fn parse_array_items(&mut self, close: TokenKind) -> Vec<ArrayItem> {
+        let mut items = Vec::new();
+        while !self.at(close) && !self.at_eof() {
+            let first = self.parse_expr();
+            let item = if self.eat(TokenKind::DoubleArrow) {
+                ArrayItem { key: Some(first), value: self.parse_expr() }
+            } else {
+                ArrayItem { key: None, value: first }
+            };
+            items.push(item);
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        items
+    }
+
+    /// Consume the expected closing delimiter, returning its span; on mismatch
+    /// reports `msg` and returns the current span.
+    fn close(&mut self, kind: TokenKind, msg: &str) -> Span {
+        if self.at(kind) {
+            self.advance().span
+        } else {
+            let span = self.cur_span();
+            self.error(span, msg);
+            span
         }
     }
 
@@ -884,6 +993,66 @@ mod tests {
                 assert!(matches!(*lhs, Expr::Binary { op: BinOp::Concat, .. }));
             }
             other => panic!("expected Concat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn array_literal_with_keys() {
+        // [1, "k" => 2, 3]
+        match one_expr(br#"<?php [1, "k" => 2, 3];"#) {
+            Expr::Array { items, .. } => {
+                assert_eq!(items.len(), 3);
+                assert!(items[0].key.is_none());
+                assert!(items[1].key.is_some());
+                assert!(items[2].key.is_none());
+            }
+            other => panic!("expected Array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn array_function_syntax() {
+        match one_expr(b"<?php array(1, 2);") {
+            Expr::Array { items, .. } => assert_eq!(items.len(), 2),
+            other => panic!("expected Array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn index_read_and_chain() {
+        // $a[0][1]  =>  Index(Index($a, 0), 1)
+        match one_expr(b"<?php $a[0][1];") {
+            Expr::Index { base, index, .. } => {
+                assert!(index.is_some());
+                assert!(matches!(*base, Expr::Index { .. }));
+            }
+            other => panic!("expected Index, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn index_assignment_and_append() {
+        match one_expr(b"<?php $a[0] = 5;") {
+            Expr::IndexAssign { index, .. } => assert!(index.is_some()),
+            other => panic!("expected IndexAssign, got {other:?}"),
+        }
+        match one_expr(b"<?php $a[] = 5;") {
+            Expr::IndexAssign { index, .. } => assert!(index.is_none()),
+            other => panic!("expected IndexAssign (append), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn foreach_with_and_without_key() {
+        let items = parse_ok(b"<?php foreach ($a as $v) { echo $v; }");
+        match &items[0] {
+            Stmt::Foreach { key_var, .. } => assert!(key_var.is_none()),
+            other => panic!("expected Foreach, got {other:?}"),
+        }
+        let items = parse_ok(b"<?php foreach ($a as $k => $v) { echo $k; }");
+        match &items[0] {
+            Stmt::Foreach { key_var, .. } => assert!(key_var.is_some()),
+            other => panic!("expected Foreach, got {other:?}"),
         }
     }
 

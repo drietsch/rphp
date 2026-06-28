@@ -69,6 +69,21 @@ pub enum Op {
     /// `dst = (string) a . (string) b`
     Concat { dst: Reg, a: Reg, b: Reg },
 
+    // --- arrays ---
+    /// `dst = []` (a fresh empty array).
+    NewArray { dst: Reg },
+    /// `dst = base[key]` (null if absent; a 1-byte substring for string bases).
+    ArrayGet { dst: Reg, base: Reg, key: Reg },
+    /// `arr[key] = value`, mutating the array in register `arr` in place (COW).
+    /// Auto-vivifies a fresh array when `arr` holds null.
+    ArraySet { arr: Reg, key: Reg, value: Reg },
+    /// `arr[] = value` (append under the next integer key).
+    ArrayPush { arr: Reg, value: Reg },
+    /// `foreach` step: if `cursor >= len(arr)` jump to `target`; otherwise load
+    /// the entry at position `cursor` into `key_dst`/`val_dst` and advance
+    /// `cursor`.
+    ForeachNext { arr: Reg, cursor: Reg, key_dst: Reg, val_dst: Reg, target: CodeAddr },
+
     // --- comparison (dst = bool) ---
     CmpEq { dst: Reg, a: Reg, b: Reg },
     CmpNe { dst: Reg, a: Reg, b: Reg },

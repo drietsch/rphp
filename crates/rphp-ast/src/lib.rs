@@ -31,6 +31,14 @@ pub enum Stmt {
         body: Vec<Stmt>,
         span: Span,
     },
+    /// `foreach ($subject as [$key =>] $value) { body }`
+    Foreach {
+        subject: Expr,
+        key_var: Option<IdentId>,
+        value_var: IdentId,
+        body: Vec<Stmt>,
+        span: Span,
+    },
     Return { value: Option<Expr>, span: Span },
     Func(Func),
 }
@@ -61,10 +69,29 @@ pub enum Expr {
     Var(IdentId, Span),
     /// `$name = value`
     Assign { target: IdentId, value: Box<Expr>, span: Span },
+    /// `base[index] = value`, or `base[] = value` (append) when `index` is None.
+    IndexAssign {
+        base: Box<Expr>,
+        index: Option<Box<Expr>>,
+        value: Box<Expr>,
+        span: Span,
+    },
     Unary { op: UnOp, expr: Box<Expr>, span: Span },
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
     /// `name(args...)`
     Call { name: IdentId, args: Vec<Expr>, span: Span },
+    /// `[ item, key => item, ... ]` or `array( ... )`
+    Array { items: Vec<ArrayItem>, span: Span },
+    /// `base[index]` read. A read with no index (`$a[]`) is invalid and rejected
+    /// by the compiler; the node exists so `$a[] = v` can be recognized.
+    Index { base: Box<Expr>, index: Option<Box<Expr>>, span: Span },
+}
+
+/// One element of an array literal: `value`, or `key => value`.
+#[derive(Clone, Debug)]
+pub struct ArrayItem {
+    pub key: Option<Expr>,
+    pub value: Expr,
 }
 
 impl Expr {
@@ -77,9 +104,12 @@ impl Expr {
             | Expr::Str(_, s)
             | Expr::Var(_, s)
             | Expr::Assign { span: s, .. }
+            | Expr::IndexAssign { span: s, .. }
             | Expr::Unary { span: s, .. }
             | Expr::Binary { span: s, .. }
-            | Expr::Call { span: s, .. } => *s,
+            | Expr::Call { span: s, .. }
+            | Expr::Array { span: s, .. }
+            | Expr::Index { span: s, .. } => *s,
         }
     }
 }

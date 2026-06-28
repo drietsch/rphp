@@ -24,6 +24,10 @@ use rphp_value::Str;
 /// Diagnostic code for a duplicate function declaration. `rphp-diagnostics`
 /// does not (yet) expose a shared constant for this, so the compiler owns it.
 const REDECLARED_FUNCTION: &str = "RPHP_E0102";
+/// Writing through a nested subscript (`$a[i][j] = v`) is not lowered yet.
+const NESTED_ARRAY_WRITE: &str = "RPHP_E0103";
+/// Reading `$a[]` (the empty-subscript append form) is not a valid expression.
+const INVALID_APPEND_READ: &str = "RPHP_E0104";
 
 /// Compile a parsed program into a bytecode module. Function `0` is the
 /// synthetic `{main}` entry containing the top-level statements; each top-level
@@ -183,7 +187,8 @@ impl<'a> FnCompiler<'a> {
         match &mut self.code[idx] {
             Op::Jmp { target: t }
             | Op::JmpIfTrue { target: t, .. }
-            | Op::JmpIfFalse { target: t, .. } => *t = target,
+            | Op::JmpIfFalse { target: t, .. }
+            | Op::ForeachNext { target: t, .. } => *t = target,
             _ => unreachable!("patch on a non-branch op"),
         }
     }
@@ -283,6 +288,31 @@ impl<'a> FnCompiler<'a> {
                 let lend = self.here();
                 self.patch(jf, lend);
             }
+            Stmt::Foreach { subject, key_var, value_var, body, .. } => {
+                let mark = self.temp_top;
+                // Snapshot the subject into a temp we own — a separate COW handle
+                // — so the body mutating the original array cannot disturb the
+                // iteration (PHP foreach iterates over a copy).
+                let sr = self.compile_expr(subject);
+                let arr = self.alloc_temp();
+                self.emit(Op::Move { dst: arr, src: sr });
+                // The iteration cursor (a position into the entry list).
+                let cursor = self.alloc_temp();
+                let k0 = self.push_const(Const::Int(0));
+                self.emit(Op::LoadConst { dst: cursor, k: k0 });
+                let val_dst = self.var_reg(*value_var);
+                let key_dst = match key_var {
+                    Some(k) => self.var_reg(*k),
+                    None => self.alloc_temp(), // throwaway key sink
+                };
+                let ltop = self.here();
+                let next = self.emit(Op::ForeachNext { arr, cursor, key_dst, val_dst, target: 0 });
+                self.compile_stmts(body);
+                self.emit(Op::Jmp { target: ltop });
+                let lend = self.here();
+                self.patch(next, lend);
+                self.free_to(mark);
+            }
             Stmt::Return { value, .. } => match value {
                 Some(e) => {
                     let mark = self.temp_top;
@@ -373,7 +403,94 @@ impl<'a> FnCompiler<'a> {
                 }
             },
             Expr::Call { name, args, span } => self.compile_call(*name, args, *span),
+            Expr::Array { items, .. } => self.compile_array(items),
+            Expr::Index { base, index, span } => self.compile_index_read(base, index.as_deref(), *span),
+            Expr::IndexAssign { base, index, value, span } => {
+                self.compile_index_assign(base, index.as_deref(), value, *span)
+            }
         }
+    }
+
+    /// `[ ... ]` / `array( ... )`: build a fresh array, then fill it element by
+    /// element preserving source order.
+    fn compile_array(&mut self, items: &[rphp_ast::ArrayItem]) -> Reg {
+        let dst = self.alloc_temp();
+        self.emit(Op::NewArray { dst });
+        let mark = self.temp_top;
+        for item in items {
+            match &item.key {
+                Some(key) => {
+                    let kr = self.compile_expr(key);
+                    let vr = self.compile_expr(&item.value);
+                    self.emit(Op::ArraySet { arr: dst, key: kr, value: vr });
+                }
+                None => {
+                    let vr = self.compile_expr(&item.value);
+                    self.emit(Op::ArrayPush { arr: dst, value: vr });
+                }
+            }
+            self.free_to(mark);
+        }
+        dst
+    }
+
+    /// `base[index]` read. `$a[]` (no index) is not a readable expression.
+    fn compile_index_read(&mut self, base: &Expr, index: Option<&Expr>, span: Span) -> Reg {
+        let Some(index) = index else {
+            self.diags.push(
+                Diagnostic::error(INVALID_APPEND_READ, "cannot use `[]` for reading")
+                    .with_primary(span, "expected an index"),
+            );
+            let dst = self.alloc_temp();
+            self.emit(Op::LoadNull { dst });
+            return dst;
+        };
+        let mark = self.temp_top;
+        let br = self.compile_expr(base);
+        let kr = self.compile_expr(index);
+        self.free_to(mark);
+        let dst = self.alloc_temp();
+        self.emit(Op::ArrayGet { dst, base: br, key: kr });
+        dst
+    }
+
+    /// `base[index] = value` / `base[] = value`. Only a plain `$var` base is
+    /// supported so far (nested-subscript writes need an lvalue chain). The
+    /// expression evaluates to the assigned value.
+    fn compile_index_assign(
+        &mut self,
+        base: &Expr,
+        index: Option<&Expr>,
+        value: &Expr,
+        span: Span,
+    ) -> Reg {
+        let Expr::Var(id, _) = base else {
+            self.diags.push(
+                Diagnostic::error(NESTED_ARRAY_WRITE, "nested array assignment is not supported yet")
+                    .with_primary(span, "write through a single `$var[...]` for now"),
+            );
+            let dst = self.alloc_temp();
+            self.emit(Op::LoadNull { dst });
+            return dst;
+        };
+        let arr = self.var_reg(*id);
+        // The assigned value is the result of the expression, so keep it live
+        // while the (freed) index temp sits above it.
+        let mark = self.temp_top;
+        let vr = self.compile_expr(value);
+        let key_mark = self.temp_top;
+        match index {
+            Some(index) => {
+                let kr = self.compile_expr(index);
+                self.emit(Op::ArraySet { arr, key: kr, value: vr });
+            }
+            None => {
+                self.emit(Op::ArrayPush { arr, value: vr });
+            }
+        }
+        self.free_to(key_mark); // release the index temp, keep `vr`
+        let _ = mark;
+        vr
     }
 
     /// `a && b` with short-circuit; result register holds a real bool.
@@ -542,6 +659,14 @@ fn collect_stmt(s: &Stmt, vars: &mut HashMap<IdentId, Reg>, next: &mut Reg) {
             collect_expr(cond, vars, next);
             collect_stmts(body, vars, next);
         }
+        Stmt::Foreach { subject, key_var, value_var, body, .. } => {
+            collect_expr(subject, vars, next);
+            if let Some(k) = key_var {
+                ensure_var(*k, vars, next);
+            }
+            ensure_var(*value_var, vars, next);
+            collect_stmts(body, vars, next);
+        }
         Stmt::Return { value, .. } => {
             if let Some(e) = value {
                 collect_expr(e, vars, next);
@@ -568,6 +693,27 @@ fn collect_expr(e: &Expr, vars: &mut HashMap<IdentId, Reg>, next: &mut Reg) {
             for a in args {
                 collect_expr(a, vars, next);
             }
+        }
+        Expr::Array { items, .. } => {
+            for it in items {
+                if let Some(k) = &it.key {
+                    collect_expr(k, vars, next);
+                }
+                collect_expr(&it.value, vars, next);
+            }
+        }
+        Expr::Index { base, index, .. } => {
+            collect_expr(base, vars, next);
+            if let Some(i) = index {
+                collect_expr(i, vars, next);
+            }
+        }
+        Expr::IndexAssign { base, index, value, .. } => {
+            collect_expr(base, vars, next);
+            if let Some(i) = index {
+                collect_expr(i, vars, next);
+            }
+            collect_expr(value, vars, next);
         }
         Expr::Null(_)
         | Expr::Bool(_, _)
@@ -960,6 +1106,95 @@ mod tests {
         // A Concat op was emitted (not an Add).
         assert!(main.code.iter().any(|op| matches!(op, Op::Concat { .. })));
         assert!(main.code.iter().any(|op| matches!(op, Op::Echo { .. })));
+    }
+
+    #[test]
+    fn array_literal_emits_new_and_fills() {
+        let mut interner = Interner::new();
+        let k = interner.intern_str("k");
+        // [1, "k" => 2]
+        let m = compile_ok(
+            vec![expr_stmt(Expr::Array {
+                items: vec![
+                    rphp_ast::ArrayItem { key: None, value: int(1) },
+                    rphp_ast::ArrayItem {
+                        key: Some(Expr::Str(k, sp())),
+                        value: int(2),
+                    },
+                ],
+                span: sp(),
+            })],
+            &interner,
+        );
+        let code = &m.func(0).code;
+        assert!(code.iter().any(|op| matches!(op, Op::NewArray { .. })));
+        assert!(code.iter().any(|op| matches!(op, Op::ArrayPush { .. })));
+        assert!(code.iter().any(|op| matches!(op, Op::ArraySet { .. })));
+    }
+
+    #[test]
+    fn append_lowers_to_array_push() {
+        let mut interner = Interner::new();
+        let a = interner.intern_str("a");
+        // $a[] = 5;
+        let m = compile_ok(
+            vec![expr_stmt(Expr::IndexAssign {
+                base: Box::new(var(a)),
+                index: None,
+                value: Box::new(int(5)),
+                span: sp(),
+            })],
+            &interner,
+        );
+        assert!(m.func(0).code.iter().any(|op| matches!(op, Op::ArrayPush { .. })));
+    }
+
+    #[test]
+    fn foreach_lowers_to_foreach_next() {
+        let mut interner = Interner::new();
+        let a = interner.intern_str("a");
+        let v = interner.intern_str("v");
+        // foreach ($a as $v) { echo $v; }
+        let m = compile_ok(
+            vec![Stmt::Foreach {
+                subject: var(a),
+                key_var: None,
+                value_var: v,
+                body: vec![echo(vec![var(v)])],
+                span: sp(),
+            }],
+            &interner,
+        );
+        let code = &m.func(0).code;
+        assert!(code.iter().any(|op| matches!(op, Op::ForeachNext { .. })));
+        // The exhaustion target must be a valid instruction index.
+        let n = code.len() as CodeAddr;
+        for op in code {
+            if let Op::ForeachNext { target, .. } = op {
+                assert!(*target <= n);
+            }
+        }
+    }
+
+    #[test]
+    fn nested_array_write_diagnoses() {
+        let mut interner = Interner::new();
+        let a = interner.intern_str("a");
+        // $a[0][1] = 5;  — nested lvalue write is not supported yet.
+        let diags = compile_err(
+            vec![expr_stmt(Expr::IndexAssign {
+                base: Box::new(Expr::Index {
+                    base: Box::new(var(a)),
+                    index: Some(Box::new(int(0))),
+                    span: sp(),
+                }),
+                index: Some(Box::new(int(1))),
+                value: Box::new(int(5)),
+                span: sp(),
+            })],
+            &interner,
+        );
+        assert!(diags.iter().any(|d| d.code == NESTED_ARRAY_WRITE && d.is_error()));
     }
 
     #[test]

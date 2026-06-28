@@ -15,7 +15,7 @@
 #![forbid(unsafe_code)]
 
 use rphp_bytecode::{Function, Module, Op};
-use rphp_value::{Value, ValueError};
+use rphp_value::{array_key, Str, Value, ValueError};
 
 /// Captured side effects of a run. `echo` output accumulates into `stdout` as
 /// raw bytes — PHP strings are byte strings, so the buffer is binary-safe rather
@@ -143,6 +143,49 @@ fn exec_function(
                 regs[dst as usize] = regs[a as usize].concat(&regs[b as usize]);
             }
 
+            // --- arrays ---
+            Op::NewArray { dst } => {
+                regs[dst as usize] = Value::empty_array();
+            }
+            Op::ArrayGet { dst, base, key } => {
+                regs[dst as usize] = array_get(&regs[base as usize], &regs[key as usize]);
+            }
+            Op::ArraySet { arr, key, value } => {
+                let key = regs[key as usize].clone();
+                let value = regs[value as usize].clone();
+                array_set(&mut regs[arr as usize], &key, value);
+            }
+            Op::ArrayPush { arr, value } => {
+                let value = regs[value as usize].clone();
+                let slot = &mut regs[arr as usize];
+                if matches!(slot, Value::Null) {
+                    *slot = Value::empty_array();
+                }
+                if let Value::Array(a) = slot {
+                    a.push(value);
+                }
+            }
+            Op::ForeachNext { arr, cursor, key_dst, val_dst, target } => {
+                let pos = regs[cursor as usize].to_int();
+                let entry = match &regs[arr as usize] {
+                    Value::Array(a) if pos >= 0 && (pos as usize) < a.len() => {
+                        a.entry_at(pos as usize).map(|(k, v)| (k.to_value(), v.clone()))
+                    }
+                    _ => None,
+                };
+                match entry {
+                    Some((k, v)) => {
+                        regs[key_dst as usize] = k;
+                        regs[val_dst as usize] = v;
+                        regs[cursor as usize] = Value::Int(pos + 1);
+                    }
+                    None => {
+                        pc = target as usize;
+                        continue;
+                    }
+                }
+            }
+
             // --- comparison (dst = bool) ---
             Op::CmpEq { dst, a, b } => {
                 regs[dst as usize] = Value::Bool(regs[a as usize].loose_eq(&regs[b as usize]));
@@ -216,6 +259,47 @@ fn exec_function(
         }
 
         pc += 1;
+    }
+}
+
+/// `base[key]` read. Arrays index by normalized key (absent ⇒ null); strings
+/// index by byte offset (negative allowed; out of range ⇒ "") — both
+/// warning-on-miss cases defer the warning. Indexing any other type is null.
+fn array_get(base: &Value, key: &Value) -> Value {
+    match base {
+        Value::Array(a) => match array_key(key) {
+            Some(k) => a.get(&k).cloned().unwrap_or(Value::Null),
+            None => Value::Null,
+        },
+        Value::Str(s) => string_offset(s, key),
+        _ => Value::Null,
+    }
+}
+
+fn string_offset(s: &Str, key: &Value) -> Value {
+    let len = s.len() as i64;
+    let mut i = key.to_int();
+    if i < 0 {
+        i += len; // PHP allows negative string offsets
+    }
+    if i >= 0 && i < len {
+        Value::string(&s.as_bytes()[i as usize..i as usize + 1])
+    } else {
+        Value::string(b"") // out of range -> "" (warning deferred)
+    }
+}
+
+/// `slot[key] = value`, mutating in place. Null auto-vivifies to a fresh array;
+/// an illegal offset type or a scalar base is a no-op (warning deferred). The
+/// COW separation happens inside [`rphp_value::Array::set`].
+fn array_set(slot: &mut Value, key: &Value, value: Value) {
+    if matches!(slot, Value::Null) {
+        *slot = Value::empty_array();
+    }
+    if let Value::Array(a) = slot {
+        if let Some(k) = array_key(key) {
+            a.set(k, value);
+        }
     }
 }
 
@@ -500,6 +584,57 @@ mod tests {
             ],
         ));
         assert_eq!(out_str(&m), "Hi, PHP!\n");
+    }
+
+    #[test]
+    fn array_build_index_and_get() {
+        // $a = []; $a[] = 10; $a[] = 20; echo $a[1];  => "20"
+        let m = module(func(
+            0,
+            3,
+            vec![
+                Op::NewArray { dst: 0 },                       // $a
+                Op::LoadConst { dst: 1, k: 0 },                // 10
+                Op::ArrayPush { arr: 0, value: 1 },
+                Op::LoadConst { dst: 1, k: 1 },                // 20
+                Op::ArrayPush { arr: 0, value: 1 },
+                Op::LoadConst { dst: 1, k: 2 },                // index 1
+                Op::ArrayGet { dst: 2, base: 0, key: 1 },
+                Op::Echo { src: 2 },
+                Op::Ret { src: None },
+            ],
+            vec![Const::Int(10), Const::Int(20), Const::Int(1)],
+        ));
+        assert_eq!(out_str(&m), "20");
+    }
+
+    #[test]
+    fn foreach_sums_values() {
+        // $a = [3, 4, 5]; foreach ($a as $v) { $s = $s + $v; } echo $s;  => "12"
+        // regs: 0=$a, 1=$s, 2=$v, 3=arr-snapshot, 4=cursor, 5=tmp
+        let m = module(func(
+            0,
+            6,
+            vec![
+                Op::NewArray { dst: 0 },                 // 0: $a = []
+                Op::LoadConst { dst: 5, k: 0 },          // 1: 3
+                Op::ArrayPush { arr: 0, value: 5 },      // 2
+                Op::LoadConst { dst: 5, k: 1 },          // 3: 4
+                Op::ArrayPush { arr: 0, value: 5 },      // 4
+                Op::LoadConst { dst: 5, k: 2 },          // 5: 5
+                Op::ArrayPush { arr: 0, value: 5 },      // 6
+                Op::LoadConst { dst: 1, k: 3 },          // 7: $s = 0
+                Op::Move { dst: 3, src: 0 },             // 8: snapshot
+                Op::LoadConst { dst: 4, k: 3 },          // 9: cursor = 0
+                Op::ForeachNext { arr: 3, cursor: 4, key_dst: 5, val_dst: 2, target: 13 }, // 10
+                Op::Add { dst: 1, a: 1, b: 2 },          // 11: $s += $v
+                Op::Jmp { target: 10 },                  // 12
+                Op::Echo { src: 1 },                     // 13
+                Op::Ret { src: None },                   // 14
+            ],
+            vec![Const::Int(3), Const::Int(4), Const::Int(5), Const::Int(0)],
+        ));
+        assert_eq!(out_str(&m), "12");
     }
 
     #[test]

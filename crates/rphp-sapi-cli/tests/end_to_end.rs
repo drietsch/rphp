@@ -117,6 +117,104 @@ fn echo_is_binary_safe() {
     assert_eq!(out, vec![0xff, 0x00, b'A']);
 }
 
+// ---- arrays -----------------------------------------------------------------
+
+#[test]
+fn array_literal_and_index() {
+    assert_eq!(eval_ok(b"<?php $a = [10, 20, 30]; echo $a[1];"), "20");
+    assert_eq!(eval_ok(b"<?php echo array(7, 8)[1];"), "8");
+}
+
+#[test]
+fn string_keys() {
+    assert_eq!(eval_ok(br#"<?php $a = ["x" => 1, "y" => 2]; echo $a["y"];"#), "2");
+}
+
+#[test]
+fn append_and_overwrite() {
+    assert_eq!(eval_ok(b"<?php $a = []; $a[] = 5; $a[] = 6; echo $a[0] . $a[1];"), "56");
+    assert_eq!(eval_ok(b"<?php $a = [1, 2]; $a[0] = 9; echo $a[0];"), "9");
+}
+
+#[test]
+fn append_autovivifies_array() {
+    assert_eq!(eval_ok(b"<?php $a[] = 7; echo $a[0];"), "7");
+    assert_eq!(eval_ok(b"<?php $a[3] = 'x'; echo $a[3];"), "x");
+}
+
+#[test]
+fn int_and_string_keys_unify() {
+    // "5" and 5 are the same key; "05" stays distinct.
+    assert_eq!(eval_ok(br#"<?php $a = []; $a["5"] = "i"; echo $a[5];"#), "i");
+    assert_eq!(eval_ok(br#"<?php $a = []; $a["05"] = "s"; echo $a["05"];"#), "s");
+}
+
+#[test]
+fn next_key_follows_highest_int() {
+    assert_eq!(eval_ok(b"<?php $a = [5 => 'a']; $a[] = 'b'; echo $a[6];"), "b");
+}
+
+#[test]
+fn nested_array_read() {
+    assert_eq!(eval_ok(b"<?php $a = [[1, 2], [3, 4]]; echo $a[1][0];"), "3");
+}
+
+#[test]
+fn echo_array_is_the_word_array() {
+    assert_eq!(eval_ok(b"<?php echo [1, 2];"), "Array");
+}
+
+#[test]
+fn array_union_operator() {
+    assert_eq!(eval_ok(b"<?php $c = [1, 2] + [9, 9, 9]; echo $c[0] . $c[2];"), "19");
+}
+
+#[test]
+fn copy_on_write_value_semantics() {
+    // $b is a copy; appending to it must not extend $a. $a[1] is absent -> "".
+    assert_eq!(
+        eval_ok(b"<?php $a = [1]; $b = $a; $b[] = 2; echo $b[0] . $b[1] . '|' . $a[0] . '[' . $a[1] . ']';"),
+        "12|1[]"
+    );
+}
+
+#[test]
+fn foreach_value() {
+    assert_eq!(
+        eval_ok(b"<?php $a = [1, 2, 3]; $s = 0; foreach ($a as $v) { $s = $s + $v; } echo $s;"),
+        "6"
+    );
+}
+
+#[test]
+fn foreach_key_value() {
+    assert_eq!(
+        eval_ok(br#"<?php $a = ["a" => 1, "b" => 2]; foreach ($a as $k => $v) { echo $k . "=" . $v . ";"; }"#),
+        "a=1;b=2;"
+    );
+}
+
+#[test]
+fn foreach_over_literal_and_snapshot() {
+    assert_eq!(eval_ok(b"<?php foreach ([1, 2, 3] as $v) echo $v;"), "123");
+    // Mutating the source array inside the loop does not affect iteration.
+    assert_eq!(
+        eval_ok(b"<?php $a = [1, 2]; foreach ($a as $v) { $a[] = 9; echo $v; }"),
+        "12"
+    );
+}
+
+#[test]
+fn string_offset_read() {
+    assert_eq!(eval_ok(br#"<?php $s = "hello"; echo $s[1] . $s[-1];"#), "eo");
+}
+
+#[test]
+fn nested_write_is_a_clean_error() {
+    let err = eval_to_string(b"<?php $a = []; $a[0][1] = 5;").unwrap_err();
+    assert!(err.contains("nested array assignment"), "got: {err}");
+}
+
 #[test]
 fn division_by_zero_is_an_error() {
     let err = eval_to_string(b"<?php echo 1 / 0;").unwrap_err();

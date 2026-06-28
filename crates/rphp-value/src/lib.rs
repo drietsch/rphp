@@ -13,6 +13,9 @@
 //! later, both JIT tiers and const-folding must agree with.
 #![forbid(unsafe_code)]
 
+mod array;
+pub use array::{array_key, Array, ArrayKey};
+
 use std::fmt;
 use std::rc::Rc;
 
@@ -70,6 +73,7 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Str(Str),
+    Array(Array),
 }
 
 /// Recoverable value-level errors that surface as PHP `Error`s at runtime.
@@ -89,6 +93,11 @@ impl Value {
         Value::Str(Str::new(bytes))
     }
 
+    /// An empty array value.
+    pub fn empty_array() -> Value {
+        Value::Array(Array::new())
+    }
+
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Null => "null",
@@ -96,6 +105,7 @@ impl Value {
             Value::Int(_) => "int",
             Value::Float(_) => "float",
             Value::Str(_) => "string",
+            Value::Array(_) => "array",
         }
     }
 
@@ -109,6 +119,8 @@ impl Value {
             Value::Float(f) => *f != 0.0,
             // PHP: only "" and "0" are falsy; "0.0", "00", " " are all truthy.
             Value::Str(s) => !(s.is_empty() || s.as_bytes() == b"0"),
+            // An array is truthy iff it is non-empty.
+            Value::Array(a) => !a.is_empty(),
         }
     }
 
@@ -131,6 +143,8 @@ impl Value {
                 Some(Value::Float(f)) => Value::Float(f).to_int(),
                 _ => 0,
             },
+            // PHP: `(int)` of an array is 0 if empty, else 1.
+            Value::Array(a) => i64::from(!a.is_empty()),
         }
     }
 
@@ -144,6 +158,7 @@ impl Value {
                 Some(v) => v.to_float(),
                 None => 0.0,
             },
+            Value::Array(a) => f64::from(!a.is_empty()),
         }
     }
 
@@ -168,6 +183,9 @@ impl Value {
             Value::Int(i) => out.extend_from_slice(i.to_string().as_bytes()),
             Value::Float(f) => out.extend_from_slice(format_php_float(*f).as_bytes()),
             Value::Str(s) => out.extend_from_slice(s.as_bytes()),
+            // PHP stringifies an array to the literal "Array" (with an
+            // E_WARNING we do not yet emit).
+            Value::Array(_) => out.extend_from_slice(b"Array"),
         }
     }
 
@@ -197,10 +215,19 @@ impl Value {
             // leading number is a TypeError.
             Value::Str(s) => leading_number(s.as_bytes())
                 .ok_or(ValueError::TypeError("non-numeric string in arithmetic")),
+            Value::Array(_) => Err(ValueError::TypeError("array operand in arithmetic")),
         }
     }
 
     pub fn add(&self, rhs: &Value) -> VResult {
+        // PHP `+` on arrays is the union operator, not arithmetic.
+        match (self, rhs) {
+            (Value::Array(a), Value::Array(b)) => return Ok(Value::Array(a.union(b))),
+            (Value::Array(_), _) | (_, Value::Array(_)) => {
+                return Err(ValueError::TypeError("array + non-array"))
+            }
+            _ => {}
+        }
         numeric_binop(self, rhs, |a, b| a.checked_add(b).map(Value::Int).unwrap_or(Value::Float(a as f64 + b as f64)), |a, b| Value::Float(a + b))
     }
 
@@ -280,6 +307,10 @@ impl Value {
             (Null, Null) => true,
             (Bool(_), _) | (_, Bool(_)) => self.to_bool() == rhs.to_bool(),
             (Null, _) | (_, Null) => self.to_bool() == rhs.to_bool(),
+            (Array(a), Array(b)) => a.loose_eq(b),
+            // An array is never loosely equal to a non-array (bool/null already
+            // handled above).
+            (Array(_), _) | (_, Array(_)) => false,
             (Str(a), Str(b)) => {
                 match (numeric_string(a.as_bytes()), numeric_string(b.as_bytes())) {
                     (Some(x), Some(y)) => x.loose_eq(&y),
@@ -309,6 +340,7 @@ impl Value {
             (Int(a), Int(b)) => a == b,
             (Float(a), Float(b)) => a == b,
             (Str(a), Str(b)) => a == b,
+            (Array(a), Array(b)) => a.identical(b),
             _ => false,
         }
     }
@@ -322,6 +354,10 @@ impl Value {
             (Bool(_), _) | (_, Bool(_)) | (Null, _) | (_, Null) => {
                 bool_cmp(self.to_bool(), rhs.to_bool())
             }
+            (Array(a), Array(b)) => a.spaceship(b),
+            // An array is greater than any non-array (bool/null handled above).
+            (Array(_), _) => 1,
+            (_, Array(_)) => -1,
             (Str(a), Str(b)) => {
                 match (numeric_string(a.as_bytes()), numeric_string(b.as_bytes())) {
                     (Some(x), Some(y)) => x.spaceship(&y),
@@ -674,5 +710,52 @@ mod tests {
         // bool/null operands always compare as booleans.
         assert!(s("anything").loose_eq(&Value::Bool(true)));
         assert!(s("0").loose_eq(&Value::Bool(false)));
+    }
+
+    fn arr(items: &[Value]) -> Value {
+        let mut a = Array::new();
+        for v in items {
+            a.push(v.clone());
+        }
+        Value::Array(a)
+    }
+
+    #[test]
+    fn array_truthiness_and_casts() {
+        assert!(!Value::empty_array().to_bool());
+        assert!(arr(&[Value::Int(0)]).to_bool()); // non-empty even with a falsy element
+        assert_eq!(Value::empty_array().to_int(), 0);
+        assert_eq!(arr(&[Value::Int(7)]).to_int(), 1);
+        assert_eq!(arr(&[Value::Int(7)]).to_php_string(), "Array");
+    }
+
+    #[test]
+    fn array_union_and_arithmetic_error() {
+        // [1,2] + [9,9,9] => keys 0,1 from left, key 2 from right => [1,2,9]
+        let u = arr(&[Value::Int(1), Value::Int(2)])
+            .add(&arr(&[Value::Int(9), Value::Int(9), Value::Int(9)]))
+            .unwrap();
+        assert_eq!(u, arr(&[Value::Int(1), Value::Int(2), Value::Int(9)]));
+        // array + scalar is a TypeError.
+        assert!(Value::empty_array().add(&Value::Int(1)).is_err());
+        // other arithmetic on arrays errors too.
+        assert!(arr(&[Value::Int(1)]).sub(&arr(&[Value::Int(1)])).is_err());
+    }
+
+    #[test]
+    fn array_comparison() {
+        // Order-independent loose ==, order-sensitive ===.
+        let mut a = Array::new();
+        a.set(ArrayKey::Int(0), Value::Int(1));
+        a.set(ArrayKey::Int(1), Value::Int(2));
+        let mut b = Array::new();
+        b.set(ArrayKey::Int(1), Value::Int(2));
+        b.set(ArrayKey::Int(0), Value::Int(1));
+        assert!(Value::Array(a.clone()).loose_eq(&Value::Array(b.clone())));
+        assert!(!Value::Array(a).identical(&Value::Array(b))); // different order
+        // Fewer elements compares less; array > non-array.
+        assert_eq!(arr(&[Value::Int(1)]).spaceship(&arr(&[Value::Int(1), Value::Int(2)])), -1);
+        assert_eq!(Value::empty_array().spaceship(&Value::Int(5)), 1);
+        assert!(!Value::empty_array().loose_eq(&Value::Int(0)));
     }
 }

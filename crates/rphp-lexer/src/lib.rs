@@ -31,6 +31,9 @@ pub enum Kw {
     True,
     False,
     Null,
+    Array,
+    Foreach,
+    As,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -73,6 +76,9 @@ pub enum TokenKind {
     RParen,
     LBrace,
     RBrace,
+    LBracket,    // [
+    RBracket,    // ]
+    DoubleArrow, // =>
     Semicolon,
     Comma,
 }
@@ -519,6 +525,8 @@ impl<'a> Lexer<'a> {
             b')' => one!(TokenKind::RParen),
             b'{' => one!(TokenKind::LBrace),
             b'}' => one!(TokenKind::RBrace),
+            b'[' => one!(TokenKind::LBracket),
+            b']' => one!(TokenKind::RBracket),
             b';' => one!(TokenKind::Semicolon),
             b',' => one!(TokenKind::Comma),
             b'*' => {
@@ -536,6 +544,9 @@ impl<'a> Lexer<'a> {
                 } else if self.starts_with(b"==") {
                     self.pos += 2;
                     self.push(TokenKind::EqEq, start);
+                } else if self.starts_with(b"=>") {
+                    self.pos += 2;
+                    self.push(TokenKind::DoubleArrow, start);
                 } else {
                     one!(TokenKind::Assign);
                 }
@@ -627,6 +638,9 @@ fn keyword(word: &[u8]) -> Option<Kw> {
         b"true" => Kw::True,
         b"false" => Kw::False,
         b"null" => Kw::Null,
+        b"array" => Kw::Array,
+        b"foreach" => Kw::Foreach,
+        b"as" => Kw::As,
         _ => return None,
     })
 }
@@ -784,5 +798,23 @@ mod tests {
         let mut i = Interner::new();
         let r = lex(b"<?php 'oops", FileId(0), &mut i);
         assert!(!r.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn array_tokens_and_keywords() {
+        let k = kinds(b"<?php foreach (array(1) as $k => $v) {} $a[0];");
+        assert!(k.iter().any(|t| matches!(t, TokenKind::Keyword(Kw::Foreach))));
+        assert!(k.iter().any(|t| matches!(t, TokenKind::Keyword(Kw::Array))));
+        assert!(k.iter().any(|t| matches!(t, TokenKind::Keyword(Kw::As))));
+        assert!(k.iter().any(|t| matches!(t, TokenKind::DoubleArrow)));
+        assert!(k.iter().any(|t| matches!(t, TokenKind::LBracket)));
+        assert!(k.iter().any(|t| matches!(t, TokenKind::RBracket)));
+    }
+
+    #[test]
+    fn double_arrow_vs_equals() {
+        let k = kinds(b"<?php $a = 1; $b => 2;");
+        assert!(k.iter().any(|t| matches!(t, TokenKind::Assign)));
+        assert!(k.iter().any(|t| matches!(t, TokenKind::DoubleArrow)));
     }
 }

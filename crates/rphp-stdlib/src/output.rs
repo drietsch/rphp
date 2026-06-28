@@ -19,7 +19,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
 /// PHP `var_dump(...$values)`: dump each argument's type and value. Returns null.
 pub(crate) fn var_dump(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
     for v in args {
-        dump(ctx.out, v, 0);
+        dump(ctx.out(), v, 0);
     }
     Ok(Value::Null)
 }
@@ -33,7 +33,7 @@ pub(crate) fn print_r(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
     if return_mode {
         Ok(Value::Str(Str::from_vec(buf)))
     } else {
-        ctx.out.extend_from_slice(&buf);
+        ctx.out().extend_from_slice(&buf);
         Ok(Value::Bool(true))
     }
 }

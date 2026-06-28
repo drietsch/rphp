@@ -18,6 +18,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     // The optional `$matches` (#2) is by-reference; the 2-arg form also works.
     nf_mut!("preg_match", 2, Some(3), 0b100, preg_match),
     nf!("preg_replace", 3, Some(3), preg_replace),
+    nf!("preg_replace_callback", 3, Some(3), preg_replace_callback),
     nf!("preg_split", 2, Some(4), preg_split),
     nf!("preg_grep", 2, Some(3), preg_grep),
 ];
@@ -206,6 +207,40 @@ pub(crate) fn preg_replace(_: &mut Ctx, args: &[Value]) -> NativeResult {
         };
         out.extend_from_slice(&subject[last..whole.start()]);
         expand_replacement(&replacement, &caps, &mut out);
+        last = whole.end();
+    }
+    out.extend_from_slice(&subject[last..]);
+    Ok(str_value(out))
+}
+
+/// `preg_replace_callback($pattern, $callback, $subject)`: for each match, call
+/// `$callback` with the numbered-capture array (group 0 = whole match) and splice
+/// in its return value. (String subject only this wave; `$limit`/`$count` are
+/// deferred.)
+pub(crate) fn preg_replace_callback(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
+    let re = compile(&bytes(&args[0]))?;
+    let subject = bytes(&args[2]);
+    let mut out = Vec::with_capacity(subject.len());
+    let mut last = 0usize;
+    for caps in re.captures_iter(&subject) {
+        let caps = match caps {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+        let whole = match caps.get(0) {
+            Some(m) => m,
+            None => continue,
+        };
+        // Build the $matches array the callback receives.
+        let mut matches = Array::new();
+        let lastg = (0..caps.len()).rev().find(|&i| caps.get(i).is_some()).unwrap_or(0);
+        for i in 0..=lastg {
+            let g = caps.get(i).map(|m| m.as_bytes().to_vec()).unwrap_or_default();
+            matches.push(Value::Str(Str::from_vec(g)));
+        }
+        out.extend_from_slice(&subject[last..whole.start()]);
+        let replacement = ctx.call(&args[1], &[Value::Array(matches)])?;
+        out.extend_from_slice(&replacement.to_php_bytes());
         last = whole.end();
     }
     out.extend_from_slice(&subject[last..]);

@@ -50,6 +50,45 @@ fn runtime_error(err: ValueError) -> RuntimeError {
     RuntimeError { message }
 }
 
+/// The [`rphp_stdlib::Host`] the interpreter hands to native functions: it
+/// exposes stdout and lets a builtin call back into the engine to invoke a PHP
+/// callable (the re-entrancy `array_map`/`usort`/… need). It is created fresh
+/// per native call, borrowing the module and the output buffer.
+struct VmHost<'a> {
+    module: &'a Module,
+    out: &'a mut RunOutput,
+}
+
+impl rphp_stdlib::Host for VmHost<'_> {
+    fn out(&mut self) -> &mut Vec<u8> {
+        &mut self.out.stdout
+    }
+
+    fn call(&mut self, callable: &Value, args: &[Value]) -> Result<Value, rphp_stdlib::NativeError> {
+        // A callable is a function-name string for now (closures arrive with the
+        // closure value type). A user function takes precedence over a builtin.
+        let name = callable.to_php_bytes();
+        if let Some(fid) = self.module.func_by_name(&name) {
+            let f = self.module.func(fid);
+            // Bind only the declared parameters (extra callback args are ignored,
+            // as in PHP); exec_function leaves any missing ones null.
+            let n = (f.num_params as usize).min(args.len());
+            exec_function(self.module, f, &args[..n], &mut *self.out)
+                .map_err(|e| rphp_stdlib::NativeError::new(e.message))
+        } else if let Some(nid) = rphp_stdlib::resolve(&name) {
+            let mut args = args.to_vec();
+            let mut host = VmHost { module: self.module, out: &mut *self.out };
+            let mut ctx = rphp_stdlib::Ctx { host: &mut host };
+            rphp_stdlib::call(nid, &mut ctx, &mut args)
+        } else {
+            Err(rphp_stdlib::NativeError::new(format!(
+                "call to undefined function {}()",
+                String::from_utf8_lossy(&name)
+            )))
+        }
+    }
+}
+
 /// Execute `module` starting at its `main` function, returning captured output.
 ///
 /// `main` takes no parameters, so it is entered with an empty argument list and
@@ -257,7 +296,8 @@ fn exec_function(
                 let mut call_args: Vec<Value> =
                     (0..argc).map(|i| regs[base + i].clone()).collect();
                 let ret = {
-                    let mut ctx = rphp_stdlib::Ctx { out: &mut out.stdout };
+                    let mut host = VmHost { module, out: &mut *out };
+                    let mut ctx = rphp_stdlib::Ctx { host: &mut host };
                     rphp_stdlib::call(id, &mut ctx, &mut call_args)
                         .map_err(|e| RuntimeError { message: e.message })?
                 };
@@ -339,6 +379,7 @@ mod tests {
     fn func(num_params: u16, num_regs: u16, code: Vec<Op>, consts: Vec<Const>) -> Function {
         Function {
             name: IdentId(0),
+            name_bytes: Box::from(&b""[..]),
             num_params,
             num_regs,
             code,

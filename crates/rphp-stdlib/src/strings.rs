@@ -1319,7 +1319,7 @@ pub(crate) fn printf(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
     let format = bytes(&args[0]);
     let rendered = do_sprintf(&format, &args[1..])?;
     let len = rendered.len() as i64;
-    ctx.out.extend_from_slice(&rendered);
+    ctx.out().extend_from_slice(&rendered);
     Ok(Value::Int(len))
 }
 

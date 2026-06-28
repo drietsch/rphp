@@ -75,6 +75,7 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
         &arities,
         &mut diags,
         IdentId(0),
+        Box::from(&b""[..]),
         &[],
         &program.items,
         Span::dummy(),
@@ -86,6 +87,7 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
             &arities,
             &mut diags,
             f.name,
+            interner.resolve(f.name).into(),
             &f.params,
             &f.body,
             f.span,
@@ -105,6 +107,7 @@ fn compile_function(
     arities: &[u16],
     diags: &mut Vec<Diagnostic>,
     name: IdentId,
+    name_bytes: Box<[u8]>,
     params: &[Param],
     body: &[Stmt],
     span: Span,
@@ -116,6 +119,7 @@ fn compile_function(
     fc.emit(Op::Ret { src: None });
     Function {
         name,
+        name_bytes,
         num_params: params.len() as u16,
         num_regs: fc.num_regs,
         code: fc.code,

@@ -119,6 +119,10 @@ pub enum Op {
 #[derive(Clone, Debug)]
 pub struct Function {
     pub name: IdentId,
+    /// The function's name as raw bytes. The interner is a compile-time artifact,
+    /// so the runtime keeps the bytes here to resolve a callable string
+    /// (`'my_func'`) to a [`FuncId`] without it. Empty for the synthetic `{main}`.
+    pub name_bytes: Box<[u8]>,
     pub num_params: u16,
     /// Total registers this frame needs (params occupy `0 .. num_params`).
     pub num_regs: u16,
@@ -137,5 +141,14 @@ pub struct Module {
 impl Module {
     pub fn func(&self, id: FuncId) -> &Function {
         &self.funcs[id as usize]
+    }
+
+    /// Resolve a function name (case-insensitive, as PHP) to its id. Used to turn
+    /// a callable string into a callable target at runtime.
+    pub fn func_by_name(&self, name: &[u8]) -> Option<FuncId> {
+        self.funcs
+            .iter()
+            .position(|f| f.name_bytes.eq_ignore_ascii_case(name))
+            .map(|i| i as FuncId)
     }
 }

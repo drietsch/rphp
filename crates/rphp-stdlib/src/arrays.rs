@@ -50,6 +50,13 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf_mut!("array_shift", 1, Some(1), 0b1, array_shift),
     nf_mut!("array_unshift", 1, None, 0b1, array_unshift),
     nf_mut!("array_splice", 2, Some(4), 0b1, array_splice),
+    // --- higher-order: invoke a callable through the host ---
+    nf!("array_map", 2, Some(2), array_map),
+    nf!("array_filter", 1, Some(2), array_filter),
+    nf!("array_reduce", 2, Some(3), array_reduce),
+    nf_mut!("usort", 2, Some(2), 0b1, usort),
+    nf_mut!("uasort", 2, Some(2), 0b1, uasort),
+    nf_mut!("uksort", 2, Some(2), 0b1, uksort),
 ];
 
 /// Borrow an argument as an array, or produce PHP's TypeError message.
@@ -811,4 +818,99 @@ pub(crate) fn array_splice(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     }
     args[0] = Value::Array(out);
     Ok(Value::Array(removed))
+}
+
+// ---- higher-order (callback) functions --------------------------------------
+//
+// These invoke a PHP callable through `ctx.call` (the host re-entry point). The
+// callable is a function-name string for now; closures arrive with the closure
+// value type. Multi-array `array_map`, `array_filter` modes, and `array_walk`
+// (by-ref callback) are cataloged in COVERAGE.md.
+
+pub(crate) fn array_map(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
+    let entries = take_entries("array_map", &args[1])?;
+    let mut out = Array::new();
+    for (k, v) in entries {
+        // Single-array form preserves keys; the result is the callback's return.
+        let mapped = ctx.call(&args[0], &[v])?;
+        out.set(k, mapped);
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_filter(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
+    let entries = take_entries("array_filter", &args[0])?;
+    // Without a callback, keep the truthy elements; with one, keep where it
+    // returns true. Keys are preserved either way.
+    let callback = args.get(1).filter(|v| !matches!(v, Value::Null));
+    let mut out = Array::new();
+    for (k, v) in entries {
+        let keep = match callback {
+            Some(cb) => ctx.call(cb, std::slice::from_ref(&v))?.to_bool(),
+            None => v.to_bool(),
+        };
+        if keep {
+            out.set(k, v);
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_reduce(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
+    let entries = take_entries("array_reduce", &args[0])?;
+    let mut acc = args.get(2).cloned().unwrap_or(Value::Null);
+    for (_, v) in entries {
+        acc = ctx.call(&args[1], &[acc, v])?;
+    }
+    Ok(acc)
+}
+
+/// Shared body for the user-comparator sorts (`usort`/`uasort`/`uksort`): sort by
+/// the callback (its sign is the order), then write back. A callback error
+/// aborts the sort and surfaces. `reindex` distinguishes `usort` (renumber) from
+/// the key-preserving `u*sort` pair.
+fn user_sort(
+    ctx: &mut Ctx,
+    args: &mut [Value],
+    func: &str,
+    by_key: bool,
+    reindex: bool,
+) -> NativeResult {
+    let mut entries = take_entries(func, &args[0])?;
+    let cb = args[1].clone();
+    let mut err: Option<NativeError> = None;
+    entries.sort_by(|a, b| {
+        if err.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        let (x, y) = if by_key {
+            (a.0.to_value(), b.0.to_value())
+        } else {
+            (a.1.clone(), b.1.clone())
+        };
+        match ctx.call(&cb, &[x, y]) {
+            Ok(r) => r.to_int().cmp(&0),
+            Err(e) => {
+                err = Some(e);
+                std::cmp::Ordering::Equal
+            }
+        }
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    args[0] = rebuild(entries, reindex);
+    Ok(Value::Bool(true))
+}
+
+pub(crate) fn usort(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    user_sort(ctx, args, "usort", false, true)
+}
+
+pub(crate) fn uasort(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    user_sort(ctx, args, "uasort", false, false)
+}
+
+pub(crate) fn uksort(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    user_sort(ctx, args, "uksort", true, false)
 }

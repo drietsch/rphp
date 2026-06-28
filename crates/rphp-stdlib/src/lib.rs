@@ -16,6 +16,7 @@ use rphp_value::Value;
 
 mod arrays;
 mod ctype;
+mod funcs;
 mod hash;
 mod json;
 mod math;
@@ -29,10 +30,71 @@ mod types;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NativeId(pub u32);
 
-/// Side-channel a native function may use — currently the run's stdout buffer.
-/// Grows as builtins need more (interner, isolate state, error sink …).
+/// The host capabilities a native function may use: write to stdout, and call
+/// back into the engine to invoke a PHP **callable** (the re-entrancy that
+/// higher-order builtins like `array_map`/`usort` need). The engine
+/// (`rphp-runtime`) implements this trait; `rphp-stdlib` only sees it, so the
+/// crate dependency stays one-way. Grows as builtins need more (isolate state,
+/// error sink, …).
+pub trait Host {
+    /// The run's stdout buffer (PHP strings are bytes, so this is byte-exact).
+    fn out(&mut self) -> &mut Vec<u8>;
+    /// Invoke a PHP callable — for now a function-name string (`'strtoupper'`,
+    /// `'my_func'`); closures arrive with the closure value type — with `args`,
+    /// returning its result. Errors if the callable cannot be resolved.
+    fn call(&mut self, callable: &Value, args: &[Value]) -> NativeResult;
+}
+
+/// The per-call runtime handle handed to every native function.
 pub struct Ctx<'a> {
-    pub out: &'a mut Vec<u8>,
+    pub host: &'a mut dyn Host,
+}
+
+impl Ctx<'_> {
+    /// Append to the run's stdout (used by `echo`-style builtins like `var_dump`).
+    pub fn out(&mut self) -> &mut Vec<u8> {
+        self.host.out()
+    }
+
+    /// Invoke a PHP callable (used by higher-order builtins).
+    pub fn call(&mut self, callable: &Value, args: &[Value]) -> NativeResult {
+        self.host.call(callable, args)
+    }
+}
+
+/// A standalone [`Host`] backed by an in-memory buffer, for embedders and tests
+/// with no VM. Its `call` resolves **builtin** callables only (there is no
+/// user-function table without a module).
+#[derive(Default)]
+pub struct BufHost {
+    pub out: Vec<u8>,
+}
+
+impl BufHost {
+    pub fn new() -> Self {
+        BufHost::default()
+    }
+}
+
+impl Host for BufHost {
+    fn out(&mut self) -> &mut Vec<u8> {
+        &mut self.out
+    }
+
+    fn call(&mut self, callable: &Value, args: &[Value]) -> NativeResult {
+        let name = callable.to_php_bytes();
+        match resolve(&name) {
+            Some(id) => {
+                let mut args = args.to_vec();
+                let mut ctx = Ctx { host: self };
+                call(id, &mut ctx, &mut args)
+            }
+            None => Err(NativeError::new(format!(
+                "call to undefined function {}()",
+                String::from_utf8_lossy(&name)
+            ))),
+        }
+    }
 }
 
 /// A recoverable native-call fault (wrong type, domain error …). The runtime
@@ -131,6 +193,7 @@ fn table() -> &'static [NativeFn] {
             arrays::FUNCTIONS,
             math::FUNCTIONS,
             ctype::FUNCTIONS,
+            funcs::FUNCTIONS,
             hash::FUNCTIONS,
             json::FUNCTIONS,
             pcre::FUNCTIONS,
@@ -177,8 +240,8 @@ mod tests {
 
     /// Call a builtin by name with the given args, returning its result.
     fn call_named(name: &[u8], args: &[Value]) -> Value {
-        let mut out = Vec::new();
-        let mut ctx = Ctx { out: &mut out };
+        let mut host = BufHost::new();
+        let mut ctx = Ctx { host: &mut host };
         let mut args = args.to_vec();
         call(resolve(name).unwrap(), &mut ctx, &mut args).unwrap()
     }
@@ -224,18 +287,28 @@ mod tests {
 
     #[test]
     fn str_repeat_rejects_negative_counts() {
-        let mut out = Vec::new();
-        let mut ctx = Ctx { out: &mut out };
+        let mut host = BufHost::new();
+        let mut ctx = Ctx { host: &mut host };
         let r = call(resolve(b"str_repeat").unwrap(), &mut ctx, &mut [Value::string(b"x"), Value::Int(-1)]);
         assert!(r.is_err());
     }
 
     #[test]
     fn intdiv_by_zero_errors() {
-        let mut out = Vec::new();
-        let mut ctx = Ctx { out: &mut out };
+        let mut host = BufHost::new();
+        let mut ctx = Ctx { host: &mut host };
         let r = call(resolve(b"intdiv").unwrap(), &mut ctx, &mut [Value::Int(1), Value::Int(0)]);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn buf_host_invokes_native_callbacks() {
+        // array_map with a builtin callable resolves through BufHost — no VM.
+        let mapped = call_named(
+            b"array_map",
+            &[Value::string(b"strtoupper"), arr(&[Value::string(b"a"), Value::string(b"b")])],
+        );
+        assert_eq!(mapped, arr(&[Value::string(b"A"), Value::string(b"B")]));
     }
 
     #[test]
@@ -247,8 +320,8 @@ mod tests {
     #[test]
     fn aliases_share_an_implementation() {
         // sizeof is an alias of count, join of implode.
-        let mut out = Vec::new();
-        let mut ctx = Ctx { out: &mut out };
+        let mut host = BufHost::new();
+        let mut ctx = Ctx { host: &mut host };
         let arr = {
             let mut a = rphp_value::Array::new();
             a.push(Value::Int(1));

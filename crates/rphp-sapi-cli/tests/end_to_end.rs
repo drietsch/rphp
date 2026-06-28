@@ -386,6 +386,64 @@ fn by_ref_requires_a_variable() {
     assert!(err.contains("by reference"), "got: {err}");
 }
 
+// ---- callables (higher-order builtins re-enter the engine) ------------------
+
+#[test]
+fn callable_array_map_user_and_native() {
+    // A user function as a callable string, and a builtin as a callable string.
+    assert_eq!(
+        eval_ok(b"<?php function d($x) { return $x + 1; } echo implode(',', array_map('d', [1, 2, 3]));"),
+        "2,3,4"
+    );
+    assert_eq!(eval_ok(br#"<?php echo implode(',', array_map('strtoupper', ['a', 'b']));"#), "A,B");
+}
+
+#[test]
+fn callable_array_filter_and_reduce() {
+    assert_eq!(
+        eval_ok(b"<?php function ev($n) { return $n % 2 == 0; } echo implode(',', array_filter([1, 2, 3, 4], 'ev'));"),
+        "2,4"
+    );
+    assert_eq!(
+        eval_ok(b"<?php function ad($a, $b) { return $a + $b; } echo array_reduce([1, 2, 3, 4], 'ad', 0);"),
+        "10"
+    );
+}
+
+#[test]
+fn callable_usort_with_user_comparator() {
+    assert_eq!(
+        eval_ok(b"<?php function dsc($a, $b) { return $b - $a; } $x = [1, 3, 2]; usort($x, 'dsc'); echo implode(',', $x);"),
+        "3,2,1"
+    );
+}
+
+#[test]
+fn callable_call_user_func() {
+    assert_eq!(
+        eval_ok(br#"<?php function s($a, $b) { return $a . $b; } echo call_user_func('s', 'x', 'y');"#),
+        "xy"
+    );
+    assert_eq!(
+        eval_ok(b"<?php function s($a, $b) { return $a + $b; } echo call_user_func_array('s', [2, 3]);"),
+        "5"
+    );
+}
+
+#[test]
+fn callable_preg_replace_callback() {
+    assert_eq!(
+        eval_ok(br#"<?php function u($m) { return strtoupper($m[0]); } echo preg_replace_callback('/[a-z]+/', 'u', 'ab Cd');"#),
+        "AB CD"
+    );
+}
+
+#[test]
+fn callable_to_undefined_function_errors() {
+    let err = eval_to_string(b"<?php array_map('nope_fn', [1]);").unwrap_err();
+    assert!(err.contains("undefined function"), "got: {err}");
+}
+
 // ---- argument-handling tests through the public `run` entry point ----------
 
 fn write_temp(name: &str, contents: &[u8]) -> PathBuf {

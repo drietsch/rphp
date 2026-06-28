@@ -1,5 +1,7 @@
 //! Array builtins, built directly on [`rphp_value::Array`] so key coercion,
 //! ordering, and loose/strict comparison match the engine exactly.
+use std::collections::HashSet;
+
 use rphp_value::{array_key, Array, ArrayKey, Str, Value};
 
 use crate::{nf, Ctx, NativeError, NativeFn, NativeResult};
@@ -18,6 +20,24 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("array_reverse", 1, Some(2), array_reverse),
     nf!("array_sum", 1, Some(1), array_sum),
     nf!("range", 2, Some(3), range),
+    nf!("array_slice", 2, Some(4), array_slice),
+    nf!("array_flip", 1, Some(1), array_flip),
+    nf!("array_unique", 1, Some(2), array_unique),
+    nf!("array_search", 2, Some(3), array_search),
+    nf!("array_fill", 3, Some(3), array_fill),
+    nf!("array_fill_keys", 2, Some(2), array_fill_keys),
+    nf!("array_combine", 2, Some(2), array_combine),
+    nf!("array_pad", 3, Some(3), array_pad),
+    nf!("array_column", 2, Some(3), array_column),
+    nf!("array_chunk", 2, Some(3), array_chunk),
+    nf!("array_product", 1, Some(1), array_product),
+    nf!("array_count_values", 1, Some(1), array_count_values),
+    nf!("array_key_first", 1, Some(1), array_key_first),
+    nf!("array_key_last", 1, Some(1), array_key_last),
+    nf!("array_is_list", 1, Some(1), array_is_list),
+    nf!("array_diff", 2, None, array_diff),
+    nf!("array_intersect", 2, None, array_intersect),
+    nf!("array_replace", 1, None, array_replace),
 ];
 
 /// Borrow an argument as an array, or produce PHP's TypeError message.
@@ -207,4 +227,388 @@ fn first_byte(v: &Value) -> u8 {
 
 fn char_value(b: u8) -> Value {
     Value::Str(Str::from_vec(vec![b]))
+}
+
+/// Borrow the `n`-th (0-based) argument as an array, with PHP's *positional*
+/// TypeError used by the variadic set operators — those omit the parameter name
+/// for every argument after the first (`array_diff(): Argument #2 must be …`).
+fn want_array_n<'a>(func: &str, n: usize, v: &'a Value) -> Result<&'a Array, NativeError> {
+    match v {
+        Value::Array(a) => Ok(a),
+        other => Err(NativeError::new(format!(
+            "{func}(): Argument #{} must be of type array, {} given",
+            n + 1,
+            other.type_name()
+        ))),
+    }
+}
+
+/// Append every entry of `src` to `out`, renumbering integer keys from `out`'s
+/// next slot while preserving string keys — the rule `array_merge`/`array_pad`
+/// apply to a single source array.
+fn append_reindexed(out: &mut Array, src: &Array) {
+    for (k, v) in src.iter() {
+        match k {
+            ArrayKey::Int(_) => out.push(v.clone()),
+            ArrayKey::Str(_) => out.set(k.clone(), v.clone()),
+        }
+    }
+}
+
+pub(crate) fn array_slice(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let arr = want_array("array_slice", &args[0])?;
+    let n = arr.len() as i64;
+    // Snapshot once; `Array::iter()` is single-pass and we index it by position.
+    let entries: Vec<(&ArrayKey, &Value)> = arr.iter().collect();
+
+    // Resolve the start offset (a negative offset counts from the end).
+    let mut start = args[1].to_int();
+    if start < 0 {
+        start = (n + start).max(0);
+    } else {
+        start = start.min(n);
+    }
+    // Resolve the exclusive end: null length means "to the end"; a negative
+    // length stops that many elements short of the end.
+    let end = match args.get(2) {
+        None | Some(Value::Null) => n,
+        Some(len) => {
+            let l = len.to_int();
+            if l < 0 {
+                (n + l).max(start)
+            } else {
+                (start + l).min(n)
+            }
+        }
+    };
+    let preserve = args.get(3).is_some_and(Value::to_bool);
+
+    let mut out = Array::new();
+    let mut i = start;
+    while i < end {
+        let (k, v) = entries[i as usize];
+        match (preserve, k) {
+            // Integer keys are renumbered unless preservation is requested;
+            // string keys are always kept.
+            (false, ArrayKey::Int(_)) => out.push(v.clone()),
+            _ => out.set(k.clone(), v.clone()),
+        }
+        i += 1;
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_flip(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let arr = want_array("array_flip", &args[0])?;
+    let mut out = Array::new();
+    for (k, v) in arr.iter() {
+        // Only int/string values can become keys; PHP warns and skips the rest.
+        // A value like "5" normalizes to the int key 5 via `array_key`.
+        if matches!(v, Value::Int(_) | Value::Str(_)) {
+            if let Some(key) = array_key(v) {
+                out.set(key, k.to_value());
+            }
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_unique(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let arr = want_array("array_unique", &args[0])?;
+    // Default SORT_STRING: two values are duplicates iff their `(string)` casts
+    // are byte-equal. The first occurrence wins and its key is preserved.
+    let mut seen: HashSet<Vec<u8>> = HashSet::new();
+    let mut out = Array::new();
+    for (k, v) in arr.iter() {
+        if seen.insert(v.to_php_bytes()) {
+            out.set(k.clone(), v.clone());
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_search(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let needle = &args[0];
+    let haystack = match &args[1] {
+        Value::Array(a) => a,
+        other => {
+            return Err(NativeError::new(format!(
+                "array_search(): Argument #2 ($haystack) must be of type array, {} given",
+                other.type_name()
+            )))
+        }
+    };
+    let strict = args.get(2).is_some_and(Value::to_bool);
+    for (k, v) in haystack.iter() {
+        let hit = if strict { needle.identical(v) } else { needle.loose_eq(v) };
+        if hit {
+            return Ok(k.to_value());
+        }
+    }
+    Ok(Value::Bool(false))
+}
+
+pub(crate) fn array_fill(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let start = args[0].to_int();
+    let count = args[1].to_int();
+    if count < 0 {
+        return Err(NativeError::new(
+            "array_fill(): Argument #2 ($count) must be greater than or equal to 0",
+        ));
+    }
+    let value = &args[2];
+    let mut out = Array::new();
+    // PHP 8 fills consecutive integer keys from `start` (a negative start counts
+    // up through 0, e.g. -2,-1,0,1,2).
+    for i in 0..count {
+        out.set(ArrayKey::Int(start.wrapping_add(i)), value.clone());
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_fill_keys(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let keys = want_array("array_fill_keys", &args[0])?;
+    let value = &args[1];
+    let mut out = Array::new();
+    // Each *value* of `keys` becomes a key (normalized) mapped to `value`.
+    for (_, k) in keys.iter() {
+        if let Some(key) = array_key(k) {
+            out.set(key, value.clone());
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_combine(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let keys = match &args[0] {
+        Value::Array(a) => a,
+        other => {
+            return Err(NativeError::new(format!(
+                "array_combine(): Argument #1 ($keys) must be of type array, {} given",
+                other.type_name()
+            )))
+        }
+    };
+    let values = match &args[1] {
+        Value::Array(a) => a,
+        other => {
+            return Err(NativeError::new(format!(
+                "array_combine(): Argument #2 ($values) must be of type array, {} given",
+                other.type_name()
+            )))
+        }
+    };
+    if keys.len() != values.len() {
+        return Err(NativeError::new(
+            "array_combine(): Argument #1 ($keys) and argument #2 ($values) must have the same number of elements",
+        ));
+    }
+    let mut out = Array::new();
+    for ((_, k), (_, v)) in keys.iter().zip(values.iter()) {
+        if let Some(key) = array_key(k) {
+            out.set(key, v.clone());
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_pad(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let arr = want_array("array_pad", &args[0])?;
+    let size = args[1].to_int();
+    let value = &args[2];
+    // Number of padding elements to add; if the array already meets the target
+    // size PHP returns it untouched (keys preserved, no reindex).
+    let pad = size.unsigned_abs() as i64 - arr.len() as i64;
+    if pad <= 0 {
+        return Ok(Value::Array(arr.clone()));
+    }
+    let mut out = Array::new();
+    if size > 0 {
+        // Pad on the right: originals first (int keys renumbered), then padding.
+        append_reindexed(&mut out, arr);
+        for _ in 0..pad {
+            out.push(value.clone());
+        }
+    } else {
+        // Pad on the left: padding first, then the originals appended after it.
+        for _ in 0..pad {
+            out.push(value.clone());
+        }
+        append_reindexed(&mut out, arr);
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_column(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let arr = want_array("array_column", &args[0])?;
+    // A null column key selects the whole row; otherwise normalize it once.
+    let whole_row = matches!(&args[1], Value::Null);
+    let column_key = if whole_row { None } else { array_key(&args[1]) };
+    // An absent or null index argument means "append with the next int key".
+    let index_key = match args.get(2) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(array_key(v)),
+    };
+
+    let mut out = Array::new();
+    for (_, row) in arr.iter() {
+        let row = match row {
+            Value::Array(a) => a,
+            _ => continue, // non-array rows are ignored
+        };
+        // Pull the column value (or the whole row); skip rows lacking it.
+        let val = if whole_row {
+            Value::Array(row.clone())
+        } else {
+            match column_key.as_ref().and_then(|k| row.get(k)) {
+                Some(v) => v.clone(),
+                None => continue,
+            }
+        };
+        match &index_key {
+            // No index requested: append under the next integer key.
+            None => out.push(val),
+            // Index requested: key by the row's index value, falling back to an
+            // append when the row lacks it or it is not a usable key.
+            Some(ik) => match ik.as_ref().and_then(|k| row.get(k)).and_then(array_key) {
+                Some(key) => out.set(key, val),
+                None => out.push(val),
+            },
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_chunk(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let arr = want_array("array_chunk", &args[0])?;
+    let size = args[1].to_int();
+    if size < 1 {
+        return Err(NativeError::new(
+            "array_chunk(): Argument #2 ($length) must be greater than 0",
+        ));
+    }
+    let preserve = args.get(2).is_some_and(Value::to_bool);
+    let mut out = Array::new();
+    let mut chunk = Array::new();
+    let mut count = 0i64;
+    for (k, v) in arr.iter() {
+        if preserve {
+            chunk.set(k.clone(), v.clone());
+        } else {
+            chunk.push(v.clone());
+        }
+        count += 1;
+        if count == size {
+            out.push(Value::Array(std::mem::take(&mut chunk)));
+            count = 0;
+        }
+    }
+    // Flush a partial final chunk.
+    if count > 0 {
+        out.push(Value::Array(chunk));
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_product(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let arr = want_array("array_product", &args[0])?;
+    // The empty-array product is the int 1, per PHP.
+    let mut acc = Value::Int(1);
+    for (_, v) in arr.iter() {
+        // `to_number` keeps both operands numeric, so `mul` never errors.
+        if let Ok(p) = acc.mul(&v.to_number()) {
+            acc = p;
+        }
+    }
+    Ok(acc)
+}
+
+pub(crate) fn array_count_values(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let arr = want_array("array_count_values", &args[0])?;
+    let mut out = Array::new();
+    for (_, v) in arr.iter() {
+        // Only int/string values are countable; PHP warns and skips the rest.
+        if !matches!(v, Value::Int(_) | Value::Str(_)) {
+            continue;
+        }
+        if let Some(key) = array_key(v) {
+            let next = out.get(&key).map_or(0, Value::to_int) + 1;
+            out.set(key, Value::Int(next));
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_key_first(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let arr = want_array("array_key_first", &args[0])?;
+    Ok(arr.iter().next().map_or(Value::Null, |(k, _)| k.to_value()))
+}
+
+pub(crate) fn array_key_last(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let arr = want_array("array_key_last", &args[0])?;
+    Ok(arr.iter().last().map_or(Value::Null, |(k, _)| k.to_value()))
+}
+
+pub(crate) fn array_is_list(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let arr = want_array("array_is_list", &args[0])?;
+    // A list has consecutive int keys 0,1,2,… in order (the empty array counts).
+    let mut expected = 0i64;
+    for (k, _) in arr.iter() {
+        match k {
+            ArrayKey::Int(i) if *i == expected => expected += 1,
+            _ => return Ok(Value::Bool(false)),
+        }
+    }
+    Ok(Value::Bool(true))
+}
+
+pub(crate) fn array_diff(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let base = want_array("array_diff", &args[0])?;
+    // Two elements are equal iff `(string)$a === (string)$b`; gather the string
+    // form of every value across the remaining arrays.
+    let mut others: HashSet<Vec<u8>> = HashSet::new();
+    for (i, arg) in args.iter().enumerate().skip(1) {
+        let a = want_array_n("array_diff", i, arg)?;
+        for (_, v) in a.iter() {
+            others.insert(v.to_php_bytes());
+        }
+    }
+    let mut out = Array::new();
+    for (k, v) in base.iter() {
+        if !others.contains(&v.to_php_bytes()) {
+            out.set(k.clone(), v.clone());
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_intersect(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    let base = want_array("array_intersect", &args[0])?;
+    // Keep a base value iff its string form appears in *every* other array.
+    let mut sets: Vec<HashSet<Vec<u8>>> = Vec::new();
+    for (i, arg) in args.iter().enumerate().skip(1) {
+        let a = want_array_n("array_intersect", i, arg)?;
+        sets.push(a.iter().map(|(_, v)| v.to_php_bytes()).collect());
+    }
+    let mut out = Array::new();
+    for (k, v) in base.iter() {
+        let s = v.to_php_bytes();
+        if sets.iter().all(|set| set.contains(&s)) {
+            out.set(k.clone(), v.clone());
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+pub(crate) fn array_replace(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    // Start from a copy of the first array, then overwrite matching keys from
+    // each later array in place (new keys are appended; no integer renumbering).
+    let mut out = want_array("array_replace", &args[0])?.clone();
+    for (i, arg) in args.iter().enumerate().skip(1) {
+        let a = want_array_n("array_replace", i, arg)?;
+        for (k, v) in a.iter() {
+            out.set(k.clone(), v.clone());
+        }
+    }
+    Ok(Value::Array(out))
 }

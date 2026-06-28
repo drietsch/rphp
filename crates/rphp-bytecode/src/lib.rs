@@ -104,6 +104,11 @@ pub enum Op {
     // --- calls ---
     /// Call `func` with `argc` args staged in `base ..= base+argc-1`; result -> `dst`.
     Call { dst: Reg, func: FuncId, base: Reg, argc: u16 },
+    /// Call the builtin with registry id `native` (see `rphp-stdlib`), with the
+    /// same `base ..= base+argc-1` argument staging as [`Op::Call`]; result ->
+    /// `dst`. The compiler range-checks `argc` against the descriptor's arity, so
+    /// the runtime can pass the window through to the handler unchecked.
+    CallNative { dst: Reg, native: u32, base: Reg, argc: u16 },
     /// Return `src` (or null) to the caller.
     Ret { src: Option<Reg> },
 

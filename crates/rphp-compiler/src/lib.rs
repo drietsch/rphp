@@ -544,41 +544,34 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn compile_call(&mut self, name: IdentId, args: &[Expr], span: Span) -> Reg {
-        let func = match self.func_map.get(&name) {
-            Some(id) => *id,
-            None => {
-                self.diags.push(
-                    Diagnostic::error(
-                        codes::UNDEFINED_FUNCTION,
-                        format!(
-                            "call to undefined function {}()",
-                            self.interner.resolve_lossy(name)
-                        ),
-                    )
-                    .with_primary(span, "not defined"),
-                );
-                let dst = self.alloc_temp();
-                self.emit(Op::LoadNull { dst });
-                return dst;
-            }
-        };
-
         let argc = args.len() as u16;
-        let expected = self.arities[func as usize];
-        if argc != expected {
+
+        // Resolve the callee: a user function takes precedence over a builtin of
+        // the same name; a builtin is matched case-insensitively by its bytes.
+        let target = if let Some(&id) = self.func_map.get(&name) {
+            self.check_user_arity(name, id, argc, span);
+            Some(CallTarget::User(id))
+        } else if let Some(nid) = rphp_stdlib::resolve(self.interner.resolve(name)) {
+            self.check_native_arity(name, nid, argc, span);
+            Some(CallTarget::Native(nid.0))
+        } else {
             self.diags.push(
                 Diagnostic::error(
-                    codes::WRONG_ARG_COUNT,
+                    codes::UNDEFINED_FUNCTION,
                     format!(
-                        "function {}() expects {} argument(s), {} given",
-                        self.interner.resolve_lossy(name),
-                        expected,
-                        argc
+                        "call to undefined function {}()",
+                        self.interner.resolve_lossy(name)
                     ),
                 )
-                .with_primary(span, "wrong number of arguments"),
+                .with_primary(span, "not defined"),
             );
-        }
+            None
+        };
+        let Some(target) = target else {
+            let dst = self.alloc_temp();
+            self.emit(Op::LoadNull { dst });
+            return dst;
+        };
 
         // Stage args into the contiguous window `base ..= base+argc-1`.
         let base = self.temp_top;
@@ -597,14 +590,67 @@ impl<'a> FnCompiler<'a> {
         self.free_to(base);
         let dst = self.alloc_temp();
         debug_assert_eq!(dst, base);
-        self.emit(Op::Call {
-            dst,
-            func,
-            base,
-            argc,
-        });
+        let op = match target {
+            CallTarget::User(func) => Op::Call { dst, func, base, argc },
+            CallTarget::Native(native) => Op::CallNative { dst, native, base, argc },
+        };
+        self.emit(op);
         dst
     }
+
+    /// A user function takes a fixed parameter count (defaults/variadics are not
+    /// modelled yet), so the arg count must match exactly.
+    fn check_user_arity(&mut self, name: IdentId, id: FuncId, argc: u16, span: Span) {
+        let expected = self.arities[id as usize];
+        if argc != expected {
+            self.diags.push(
+                Diagnostic::error(
+                    codes::WRONG_ARG_COUNT,
+                    format!(
+                        "function {}() expects {} argument(s), {} given",
+                        self.interner.resolve_lossy(name),
+                        expected,
+                        argc
+                    ),
+                )
+                .with_primary(span, "wrong number of arguments"),
+            );
+        }
+    }
+
+    /// A builtin declares an arity range (`min_args ..= max_args`, `None` upper
+    /// bound meaning variadic); range-check the call site against it.
+    fn check_native_arity(&mut self, name: IdentId, nid: rphp_stdlib::NativeId, argc: u16, span: Span) {
+        let desc = rphp_stdlib::descriptor(nid);
+        let argc = argc as usize;
+        let too_few = argc < desc.min_args;
+        let too_many = desc.max_args.is_some_and(|max| argc > max);
+        if too_few || too_many {
+            let want = match desc.max_args {
+                Some(max) if max == desc.min_args => format!("exactly {}", desc.min_args),
+                Some(max) => format!("{} to {}", desc.min_args, max),
+                None => format!("at least {}", desc.min_args),
+            };
+            self.diags.push(
+                Diagnostic::error(
+                    codes::WRONG_ARG_COUNT,
+                    format!(
+                        "function {}() expects {want} argument(s), {argc} given",
+                        self.interner.resolve_lossy(name),
+                    ),
+                )
+                .with_primary(span, "wrong number of arguments"),
+            );
+        }
+    }
+}
+
+/// What a call site resolves to during lowering.
+enum CallTarget {
+    /// A user-defined function, by [`FuncId`].
+    User(FuncId),
+    /// A builtin, by its `rphp-stdlib` registry index.
+    Native(u32),
 }
 
 fn binary_op(op: BinOp, dst: Reg, a: Reg, b: Reg) -> Op {
@@ -943,6 +989,67 @@ mod tests {
         assert!(diags
             .iter()
             .any(|d| d.code == codes::UNDEFINED_FUNCTION && d.is_error()));
+    }
+
+    #[test]
+    fn native_call_lowers_to_call_native() {
+        let mut interner = Interner::new();
+        let strlen = interner.intern_str("strlen");
+        let x = interner.intern_str("x");
+        // strlen("x"); — a builtin, with no matching user function.
+        let m = compile_ok(
+            vec![expr_stmt(Expr::Call {
+                name: strlen,
+                args: vec![Expr::Str(x, sp())],
+                span: sp(),
+            })],
+            &interner,
+        );
+        assert!(m
+            .func(0)
+            .code
+            .iter()
+            .any(|op| matches!(op, Op::CallNative { argc: 1, .. })));
+        // The builtin is not lowered into a user `Function`.
+        assert_eq!(m.funcs.len(), 1);
+    }
+
+    #[test]
+    fn user_function_shadows_builtin_of_same_name() {
+        let mut interner = Interner::new();
+        let count = interner.intern_str("count");
+        // function count() { return 1; } count(); — the user def wins, so the
+        // call is a user `Call`, not a `CallNative`.
+        let func = Stmt::Func(Func {
+            name: count,
+            params: vec![],
+            body: vec![Stmt::Return { value: Some(int(1)), span: sp() }],
+            span: sp(),
+        });
+        let call = expr_stmt(Expr::Call { name: count, args: vec![], span: sp() });
+        let m = compile_ok(vec![func, call], &interner);
+        let main = &m.func(0).code;
+        assert!(main.iter().any(|op| matches!(op, Op::Call { func: 1, .. })));
+        assert!(!main.iter().any(|op| matches!(op, Op::CallNative { .. })));
+    }
+
+    #[test]
+    fn wrong_native_arity_diagnoses() {
+        let mut interner = Interner::new();
+        let strlen = interner.intern_str("strlen");
+        let x = interner.intern_str("x");
+        // strlen("x", "x") — strlen takes exactly one argument.
+        let diags = compile_err(
+            vec![expr_stmt(Expr::Call {
+                name: strlen,
+                args: vec![Expr::Str(x, sp()), Expr::Str(x, sp())],
+                span: sp(),
+            })],
+            &interner,
+        );
+        assert!(diags
+            .iter()
+            .any(|d| d.code == codes::WRONG_ARG_COUNT && d.is_error()));
     }
 
     #[test]

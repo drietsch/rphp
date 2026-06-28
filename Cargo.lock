@@ -35,6 +35,7 @@ dependencies = [
  "rphp-diagnostics",
  "rphp-intern",
  "rphp-span",
+ "rphp-stdlib",
  "rphp-value",
 ]
 
@@ -77,6 +78,7 @@ dependencies = [
  "rphp-bytecode",
  "rphp-intern",
  "rphp-span",
+ "rphp-stdlib",
  "rphp-value",
 ]
 
@@ -106,6 +108,13 @@ dependencies = [
 [[package]]
 name = "rphp-span"
 version = "0.0.0"
+
+[[package]]
+name = "rphp-stdlib"
+version = "0.0.0"
+dependencies = [
+ "rphp-value",
+]
 
 [[package]]
 name = "rphp-value"

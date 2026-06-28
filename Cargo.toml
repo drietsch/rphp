@@ -11,6 +11,7 @@ members = [
     "crates/rphp-bytecode",
     "crates/rphp-parser",
     "crates/rphp-compiler",
+    "crates/rphp-stdlib",
     "crates/rphp-runtime",
     "crates/rphp-sapi-cli",
     "tools/rphp",
@@ -35,6 +36,7 @@ rphp-lexer = { path = "crates/rphp-lexer" }
 rphp-bytecode = { path = "crates/rphp-bytecode" }
 rphp-parser = { path = "crates/rphp-parser" }
 rphp-compiler = { path = "crates/rphp-compiler" }
+rphp-stdlib = { path = "crates/rphp-stdlib" }
 rphp-runtime = { path = "crates/rphp-runtime" }
 rphp-sapi-cli = { path = "crates/rphp-sapi-cli" }
 

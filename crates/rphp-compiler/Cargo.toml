@@ -12,3 +12,4 @@ rphp-diagnostics.workspace = true
 rphp-ast.workspace = true
 rphp-bytecode.workspace = true
 rphp-value.workspace = true
+rphp-stdlib.workspace = true

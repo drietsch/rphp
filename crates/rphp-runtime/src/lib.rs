@@ -248,6 +248,19 @@ fn exec_function(
                 let ret = exec_function(module, callee, &call_args, out)?;
                 regs[dst as usize] = ret;
             }
+            Op::CallNative { dst, native, base, argc } => {
+                // Same `base ..= base+argc-1` staging as a user call; the args
+                // are handed to the builtin and its result lands in `dst`.
+                let base = base as usize;
+                let mut call_args = Vec::with_capacity(argc as usize);
+                for i in 0..argc as usize {
+                    call_args.push(regs[base + i].clone());
+                }
+                let mut ctx = rphp_stdlib::Ctx { out: &mut out.stdout };
+                let ret = rphp_stdlib::call(rphp_stdlib::NativeId(native), &mut ctx, &call_args)
+                    .map_err(|e| RuntimeError { message: e.message })?;
+                regs[dst as usize] = ret;
+            }
             Op::Ret { src } => {
                 return Ok(src.map_or(Value::Null, |r| regs[r as usize].clone()));
             }

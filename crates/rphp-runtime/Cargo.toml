@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 rphp-bytecode.workspace = true
 rphp-value.workspace = true
+rphp-stdlib.workspace = true
 
 [dev-dependencies]
 # Needed only by tests to construct `Function { name, span, .. }` by hand.

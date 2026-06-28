@@ -241,6 +241,111 @@ fn undefined_function_reports_diagnostic() {
     );
 }
 
+// ---- stdlib builtins (resolved through rphp-stdlib) -------------------------
+
+#[test]
+fn string_builtins() {
+    assert_eq!(eval_ok(br#"<?php echo strlen("hello");"#), "5");
+    assert_eq!(eval_ok(br#"<?php echo strtoupper("aB") . strtolower("aB");"#), "ABab");
+    assert_eq!(eval_ok(br#"<?php echo ucfirst("php");"#), "Php");
+    assert_eq!(eval_ok(br#"<?php echo str_repeat("ab", 3);"#), "ababab");
+    assert_eq!(eval_ok(br#"<?php echo substr("abcdef", 1, 3);"#), "bcd");
+    assert_eq!(eval_ok(br#"<?php echo substr("abcdef", -2);"#), "ef");
+    assert_eq!(eval_ok(br#"<?php echo strpos("hello", "ll");"#), "2");
+    assert_eq!(eval_ok(br#"<?php echo str_replace("a", "X", "banana");"#), "bXnXnX");
+    assert_eq!(eval_ok(br#"<?php echo "[" . trim("  hi  ") . "]";"#), "[hi]");
+    assert_eq!(eval_ok(br#"<?php echo implode("-", ["a", "b", "c"]);"#), "a-b-c");
+    assert_eq!(eval_ok(br#"<?php $p = explode(",", "x,y,z"); echo $p[2];"#), "z");
+    assert_eq!(eval_ok(br#"<?php echo ord("A") . chr(98);"#), "65b");
+}
+
+#[test]
+fn str_predicates_return_real_bools() {
+    // A bool result echoes as "1"/"" — the byte-exact PHP form.
+    assert_eq!(eval_ok(br#"<?php echo str_contains("abc", "b");"#), "1");
+    assert_eq!(eval_ok(br#"<?php echo str_starts_with("abc", "x");"#), "");
+    assert_eq!(eval_ok(br#"<?php echo str_ends_with("abc", "bc");"#), "1");
+}
+
+#[test]
+fn array_builtins() {
+    assert_eq!(eval_ok(b"<?php echo count([1, 2, 3]);"), "3");
+    assert_eq!(eval_ok(b"<?php echo array_sum([1, 2, 3, 4]);"), "10");
+    assert_eq!(eval_ok(b"<?php echo in_array(2, [1, 2, 3]);"), "1");
+    assert_eq!(eval_ok(b"<?php echo in_array(9, [1, 2, 3]);"), "");
+    assert_eq!(eval_ok(br#"<?php echo array_key_exists("k", ["k" => 1]);"#), "1");
+    assert_eq!(eval_ok(b"<?php $m = array_merge([1], [2, 3]); echo $m[2];"), "3");
+    assert_eq!(eval_ok(b"<?php $r = array_reverse([1, 2, 3]); echo $r[0];"), "3");
+    assert_eq!(eval_ok(b"<?php echo implode(\",\", range(1, 4));"), "1,2,3,4");
+    assert_eq!(eval_ok(b"<?php echo implode(\"\", range('a', 'c'));"), "abc");
+}
+
+#[test]
+fn math_builtins() {
+    assert_eq!(eval_ok(b"<?php echo abs(-5);"), "5");
+    assert_eq!(eval_ok(b"<?php echo max(3, 7, 2);"), "7");
+    assert_eq!(eval_ok(b"<?php echo min([4, 1, 8]);"), "1");
+    assert_eq!(eval_ok(b"<?php echo floor(3.9) . ceil(3.1);"), "34");
+    assert_eq!(eval_ok(b"<?php echo round(3.14159, 2);"), "3.14");
+    assert_eq!(eval_ok(b"<?php echo sqrt(81);"), "9");
+    assert_eq!(eval_ok(b"<?php echo intdiv(17, 5);"), "3");
+}
+
+#[test]
+fn function_aliases_resolve() {
+    // sizeof => count, join => implode are registry aliases.
+    assert_eq!(eval_ok(b"<?php echo sizeof([1, 2, 3]);"), "3");
+    assert_eq!(eval_ok(br#"<?php echo join("/", ["a", "b"]);"#), "a/b");
+}
+
+#[test]
+fn case_insensitive_builtin_names() {
+    // PHP function names are case-insensitive.
+    assert_eq!(eval_ok(br#"<?php echo STRLEN("abcd");"#), "4");
+    assert_eq!(eval_ok(br#"<?php echo StrToUpper("hi");"#), "HI");
+}
+
+#[test]
+fn intdiv_by_zero_is_a_runtime_error() {
+    let err = eval_to_string(b"<?php echo intdiv(1, 0);").unwrap_err();
+    assert!(err.contains("Division by zero"), "got: {err}");
+}
+
+#[test]
+fn wrong_builtin_arg_count_is_a_compile_error() {
+    // strlen takes exactly one argument.
+    let err = eval_to_string(br#"<?php echo strlen("a", "b");"#).unwrap_err();
+    assert!(err.contains("exactly 1"), "got: {err}");
+}
+
+#[test]
+fn var_dump_matches_php() {
+    assert_eq!(eval_ok(b"<?php var_dump(42);"), "int(42)\n");
+    assert_eq!(eval_ok(b"<?php var_dump(true, null);"), "bool(true)\nNULL\n");
+    assert_eq!(eval_ok(br#"<?php var_dump("hi");"#), "string(2) \"hi\"\n");
+    assert_eq!(
+        eval_ok(b"<?php var_dump([1, 2]);"),
+        "array(2) {\n  [0]=>\n  int(1)\n  [1]=>\n  int(2)\n}\n"
+    );
+}
+
+#[test]
+fn print_r_return_mode() {
+    assert_eq!(
+        eval_ok(br#"<?php echo print_r([1, 2], true);"#),
+        "Array\n(\n    [0] => 1\n    [1] => 2\n)\n"
+    );
+}
+
+#[test]
+fn builtin_const_args_run_through_interpreter() {
+    // is_numeric on a numeric vs non-numeric string; gettype + based intval.
+    assert_eq!(eval_ok(br#"<?php echo is_numeric("1.5e3");"#), "1");
+    assert_eq!(eval_ok(br#"<?php echo is_numeric("12abc");"#), "");
+    assert_eq!(eval_ok(br#"<?php echo gettype(3.5);"#), "double");
+    assert_eq!(eval_ok(br#"<?php echo intval("0x1A", 16);"#), "26");
+}
+
 // ---- argument-handling tests through the public `run` entry point ----------
 
 fn write_temp(name: &str, contents: &[u8]) -> PathBuf {

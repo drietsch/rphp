@@ -196,6 +196,28 @@ impl Value {
         out
     }
 
+    /// PHP `is_numeric`: an int/float, or a fully numeric string.
+    pub fn is_numeric(&self) -> bool {
+        match self {
+            Value::Int(_) | Value::Float(_) => true,
+            Value::Str(s) => numeric_string(s.as_bytes()).is_some(),
+            _ => false,
+        }
+    }
+
+    /// Lenient numeric coercion to an `Int` or `Float` value (never errors;
+    /// non-numeric strings and arrays coerce as in a cast). Used by math
+    /// builtins; arithmetic uses the stricter [`Value::as_number`].
+    pub fn to_number(&self) -> Value {
+        match self {
+            Value::Int(_) | Value::Float(_) => self.clone(),
+            Value::Bool(b) => Value::Int(*b as i64),
+            Value::Null => Value::Int(0),
+            Value::Str(s) => leading_number(s.as_bytes()).unwrap_or(Value::Int(0)),
+            Value::Array(a) => Value::Int(i64::from(!a.is_empty())),
+        }
+    }
+
     /// String concatenation (`.`): byte-exact, never fails for scalars/strings.
     pub fn concat(&self, rhs: &Value) -> Value {
         let mut bytes = self.to_php_bytes();

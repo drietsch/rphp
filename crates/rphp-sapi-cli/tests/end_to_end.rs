@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use rphp_sapi_cli::{eval_to_string, run};
+use rphp_sapi_cli::{eval_to_bytes, eval_to_string, run};
 
 /// Evaluate source, asserting it succeeds, and return its stdout.
 fn eval_ok(src: &[u8]) -> String {
@@ -54,6 +54,67 @@ fn recursion_factorial() {
         eval_ok(b"<?php function f($n) { if ($n <= 1) return 1; return $n * f($n - 1); } echo f(5);"),
         "120"
     );
+}
+
+// ---- strings ---------------------------------------------------------------
+
+#[test]
+fn string_concatenation() {
+    assert_eq!(eval_ok(br#"<?php echo "Hello, " . "world!";"#), "Hello, world!");
+}
+
+#[test]
+fn concat_below_addition_php8() {
+    // PHP 8 precedence: "x" . 1 + 2  ==  "x" . (1 + 2)  ==  "x3"
+    assert_eq!(eval_ok(br#"<?php echo "x" . 1 + 2;"#), "x3");
+}
+
+#[test]
+fn numeric_string_arithmetic() {
+    assert_eq!(eval_ok(br#"<?php echo "10" + 5;"#), "15");
+    assert_eq!(eval_ok(br#"<?php echo "3" . "4" * 2;"#), "38"); // 3 . (4*2)
+}
+
+#[test]
+fn double_quote_escapes() {
+    assert_eq!(eval_ok(br#"<?php echo "a\tb\nc";"#), "a\tb\nc");
+}
+
+#[test]
+fn single_quotes_are_literal() {
+    // \n stays a backslash-n in single quotes.
+    assert_eq!(eval_ok(br"<?php echo 'a\nb';"), r"a\nb");
+}
+
+#[test]
+fn simple_variable_interpolation() {
+    assert_eq!(
+        eval_ok(br#"<?php $name = "PHP"; echo "Hi $name!";"#),
+        "Hi PHP!"
+    );
+}
+
+#[test]
+fn brace_variable_interpolation() {
+    assert_eq!(eval_ok(br#"<?php $x = 7; echo "v={$x}.";"#), "v=7.");
+}
+
+#[test]
+fn interpolation_stringifies_numbers() {
+    // A lone interpolated value is string-cast, and concatenation joins parts.
+    assert_eq!(eval_ok(br#"<?php $n = 42; echo "$n";"#), "42");
+}
+
+#[test]
+fn string_comparison_is_lexical() {
+    assert_eq!(eval_ok(br#"<?php if ("abc" < "abd") echo "yes"; else echo "no";"#), "yes");
+}
+
+#[test]
+fn echo_is_binary_safe() {
+    // A byte that is not valid UTF-8 must round-trip through echo unchanged.
+    let out = eval_to_bytes(b"<?php echo \"\\xff\\x00A\";").unwrap();
+    assert_eq!(out, vec![0xff, 0x00, b'A']);
 }
 
 #[test]

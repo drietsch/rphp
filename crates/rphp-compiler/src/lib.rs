@@ -19,6 +19,7 @@ use rphp_bytecode::{CodeAddr, Const, FuncId, Function, Module, Op, Reg};
 use rphp_diagnostics::{codes, Diagnostic};
 use rphp_intern::{IdentId, Interner};
 use rphp_span::Span;
+use rphp_value::Str;
 
 /// Diagnostic code for a duplicate function declaration. `rphp-diagnostics`
 /// does not (yet) expose a shared constant for this, so the compiler owns it.
@@ -328,6 +329,12 @@ impl<'a> FnCompiler<'a> {
                 self.emit(Op::LoadConst { dst, k });
                 dst
             }
+            Expr::Str(id, _) => {
+                let k = self.push_const(Const::Str(Str::new(self.interner.resolve(*id))));
+                let dst = self.alloc_temp();
+                self.emit(Op::LoadConst { dst, k });
+                dst
+            }
             Expr::Var(id, _) => self.var_reg(*id),
             Expr::Assign { target, value, .. } => {
                 let dst = self.var_reg(*target);
@@ -491,6 +498,7 @@ fn binary_op(op: BinOp, dst: Reg, a: Reg, b: Reg) -> Op {
         BinOp::Div => Op::Div { dst, a, b },
         BinOp::Mod => Op::Mod { dst, a, b },
         BinOp::Pow => Op::Pow { dst, a, b },
+        BinOp::Concat => Op::Concat { dst, a, b },
         BinOp::Eq => Op::CmpEq { dst, a, b },
         BinOp::Ne => Op::CmpNe { dst, a, b },
         BinOp::Identical => Op::CmpIdentical { dst, a, b },
@@ -561,7 +569,11 @@ fn collect_expr(e: &Expr, vars: &mut HashMap<IdentId, Reg>, next: &mut Reg) {
                 collect_expr(a, vars, next);
             }
         }
-        Expr::Null(_) | Expr::Bool(_, _) | Expr::Int(_, _) | Expr::Float(_, _) => {}
+        Expr::Null(_)
+        | Expr::Bool(_, _)
+        | Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Str(_, _) => {}
     }
 }
 
@@ -925,6 +937,29 @@ mod tests {
         assert!(code.iter().any(|op| matches!(op, Op::Not { .. })));
         assert!(code.iter().any(|op| matches!(op, Op::Spaceship { .. })));
         assert!(code.iter().any(|op| matches!(op, Op::CmpLt { .. })));
+    }
+
+    #[test]
+    fn string_literal_and_concat() {
+        let mut interner = Interner::new();
+        let hi = interner.intern_str("hi");
+        // echo "hi" . "!";
+        let m = compile_ok(
+            vec![echo(vec![Expr::Binary {
+                op: BinOp::Concat,
+                lhs: Box::new(Expr::Str(hi, sp())),
+                rhs: Box::new(Expr::Str(interner.intern_str("!"), sp())),
+                span: sp(),
+            }])],
+            &interner,
+        );
+        let main = m.func(0);
+        // Both string literals reach the constant pool as Const::Str.
+        assert!(main.consts.contains(&Const::Str(Str::new(b"hi"))));
+        assert!(main.consts.contains(&Const::Str(Str::new(b"!"))));
+        // A Concat op was emitted (not an Add).
+        assert!(main.code.iter().any(|op| matches!(op, Op::Concat { .. })));
+        assert!(main.code.iter().any(|op| matches!(op, Op::Echo { .. })));
     }
 
     #[test]

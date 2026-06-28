@@ -1,4 +1,4 @@
-//! Tier-0 register-bytecode interpreter for the M0 slice.
+//! Tier-0 register-bytecode interpreter.
 //!
 //! A portable `loop { match op { … } }` dispatch over a function's `code`,
 //! with a `usize` program counter. Each frame owns a `Vec<Value>` of registers
@@ -17,10 +17,12 @@
 use rphp_bytecode::{Function, Module, Op};
 use rphp_value::{Value, ValueError};
 
-/// Captured side effects of a run. M0 collects `echo` output into `stdout`.
+/// Captured side effects of a run. `echo` output accumulates into `stdout` as
+/// raw bytes — PHP strings are byte strings, so the buffer is binary-safe rather
+/// than UTF-8.
 #[derive(Default, Debug)]
 pub struct RunOutput {
-    pub stdout: String,
+    pub stdout: Vec<u8>,
 }
 
 /// A runtime fault (division by zero, undefined function, …) surfaced as a
@@ -75,8 +77,8 @@ fn exec_function(
     // The frame: every register starts as null (uninitialized vars read null).
     let mut regs = vec![Value::Null; function.num_regs as usize];
     // Initialize parameter registers `0 .. argc` from the staged arguments.
-    for (i, &arg) in args.iter().enumerate() {
-        regs[i] = arg;
+    for (i, arg) in args.iter().enumerate() {
+        regs[i] = arg.clone();
     }
 
     let mut pc: usize = 0;
@@ -98,7 +100,7 @@ fn exec_function(
                 regs[dst as usize] = Value::Bool(val);
             }
             Op::Move { dst, src } => {
-                regs[dst as usize] = regs[src as usize];
+                regs[dst as usize] = regs[src as usize].clone();
             }
 
             // --- arithmetic (dst = a OP b) ---
@@ -134,6 +136,11 @@ fn exec_function(
             }
             Op::Neg { dst, src } => {
                 regs[dst as usize] = regs[src as usize].neg().map_err(runtime_error)?;
+            }
+
+            // --- strings ---
+            Op::Concat { dst, a, b } => {
+                regs[dst as usize] = regs[a as usize].concat(&regs[b as usize]);
             }
 
             // --- comparison (dst = bool) ---
@@ -192,19 +199,19 @@ fn exec_function(
                 let base = base as usize;
                 let mut call_args = Vec::with_capacity(argc as usize);
                 for i in 0..argc as usize {
-                    call_args.push(regs[base + i]);
+                    call_args.push(regs[base + i].clone());
                 }
                 let callee = module.func(func);
                 let ret = exec_function(module, callee, &call_args, out)?;
                 regs[dst as usize] = ret;
             }
             Op::Ret { src } => {
-                return Ok(src.map_or(Value::Null, |r| regs[r as usize]));
+                return Ok(src.map_or(Value::Null, |r| regs[r as usize].clone()));
             }
 
             // --- io ---
             Op::Echo { src } => {
-                out.stdout.push_str(&regs[src as usize].to_php_string());
+                regs[src as usize].append_php_bytes(&mut out.stdout);
             }
         }
 
@@ -237,6 +244,11 @@ mod tests {
         Module { funcs: vec![main], main: 0 }
     }
 
+    /// Run a module and decode its (binary-safe) stdout as UTF-8 for assertions.
+    fn out_str(m: &Module) -> String {
+        String::from_utf8(run(m).unwrap().stdout).unwrap()
+    }
+
     #[test]
     fn echo_constant() {
         let m = module(func(
@@ -249,7 +261,7 @@ mod tests {
             ],
             vec![Const::Int(42)],
         ));
-        assert_eq!(run(&m).unwrap().stdout, "42");
+        assert_eq!(out_str(&m), "42");
     }
 
     #[test]
@@ -267,7 +279,7 @@ mod tests {
             ],
             vec![Const::Int(1), Const::Int(2)],
         ));
-        assert_eq!(run(&m).unwrap().stdout, "3");
+        assert_eq!(out_str(&m), "3");
     }
 
     #[test]
@@ -287,7 +299,7 @@ mod tests {
             ],
             vec![Const::Int(111), Const::Int(222)],
         ));
-        assert_eq!(run(&m).unwrap().stdout, "222");
+        assert_eq!(out_str(&m), "222");
     }
 
     #[test]
@@ -306,7 +318,7 @@ mod tests {
             ],
             vec![Const::Int(7)],
         ));
-        assert_eq!(run(&m).unwrap().stdout, "7");
+        assert_eq!(out_str(&m), "7");
     }
 
     #[test]
@@ -335,7 +347,7 @@ mod tests {
             vec![],
         );
         let m = Module { funcs: vec![main, add2], main: 0 };
-        assert_eq!(run(&m).unwrap().stdout, "42");
+        assert_eq!(out_str(&m), "42");
     }
 
     #[test]
@@ -370,7 +382,7 @@ mod tests {
             vec![Const::Int(1)],
         );
         let m = Module { funcs: vec![main, fact], main: 0 };
-        assert_eq!(run(&m).unwrap().stdout, "120");
+        assert_eq!(out_str(&m), "120");
     }
 
     #[test]
@@ -416,7 +428,7 @@ mod tests {
             vec![Op::Echo { src: 0 }, Op::Ret { src: None }],
             vec![],
         ));
-        assert_eq!(run(&m).unwrap().stdout, "");
+        assert_eq!(out_str(&m), "");
     }
 
     #[test]
@@ -438,7 +450,7 @@ mod tests {
             ],
             vec![Const::Int(7), Const::Int(2), Const::Int(3), Const::Int(5)],
         ));
-        assert_eq!(run(&m).unwrap().stdout, "3.5-1");
+        assert_eq!(out_str(&m), "3.5-1");
     }
 
     #[test]
@@ -462,6 +474,44 @@ mod tests {
             ],
             vec![Const::Int(0), Const::Int(3), Const::Int(1)],
         ));
-        assert_eq!(run(&m).unwrap().stdout, "6");
+        assert_eq!(out_str(&m), "6");
+    }
+
+    #[test]
+    fn concat_and_echo_string() {
+        use rphp_value::Str;
+        // echo "Hi, " . "PHP" . "!\n";  =>  "Hi, PHP!\n"
+        let m = module(func(
+            0,
+            3,
+            vec![
+                Op::LoadConst { dst: 0, k: 0 },   // "Hi, "
+                Op::LoadConst { dst: 1, k: 1 },   // "PHP"
+                Op::Concat { dst: 0, a: 0, b: 1 },
+                Op::LoadConst { dst: 1, k: 2 },   // "!\n"
+                Op::Concat { dst: 0, a: 0, b: 1 },
+                Op::Echo { src: 0 },
+                Op::Ret { src: None },
+            ],
+            vec![
+                Const::Str(Str::new(b"Hi, ")),
+                Const::Str(Str::new(b"PHP")),
+                Const::Str(Str::new(b"!\n")),
+            ],
+        ));
+        assert_eq!(out_str(&m), "Hi, PHP!\n");
+    }
+
+    #[test]
+    fn echo_preserves_raw_bytes() {
+        use rphp_value::Str;
+        // A non-UTF-8 byte (0xFF) must survive echo unchanged.
+        let m = module(func(
+            0,
+            1,
+            vec![Op::LoadConst { dst: 0, k: 0 }, Op::Echo { src: 0 }, Op::Ret { src: None }],
+            vec![Const::Str(Str::new(&[0xFF, 0x00, 0x41]))],
+        ));
+        assert_eq!(run(&m).unwrap().stdout, vec![0xFF, 0x00, 0x41]);
     }
 }

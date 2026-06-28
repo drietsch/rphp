@@ -17,7 +17,7 @@
 
 use rphp_intern::IdentId;
 use rphp_span::Span;
-use rphp_value::Value;
+use rphp_value::{Str, Value};
 
 /// A register index within a frame.
 pub type Reg = u16;
@@ -28,18 +28,22 @@ pub type FuncId = u32;
 /// An instruction index within `Function::code` (a branch target).
 pub type CodeAddr = u32;
 
-/// A compile-time constant. M0 has only numeric constants.
-#[derive(Clone, Copy, PartialEq, Debug)]
+/// A compile-time constant in a function's constant pool.
+#[derive(Clone, PartialEq, Debug)]
 pub enum Const {
     Int(i64),
     Float(f64),
+    Str(Str),
 }
 
 impl Const {
-    pub fn to_value(self) -> Value {
+    /// Materialize a runtime [`Value`]. For `Str` this is a cheap refcount bump,
+    /// so loading a string constant in a loop does not re-allocate.
+    pub fn to_value(&self) -> Value {
         match self {
-            Const::Int(i) => Value::Int(i),
-            Const::Float(f) => Value::Float(f),
+            Const::Int(i) => Value::Int(*i),
+            Const::Float(f) => Value::Float(*f),
+            Const::Str(s) => Value::Str(s.clone()),
         }
     }
 }
@@ -60,6 +64,10 @@ pub enum Op {
     Mod { dst: Reg, a: Reg, b: Reg },
     Pow { dst: Reg, a: Reg, b: Reg },
     Neg { dst: Reg, src: Reg },
+
+    // --- strings ---
+    /// `dst = (string) a . (string) b`
+    Concat { dst: Reg, a: Reg, b: Reg },
 
     // --- comparison (dst = bool) ---
     CmpEq { dst: Reg, a: Reg, b: Reg },

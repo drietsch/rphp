@@ -1,10 +1,19 @@
-//! Byte-level lexer for the M0 PHP subset.
+//! Byte-level lexer for the PHP subset implemented so far.
 //!
 //! Operates on `&[u8]` (PHP source is bytes). It scans the `<?php ... ?>` code
 //! island, skips whitespace and `//`/`#`/`/* */` comments, and emits a flat
-//! token stream. Identifiers are interned eagerly into [`IdentId`]. The full
-//! lexer (heredoc/nowdoc, interpolation, attributes, `|>`, inline HTML output)
-//! is added later; this is the contract the parser builds against.
+//! token stream. Identifiers and string-literal bytes are interned eagerly into
+//! [`IdentId`].
+//!
+//! ## String literals
+//! Single-quoted strings (`'...'`, escapes `\\` and `\'`) and double-quoted
+//! strings (`"..."`, C-style escapes) become a single [`TokenKind::Str`] holding
+//! the interned final bytes. A double-quoted string that contains simple
+//! `$var` / `{$var}` interpolation is emitted as a bracketed run —
+//! [`TokenKind::DQStrBegin`], then alternating `Str` literal pieces and
+//! `Variable` tokens, then [`TokenKind::DQStrEnd`] — which the parser folds into
+//! a concatenation. Heredoc/nowdoc and complex interpolation (`{$expr}`,
+//! `$a[k]`, `$a->b`) are added later.
 #![forbid(unsafe_code)]
 
 use rphp_diagnostics::{codes, Diagnostic};
@@ -30,6 +39,11 @@ pub enum TokenKind {
     // literals
     Int(i64),
     Float(f64),
+    Str(IdentId), // 'single' or "double" literal — interned final bytes
+    // A double-quoted string with interpolation expands to:
+    //   DQStrBegin (Str | Variable)* DQStrEnd
+    DQStrBegin,
+    DQStrEnd,
     // names
     Variable(IdentId), // $name
     Ident(IdentId),    // bareword (function name, etc.)
@@ -41,6 +55,7 @@ pub enum TokenKind {
     StarStar, // **
     Slash,
     Percent,
+    Dot, // . (concatenation)
     Assign,       // =
     EqEq,         // ==
     EqEqEq,       // ===
@@ -109,7 +124,11 @@ impl<'a> Lexer<'a> {
             }
             if c == b'$' {
                 self.lex_variable(start);
-            } else if c.is_ascii_digit() || (c == b'.' && self.peek_at(1).map_or(false, |d| d.is_ascii_digit())) {
+            } else if c == b'\'' {
+                self.lex_single_quoted(start);
+            } else if c == b'"' {
+                self.lex_double_quoted(start);
+            } else if c.is_ascii_digit() || (c == b'.' && self.peek_at(1).is_some_and(|d| d.is_ascii_digit())) {
                 self.lex_number(start);
             } else if is_ident_start(c) {
                 self.lex_ident_or_keyword(start);
@@ -182,12 +201,258 @@ impl<'a> Lexer<'a> {
         self.push(TokenKind::Variable(id), start);
     }
 
+    /// `'...'` — only `\\` and `\'` are escapes; every other byte (including a
+    /// literal newline or a `\n` sequence) is taken verbatim.
+    fn lex_single_quoted(&mut self, start: usize) {
+        self.pos += 1; // opening quote
+        let mut buf: Vec<u8> = Vec::new();
+        loop {
+            let Some(c) = self.peek() else {
+                self.unterminated_string(start);
+                break;
+            };
+            match c {
+                b'\'' => {
+                    self.pos += 1;
+                    break;
+                }
+                b'\\' => match self.peek_at(1) {
+                    Some(b'\'') => {
+                        buf.push(b'\'');
+                        self.pos += 2;
+                    }
+                    Some(b'\\') => {
+                        buf.push(b'\\');
+                        self.pos += 2;
+                    }
+                    _ => {
+                        buf.push(b'\\');
+                        self.pos += 1;
+                    }
+                },
+                _ => {
+                    buf.push(c);
+                    self.pos += 1;
+                }
+            }
+        }
+        let id = self.interner.intern(&buf);
+        self.push(TokenKind::Str(id), start);
+    }
+
+    /// `"..."` — C-style escapes plus simple `$var` / `{$var}` interpolation.
+    fn lex_double_quoted(&mut self, start: usize) {
+        self.pos += 1; // opening quote
+        let mut parts: Vec<DqPart> = Vec::new();
+        let mut lit: Vec<u8> = Vec::new();
+        let flush = |lit: &mut Vec<u8>, parts: &mut Vec<DqPart>| {
+            if !lit.is_empty() {
+                parts.push(DqPart::Lit(std::mem::take(lit)));
+            }
+        };
+        loop {
+            let Some(c) = self.peek() else {
+                self.unterminated_string(start);
+                break;
+            };
+            match c {
+                b'"' => {
+                    self.pos += 1;
+                    break;
+                }
+                b'\\' => {
+                    self.pos += 1; // consume backslash
+                    self.lex_dq_escape(&mut lit);
+                }
+                // Simple `$name` interpolation.
+                b'$' if self.peek_at(1).is_some_and(is_ident_start) => {
+                    flush(&mut lit, &mut parts);
+                    self.pos += 1; // `$`
+                    let name_start = self.pos;
+                    while self.peek().is_some_and(is_ident_continue) {
+                        self.pos += 1;
+                    }
+                    let id = self.interner.intern(&self.src[name_start..self.pos]);
+                    parts.push(DqPart::Var(id));
+                }
+                // `{$name}` interpolation (simple variable only for now).
+                b'{' if self.peek_at(1) == Some(b'$') => {
+                    if let Some((id, end)) = self.try_brace_var() {
+                        flush(&mut lit, &mut parts);
+                        parts.push(DqPart::Var(id));
+                        self.pos = end;
+                    } else {
+                        // Not a simple `{$name}`: keep `{` literal, defer the
+                        // complex form. The `$...` after it is handled normally.
+                        lit.push(b'{');
+                        self.pos += 1;
+                    }
+                }
+                _ => {
+                    lit.push(c);
+                    self.pos += 1;
+                }
+            }
+        }
+        flush(&mut lit, &mut parts);
+
+        let has_var = parts.iter().any(|p| matches!(p, DqPart::Var(_)));
+        if !has_var {
+            // No interpolation: a single string token (empty `""` included).
+            let mut all = Vec::new();
+            for p in &parts {
+                if let DqPart::Lit(b) = p {
+                    all.extend_from_slice(b);
+                }
+            }
+            let id = self.interner.intern(&all);
+            self.push(TokenKind::Str(id), start);
+        } else {
+            self.push(TokenKind::DQStrBegin, start);
+            for p in parts {
+                match p {
+                    DqPart::Lit(b) => {
+                        let id = self.interner.intern(&b);
+                        self.push(TokenKind::Str(id), start);
+                    }
+                    DqPart::Var(id) => self.push(TokenKind::Variable(id), start),
+                }
+            }
+            self.push(TokenKind::DQStrEnd, start);
+        }
+    }
+
+    /// Try to read `{$name}` starting at the current `{` (with `$` next). On
+    /// success interns the name and returns it with the index just past the
+    /// closing `}`; otherwise `None` (the caller keeps `{` literal). Leaves
+    /// `self.pos` unchanged.
+    fn try_brace_var(&mut self) -> Option<(IdentId, usize)> {
+        let name_start = self.pos + 2; // past `{$`
+        let mut j = name_start;
+        if !self.src.get(j).copied().is_some_and(is_ident_start) {
+            return None;
+        }
+        while self.src.get(j).copied().is_some_and(is_ident_continue) {
+            j += 1;
+        }
+        if self.src.get(j) != Some(&b'}') {
+            return None;
+        }
+        let id = self.interner.intern(&self.src[name_start..j]);
+        Some((id, j + 1))
+    }
+
+    /// Decode the escape sequence following a `\` (already consumed) in a
+    /// double-quoted string, appending the decoded byte(s) to `out`.
+    fn lex_dq_escape(&mut self, out: &mut Vec<u8>) {
+        let Some(c) = self.peek() else {
+            out.push(b'\\'); // trailing backslash at EOF
+            return;
+        };
+        match c {
+            b'n' => self.escape_byte(out, b'\n'),
+            b'r' => self.escape_byte(out, b'\r'),
+            b't' => self.escape_byte(out, b'\t'),
+            b'v' => self.escape_byte(out, 0x0b),
+            b'f' => self.escape_byte(out, 0x0c),
+            b'e' => self.escape_byte(out, 0x1b),
+            b'\\' => self.escape_byte(out, b'\\'),
+            b'$' => self.escape_byte(out, b'$'),
+            b'"' => self.escape_byte(out, b'"'),
+            b'0'..=b'7' => {
+                let mut val: u32 = 0;
+                let mut count = 0;
+                while count < 3 {
+                    match self.peek() {
+                        Some(d @ b'0'..=b'7') => {
+                            val = val * 8 + (d - b'0') as u32;
+                            self.pos += 1;
+                            count += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                out.push(val as u8);
+            }
+            b'x' => {
+                self.pos += 1; // consume `x`
+                let mut val: u32 = 0;
+                let mut count = 0;
+                while count < 2 {
+                    match self.peek().and_then(hex_val) {
+                        Some(h) => {
+                            val = val * 16 + h;
+                            self.pos += 1;
+                            count += 1;
+                        }
+                        None => break,
+                    }
+                }
+                if count == 0 {
+                    out.extend_from_slice(b"\\x"); // not a hex escape after all
+                } else {
+                    out.push(val as u8);
+                }
+            }
+            b'u' if self.peek_at(1) == Some(b'{') => {
+                let mut j = self.pos + 2; // past `u{`
+                let mut val: u32 = 0;
+                let mut count = 0;
+                while let Some(h) = self.src.get(j).copied().and_then(hex_val) {
+                    val = val * 16 + h;
+                    j += 1;
+                    count += 1;
+                }
+                if count > 0 && self.src.get(j) == Some(&b'}') {
+                    self.pos = j + 1;
+                    match char::from_u32(val) {
+                        Some(ch) => {
+                            let mut tmp = [0u8; 4];
+                            out.extend_from_slice(ch.encode_utf8(&mut tmp).as_bytes());
+                        }
+                        None => {
+                            let span = self.span_from(self.pos);
+                            self.diags.push(
+                                Diagnostic::error(codes::UNEXPECTED_CHAR, "invalid \\u{} code point")
+                                    .with_primary(span, "here"),
+                            );
+                        }
+                    }
+                } else {
+                    // Malformed: keep `\u` literal and reprocess from `{`.
+                    out.extend_from_slice(b"\\u");
+                    self.pos += 1; // now at `{`
+                }
+            }
+            _ => {
+                // Unknown escape: PHP keeps both the backslash and the char.
+                out.push(b'\\');
+                out.push(c);
+                self.pos += 1;
+            }
+        }
+    }
+
+    #[inline]
+    fn escape_byte(&mut self, out: &mut Vec<u8>, b: u8) {
+        out.push(b);
+        self.pos += 1;
+    }
+
+    fn unterminated_string(&mut self, start: usize) {
+        let span = self.span_from(start);
+        self.diags.push(
+            Diagnostic::error(codes::UNTERMINATED, "unterminated string literal")
+                .with_primary(span, "string starts here"),
+        );
+    }
+
     fn lex_number(&mut self, start: usize) {
         let mut is_float = false;
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() || c == b'_' {
                 self.pos += 1;
-            } else if c == b'.' && !is_float && self.peek_at(1).map_or(true, |d| d != b'.') {
+            } else if c == b'.' && !is_float && self.peek_at(1).is_none_or(|d| d != b'.') {
                 is_float = true;
                 self.pos += 1;
             } else if c == b'e' || c == b'E' {
@@ -247,6 +512,9 @@ impl<'a> Lexer<'a> {
             b'-' => one!(TokenKind::Minus),
             b'%' => one!(TokenKind::Percent),
             b'/' => one!(TokenKind::Slash),
+            // A `.` adjacent to a digit was already routed to `lex_number`, so a
+            // `.` reaching here is always the concatenation operator.
+            b'.' => one!(TokenKind::Dot),
             b'(' => one!(TokenKind::LParen),
             b')' => one!(TokenKind::RParen),
             b'{' => one!(TokenKind::LBrace),
@@ -363,6 +631,23 @@ fn keyword(word: &[u8]) -> Option<Kw> {
     })
 }
 
+/// A piece of a double-quoted string while scanning: either a run of literal
+/// (escape-decoded) bytes or an interpolated variable name.
+enum DqPart {
+    Lit(Vec<u8>),
+    Var(IdentId),
+}
+
+/// Hex-digit value, or `None` if `c` is not `[0-9a-fA-F]`.
+fn hex_val(c: u8) -> Option<u32> {
+    match c {
+        b'0'..=b'9' => Some((c - b'0') as u32),
+        b'a'..=b'f' => Some((c - b'a' + 10) as u32),
+        b'A'..=b'F' => Some((c - b'A' + 10) as u32),
+        _ => None,
+    }
+}
+
 fn is_ident_start(c: u8) -> bool {
     c == b'_' || c.is_ascii_alphabetic() || c >= 0x80
 }
@@ -408,5 +693,96 @@ mod tests {
     fn skips_comments() {
         let k = kinds(b"<?php // line\n# hash\n/* block */ $x;");
         assert!(matches!(k[0], TokenKind::Variable(_)));
+    }
+
+    /// Lex `src` and resolve any `Str`/`Variable` token bytes for assertions.
+    fn lex_with(src: &[u8]) -> (Vec<TokenKind>, Interner) {
+        let mut i = Interner::new();
+        let toks = lex(src, FileId(0), &mut i).tokens.into_iter().map(|t| t.kind).collect();
+        (toks, i)
+    }
+
+    #[test]
+    fn single_quoted_string_keeps_escapes_literal() {
+        let (k, i) = lex_with(br"<?php 'a\n\'b\\';");
+        match k[0] {
+            // \n stays literal, \' -> ', \\ -> \
+            TokenKind::Str(id) => assert_eq!(i.resolve(id), br"a\n'b\"),
+            other => panic!("expected Str, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn double_quoted_string_decodes_escapes() {
+        let (k, i) = lex_with(br#"<?php "tab\there\n\x41\u{2764}";"#);
+        match k[0] {
+            TokenKind::Str(id) => {
+                assert_eq!(i.resolve(id), "tab\there\n\u{41}\u{2764}".as_bytes());
+            }
+            other => panic!("expected Str, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn double_quoted_without_interp_is_single_token() {
+        let (k, _) = lex_with(br#"<?php "plain text";"#);
+        assert!(matches!(k[0], TokenKind::Str(_)));
+        assert!(matches!(k[1], TokenKind::Semicolon));
+    }
+
+    #[test]
+    fn interpolation_expands_to_bracketed_run() {
+        // "a $x b {$y}" -> Begin, "a ", $x, " b ", $y, End
+        let (k, i) = lex_with(br#"<?php "a $x b {$y}";"#);
+        assert!(matches!(k[0], TokenKind::DQStrBegin));
+        match k[1] {
+            TokenKind::Str(id) => assert_eq!(i.resolve(id), b"a "),
+            other => panic!("expected literal piece, got {other:?}"),
+        }
+        match k[2] {
+            TokenKind::Variable(id) => assert_eq!(i.resolve(id), b"x"),
+            other => panic!("expected $x, got {other:?}"),
+        }
+        match k[3] {
+            TokenKind::Str(id) => assert_eq!(i.resolve(id), b" b "),
+            other => panic!("expected literal piece, got {other:?}"),
+        }
+        match k[4] {
+            TokenKind::Variable(id) => assert_eq!(i.resolve(id), b"y"),
+            other => panic!("expected {{$y}}, got {other:?}"),
+        }
+        assert!(matches!(k[5], TokenKind::DQStrEnd));
+    }
+
+    #[test]
+    fn escaped_dollar_is_not_interpolation() {
+        let (k, i) = lex_with(br#"<?php "price \$5";"#);
+        match k[0] {
+            TokenKind::Str(id) => assert_eq!(i.resolve(id), b"price $5"),
+            other => panic!("expected Str, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dot_is_concatenation_operator() {
+        let k: Vec<_> = lex_with(br#"<?php $x . "y";"#).0;
+        assert!(matches!(k[0], TokenKind::Variable(_)));
+        assert!(matches!(k[1], TokenKind::Dot));
+        assert!(matches!(k[2], TokenKind::Str(_)));
+    }
+
+    #[test]
+    fn float_dot_still_lexes_as_number() {
+        let (k, _) = lex_with(b"<?php 1.5 . 2;");
+        assert!(matches!(k[0], TokenKind::Float(_)));
+        assert!(matches!(k[1], TokenKind::Dot));
+        assert!(matches!(k[2], TokenKind::Int(2)));
+    }
+
+    #[test]
+    fn unterminated_string_diagnoses() {
+        let mut i = Interner::new();
+        let r = lex(b"<?php 'oops", FileId(0), &mut i);
+        assert!(!r.diagnostics.is_empty());
     }
 }

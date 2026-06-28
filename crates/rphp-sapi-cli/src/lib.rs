@@ -143,7 +143,10 @@ fn run_file(name: &str, bytes: &[u8]) -> i32 {
 
     match rphp_runtime::run(&module) {
         Ok(out) => {
-            print!("{}", out.stdout);
+            // `echo` output is raw bytes (PHP strings are byte strings), so write
+            // it through directly rather than via a UTF-8 `print!`.
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(&out.stdout);
             0
         }
         Err(err) => {
@@ -205,6 +208,11 @@ fn emit_bytecode(name: &str, bytes: &[u8]) -> i32 {
 /// returned as the `Err` string. Intended for tests and embedders that want the
 /// output as a value rather than printed to stdout.
 pub fn eval_to_string(src: &[u8]) -> Result<String, String> {
+    Ok(String::from_utf8_lossy(&eval_to_bytes(src)?).into_owned())
+}
+
+/// As [`eval_to_string`], but returns the raw (binary-safe) `echo` bytes.
+pub fn eval_to_bytes(src: &[u8]) -> Result<Vec<u8>, String> {
     let (_sources, module) =
         compile_to_module("<eval>", src).map_err(|lines| lines.join("\n"))?;
     let out = rphp_runtime::run(&module).map_err(|e| e.message)?;

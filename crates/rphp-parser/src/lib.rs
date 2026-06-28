@@ -395,6 +395,11 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Expr::Float(v, tok.span)
             }
+            TokenKind::Str(id) => {
+                self.advance();
+                Expr::Str(id, tok.span)
+            }
+            TokenKind::DQStrBegin => self.parse_interpolated_string(),
             TokenKind::Keyword(Kw::Null) => {
                 self.advance();
                 Expr::Null(tok.span)
@@ -431,6 +436,45 @@ impl<'a> Parser<'a> {
                 Expr::Null(tok.span)
             }
         }
+    }
+
+    /// A double-quoted string with interpolation: `DQStrBegin (Str|Variable)*
+    /// DQStrEnd`. The pieces are folded into a left-associative concatenation,
+    /// seeded with an empty string so the result is always a string (a lone
+    /// `"$x"` is `(string)$x`, not the raw value of `$x`).
+    fn parse_interpolated_string(&mut self) -> Expr {
+        let begin = self.advance(); // DQStrBegin
+        let mut acc = Expr::Str(self.interner.intern(b""), begin.span);
+        loop {
+            let tok = self.peek_tok();
+            let piece = match tok.kind {
+                TokenKind::Str(id) => Expr::Str(id, tok.span),
+                TokenKind::Variable(id) => Expr::Var(id, tok.span),
+                TokenKind::DQStrEnd => {
+                    self.advance();
+                    break;
+                }
+                TokenKind::Eof => {
+                    self.error(tok.span, "unterminated interpolated string");
+                    break;
+                }
+                _ => {
+                    // The lexer only emits Str/Variable between the brackets.
+                    self.error(tok.span, "unexpected token in interpolated string");
+                    self.advance();
+                    continue;
+                }
+            };
+            self.advance();
+            let span = acc.span().to(piece.span());
+            acc = Expr::Binary {
+                op: BinOp::Concat,
+                lhs: Box::new(acc),
+                rhs: Box::new(piece),
+                span,
+            };
+        }
+        acc
     }
 
     /// `name ( arg, arg, ... )`. A bareword not followed by `(` has no node in
@@ -470,6 +514,9 @@ impl<'a> Parser<'a> {
 /// `parse_assignment`) are intentionally absent.
 fn bin_op(kind: TokenKind) -> Option<(BinOp, u8)> {
     use TokenKind as T;
+    // PHP 8 precedence (low → high). Concatenation `.` sits below `+ -` and
+    // above the comparison operators (the 8.0 change), so `"x" . 1 + 2` is
+    // `"x" . (1 + 2)` and `1 . 2 < 3` parses the concat first.
     Some(match kind {
         T::PipePipe => (BinOp::Or, 1),
         T::AmpAmp => (BinOp::And, 2),
@@ -477,16 +524,17 @@ fn bin_op(kind: TokenKind) -> Option<(BinOp, u8)> {
         T::BangEq => (BinOp::Ne, 3),
         T::EqEqEq => (BinOp::Identical, 3),
         T::BangEqEq => (BinOp::NotIdentical, 3),
+        T::Spaceship => (BinOp::Spaceship, 3),
         T::Lt => (BinOp::Lt, 4),
         T::Le => (BinOp::Le, 4),
         T::Gt => (BinOp::Gt, 4),
         T::Ge => (BinOp::Ge, 4),
-        T::Spaceship => (BinOp::Spaceship, 4),
-        T::Plus => (BinOp::Add, 5),
-        T::Minus => (BinOp::Sub, 5),
-        T::Star => (BinOp::Mul, 6),
-        T::Slash => (BinOp::Div, 6),
-        T::Percent => (BinOp::Mod, 6),
+        T::Dot => (BinOp::Concat, 5),
+        T::Plus => (BinOp::Add, 6),
+        T::Minus => (BinOp::Sub, 6),
+        T::Star => (BinOp::Mul, 7),
+        T::Slash => (BinOp::Div, 7),
+        T::Percent => (BinOp::Mod, 7),
         _ => return None,
     })
 }
@@ -793,5 +841,61 @@ mod tests {
         let (program, diags) = parse_src(b"<?php");
         assert!(program.items.is_empty());
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn string_literal() {
+        let mut interner = Interner::new();
+        let (program, diags) = parse(br#"<?php "hi";"#, FileId(0), &mut interner);
+        assert!(diags.is_empty(), "{diags:?}");
+        match &program.items[0] {
+            Stmt::Expr(Expr::Str(id, _)) => assert_eq!(interner.resolve(*id), b"hi"),
+            other => panic!("expected string literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn concat_binds_below_addition() {
+        // "x" . 1 + 2  =>  Concat("x", Add(1, 2))   (PHP 8 precedence)
+        match one_expr(br#"<?php "x" . 1 + 2;"#) {
+            Expr::Binary { op: BinOp::Concat, rhs, .. } => {
+                assert!(matches!(*rhs, Expr::Binary { op: BinOp::Add, .. }));
+            }
+            other => panic!("expected Concat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn concat_binds_above_comparison() {
+        // 1 . 2 < 3  =>  Lt(Concat(1, 2), 3)
+        match one_expr(b"<?php 1 . 2 < 3;") {
+            Expr::Binary { op: BinOp::Lt, lhs, .. } => {
+                assert!(matches!(*lhs, Expr::Binary { op: BinOp::Concat, .. }));
+            }
+            other => panic!("expected Lt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn concat_is_left_associative() {
+        // $a . $b . $c  =>  Concat(Concat($a, $b), $c)
+        match one_expr(b"<?php $a . $b . $c;") {
+            Expr::Binary { op: BinOp::Concat, lhs, .. } => {
+                assert!(matches!(*lhs, Expr::Binary { op: BinOp::Concat, .. }));
+            }
+            other => panic!("expected Concat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpolation_folds_into_concat() {
+        // "a $x" => Concat(Concat("", "a "), $x)  — seeded with an empty string.
+        match one_expr(br#"<?php "a $x";"#) {
+            Expr::Binary { op: BinOp::Concat, lhs, rhs, .. } => {
+                assert!(matches!(*rhs, Expr::Var(_, _)));
+                assert!(matches!(*lhs, Expr::Binary { op: BinOp::Concat, .. }));
+            }
+            other => panic!("expected Concat, got {other:?}"),
+        }
     }
 }

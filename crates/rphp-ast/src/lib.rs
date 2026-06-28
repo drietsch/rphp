@@ -55,6 +55,8 @@ pub enum Expr {
     Bool(bool, Span),
     Int(i64, Span),
     Float(f64, Span),
+    /// A string literal; `id` interns the final (escape-decoded) bytes.
+    Str(IdentId, Span),
     /// `$name`
     Var(IdentId, Span),
     /// `$name = value`
@@ -72,6 +74,7 @@ impl Expr {
             | Expr::Bool(_, s)
             | Expr::Int(_, s)
             | Expr::Float(_, s)
+            | Expr::Str(_, s)
             | Expr::Var(_, s)
             | Expr::Assign { span: s, .. }
             | Expr::Unary { span: s, .. }
@@ -95,6 +98,7 @@ pub enum BinOp {
     Div,
     Mod,
     Pow,
+    Concat,    // .
     Eq,        // ==
     Ne,        // !=
     Identical, // ===

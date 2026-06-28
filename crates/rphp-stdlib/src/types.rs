@@ -32,6 +32,7 @@ pub(crate) fn gettype(_: &mut Ctx, args: &[Value]) -> NativeResult {
         Value::Float(_) => b"double",
         Value::Str(_) => b"string",
         Value::Array(_) => b"array",
+        Value::Closure(_) => b"object",
     };
     Ok(Value::string(name))
 }

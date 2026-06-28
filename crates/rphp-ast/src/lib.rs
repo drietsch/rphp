@@ -80,6 +80,15 @@ pub enum Expr {
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
     /// `name(args...)`
     Call { name: IdentId, args: Vec<Expr>, span: Span },
+    /// `function (params) use ($a, $b) { body }`, or an arrow `fn (params) => e`
+    /// desugared to the same node (its free variables become the `uses` list and
+    /// the body a single `return e;`). Captures are by value.
+    Closure {
+        params: Vec<Param>,
+        uses: Vec<IdentId>,
+        body: Vec<Stmt>,
+        span: Span,
+    },
     /// `[ item, key => item, ... ]` or `array( ... )`
     Array { items: Vec<ArrayItem>, span: Span },
     /// `base[index]` read. A read with no index (`$a[]`) is invalid and rejected
@@ -108,6 +117,7 @@ impl Expr {
             | Expr::Unary { span: s, .. }
             | Expr::Binary { span: s, .. }
             | Expr::Call { span: s, .. }
+            | Expr::Closure { span: s, .. }
             | Expr::Array { span: s, .. }
             | Expr::Index { span: s, .. } => *s,
         }

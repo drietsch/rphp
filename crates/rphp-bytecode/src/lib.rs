@@ -109,11 +109,24 @@ pub enum Op {
     /// `dst`. The compiler range-checks `argc` against the descriptor's arity, so
     /// the runtime can pass the window through to the handler unchecked.
     CallNative { dst: Reg, native: u32, base: Reg, argc: u16 },
+    /// Build a closure value from the enclosing function's `closures[proto]`
+    /// template: snapshot the captured registers and bind them to the closure's
+    /// compiled function. Result -> `dst`.
+    MakeClosure { dst: Reg, proto: u32 },
     /// Return `src` (or null) to the caller.
     Ret { src: Option<Reg> },
 
     // --- io ---
     Echo { src: Reg },
+}
+
+/// A template for [`Op::MakeClosure`]: the closure's compiled function plus the
+/// enclosing-frame registers whose current values are captured (in the order the
+/// closure binds them to its [`Function::capture_regs`]).
+#[derive(Clone, Debug)]
+pub struct ClosureProto {
+    pub func: FuncId,
+    pub src_regs: Vec<Reg>,
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +141,12 @@ pub struct Function {
     pub num_regs: u16,
     pub code: Vec<Op>,
     pub consts: Vec<Const>,
+    /// For a closure body: the registers that captured variables bind to, in
+    /// capture order (the runtime fills them from the closure's environment
+    /// before running). Empty for an ordinary function.
+    pub capture_regs: Vec<Reg>,
+    /// Closure templates referenced by this function's [`Op::MakeClosure`]s.
+    pub closures: Vec<ClosureProto>,
     pub span: Span,
 }
 

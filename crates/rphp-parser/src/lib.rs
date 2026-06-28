@@ -47,6 +47,12 @@ impl<'a> Parser<'a> {
         self.tokens[self.pos]
     }
 
+    /// The kind `n` tokens ahead (clamped to the trailing `Eof`).
+    fn peek_at(&self, n: usize) -> TokenKind {
+        let i = (self.pos + n).min(self.tokens.len() - 1);
+        self.tokens[i].kind
+    }
+
     fn cur_span(&self) -> Span {
         self.tokens[self.pos].span
     }
@@ -162,7 +168,11 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Kw::While) => Some(self.parse_while(tok.span)),
             TokenKind::Keyword(Kw::Foreach) => Some(self.parse_foreach(tok.span)),
             TokenKind::Keyword(Kw::Return) => Some(self.parse_return(tok.span)),
-            TokenKind::Keyword(Kw::Function) => Some(self.parse_function(tok.span)),
+            // `function name(...)` is a declaration; anonymous `function (...)`
+            // (a closure) falls through to the expression-statement path.
+            TokenKind::Keyword(Kw::Function) if matches!(self.peek_at(1), TokenKind::Ident(_)) => {
+                Some(self.parse_function(tok.span))
+            }
             // Empty statement.
             TokenKind::Semicolon => {
                 self.advance();
@@ -309,6 +319,59 @@ impl<'a> Parser<'a> {
         let body = self.parse_block();
         let span = kw_span.to(self.prev_span());
         Stmt::Func(Func { name, params, body, span })
+    }
+
+    /// `function (params) [use ($a, $b)] { body }` — an anonymous closure with
+    /// by-value captures.
+    fn parse_closure(&mut self, kw_span: Span) -> Expr {
+        self.advance(); // `function`
+        let params = self.parse_params();
+        let mut uses = Vec::new();
+        if self.at(TokenKind::Keyword(Kw::Use)) {
+            self.advance(); // `use`
+            self.expect(TokenKind::LParen, "expected `(` after `use`");
+            if !self.at(TokenKind::RParen) {
+                loop {
+                    if let TokenKind::Variable(id) = self.peek() {
+                        self.advance();
+                        uses.push(id);
+                    } else {
+                        let s = self.cur_span();
+                        self.error(s, "expected captured variable");
+                        break;
+                    }
+                    if self.eat(TokenKind::Comma) {
+                        if self.at(TokenKind::RParen) {
+                            break; // trailing comma
+                        }
+                        continue;
+                    }
+                    break;
+                }
+            }
+            self.expect(TokenKind::RParen, "expected `)` to close use list");
+        }
+        let body = self.parse_block();
+        Expr::Closure { params, uses, body, span: kw_span.to(self.prev_span()) }
+    }
+
+    /// `fn (params) => expr` — an arrow function. The body is a single returned
+    /// expression, and free variables are captured by value automatically.
+    fn parse_arrow_fn(&mut self, kw_span: Span) -> Expr {
+        self.advance(); // `fn`
+        let params = self.parse_params();
+        self.expect(TokenKind::DoubleArrow, "expected `=>` in arrow function");
+        let body_expr = self.parse_expr();
+        let span = kw_span.to(self.prev_span());
+        // Auto-capture: variables used in the body that are not parameters.
+        let mut free = Vec::new();
+        collect_free_vars(&body_expr, &mut free);
+        let uses: Vec<IdentId> = free
+            .into_iter()
+            .filter(|v| !params.iter().any(|p| p.name == *v))
+            .collect();
+        let body = vec![Stmt::Return { value: Some(body_expr), span }];
+        Expr::Closure { params, uses, body, span }
     }
 
     /// `( $a, $b, ... )` — plain variables only in M0 (no types/defaults).
@@ -485,6 +548,8 @@ impl<'a> Parser<'a> {
                 self.advance();
                 self.parse_call(id, tok.span)
             }
+            TokenKind::Keyword(Kw::Function) => self.parse_closure(tok.span),
+            TokenKind::Keyword(Kw::Fn) => self.parse_arrow_fn(tok.span),
             TokenKind::LBracket => {
                 self.advance(); // `[`
                 let items = self.parse_array_items(TokenKind::RBracket);
@@ -648,6 +713,66 @@ fn bin_op(kind: TokenKind) -> Option<(BinOp, u8)> {
     })
 }
 
+fn push_unique(out: &mut Vec<IdentId>, id: IdentId) {
+    if !out.contains(&id) {
+        out.push(id);
+    }
+}
+
+/// Collect the variables a body expression reads from the enclosing scope, in
+/// first-use order without duplicates — the auto-capture set for an arrow
+/// function. A nested closure contributes its own `use` list (those are exactly
+/// its free variables), but not its parameters or locals.
+fn collect_free_vars(e: &Expr, out: &mut Vec<IdentId>) {
+    match e {
+        Expr::Var(id, _) => push_unique(out, *id),
+        // The assignment target is a local write, not a read; only the value side
+        // captures. (Index targets read the base, handled below.)
+        Expr::Assign { value, .. } => collect_free_vars(value, out),
+        Expr::IndexAssign { base, index, value, .. } => {
+            collect_free_vars(base, out);
+            if let Some(i) = index {
+                collect_free_vars(i, out);
+            }
+            collect_free_vars(value, out);
+        }
+        Expr::Unary { expr, .. } => collect_free_vars(expr, out),
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_free_vars(lhs, out);
+            collect_free_vars(rhs, out);
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_free_vars(a, out);
+            }
+        }
+        Expr::Closure { uses, .. } => {
+            for u in uses {
+                push_unique(out, *u);
+            }
+        }
+        Expr::Array { items, .. } => {
+            for it in items {
+                if let Some(k) = &it.key {
+                    collect_free_vars(k, out);
+                }
+                collect_free_vars(&it.value, out);
+            }
+        }
+        Expr::Index { base, index, .. } => {
+            collect_free_vars(base, out);
+            if let Some(i) = index {
+                collect_free_vars(i, out);
+            }
+        }
+        Expr::Null(_)
+        | Expr::Bool(_, _)
+        | Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Str(_, _) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,6 +798,37 @@ mod tests {
             Stmt::Expr(e) => e,
             other => panic!("expected expression statement, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn arrow_fn_captures_free_vars_not_params() {
+        // fn ($x) => $x + $y  — $x is a parameter, $y is captured.
+        match one_expr(b"<?php fn ($x) => $x + $y;") {
+            Expr::Closure { params, uses, body, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(uses.len(), 1, "only the free variable $y is captured");
+                assert!(matches!(body.as_slice(), [Stmt::Return { .. }]));
+            }
+            other => panic!("expected a closure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closure_use_list_parses() {
+        match one_expr(b"<?php function ($x) use ($a, $b) { return $x; };") {
+            Expr::Closure { params, uses, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(uses.len(), 2);
+            }
+            other => panic!("expected a closure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn function_keyword_stays_a_declaration_with_a_name() {
+        // `function name(...)` is a statement, not a closure expression.
+        let items = parse_ok(b"<?php function foo() { return 1; }");
+        assert!(matches!(items.as_slice(), [Stmt::Func(_)]));
     }
 
     #[test]

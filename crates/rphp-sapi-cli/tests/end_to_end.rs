@@ -444,6 +444,46 @@ fn callable_to_undefined_function_errors() {
     assert!(err.contains("undefined function"), "got: {err}");
 }
 
+// ---- closures & arrow functions --------------------------------------------
+
+#[test]
+fn closure_with_use_capture() {
+    assert_eq!(
+        eval_ok(b"<?php $b = 10; $f = function ($x) use ($b) { return $x + $b; }; echo call_user_func($f, 5);"),
+        "15"
+    );
+}
+
+#[test]
+fn arrow_fn_auto_captures_free_vars() {
+    assert_eq!(eval_ok(b"<?php $k = 3; echo call_user_func(fn($x) => $x * $k, 4);"), "12");
+}
+
+#[test]
+fn closures_drive_higher_order_builtins() {
+    assert_eq!(eval_ok(b"<?php echo implode(',', array_map(fn($x) => $x + 1, [1, 2, 3]));"), "2,3,4");
+    assert_eq!(
+        eval_ok(b"<?php $a = [3, 1, 2]; usort($a, fn($x, $y) => $x - $y); echo implode(',', $a);"),
+        "1,2,3"
+    );
+    assert_eq!(eval_ok(b"<?php echo array_reduce([1, 2, 3, 4], fn($c, $v) => $c + $v, 0);"), "10");
+}
+
+#[test]
+fn closures_capture_by_value() {
+    // The snapshot is taken when the closure is created, not when it is called.
+    assert_eq!(eval_ok(b"<?php $n = 5; $f = fn() => $n; $n = 99; echo call_user_func($f);"), "5");
+}
+
+#[test]
+fn named_function_declaration_still_works() {
+    // The `function name(...)` vs anonymous `function (...)` disambiguation.
+    assert_eq!(
+        eval_ok(b"<?php function inc($x) { return $x + 1; } echo inc(41);"),
+        "42"
+    );
+}
+
 // ---- argument-handling tests through the public `run` entry point ----------
 
 fn write_temp(name: &str, contents: &[u8]) -> PathBuf {

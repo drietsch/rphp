@@ -55,6 +55,8 @@ fn encode(out: &mut Vec<u8>, v: &Value, flags: i64, depth: usize) -> Result<(), 
         }
         Value::Str(s) => encode_string(out, s.as_bytes(), flags)?,
         Value::Array(a) => encode_array(out, a, flags, depth)?,
+        // An object with no public properties encodes as `{}` (a closure here).
+        Value::Closure(_) => out.extend_from_slice(b"{}"),
     }
     Ok(())
 }

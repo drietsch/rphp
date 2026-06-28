@@ -65,8 +65,13 @@ impl rphp_stdlib::Host for VmHost<'_> {
     }
 
     fn call(&mut self, callable: &Value, args: &[Value]) -> Result<Value, rphp_stdlib::NativeError> {
-        // A callable is a function-name string for now (closures arrive with the
-        // closure value type). A user function takes precedence over a builtin.
+        // A closure carries its own function + captured environment.
+        if let Value::Closure(c) = callable {
+            return exec_closure(self.module, c, args, &mut *self.out)
+                .map_err(|e| rphp_stdlib::NativeError::new(e.message));
+        }
+        // Otherwise a function-name string: a user function takes precedence over
+        // a builtin.
         let name = callable.to_php_bytes();
         if let Some(fid) = self.module.func_by_name(&name) {
             let f = self.module.func(fid);
@@ -119,7 +124,37 @@ fn exec_function(
     for (i, arg) in args.iter().enumerate() {
         regs[i] = arg.clone();
     }
+    run_frame(module, function, regs, out)
+}
 
+/// Execute a closure: seed the captured environment into the function's
+/// `capture_regs`, then bind the parameters (capped to the declared count, so an
+/// extra callback argument is ignored as in PHP), then run.
+fn exec_closure(
+    module: &Module,
+    closure: &rphp_value::Closure,
+    args: &[Value],
+    out: &mut RunOutput,
+) -> Result<Value, RuntimeError> {
+    let function = module.func(closure.func());
+    let mut regs = vec![Value::Null; function.num_regs as usize];
+    for (i, &reg) in function.capture_regs.iter().enumerate() {
+        regs[reg as usize] = closure.captures()[i].clone();
+    }
+    let np = function.num_params as usize;
+    for (i, arg) in args.iter().enumerate().take(np) {
+        regs[i] = arg.clone();
+    }
+    run_frame(module, function, regs, out)
+}
+
+/// Run a prepared frame (registers already seeded) to completion.
+fn run_frame(
+    module: &Module,
+    function: &Function,
+    mut regs: Vec<Value>,
+    out: &mut RunOutput,
+) -> Result<Value, RuntimeError> {
     let mut pc: usize = 0;
     loop {
         // Falling off the end of the code is an implicit `return null`.
@@ -312,6 +347,14 @@ fn exec_function(
                 }
                 regs[dst as usize] = ret;
             }
+            Op::MakeClosure { dst, proto } => {
+                // Snapshot the captured registers and bind them to the closure's
+                // compiled function (the template lives in this function).
+                let proto = &function.closures[proto as usize];
+                let captures: Vec<Value> =
+                    proto.src_regs.iter().map(|&r| regs[r as usize].clone()).collect();
+                regs[dst as usize] = Value::Closure(rphp_value::Closure::new(proto.func, captures));
+            }
             Op::Ret { src } => {
                 return Ok(src.map_or(Value::Null, |r| regs[r as usize].clone()));
             }
@@ -384,6 +427,8 @@ mod tests {
             num_regs,
             code,
             consts,
+            capture_regs: Vec::new(),
+            closures: Vec::new(),
             span: Span::dummy(),
         }
     }

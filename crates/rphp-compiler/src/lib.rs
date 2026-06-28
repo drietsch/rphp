@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use rphp_ast::{BinOp, Expr, Func, Param, Program, Stmt, UnOp};
-use rphp_bytecode::{CodeAddr, Const, FuncId, Function, Module, Op, Reg};
+use rphp_bytecode::{ClosureProto, CodeAddr, Const, FuncId, Function, Module, Op, Reg};
 use rphp_diagnostics::{codes, Diagnostic};
 use rphp_intern::{IdentId, Interner};
 use rphp_span::Span;
@@ -66,7 +66,11 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
     }
 
     // ---- compile bodies ----
+    // Closures discovered while compiling bodies are appended after the top-level
+    // functions; their FuncId is `top_level_count + sink index`.
+    let top_level_count = (user_funcs.len() + 1) as FuncId;
     let mut funcs: Vec<Function> = Vec::with_capacity(user_funcs.len() + 1);
+    let mut closure_sink: Vec<Function> = Vec::new();
     // Function 0: synthetic `{main}`. Non-`Func` top-level statements only —
     // `compile_stmts` ignores `Stmt::Func`, so passing all items is correct.
     funcs.push(compile_function(
@@ -74,6 +78,8 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
         &func_map,
         &arities,
         &mut diags,
+        &mut closure_sink,
+        top_level_count,
         IdentId(0),
         Box::from(&b""[..]),
         &[],
@@ -86,6 +92,8 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
             &func_map,
             &arities,
             &mut diags,
+            &mut closure_sink,
+            top_level_count,
             f.name,
             interner.resolve(f.name).into(),
             &f.params,
@@ -97,6 +105,8 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
     if diags.iter().any(Diagnostic::is_error) {
         return Err(diags);
     }
+    // Append the compiled closures so `FuncId`s line up with their indices.
+    funcs.extend(closure_sink);
     Ok(Module { funcs, main: 0 })
 }
 
@@ -106,13 +116,25 @@ fn compile_function(
     func_map: &HashMap<IdentId, FuncId>,
     arities: &[u16],
     diags: &mut Vec<Diagnostic>,
+    closure_sink: &mut Vec<Function>,
+    top_level_count: FuncId,
     name: IdentId,
     name_bytes: Box<[u8]>,
     params: &[Param],
     body: &[Stmt],
     span: Span,
 ) -> Function {
-    let mut fc = FnCompiler::new(interner, func_map, arities, diags, params, body);
+    let mut fc = FnCompiler::new(
+        interner,
+        func_map,
+        arities,
+        diags,
+        closure_sink,
+        top_level_count,
+        params,
+        &[],
+        body,
+    );
     fc.compile_stmts(body);
     // Always terminate with a fall-through return so every code path (and every
     // branch target that lands at the textual end) has a valid `Ret`.
@@ -124,6 +146,8 @@ fn compile_function(
         num_regs: fc.num_regs,
         code: fc.code,
         consts: fc.consts,
+        capture_regs: fc.capture_regs,
+        closures: fc.closures,
         span,
     }
 }
@@ -133,34 +157,61 @@ struct FnCompiler<'a> {
     func_map: &'a HashMap<IdentId, FuncId>,
     arities: &'a [u16],
     diags: &'a mut Vec<Diagnostic>,
+    /// Where nested closures register their compiled `Function`s. Their `FuncId`
+    /// is `top_level_count + index` (the sink is appended after the top-level
+    /// functions), so ids stay stable as the sink grows.
+    closure_sink: &'a mut Vec<Function>,
+    top_level_count: FuncId,
 
     /// Variable -> permanent register. Variables occupy the low registers
-    /// (params first); temporaries live above them.
+    /// (params first, then captured `use` vars, then locals); temporaries live
+    /// above them.
     vars: HashMap<IdentId, Reg>,
     /// Current top of the temporary stack (next free temp register).
     temp_top: Reg,
     /// High-water mark: total registers the frame needs.
     num_regs: Reg,
+    /// Registers a closure body binds its captures to, in capture order (empty
+    /// for an ordinary function).
+    capture_regs: Vec<Reg>,
+    /// Closure templates this function emits via `Op::MakeClosure`.
+    closures: Vec<ClosureProto>,
 
     code: Vec<Op>,
     consts: Vec<Const>,
 }
 
 impl<'a> FnCompiler<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         interner: &'a Interner,
         func_map: &'a HashMap<IdentId, FuncId>,
         arities: &'a [u16],
         diags: &'a mut Vec<Diagnostic>,
+        closure_sink: &'a mut Vec<Function>,
+        top_level_count: FuncId,
         params: &[Param],
+        captures: &[IdentId],
         body: &[Stmt],
     ) -> Self {
-        // Params take registers 0 .. num_params in order.
+        // Params take registers 0 .. np; captured `use` vars follow in np .. np+nc.
         let mut vars: HashMap<IdentId, Reg> = HashMap::new();
         for (i, p) in params.iter().enumerate() {
             vars.insert(p.name, i as Reg);
         }
         let mut var_count = params.len() as Reg;
+        let mut capture_regs = Vec::with_capacity(captures.len());
+        for &c in captures {
+            let reg = var_count;
+            // A capture may shadow nothing here; if it repeats a param, keep the
+            // param's slot (degenerate, but avoids a duplicate register).
+            vars.entry(c).or_insert(reg);
+            let reg = vars[&c];
+            capture_regs.push(reg);
+            if reg == var_count {
+                var_count += 1;
+            }
+        }
         // Pre-scan the body so every variable has a permanent register before
         // any temporary is allocated.
         collect_stmts(body, &mut vars, &mut var_count);
@@ -170,9 +221,13 @@ impl<'a> FnCompiler<'a> {
             func_map,
             arities,
             diags,
+            closure_sink,
+            top_level_count,
             vars,
             temp_top: var_count,
             num_regs: var_count,
+            capture_regs,
+            closures: Vec::new(),
             code: Vec::new(),
             consts: Vec::new(),
         }
@@ -409,6 +464,7 @@ impl<'a> FnCompiler<'a> {
                 }
             },
             Expr::Call { name, args, span } => self.compile_call(*name, args, *span),
+            Expr::Closure { params, uses, body, span } => self.compile_closure(params, uses, body, *span),
             Expr::Array { items, .. } => self.compile_array(items),
             Expr::Index { base, index, span } => self.compile_index_read(base, index.as_deref(), *span),
             Expr::IndexAssign { base, index, value, span } => {
@@ -724,6 +780,67 @@ impl<'a> FnCompiler<'a> {
     }
 }
 
+impl FnCompiler<'_> {
+    /// Lower a closure expression: capture the current values of its `use`
+    /// variables from this frame, compile its body as its own function, and emit
+    /// a `MakeClosure` that binds them together at runtime.
+    fn compile_closure(
+        &mut self,
+        params: &[Param],
+        uses: &[IdentId],
+        body: &[Stmt],
+        span: Span,
+    ) -> Reg {
+        // Registers in *this* frame holding the captured variables' current
+        // values (snapshotted by value when the closure is built).
+        let src_regs: Vec<Reg> = uses.iter().map(|u| self.var_reg(*u)).collect();
+        let closure_fn = self.compile_closure_fn(params, uses, body, span);
+        // FuncId = top-level count + position in the sink (nested closures of
+        // this body were already pushed during compilation).
+        let func = self.top_level_count + self.closure_sink.len() as FuncId;
+        self.closure_sink.push(closure_fn);
+        let proto = self.closures.len() as u32;
+        self.closures.push(ClosureProto { func, src_regs });
+        let dst = self.alloc_temp();
+        self.emit(Op::MakeClosure { dst, proto });
+        dst
+    }
+
+    /// Compile a closure body to a `Function` (a sub-compiler sharing the sink).
+    fn compile_closure_fn(
+        &mut self,
+        params: &[Param],
+        uses: &[IdentId],
+        body: &[Stmt],
+        span: Span,
+    ) -> Function {
+        let mut fc = FnCompiler::new(
+            self.interner,
+            self.func_map,
+            self.arities,
+            &mut *self.diags,
+            &mut *self.closure_sink,
+            self.top_level_count,
+            params,
+            uses,
+            body,
+        );
+        fc.compile_stmts(body);
+        fc.emit(Op::Ret { src: None });
+        Function {
+            name: IdentId(0),
+            name_bytes: Box::from(&b""[..]),
+            num_params: params.len() as u16,
+            num_regs: fc.num_regs,
+            code: fc.code,
+            consts: fc.consts,
+            capture_regs: fc.capture_regs,
+            closures: fc.closures,
+            span,
+        }
+    }
+}
+
 /// What a call site resolves to during lowering.
 enum CallTarget {
     /// A user-defined function, by [`FuncId`].
@@ -817,6 +934,14 @@ fn collect_expr(e: &Expr, vars: &mut HashMap<IdentId, Reg>, next: &mut Reg) {
         Expr::Call { args, .. } => {
             for a in args {
                 collect_expr(a, vars, next);
+            }
+        }
+        // A closure captures `use` variables from this scope by value, so they
+        // must have registers here. Its body/params are a separate scope and are
+        // pre-scanned when the closure is compiled — do not descend into them.
+        Expr::Closure { uses, .. } => {
+            for u in uses {
+                ensure_var(*u, vars, next);
             }
         }
         Expr::Array { items, .. } => {

@@ -90,6 +90,9 @@ fn dump(out: &mut Vec<u8>, v: &Value, pad: usize) {
             indent(out, pad);
             out.extend_from_slice(b"}\n");
         }
+        // A closure is an object; PHP prints `object(Closure)#N (0) {}` with a
+        // live object id we don't model, so this is a documented divergence.
+        Value::Closure(_) => out.extend_from_slice(b"object(Closure) {\n}\n"),
     }
 }
 

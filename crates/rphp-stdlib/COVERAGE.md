@@ -17,10 +17,12 @@ Functions needing a missing language feature are **cataloged, not faked** (decis
 - **by-reference parameters** — ✅ *native* by-ref done (the ABI copies a builtin's
   mutated arg slots back into the caller's variable; `lib.rs` `Handler::ByRef` +
   `NativeFn::by_ref`). User-defined `function f(&$x)` is still pending (needs parser/AST).
-- **callables** — ✅ *function-name-string* callables done: native functions re-enter the
-  engine via `Host::call` (`lib.rs` `Host` trait, implemented by `rphp-runtime`'s `VmHost`),
-  resolving a callable string to a user function (`Module::func_by_name`) or a builtin.
-  **Closures / arrow fns / `[$obj, 'method']`** still pending (parser + closure/object values).
+- **callables** — ✅ function-name strings **and closures/arrow functions**: native
+  functions re-enter the engine via `Host::call` (`lib.rs` `Host`, implemented by
+  `rphp-runtime`'s `VmHost`), which dispatches a `Value::Closure` to `exec_closure` or
+  resolves a callable string to a user function (`Module::func_by_name`) / builtin.
+  Closures capture by value (`use (...)` / arrow auto-capture). **Still pending:**
+  `[$obj, 'method']` arrays, first-class `strlen(...)`, by-reference `use (&$x)`.
 - **objects** — class-returning APIs (also `json_decode`'s default object form, SPL, DateTime).
 
 ## Implemented (Tier-A wave 1)

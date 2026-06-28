@@ -346,6 +346,46 @@ fn builtin_const_args_run_through_interpreter() {
     assert_eq!(eval_ok(br#"<?php echo intval("0x1A", 16);"#), "26");
 }
 
+// ---- by-reference builtins (write back through the passed variable) ---------
+
+#[test]
+fn by_ref_sort_mutates_caller() {
+    assert_eq!(eval_ok(b"<?php $a = [3, 1, 2]; sort($a); echo implode(',', $a);"), "1,2,3");
+    assert_eq!(eval_ok(b"<?php $a = [1, 3, 2]; rsort($a); echo implode(',', $a);"), "3,2,1");
+}
+
+#[test]
+fn by_ref_push_pop_shift() {
+    // push returns the new count; pop/shift return the removed element.
+    assert_eq!(eval_ok(b"<?php $a = [1, 2]; echo array_push($a, 3); echo '|'; echo implode(',', $a);"), "3|1,2,3");
+    assert_eq!(eval_ok(b"<?php $a = [1, 2, 3]; echo array_pop($a); echo implode(',', $a);"), "31,2");
+    assert_eq!(eval_ok(b"<?php $a = [1, 2, 3]; echo array_shift($a); echo implode(',', $a);"), "12,3");
+}
+
+#[test]
+fn by_ref_splice_returns_removed_and_mutates() {
+    assert_eq!(
+        eval_ok(b"<?php $a = [1, 2, 3, 4]; $r = array_splice($a, 1, 2, ['x']); echo implode(',', $a) . '|' . implode(',', $r);"),
+        "1,x,4|2,3"
+    );
+}
+
+#[test]
+fn by_ref_preg_match_fills_matches() {
+    assert_eq!(
+        eval_ok(br#"<?php preg_match('/(\d+)-(\d+)/', '2026-06', $m); echo $m[0] . '|' . $m[1] . '|' . $m[2];"#),
+        "2026-06|2026|06"
+    );
+    // No match: returns 0 and $matches is set to an empty array.
+    assert_eq!(eval_ok(br#"<?php echo preg_match('/z/', 'abc', $m); echo count($m);"#), "00");
+}
+
+#[test]
+fn by_ref_requires_a_variable() {
+    let err = eval_to_string(b"<?php sort([3, 1, 2]);").unwrap_err();
+    assert!(err.contains("by reference"), "got: {err}");
+}
+
 // ---- argument-handling tests through the public `run` entry point ----------
 
 fn write_temp(name: &str, contents: &[u8]) -> PathBuf {

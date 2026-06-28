@@ -50,6 +50,17 @@ impl NativeError {
 
 pub type NativeResult = Result<Value, NativeError>;
 
+/// A builtin's implementation. Most functions are **pure** in the sense that
+/// they only read their arguments (`&[Value]`); a few take `&mut [Value]` so they
+/// can write back through a **by-reference** parameter (`sort($a)`,
+/// `array_push($a, …)`, `preg_match($p, $s, $m)`). Keeping the two forms distinct
+/// makes "does not mutate its args" visible in the type.
+#[derive(Clone, Copy)]
+pub enum Handler {
+    Pure(fn(&mut Ctx, &[Value]) -> NativeResult),
+    ByRef(fn(&mut Ctx, &mut [Value]) -> NativeResult),
+}
+
 /// A native-function descriptor. All fields are `Copy`, so the per-extension
 /// `FUNCTIONS` slices flatten into the registry by value.
 #[derive(Clone, Copy)]
@@ -58,17 +69,52 @@ pub struct NativeFn {
     pub min_args: usize,
     /// `None` means variadic (no upper bound).
     pub max_args: Option<usize>,
-    pub func: fn(&mut Ctx, &[Value]) -> NativeResult,
+    /// Bitmask of by-reference parameter positions (bit `i` ⇒ argument `i` is
+    /// passed by reference and written back to the caller's variable). `0` for an
+    /// ordinary function. The compiler reads this to require an lvalue and emit
+    /// the write-back; the runtime reads it to copy mutated args back.
+    pub by_ref: u32,
+    pub handler: Handler,
 }
 
-/// Build a [`NativeFn`] registry row. Each extension module uses this in its
-/// `FUNCTIONS` slice (`use crate::{nf, NativeFn};`).
+impl NativeFn {
+    /// Whether argument position `i` is declared by-reference.
+    pub fn is_by_ref(&self, i: usize) -> bool {
+        i < 32 && self.by_ref & (1 << i) != 0
+    }
+}
+
+/// Build an ordinary (pure) [`NativeFn`] registry row. Each extension module uses
+/// this in its `FUNCTIONS` slice (`use crate::{nf, NativeFn};`).
 macro_rules! nf {
     ($name:literal, $min:expr, $max:expr, $f:path) => {
-        NativeFn { name: $name, min_args: $min, max_args: $max, func: $f }
+        NativeFn {
+            name: $name,
+            min_args: $min,
+            max_args: $max,
+            by_ref: 0,
+            handler: $crate::Handler::Pure($f),
+        }
     };
 }
 pub(crate) use nf;
+
+/// Build a by-reference [`NativeFn`] registry row. `$byref` is the bitmask of
+/// by-reference parameter positions (e.g. `0b001` for `&$arg0`, `0b100` for the
+/// third argument). The handler takes `&mut [Value]` and writes results back into
+/// those positions.
+macro_rules! nf_mut {
+    ($name:literal, $min:expr, $max:expr, $byref:expr, $f:path) => {
+        NativeFn {
+            name: $name,
+            min_args: $min,
+            max_args: $max,
+            by_ref: $byref,
+            handler: $crate::Handler::ByRef($f),
+        }
+    };
+}
+pub(crate) use nf_mut;
 
 /// The flattened builtin registry. Each extension module owns a `FUNCTIONS`
 /// slice; they are concatenated here in a fixed order, and `NativeId(i)` indexes
@@ -106,9 +152,15 @@ pub fn descriptor(id: NativeId) -> &'static NativeFn {
     &table()[id.0 as usize]
 }
 
-/// Invoke a builtin with already-evaluated arguments.
-pub fn call(id: NativeId, ctx: &mut Ctx, args: &[Value]) -> NativeResult {
-    (descriptor(id).func)(ctx, args)
+/// Invoke a builtin with already-evaluated arguments. `args` is `&mut` so a
+/// by-reference builtin can write back through its argument slots; the caller is
+/// responsible for propagating those mutations (the interpreter copies the
+/// by-ref positions back into the caller's variables — see `descriptor().by_ref`).
+pub fn call(id: NativeId, ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    match descriptor(id).handler {
+        Handler::Pure(f) => f(ctx, args),
+        Handler::ByRef(f) => f(ctx, args),
+    }
 }
 
 #[cfg(test)]
@@ -127,7 +179,8 @@ mod tests {
     fn call_named(name: &[u8], args: &[Value]) -> Value {
         let mut out = Vec::new();
         let mut ctx = Ctx { out: &mut out };
-        call(resolve(name).unwrap(), &mut ctx, args).unwrap()
+        let mut args = args.to_vec();
+        call(resolve(name).unwrap(), &mut ctx, &mut args).unwrap()
     }
 
     fn arr(items: &[Value]) -> Value {
@@ -173,7 +226,7 @@ mod tests {
     fn str_repeat_rejects_negative_counts() {
         let mut out = Vec::new();
         let mut ctx = Ctx { out: &mut out };
-        let r = call(resolve(b"str_repeat").unwrap(), &mut ctx, &[Value::string(b"x"), Value::Int(-1)]);
+        let r = call(resolve(b"str_repeat").unwrap(), &mut ctx, &mut [Value::string(b"x"), Value::Int(-1)]);
         assert!(r.is_err());
     }
 
@@ -181,7 +234,7 @@ mod tests {
     fn intdiv_by_zero_errors() {
         let mut out = Vec::new();
         let mut ctx = Ctx { out: &mut out };
-        let r = call(resolve(b"intdiv").unwrap(), &mut ctx, &[Value::Int(1), Value::Int(0)]);
+        let r = call(resolve(b"intdiv").unwrap(), &mut ctx, &mut [Value::Int(1), Value::Int(0)]);
         assert!(r.is_err());
     }
 
@@ -202,8 +255,8 @@ mod tests {
             a.push(Value::Int(2));
             Value::Array(a)
         };
-        let by_count = call(resolve(b"count").unwrap(), &mut ctx, std::slice::from_ref(&arr)).unwrap();
-        let by_sizeof = call(resolve(b"sizeof").unwrap(), &mut ctx, std::slice::from_ref(&arr)).unwrap();
+        let by_count = call(resolve(b"count").unwrap(), &mut ctx, &mut [arr.clone()]).unwrap();
+        let by_sizeof = call(resolve(b"sizeof").unwrap(), &mut ctx, &mut [arr.clone()]).unwrap();
         assert_eq!(by_count, Value::Int(2));
         assert_eq!(by_count, by_sizeof);
     }

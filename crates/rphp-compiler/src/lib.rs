@@ -28,6 +28,8 @@ const REDECLARED_FUNCTION: &str = "RPHP_E0102";
 const NESTED_ARRAY_WRITE: &str = "RPHP_E0103";
 /// Reading `$a[]` (the empty-subscript append form) is not a valid expression.
 const INVALID_APPEND_READ: &str = "RPHP_E0104";
+/// A by-reference parameter (e.g. `sort($a)`) was passed a non-variable.
+const BY_REF_NOT_VARIABLE: &str = "RPHP_E0105";
 
 /// Compile a parsed program into a bytecode module. Function `0` is the
 /// synthetic `{main}` entry containing the top-level statements; each top-level
@@ -573,6 +575,19 @@ impl<'a> FnCompiler<'a> {
             return dst;
         };
 
+        // Builtins may declare by-reference parameters (user by-ref is not
+        // modelled yet). A call that actually passes an argument into a by-ref
+        // slot needs a write-back, handled on a separate path.
+        let by_ref = match &target {
+            CallTarget::Native(n) => rphp_stdlib::descriptor(rphp_stdlib::NativeId(*n)).by_ref,
+            CallTarget::User(_) => 0,
+        };
+        if let (true, CallTarget::Native(native)) =
+            ((0..argc).any(|i| by_ref & (1 << i) != 0), &target)
+        {
+            return self.compile_native_by_ref(name, *native, by_ref, args, argc);
+        }
+
         // Stage args into the contiguous window `base ..= base+argc-1`.
         let base = self.temp_top;
         self.set_top(base + argc);
@@ -596,6 +611,66 @@ impl<'a> FnCompiler<'a> {
         };
         self.emit(op);
         dst
+    }
+
+    /// Lower a builtin call that passes one or more arguments **by reference**
+    /// (`sort($a)`, `array_push($a, …)`, `preg_match($p, $s, $m)`). A by-ref
+    /// argument must be a plain variable; its value is copied into the call
+    /// window, and after the call the (mutated) window slot is copied back into
+    /// that variable. The result is brought down to a single temporary so the
+    /// usual "the result is the top live temp" invariant still holds.
+    fn compile_native_by_ref(
+        &mut self,
+        name: IdentId,
+        native: u32,
+        by_ref: u32,
+        args: &[Expr],
+        argc: u16,
+    ) -> Reg {
+        let base = self.temp_top;
+        self.set_top(base + argc);
+        // (variable register, window slot) pairs to copy back after the call.
+        let mut write_backs: Vec<(Reg, Reg)> = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            let slot = base + i as Reg;
+            if by_ref & (1 << i) != 0 {
+                if let Expr::Var(id, _) = arg {
+                    let vr = self.var_reg(*id);
+                    self.emit(Op::Move { dst: slot, src: vr });
+                    write_backs.push((vr, slot));
+                    continue;
+                }
+                self.diags.push(
+                    Diagnostic::error(
+                        BY_REF_NOT_VARIABLE,
+                        format!(
+                            "{}(): only a variable can be passed by reference",
+                            self.interner.resolve_lossy(name)
+                        ),
+                    )
+                    .with_primary(arg.span(), "not a variable"),
+                );
+            }
+            let mark = self.temp_top;
+            let r = self.compile_expr(arg);
+            if r != slot {
+                self.emit(Op::Move { dst: slot, src: r });
+            }
+            self.free_to(mark);
+        }
+        // The result goes into a temp ABOVE the window, so it cannot alias a
+        // by-ref slot the runtime writes back into the window.
+        let dst_high = self.alloc_temp();
+        debug_assert_eq!(dst_high, base + argc);
+        self.emit(Op::CallNative { dst: dst_high, native, base, argc });
+        // Copy each mutated by-ref slot back into its variable.
+        for (vr, slot) in &write_backs {
+            self.emit(Op::Move { dst: *vr, src: *slot });
+        }
+        // Bring the result down to `base`, releasing the window and the high temp.
+        self.emit(Op::Move { dst: base, src: dst_high });
+        self.free_to(base + 1);
+        base
     }
 
     /// A user function takes a fixed parameter count (defaults/variadics are not
@@ -1050,6 +1125,50 @@ mod tests {
         assert!(diags
             .iter()
             .any(|d| d.code == codes::WRONG_ARG_COUNT && d.is_error()));
+    }
+
+    #[test]
+    fn by_ref_builtin_writes_back_to_variable() {
+        let mut interner = Interner::new();
+        let sort = interner.intern_str("sort");
+        let a = interner.intern_str("a");
+        // $a = []; sort($a);  — sort takes its array by reference.
+        let m = compile_ok(
+            vec![
+                expr_stmt(Expr::Assign {
+                    target: a,
+                    value: Box::new(Expr::Array { items: vec![], span: sp() }),
+                    span: sp(),
+                }),
+                expr_stmt(Expr::Call { name: sort, args: vec![var(a)], span: sp() }),
+            ],
+            &interner,
+        );
+        let code = &m.func(0).code;
+        let call = code.iter().position(|op| matches!(op, Op::CallNative { .. })).unwrap();
+        // $a is register 0; after the call its register is written back.
+        assert!(code[call + 1..]
+            .iter()
+            .any(|op| matches!(op, Op::Move { dst: 0, .. })));
+    }
+
+    #[test]
+    fn by_ref_non_variable_diagnoses() {
+        let mut interner = Interner::new();
+        let sort = interner.intern_str("sort");
+        // sort([1]) — a by-ref parameter requires a variable, not a literal.
+        let diags = compile_err(
+            vec![expr_stmt(Expr::Call {
+                name: sort,
+                args: vec![Expr::Array {
+                    items: vec![rphp_ast::ArrayItem { key: None, value: int(1) }],
+                    span: sp(),
+                }],
+                span: sp(),
+            })],
+            &interner,
+        );
+        assert!(diags.iter().any(|d| d.code == BY_REF_NOT_VARIABLE && d.is_error()));
     }
 
     #[test]

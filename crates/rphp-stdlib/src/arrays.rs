@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use rphp_value::{array_key, Array, ArrayKey, Str, Value};
 
-use crate::{nf, Ctx, NativeError, NativeFn, NativeResult};
+use crate::{nf, nf_mut, Ctx, NativeError, NativeFn, NativeResult};
 
 /// This extension's registry contribution (see `lib.rs`). Value-returning array
 /// functions live here; in-place mutators (sort, array_push, …) wait on
@@ -38,6 +38,18 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("array_diff", 2, None, array_diff),
     nf!("array_intersect", 2, None, array_intersect),
     nf!("array_replace", 1, None, array_replace),
+    // --- by-reference mutators: write the result back through $array (#0) ---
+    nf_mut!("sort", 1, Some(2), 0b1, sort),
+    nf_mut!("rsort", 1, Some(2), 0b1, rsort),
+    nf_mut!("asort", 1, Some(2), 0b1, asort),
+    nf_mut!("arsort", 1, Some(2), 0b1, arsort),
+    nf_mut!("ksort", 1, Some(2), 0b1, ksort),
+    nf_mut!("krsort", 1, Some(2), 0b1, krsort),
+    nf_mut!("array_push", 1, None, 0b1, array_push),
+    nf_mut!("array_pop", 1, Some(1), 0b1, array_pop),
+    nf_mut!("array_shift", 1, Some(1), 0b1, array_shift),
+    nf_mut!("array_unshift", 1, None, 0b1, array_unshift),
+    nf_mut!("array_splice", 2, Some(4), 0b1, array_splice),
 ];
 
 /// Borrow an argument as an array, or produce PHP's TypeError message.
@@ -611,4 +623,192 @@ pub(crate) fn array_replace(_: &mut Ctx, args: &[Value]) -> NativeResult {
         }
     }
     Ok(Value::Array(out))
+}
+
+// ---- by-reference mutators --------------------------------------------------
+//
+// These take `&mut [Value]` and write the new array back into `args[0]`; the
+// interpreter copies that slot back into the caller's variable (see the call
+// ABI). `Array` exposes no in-place remove, so they rebuild from owned entries.
+
+/// Owned `(key, value)` entries of an array argument, or PHP's TypeError.
+fn take_entries(func: &str, v: &Value) -> Result<Vec<(ArrayKey, Value)>, NativeError> {
+    match v {
+        Value::Array(a) => Ok(a.iter().map(|(k, val)| (k.clone(), val.clone())).collect()),
+        other => Err(NativeError::new(format!(
+            "{func}(): Argument #1 ($array) must be of type array, {} given",
+            other.type_name()
+        ))),
+    }
+}
+
+/// PHP SORT_REGULAR comparison, reusing the engine's spaceship so ordering
+/// matches `<` exactly. (Sort flags like SORT_STRING are not modelled yet.)
+fn regular_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+    a.spaceship(b).cmp(&0)
+}
+
+/// Rebuild a value array, optionally renumbering integer keys (string keys are
+/// always kept). `reindex` mirrors the difference between `sort` (renumber) and
+/// `asort`/`ksort` (preserve).
+fn rebuild(entries: Vec<(ArrayKey, Value)>, reindex: bool) -> Value {
+    let mut out = Array::new();
+    for (k, v) in entries {
+        match (reindex, &k) {
+            (true, ArrayKey::Int(_)) => out.push(v),
+            _ => out.set(k, v),
+        }
+    }
+    Value::Array(out)
+}
+
+/// Shared body for the six sort builtins: sort the entries by `key`/`value` per
+/// the flags, then write the (reindexed or key-preserving) array back.
+fn sort_impl(
+    func: &str,
+    args: &mut [Value],
+    by_key: bool,
+    reverse: bool,
+    reindex: bool,
+) -> NativeResult {
+    let mut entries = take_entries(func, &args[0])?;
+    entries.sort_by(|a, b| {
+        let ord = if by_key {
+            regular_cmp(&a.0.to_value(), &b.0.to_value())
+        } else {
+            regular_cmp(&a.1, &b.1)
+        };
+        if reverse {
+            ord.reverse()
+        } else {
+            ord
+        }
+    });
+    args[0] = rebuild(entries, reindex);
+    Ok(Value::Bool(true))
+}
+
+pub(crate) fn sort(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    sort_impl("sort", args, false, false, true)
+}
+
+pub(crate) fn rsort(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    sort_impl("rsort", args, false, true, true)
+}
+
+pub(crate) fn asort(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    sort_impl("asort", args, false, false, false)
+}
+
+pub(crate) fn arsort(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    sort_impl("arsort", args, false, true, false)
+}
+
+pub(crate) fn ksort(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    sort_impl("ksort", args, true, false, false)
+}
+
+pub(crate) fn krsort(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    sort_impl("krsort", args, true, true, false)
+}
+
+pub(crate) fn array_push(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let mut a = match &args[0] {
+        Value::Array(a) => a.clone(),
+        other => {
+            return Err(NativeError::new(format!(
+                "array_push(): Argument #1 ($array) must be of type array, {} given",
+                other.type_name()
+            )))
+        }
+    };
+    for v in &args[1..] {
+        a.push(v.clone());
+    }
+    let count = a.len() as i64;
+    args[0] = Value::Array(a);
+    Ok(Value::Int(count))
+}
+
+pub(crate) fn array_pop(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let mut entries = take_entries("array_pop", &args[0])?;
+    let popped = entries.pop().map(|(_, v)| v);
+    // Keys are preserved (no renumber); the next-append index resets to max+1,
+    // which rebuilding via `set` reproduces.
+    args[0] = rebuild(entries, false);
+    Ok(popped.unwrap_or(Value::Null))
+}
+
+pub(crate) fn array_shift(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let mut entries = take_entries("array_shift", &args[0])?;
+    if entries.is_empty() {
+        return Ok(Value::Null);
+    }
+    let (_, first) = entries.remove(0);
+    // array_shift renumbers integer keys, keeps string keys.
+    args[0] = rebuild(entries, true);
+    Ok(first)
+}
+
+pub(crate) fn array_unshift(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let existing = take_entries("array_unshift", &args[0])?;
+    let mut combined: Vec<(ArrayKey, Value)> =
+        args[1..].iter().map(|v| (ArrayKey::Int(0), v.clone())).collect();
+    combined.extend(existing);
+    // Prepended values plus existing integer keys are renumbered from 0.
+    args[0] = rebuild(combined, true);
+    let count = match &args[0] {
+        Value::Array(a) => a.len() as i64,
+        _ => 0,
+    };
+    Ok(Value::Int(count))
+}
+
+pub(crate) fn array_splice(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let entries = take_entries("array_splice", &args[0])?;
+    let n = entries.len() as i64;
+    // offset: negative counts from the end; clamped into 0..=n.
+    let mut offset = args[1].to_int();
+    if offset < 0 {
+        offset = (n + offset).max(0);
+    } else {
+        offset = offset.min(n);
+    }
+    let offset = offset as usize;
+    // length: absent/null => to the end; negative => stop that many from the end.
+    let end = match args.get(2) {
+        None | Some(Value::Null) => n as usize,
+        Some(l) => {
+            let l = l.to_int();
+            if l < 0 {
+                (n + l).max(offset as i64) as usize
+            } else {
+                (offset as i64 + l).min(n) as usize
+            }
+        }
+    };
+    let replacement: Vec<Value> = match args.get(3) {
+        Some(Value::Array(a)) => a.iter().map(|(_, v)| v.clone()).collect(),
+        Some(Value::Null) | None => Vec::new(),
+        Some(other) => vec![other.clone()],
+    };
+
+    // Reassemble: entries before the cut, then the replacement, then entries
+    // after the cut — all renumbered (array_splice always reindexes).
+    let mut out = Array::new();
+    for (_, v) in &entries[..offset] {
+        out.push(v.clone());
+    }
+    for v in &replacement {
+        out.push(v.clone());
+    }
+    for (_, v) in &entries[end..] {
+        out.push(v.clone());
+    }
+    let mut removed = Array::new();
+    for (_, v) in &entries[offset..end] {
+        removed.push(v.clone());
+    }
+    args[0] = Value::Array(out);
+    Ok(Value::Array(removed))
 }

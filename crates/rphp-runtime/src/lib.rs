@@ -252,13 +252,24 @@ fn exec_function(
                 // Same `base ..= base+argc-1` staging as a user call; the args
                 // are handed to the builtin and its result lands in `dst`.
                 let base = base as usize;
-                let mut call_args = Vec::with_capacity(argc as usize);
-                for i in 0..argc as usize {
-                    call_args.push(regs[base + i].clone());
+                let argc = argc as usize;
+                let id = rphp_stdlib::NativeId(native);
+                let mut call_args: Vec<Value> =
+                    (0..argc).map(|i| regs[base + i].clone()).collect();
+                let ret = {
+                    let mut ctx = rphp_stdlib::Ctx { out: &mut out.stdout };
+                    rphp_stdlib::call(id, &mut ctx, &mut call_args)
+                        .map_err(|e| RuntimeError { message: e.message })?
+                };
+                // A by-reference builtin mutates its argument slots in place; copy
+                // the window back so the compiler's write-back `Move`s (into the
+                // caller's variables) observe the changes. For such calls `dst` is
+                // allocated above the window, so it cannot alias a by-ref slot.
+                if rphp_stdlib::descriptor(id).by_ref != 0 {
+                    for (i, v) in call_args.into_iter().enumerate() {
+                        regs[base + i] = v;
+                    }
                 }
-                let mut ctx = rphp_stdlib::Ctx { out: &mut out.stdout };
-                let ret = rphp_stdlib::call(rphp_stdlib::NativeId(native), &mut ctx, &call_args)
-                    .map_err(|e| RuntimeError { message: e.message })?;
                 regs[dst as usize] = ret;
             }
             Op::Ret { src } => {

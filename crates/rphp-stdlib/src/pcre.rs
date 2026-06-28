@@ -10,13 +10,13 @@
 use pcre2::bytes::{Captures, Regex, RegexBuilder};
 use rphp_value::{Array, Str, Value};
 
-use crate::{nf, Ctx, NativeError, NativeFn, NativeResult};
+use crate::{nf, nf_mut, Ctx, NativeError, NativeFn, NativeResult};
 
 /// This extension's registry contribution (see `lib.rs`).
 pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("preg_quote", 1, Some(2), preg_quote),
-    // `$matches` is by-reference, so only the boolean form ships now (max 2).
-    nf!("preg_match", 2, Some(2), preg_match),
+    // The optional `$matches` (#2) is by-reference; the 2-arg form also works.
+    nf_mut!("preg_match", 2, Some(3), 0b100, preg_match),
     nf!("preg_replace", 3, Some(3), preg_replace),
     nf!("preg_split", 2, Some(4), preg_split),
     nf!("preg_grep", 2, Some(3), preg_grep),
@@ -158,12 +158,31 @@ pub(crate) fn preg_quote(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-/// `preg_match($pattern, $subject)`: 1 if the pattern matches, else 0. (The
-/// `$matches` capture-array form is by-reference and deferred.)
-pub(crate) fn preg_match(_: &mut Ctx, args: &[Value]) -> NativeResult {
+/// `preg_match($pattern, $subject, &$matches = null)`: 1 if the pattern matches,
+/// else 0. With a third argument, `$matches` is filled by reference with the
+/// numbered capture groups (group 0 = whole match); trailing groups that did not
+/// participate are omitted, matching PHP. (Named-group keys are not emitted yet.)
+pub(crate) fn preg_match(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let re = compile(&bytes(&args[0]))?;
     let subject = bytes(&args[1]);
-    Ok(Value::Int(i64::from(re.is_match(&subject).unwrap_or(false))))
+    if args.len() < 3 {
+        return Ok(Value::Int(i64::from(re.is_match(&subject).unwrap_or(false))));
+    }
+    let mut matches = Array::new();
+    let found = match re.captures(&subject) {
+        Ok(Some(caps)) => {
+            // Highest group that actually participated; PHP drops trailing None.
+            let last = (0..caps.len()).rev().find(|&i| caps.get(i).is_some()).unwrap_or(0);
+            for i in 0..=last {
+                let g = caps.get(i).map(|m| m.as_bytes().to_vec()).unwrap_or_default();
+                matches.push(Value::Str(Str::from_vec(g)));
+            }
+            true
+        }
+        _ => false,
+    };
+    args[2] = Value::Array(matches);
+    Ok(Value::Int(i64::from(found)))
 }
 
 /// `preg_replace($pattern, $replacement, $subject)`: replace every match.

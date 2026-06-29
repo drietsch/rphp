@@ -594,6 +594,102 @@ fn undefined_class_diagnoses() {
     assert!(eval_to_string(b"<?php $x = new Nope();").is_err());
 }
 
+// ---- inheritance, visibility & instanceof ----------------------------------
+
+#[test]
+fn inherited_method_and_property() {
+    // B inherits A's method and property without redeclaring them.
+    assert_eq!(
+        eval_ok(b"<?php class A { public $x = 5; function get() { return $this->x; } } class B extends A {} $b = new B(); echo $b->get();"),
+        "5"
+    );
+}
+
+#[test]
+fn virtual_dispatch_picks_runtime_method() {
+    // describe() lives in the parent but calls speak(), which the child overrides.
+    assert_eq!(
+        eval_ok(b"<?php class A { function speak() { return 'a'; } function describe() { return $this->speak(); } } class B extends A { function speak() { return 'b'; } } $o = new B(); echo $o->describe();"),
+        "b"
+    );
+}
+
+#[test]
+fn parent_constructor_via_scoped_call() {
+    assert_eq!(
+        eval_ok(b"<?php class A { public $n; function __construct($n) { $this->n = $n; } } class B extends A { function __construct() { parent::__construct(7); } } $b = new B(); echo $b->n;"),
+        "7"
+    );
+}
+
+#[test]
+fn inherited_constructor_runs_for_subclass() {
+    // B has no constructor, so `new B(...)` runs A's.
+    assert_eq!(
+        eval_ok(b"<?php class A { public $n = 0; function __construct($n) { $this->n = $n; } } class B extends A {} $b = new B(9); echo $b->n;"),
+        "9"
+    );
+}
+
+#[test]
+fn self_scoped_call_is_non_virtual() {
+    // self::who() binds to the lexical class, not the runtime one.
+    assert_eq!(
+        eval_ok(b"<?php class A { function who() { return 'A'; } function tag() { return self::who(); } } class B extends A { function who() { return 'B'; } } $b = new B(); echo $b->tag();"),
+        "A"
+    );
+}
+
+#[test]
+fn instanceof_walks_the_chain() {
+    assert_eq!(eval_ok(b"<?php class A {} class B extends A {} $b = new B(); echo ($b instanceof B);"), "1");
+    assert_eq!(eval_ok(b"<?php class A {} class B extends A {} $b = new B(); echo ($b instanceof A);"), "1");
+    assert_eq!(eval_ok(b"<?php class A {} class B {} $a = new A(); echo ($a instanceof B);"), "");
+    // A non-object is never an instance; an unknown class name is just false.
+    assert_eq!(eval_ok(b"<?php class A {} echo (5 instanceof A);"), "");
+    assert_eq!(eval_ok(b"<?php $x = 1; echo ($x instanceof Nope);"), "");
+}
+
+#[test]
+fn private_property_is_inaccessible_from_outside() {
+    assert!(eval_to_string(b"<?php class C { private $s = 1; } $c = new C(); echo $c->s;").is_err());
+}
+
+#[test]
+fn protected_method_is_inaccessible_from_outside() {
+    assert!(eval_to_string(b"<?php class C { protected function m() { return 1; } } $c = new C(); echo $c->m();").is_err());
+}
+
+#[test]
+fn protected_is_accessible_within_the_hierarchy() {
+    assert_eq!(
+        eval_ok(b"<?php class A { protected $x = 7; } class B extends A { function get() { return $this->x; } } $b = new B(); echo $b->get();"),
+        "7"
+    );
+}
+
+#[test]
+fn private_is_accessible_within_its_class() {
+    assert_eq!(
+        eval_ok(b"<?php class C { private $s = 'ok'; function reveal() { return $this->s; } } $c = new C(); echo $c->reveal();"),
+        "ok"
+    );
+}
+
+#[test]
+fn private_of_parent_is_not_accessible_in_child() {
+    // A private property is not visible to a subclass's method.
+    assert!(eval_to_string(b"<?php class A { private $s = 1; } class B extends A { function get() { return $this->s; } } $b = new B(); echo $b->get();").is_err());
+}
+
+#[test]
+fn json_encode_emits_public_properties_only() {
+    assert_eq!(
+        eval_ok(br#"<?php class C { public $a = 1; protected $b = 2; private $c = 3; } echo json_encode(new C());"#),
+        r#"{"a":1}"#
+    );
+}
+
 // ---- argument-handling tests through the public `run` entry point ----------
 
 fn write_temp(name: &str, contents: &[u8]) -> PathBuf {

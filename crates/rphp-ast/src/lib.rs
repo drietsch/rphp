@@ -44,20 +44,30 @@ pub enum Stmt {
     Class(Class),
 }
 
+/// Member visibility (`public` default, `protected`, `private`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Visibility {
+    Public,
+    Protected,
+    Private,
+}
+
 #[derive(Clone, Debug)]
 pub struct Class {
     pub name: IdentId,
+    /// The parent class name from an `extends` clause, if any.
+    pub parent: Option<IdentId>,
     pub props: Vec<PropDecl>,
     pub methods: Vec<Method>,
     pub span: Span,
 }
 
-/// A declared property `[visibility] $name [= default];`. Visibility is parsed
-/// but not yet enforced (everything is effectively public).
+/// A declared property `[visibility] $name [= default];`.
 #[derive(Clone, Debug)]
 pub struct PropDecl {
     pub name: IdentId,
     pub default: Option<Expr>,
+    pub visibility: Visibility,
     pub span: Span,
 }
 
@@ -68,6 +78,7 @@ pub struct Method {
     pub name: IdentId,
     pub params: Vec<Param>,
     pub body: Vec<Stmt>,
+    pub visibility: Visibility,
     pub span: Span,
 }
 
@@ -133,6 +144,11 @@ pub enum Expr {
     PropSet { obj: Box<Expr>, name: IdentId, value: Box<Expr>, span: Span },
     /// `obj->method(args...)`
     MethodCall { obj: Box<Expr>, method: IdentId, args: Vec<Expr>, span: Span },
+    /// A scoped call `class::method(args...)` where `class` is a name, `self`, or
+    /// `parent`.
+    StaticCall { class: IdentId, method: IdentId, args: Vec<Expr>, span: Span },
+    /// `expr instanceof Class` (the class name may be `self`/`parent`).
+    InstanceOf { expr: Box<Expr>, class: IdentId, span: Span },
 }
 
 /// One element of an array literal: `value`, or `key => value`.
@@ -163,7 +179,9 @@ impl Expr {
             | Expr::New { span: s, .. }
             | Expr::PropGet { span: s, .. }
             | Expr::PropSet { span: s, .. }
-            | Expr::MethodCall { span: s, .. } => *s,
+            | Expr::MethodCall { span: s, .. }
+            | Expr::StaticCall { span: s, .. }
+            | Expr::InstanceOf { span: s, .. } => *s,
         }
     }
 }

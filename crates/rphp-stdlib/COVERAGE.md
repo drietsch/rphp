@@ -25,10 +25,13 @@ Functions needing a missing language feature are **cataloged, not faked** (decis
   `[$obj, 'method']` arrays, first-class `strlen(...)`, by-reference `use (&$x)`.
 - **objects** — ✅ *core* objects/classes landed: class declarations, properties with
   constant defaults, constructors, methods, `$this`, method chaining, reference
-  semantics, and identity (`===`). `json_encode` now serializes an instance's public
-  properties. **Still pending:** inheritance/interfaces/traits, visibility enforcement,
-  static members & class constants, `::` access, magic methods, `instanceof`, dynamic
-  `new $cls`, `[$obj,'method']` callables, `json_decode`'s default stdClass form, SPL, DateTime.
+  semantics, identity (`===`), **single inheritance** (`extends`) with virtual dispatch
+  and inherited constructors, **`parent::`/`self::`/`Class::` scoped calls**,
+  **`instanceof`**, and **runtime-enforced `public`/`protected`/`private` visibility**.
+  `json_encode` serializes an instance's *public* properties only. **Still pending:**
+  interfaces/traits, static members & class constants (`::CONST`/`::$p`), magic methods,
+  `clone`, dynamic `new $cls` / `$obj instanceof $cls`, `[$obj,'method']` callables,
+  `json_decode`'s default stdClass form, SPL, DateTime.
 
 ## Implemented (Tier-A wave 1)
 

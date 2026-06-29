@@ -18,18 +18,40 @@ use std::rc::Rc;
 
 use crate::Value;
 
+/// Property visibility, carried on each instance slot so the value formatters
+/// (`json_encode` emits public only; `var_dump` annotates) can honour it without
+/// reaching back into the class table.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Vis {
+    Public,
+    Protected,
+    Private,
+}
+
+/// One property slot: name, current value, and visibility.
+#[derive(Clone)]
+pub struct Prop {
+    pub name: Box<[u8]>,
+    pub value: Value,
+    pub vis: Vis,
+}
+
 #[derive(Clone)]
 pub struct Object(Rc<RefCell<ObjectData>>);
 
 struct ObjectData {
     class: u32,
-    props: Vec<(Box<[u8]>, Value)>,
+    props: Vec<Prop>,
 }
 
 impl Object {
     /// Create an instance of `class` seeded with `props` (the class's declared
-    /// properties and their default values, in declaration order).
-    pub fn new(class: u32, props: Vec<(Box<[u8]>, Value)>) -> Self {
+    /// properties — name, default value, visibility — in declaration order).
+    pub fn new(class: u32, props: Vec<(Box<[u8]>, Value, Vis)>) -> Self {
+        let props = props
+            .into_iter()
+            .map(|(name, value, vis)| Prop { name, value, vis })
+            .collect();
         Object(Rc::new(RefCell::new(ObjectData { class, props })))
     }
 
@@ -44,25 +66,25 @@ impl Object {
             .borrow()
             .props
             .iter()
-            .find(|(k, _)| k.as_ref() == name)
-            .map(|(_, v)| v.clone())
+            .find(|p| p.name.as_ref() == name)
+            .map(|p| p.value.clone())
     }
 
-    /// Set property `name` to `value`, appending it (dynamic property) if the
-    /// object does not already declare it — PHP lets you assign arbitrary
-    /// properties onto an instance.
+    /// Set property `name` to `value`, appending it as a **public** dynamic
+    /// property if the object does not already declare it — PHP lets you assign
+    /// arbitrary properties onto an instance.
     pub fn set(&self, name: &[u8], value: Value) {
         let mut data = self.0.borrow_mut();
-        if let Some(slot) = data.props.iter_mut().find(|(k, _)| k.as_ref() == name) {
-            slot.1 = value;
+        if let Some(slot) = data.props.iter_mut().find(|p| p.name.as_ref() == name) {
+            slot.value = value;
         } else {
-            data.props.push((name.into(), value));
+            data.props.push(Prop { name: name.into(), value, vis: Vis::Public });
         }
     }
 
     /// The properties, in insertion order, cloned out. Used by the value
-    /// formatters (`var_dump`/`print_r`/`json_encode`) that arrive later.
-    pub fn props(&self) -> Vec<(Box<[u8]>, Value)> {
+    /// formatters (`var_dump`/`print_r`/`json_encode`).
+    pub fn props(&self) -> Vec<Prop> {
         self.0.borrow().props.clone()
     }
 }
@@ -88,7 +110,7 @@ mod tests {
     use super::*;
 
     fn obj() -> Object {
-        Object::new(0, vec![(Box::from(&b"x"[..]), Value::Int(1))])
+        Object::new(0, vec![(Box::from(&b"x"[..]), Value::Int(1), Vis::Public)])
     }
 
     #[test]
@@ -101,13 +123,14 @@ mod tests {
     }
 
     #[test]
-    fn set_appends_dynamic_property_in_order() {
+    fn set_appends_dynamic_public_property_in_order() {
         let o = obj();
         o.set(b"y", Value::Int(2));
         let props = o.props();
         assert_eq!(props.len(), 2);
-        assert_eq!(props[0].0.as_ref(), b"x");
-        assert_eq!(props[1].0.as_ref(), b"y");
+        assert_eq!(props[0].name.as_ref(), b"x");
+        assert_eq!(props[1].name.as_ref(), b"y");
+        assert_eq!(props[1].vis, Vis::Public); // dynamic properties are public
     }
 
     #[test]

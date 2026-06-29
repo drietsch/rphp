@@ -14,7 +14,7 @@
 //! stable; the CLI and tests depend on them.
 #![forbid(unsafe_code)]
 
-use rphp_bytecode::{Function, Module, Op};
+use rphp_bytecode::{ClassId, Function, Module, Op, Visibility};
 use rphp_value::{array_key, Object, Str, Value, ValueError};
 
 /// Captured side effects of a run. `echo` output accumulates into `stdout` as
@@ -48,6 +48,58 @@ fn runtime_error(err: ValueError) -> RuntimeError {
         ValueError::TypeError(msg) => format!("Unsupported operand types: {msg}"),
     };
     RuntimeError { message }
+}
+
+/// Whether a member with the given visibility, declared in `decl_class`, is
+/// reachable from code executing in `cur_class`. `protected` is visible anywhere
+/// in the same inheritance hierarchy; `private` only within the declaring class.
+fn access_ok(
+    module: &Module,
+    vis: Visibility,
+    decl_class: ClassId,
+    cur_class: Option<ClassId>,
+) -> bool {
+    match vis {
+        Visibility::Public => true,
+        Visibility::Private => cur_class == Some(decl_class),
+        Visibility::Protected => match cur_class {
+            Some(cc) => {
+                module.is_subclass_or_eq(cc, decl_class) || module.is_subclass_or_eq(decl_class, cc)
+            }
+            None => false,
+        },
+    }
+}
+
+fn vis_word(v: Visibility) -> &'static str {
+    match v {
+        Visibility::Public => "public",
+        Visibility::Protected => "protected",
+        Visibility::Private => "private",
+    }
+}
+
+/// Enforce property visibility. An undeclared (dynamic) property is public, so a
+/// `None` resolution is always allowed.
+fn check_prop_access(
+    module: &Module,
+    class: ClassId,
+    name: &[u8],
+    cur_class: Option<ClassId>,
+) -> Result<(), RuntimeError> {
+    if let Some((vis, decl)) = module.resolve_prop(class, name) {
+        if !access_ok(module, vis, decl, cur_class) {
+            return Err(RuntimeError {
+                message: format!(
+                    "Cannot access {} property {}::${}",
+                    vis_word(vis),
+                    String::from_utf8_lossy(&module.class(decl).name_bytes),
+                    String::from_utf8_lossy(name),
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The [`rphp_stdlib::Host`] the interpreter hands to native functions: it
@@ -87,7 +139,8 @@ fn invoke_value(
     if let Some(fid) = module.func_by_name(&name) {
         let f = module.func(fid);
         let n = (f.num_params as usize).min(args.len());
-        return exec_function(module, f, &args[..n], out);
+        // A callable string resolves to a free function — no class context.
+        return exec_function(module, f, &args[..n], None, out);
     }
     if let Some(nid) = rphp_stdlib::resolve(&name) {
         let mut args = args.to_vec();
@@ -108,7 +161,7 @@ fn invoke_value(
 pub fn run(module: &Module) -> Result<RunOutput, RuntimeError> {
     let mut out = RunOutput::default();
     let main = module.func(module.main);
-    exec_function(module, main, &[], &mut out)?;
+    exec_function(module, main, &[], None, &mut out)?;
     Ok(out)
 }
 
@@ -123,6 +176,7 @@ fn exec_function(
     module: &Module,
     function: &Function,
     args: &[Value],
+    cur_class: Option<ClassId>,
     out: &mut RunOutput,
 ) -> Result<Value, RuntimeError> {
     // The frame: every register starts as null (uninitialized vars read null).
@@ -131,7 +185,7 @@ fn exec_function(
     for (i, arg) in args.iter().enumerate() {
         regs[i] = arg.clone();
     }
-    run_frame(module, function, regs, out)
+    run_frame(module, function, regs, cur_class, out)
 }
 
 /// Execute a closure: seed the captured environment into the function's
@@ -152,14 +206,19 @@ fn exec_closure(
     for (i, arg) in args.iter().enumerate().take(np) {
         regs[i] = arg.clone();
     }
-    run_frame(module, function, regs, out)
+    // A closure carries no class context (its `$this`/visibility binding is a
+    // later refinement).
+    run_frame(module, function, regs, None, out)
 }
 
-/// Run a prepared frame (registers already seeded) to completion.
+/// Run a prepared frame (registers already seeded) to completion. `cur_class` is
+/// the class whose method is executing (the lexical context for visibility
+/// checks), or `None` for free functions, closures, and `{main}`.
 fn run_frame(
     module: &Module,
     function: &Function,
     mut regs: Vec<Value>,
+    cur_class: Option<ClassId>,
     out: &mut RunOutput,
 ) -> Result<Value, RuntimeError> {
     let mut pc: usize = 0;
@@ -326,7 +385,7 @@ fn run_frame(
                     call_args.push(regs[base + i].clone());
                 }
                 let callee = module.func(func);
-                let ret = exec_function(module, callee, &call_args, out)?;
+                let ret = exec_function(module, callee, &call_args, None, out)?;
                 regs[dst as usize] = ret;
             }
             Op::CallNative { dst, native, base, argc } => {
@@ -372,27 +431,28 @@ fn run_frame(
 
             // --- objects ---
             Op::New { dst, class } => {
-                let cls = module.class(class);
-                let props: Vec<(Box<[u8]>, Value)> = cls
-                    .props
-                    .iter()
-                    .map(|p| (p.name.clone(), p.default.clone()))
-                    .collect();
+                // Seed the instance with its full (inherited + own) property set.
+                let props = module.instance_props(class);
                 regs[dst as usize] = Value::Object(Object::new(class, props));
             }
             Op::PropGet { dst, obj, name } => {
                 let key = function.consts[name as usize].to_value().to_php_bytes();
-                regs[dst as usize] = match &regs[obj as usize] {
-                    Value::Object(o) => o.get(&key).unwrap_or(Value::Null),
+                let val = match &regs[obj as usize] {
+                    Value::Object(o) => {
+                        check_prop_access(module, o.class_id(), &key, cur_class)?;
+                        o.get(&key).unwrap_or(Value::Null)
+                    }
                     // Reading a property of a non-object yields null (warning deferred).
                     _ => Value::Null,
                 };
+                regs[dst as usize] = val;
             }
             Op::PropSet { obj, name, value } => {
                 let key = function.consts[name as usize].to_value().to_php_bytes();
                 let v = regs[value as usize].clone();
                 // Writing through a non-object is a no-op (warning deferred).
                 if let Value::Object(o) = &regs[obj as usize] {
+                    check_prop_access(module, o.class_id(), &key, cur_class)?;
                     o.set(&key, v);
                 }
             }
@@ -411,13 +471,25 @@ fn run_frame(
                         })
                     }
                 };
-                let fid = module.class(class_id).method(&mname).ok_or_else(|| RuntimeError {
-                    message: format!(
-                        "Call to undefined method {}::{}()",
-                        String::from_utf8_lossy(&module.class(class_id).name_bytes),
-                        String::from_utf8_lossy(&mname),
-                    ),
-                })?;
+                // Virtual dispatch: resolve up the chain from the runtime class.
+                let (fid, vis, decl_class) =
+                    module.resolve_method(class_id, &mname).ok_or_else(|| RuntimeError {
+                        message: format!(
+                            "Call to undefined method {}::{}()",
+                            String::from_utf8_lossy(&module.class(class_id).name_bytes),
+                            String::from_utf8_lossy(&mname),
+                        ),
+                    })?;
+                if !access_ok(module, vis, decl_class, cur_class) {
+                    return Err(RuntimeError {
+                        message: format!(
+                            "Call to {} method {}::{}()",
+                            vis_word(vis),
+                            String::from_utf8_lossy(&module.class(decl_class).name_bytes),
+                            String::from_utf8_lossy(&mname),
+                        ),
+                    });
+                }
                 let callee = module.func(fid);
                 // The method frame takes `$this` in register 0, then its declared
                 // parameters; cap the staged args to that count (extra args are
@@ -430,7 +502,30 @@ fn run_frame(
                 for i in 0..(argc as usize).min(np.saturating_sub(1)) {
                     call_args.push(regs[base + i].clone());
                 }
-                regs[dst as usize] = exec_function(module, callee, &call_args, out)?;
+                // The callee runs in the lexical context of its *declaring* class.
+                regs[dst as usize] = exec_function(module, callee, &call_args, Some(decl_class), out)?;
+            }
+            Op::StaticCall { dst, this, func, base, argc } => {
+                // Non-virtual scoped call (`self::`/`parent::`/`Class::`); the
+                // current `$this` is forwarded explicitly.
+                let this_val = regs[this as usize].clone();
+                let callee = module.func(func);
+                let np = callee.num_params as usize;
+                let base = base as usize;
+                let mut call_args = Vec::with_capacity(np);
+                call_args.push(this_val);
+                for i in 0..(argc as usize).min(np.saturating_sub(1)) {
+                    call_args.push(regs[base + i].clone());
+                }
+                let callee_class = module.method_owner(func);
+                regs[dst as usize] = exec_function(module, callee, &call_args, callee_class, out)?;
+            }
+            Op::InstanceOf { dst, obj, class } => {
+                let result = match &regs[obj as usize] {
+                    Value::Object(o) => module.is_subclass_or_eq(o.class_id(), class),
+                    _ => false,
+                };
+                regs[dst as usize] = Value::Bool(result);
             }
 
             Op::Ret { src } => {

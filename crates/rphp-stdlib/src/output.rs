@@ -6,7 +6,7 @@
 //! (scalars + arrays). Floats use a shortest-round-trip form (PHP's
 //! `serialize_precision=-1`); the scientific-notation threshold is a documented
 //! divergence axis until the dedicated serializer lands.
-use rphp_value::{ArrayKey, Str, Value};
+use rphp_value::{ArrayKey, Str, Value, Vis};
 
 use crate::{nf, Ctx, NativeFn, NativeResult};
 
@@ -99,13 +99,19 @@ fn dump(out: &mut Vec<u8>, v: &Value, pad: usize) {
         Value::Object(o) => {
             let props = o.props();
             out.extend_from_slice(format!("object(#{}) ({}) {{\n", o.class_id(), props.len()).as_bytes());
-            for (k, val) in &props {
+            for p in &props {
                 indent(out, pad + 2);
                 out.extend_from_slice(b"[\"");
-                out.extend_from_slice(k);
-                out.extend_from_slice(b"\"]=>\n");
+                out.extend_from_slice(&p.name);
+                out.extend_from_slice(b"\"");
+                match p.vis {
+                    Vis::Public => {}
+                    Vis::Protected => out.extend_from_slice(b":protected"),
+                    Vis::Private => out.extend_from_slice(b":private"),
+                }
+                out.extend_from_slice(b"]=>\n");
                 indent(out, pad + 2);
-                dump(out, val, pad + 2);
+                dump(out, &p.value, pad + 2);
             }
             indent(out, pad);
             out.extend_from_slice(b"}\n");

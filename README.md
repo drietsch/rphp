@@ -61,11 +61,16 @@ echo json_encode($c), "\n";             // {"count":12}
   builtin parameters.
 - **Closures & arrow functions** — first-class, by-value capture (`use (...)` /
   auto-capture), direct dynamic calls `$f(...)`, higher-order builtins.
-- **Objects & classes** *(newest slice)* — class declarations, properties with
-  constant defaults, constructors, methods, `$this`, method chaining, **reference
-  semantics**, identity (`===`), and `json_encode` over public properties.
-  (Inheritance, visibility enforcement, statics, `::`, magic methods, and
-  `instanceof` are not in yet — see [the coverage dashboard](crates/rphp-stdlib/COVERAGE.md).)
+- **Objects & classes** — class declarations, properties with constant defaults,
+  constructors, methods, `$this`, method chaining, **reference semantics**,
+  identity (`===`), and `json_encode` over public properties.
+- **Inheritance, visibility & `instanceof`** *(newest slice)* — single inheritance
+  (`extends`) with **virtual dispatch** and inherited constructors,
+  `parent::`/`self::`/`Class::` scoped calls (so `parent::__construct()` works),
+  `instanceof` over the class chain, and **runtime-enforced** `public`/`protected`/
+  `private` visibility. (Interfaces, traits, statics, class constants, magic
+  methods, and `clone` are still pending — see
+  [the coverage dashboard](crates/rphp-stdlib/COVERAGE.md).)
 
 **Standard library** — ~180 registry entries across `ctype`, `math`, `string`,
 `array` (incl. by-reference sort/mutators and higher-order `array_map`/`usort`/…),

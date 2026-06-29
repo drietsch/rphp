@@ -14,10 +14,10 @@
 
 use std::collections::HashMap;
 
-use rphp_ast::{BinOp, Class, Expr, Func, Param, Program, Stmt, UnOp};
+use rphp_ast::{BinOp, Class, Expr, Func, Param, Program, Stmt, UnOp, Visibility as AstVis};
 use rphp_bytecode::{
     Class as BcClass, ClassId, ClosureProto, CodeAddr, Const, FuncId, Function, Method as BcMethod,
-    Module, Op, PropDef, Reg,
+    Module, Op, PropDef, Reg, Visibility,
 };
 use rphp_diagnostics::{codes, Diagnostic};
 use rphp_intern::{IdentId, Interner};
@@ -39,6 +39,11 @@ const REDECLARED_CLASS: &str = "RPHP_E0106";
 const UNDEFINED_CLASS: &str = "RPHP_E0107";
 /// A property default that is not a constant expression.
 const NON_CONST_PROP_DEFAULT: &str = "RPHP_E0108";
+/// A scoped call (`self::m()` / `parent::m()` / `Class::m()`) to a method that
+/// does not exist.
+const UNDEFINED_METHOD: &str = "RPHP_E0109";
+/// `self::`/`parent::` used outside a class, or `parent::` with no parent.
+const INVALID_SCOPE: &str = "RPHP_E0110";
 
 /// Compile a parsed program into a bytecode module. Function `0` is the
 /// synthetic `{main}` entry containing the top-level statements; each top-level
@@ -82,7 +87,8 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
     let mut user_classes: Vec<&Class> = Vec::new();
     // The FuncId for each method, parallel to each class's `.methods`.
     let mut method_ids: Vec<Vec<FuncId>> = Vec::new();
-    let mut class_has_ctor: Vec<bool> = Vec::new();
+    // Whether each class declares its *own* `__construct` (chain-aware below).
+    let mut own_ctor: Vec<bool> = Vec::new();
     let mut next_method_id: FuncId = next_id;
     for item in &program.items {
         if let Stmt::Class(c) = item {
@@ -106,17 +112,101 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
                     id
                 })
                 .collect();
-            let has_ctor = c
-                .methods
-                .iter()
-                .any(|m| interner.resolve(m.name).eq_ignore_ascii_case(b"__construct"));
+            own_ctor.push(
+                c.methods
+                    .iter()
+                    .any(|m| interner.resolve(m.name).eq_ignore_ascii_case(b"__construct")),
+            );
             method_ids.push(ids);
-            class_has_ctor.push(has_ctor);
             user_classes.push(c);
         }
     }
 
-    let class_ctx = ClassCtx { map: &class_map, has_ctor: &class_has_ctor };
+    let n_classes = user_classes.len();
+
+    // Resolve each `extends` target to a ClassId; diagnose unknown parents.
+    let parent_id: Vec<Option<ClassId>> = user_classes
+        .iter()
+        .map(|c| match c.parent {
+            None => None,
+            Some(pname) => {
+                let p = class_map.get(&pname).copied();
+                if p.is_none() {
+                    diags.push(
+                        Diagnostic::error(
+                            UNDEFINED_CLASS,
+                            format!("class \"{}\" not found", interner.resolve_lossy(pname)),
+                        )
+                        .with_primary(c.span, "unknown parent class"),
+                    );
+                }
+                p
+            }
+        })
+        .collect();
+
+    // Reject inheritance cycles — runtime chain walks must terminate.
+    for ci in 0..n_classes {
+        let mut cur = parent_id[ci];
+        let mut hops = 0usize;
+        while let Some(p) = cur {
+            hops += 1;
+            if hops > n_classes {
+                diags.push(
+                    Diagnostic::error(
+                        REDECLARED_CLASS,
+                        format!(
+                            "class \"{}\" has a cyclic inheritance chain",
+                            interner.resolve_lossy(user_classes[ci].name)
+                        ),
+                    )
+                    .with_primary(user_classes[ci].span, "cyclic `extends`"),
+                );
+                break;
+            }
+            cur = parent_id[p as usize];
+        }
+    }
+
+    // A `new` needs a constructor call iff one exists anywhere up the chain.
+    let class_has_ctor: Vec<bool> = (0..n_classes)
+        .map(|ci| {
+            let mut cur = Some(ci as ClassId);
+            let mut hops = 0usize;
+            while let Some(cid) = cur {
+                if own_ctor[cid as usize] {
+                    return true;
+                }
+                hops += 1;
+                if hops > n_classes {
+                    break; // cycle (already diagnosed)
+                }
+                cur = parent_id[cid as usize];
+            }
+            false
+        })
+        .collect();
+
+    // Per-class own-method table (name -> FuncId) for compile-time `self::` /
+    // `parent::` / `Class::` resolution.
+    let methods_ct: Vec<Vec<(Box<[u8]>, FuncId)>> = user_classes
+        .iter()
+        .enumerate()
+        .map(|(ci, c)| {
+            c.methods
+                .iter()
+                .enumerate()
+                .map(|(mi, m)| (interner.resolve(m.name).into(), method_ids[ci][mi]))
+                .collect()
+        })
+        .collect();
+
+    let class_ctx = ClassCtx {
+        map: &class_map,
+        has_ctor: &class_has_ctor,
+        parent: &parent_id,
+        methods: &methods_ct,
+    };
     let total_methods: usize = method_ids.iter().map(Vec::len).sum();
     // Closures discovered while compiling bodies are appended after main, the
     // user functions, and the methods; their FuncId is `top_level_count + sink`.
@@ -128,21 +218,23 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
     // only — `compile_stmts` ignores both, so passing all items is correct.
     funcs.push(compile_function(
         interner, &func_map, &class_ctx, &arities, &mut diags, &mut closure_sink,
-        top_level_count, IdentId(0), Box::from(&b""[..]), &[], &program.items, Span::dummy(), false,
+        top_level_count, IdentId(0), Box::from(&b""[..]), &[], &program.items, Span::dummy(), None,
     ));
     for f in &user_funcs {
         funcs.push(compile_function(
             interner, &func_map, &class_ctx, &arities, &mut diags, &mut closure_sink,
-            top_level_count, f.name, interner.resolve(f.name).into(), &f.params, &f.body, f.span, false,
+            top_level_count, f.name, interner.resolve(f.name).into(), &f.params, &f.body, f.span, None,
         ));
     }
     // Methods, in the same class-then-declaration order as pre-pass B so each
-    // lands at exactly the FuncId reserved for it.
-    for c in &user_classes {
+    // lands at exactly the FuncId reserved for it. Each carries its class as the
+    // lexical context (`cur_class`) for `$this`, `self::`/`parent::`, visibility.
+    for (ci, c) in user_classes.iter().enumerate() {
         for m in &c.methods {
             funcs.push(compile_function(
                 interner, &func_map, &class_ctx, &arities, &mut diags, &mut closure_sink,
-                top_level_count, m.name, interner.resolve(m.name).into(), &m.params, &m.body, m.span, true,
+                top_level_count, m.name, interner.resolve(m.name).into(), &m.params, &m.body, m.span,
+                Some(ci as ClassId),
             ));
         }
     }
@@ -167,7 +259,11 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
                         Value::Null
                     }),
                 };
-                PropDef { name: interner.resolve(p.name).into(), default }
+                PropDef {
+                    name: interner.resolve(p.name).into(),
+                    default,
+                    visibility: bc_vis(p.visibility),
+                }
             })
             .collect();
         let methods = c
@@ -177,11 +273,13 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
             .map(|(mi, m)| BcMethod {
                 name_bytes: interner.resolve(m.name).into(),
                 func: method_ids[ci][mi],
+                visibility: bc_vis(m.visibility),
             })
             .collect();
         classes.push(BcClass {
             name: c.name,
             name_bytes: interner.resolve(c.name).into(),
+            parent: parent_id[ci],
             props,
             methods,
         });
@@ -216,11 +314,43 @@ fn const_default(e: &Expr, interner: &Interner) -> Option<Value> {
     })
 }
 
-/// Shared class lookup tables threaded into every function compilation: class
-/// name -> id, and whether each class declares a `__construct`.
+/// Map an AST visibility to its bytecode counterpart.
+fn bc_vis(v: AstVis) -> Visibility {
+    match v {
+        AstVis::Public => Visibility::Public,
+        AstVis::Protected => Visibility::Protected,
+        AstVis::Private => Visibility::Private,
+    }
+}
+
+/// Shared class lookup tables threaded into every function compilation. Indexed
+/// by [`ClassId`] except `map` (name -> id): the resolved parent of each class,
+/// whether each has a constructor anywhere in its chain, and each class's *own*
+/// methods (name -> FuncId) for compile-time scoped-call resolution.
+/// A class's own methods as (name, compiled id) pairs.
+type MethodTable = Vec<(Box<[u8]>, FuncId)>;
+
 struct ClassCtx<'a> {
     map: &'a HashMap<IdentId, ClassId>,
     has_ctor: &'a [bool],
+    parent: &'a [Option<ClassId>],
+    methods: &'a [MethodTable],
+}
+
+impl ClassCtx<'_> {
+    /// Resolve a method name on `class`, walking up the chain (compile time).
+    fn resolve_method(&self, class: ClassId, name: &[u8]) -> Option<FuncId> {
+        let mut cur = Some(class);
+        while let Some(cid) = cur {
+            for (n, f) in &self.methods[cid as usize] {
+                if n.eq_ignore_ascii_case(name) {
+                    return Some(*f);
+                }
+            }
+            cur = self.parent[cid as usize];
+        }
+        None
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -237,7 +367,7 @@ fn compile_function(
     params: &[Param],
     body: &[Stmt],
     span: Span,
-    is_method: bool,
+    cur_class: Option<ClassId>,
 ) -> Function {
     let mut fc = FnCompiler::new(
         interner,
@@ -250,7 +380,7 @@ fn compile_function(
         params,
         &[],
         body,
-        is_method,
+        cur_class,
     );
     fc.compile_stmts(body);
     // Always terminate with a fall-through return so every code path (and every
@@ -261,7 +391,7 @@ fn compile_function(
         name_bytes,
         // A method's register 0 holds the implicit `$this`, so its declared
         // parameters occupy registers `1 ..= n` and the frame takes `n + 1`.
-        num_params: params.len() as u16 + u16::from(is_method),
+        num_params: params.len() as u16 + u16::from(cur_class.is_some()),
         num_regs: fc.num_regs,
         code: fc.code,
         consts: fc.consts,
@@ -282,6 +412,9 @@ struct FnCompiler<'a> {
     /// functions), so ids stay stable as the sink grows.
     closure_sink: &'a mut Vec<Function>,
     top_level_count: FuncId,
+    /// The class whose method is being compiled (lexical context for `$this`,
+    /// `self::`/`parent::`, and visibility); `None` outside a method.
+    cur_class: Option<ClassId>,
 
     /// Variable -> permanent register. Variables occupy the low registers
     /// (params first, then captured `use` vars, then locals); temporaries live
@@ -314,11 +447,12 @@ impl<'a> FnCompiler<'a> {
         params: &[Param],
         captures: &[IdentId],
         body: &[Stmt],
-        is_method: bool,
+        cur_class: Option<ClassId>,
     ) -> Self {
         // A method reserves register 0 for the implicit `$this`; parameters then
         // start at register 1. (If the body names `$this`, the lexer has interned
         // it, so we can bind that id to register 0.)
+        let is_method = cur_class.is_some();
         let mut vars: HashMap<IdentId, Reg> = HashMap::new();
         let mut base = 0;
         if is_method {
@@ -356,6 +490,7 @@ impl<'a> FnCompiler<'a> {
             diags,
             closure_sink,
             top_level_count,
+            cur_class,
             vars,
             temp_top: var_count,
             num_regs: var_count,
@@ -608,6 +743,10 @@ impl<'a> FnCompiler<'a> {
             Expr::PropGet { obj, name, .. } => self.compile_prop_get(obj, *name),
             Expr::PropSet { obj, name, value, .. } => self.compile_prop_set(obj, *name, value),
             Expr::MethodCall { obj, method, args, .. } => self.compile_method_call(obj, *method, args),
+            Expr::StaticCall { class, method, args, span } => {
+                self.compile_static_call(*class, *method, args, *span)
+            }
+            Expr::InstanceOf { expr, class, span } => self.compile_instance_of(expr, *class, *span),
         }
     }
 
@@ -1040,6 +1179,131 @@ impl FnCompiler<'_> {
         dst
     }
 
+    /// `class::method(args...)` — a scoped (non-virtual) call. Resolves the
+    /// target class (`self`/`parent`/name) and the method (compile time, walking
+    /// the chain), then forwards the current `$this` (register 0 in a method) and
+    /// the arguments to the resolved function.
+    fn compile_static_call(&mut self, class: IdentId, method: IdentId, args: &[Expr], span: Span) -> Reg {
+        let cname = self.interner.resolve(class);
+        let target: Option<ClassId> = if cname.eq_ignore_ascii_case(b"self") {
+            if self.cur_class.is_none() {
+                self.scope_error("cannot use \"self::\" outside a class", span);
+            }
+            self.cur_class
+        } else if cname.eq_ignore_ascii_case(b"parent") {
+            match self.cur_class {
+                None => {
+                    self.scope_error("cannot use \"parent::\" outside a class", span);
+                    None
+                }
+                Some(c) => {
+                    let p = self.class_ctx.parent[c as usize];
+                    if p.is_none() {
+                        self.scope_error("current class has no parent", span);
+                    }
+                    p
+                }
+            }
+        } else {
+            let t = self.class_ctx.map.get(&class).copied();
+            if t.is_none() {
+                self.diags.push(
+                    Diagnostic::error(
+                        UNDEFINED_CLASS,
+                        format!("class \"{}\" not found", self.interner.resolve_lossy(class)),
+                    )
+                    .with_primary(span, "not defined"),
+                );
+            }
+            t
+        };
+
+        let func = target.and_then(|c| self.class_ctx.resolve_method(c, self.interner.resolve(method)));
+        let Some(func) = func else {
+            if target.is_some() {
+                self.diags.push(
+                    Diagnostic::error(
+                        UNDEFINED_METHOD,
+                        format!("call to undefined method {}()", self.interner.resolve_lossy(method)),
+                    )
+                    .with_primary(span, "no such method"),
+                );
+            }
+            let dst = self.alloc_temp();
+            self.emit(Op::LoadNull { dst });
+            return dst;
+        };
+
+        // `$this` to forward: register 0 inside a method, otherwise a fresh null.
+        let this_reg = if self.cur_class.is_some() {
+            0
+        } else {
+            let t = self.alloc_temp();
+            self.emit(Op::LoadNull { dst: t });
+            t
+        };
+        let argc = args.len() as u16;
+        let base = self.temp_top;
+        self.set_top(base + argc);
+        for (i, arg) in args.iter().enumerate() {
+            let slot = base + i as Reg;
+            let mark = self.temp_top;
+            let r = self.compile_expr(arg);
+            if r != slot {
+                self.emit(Op::Move { dst: slot, src: r });
+            }
+            self.free_to(mark);
+        }
+        self.free_to(base);
+        let dst = self.alloc_temp();
+        debug_assert_eq!(dst, base);
+        self.emit(Op::StaticCall { dst, this: this_reg, func, base, argc });
+        dst
+    }
+
+    /// `expr instanceof Class`. The class name resolves at compile time; an
+    /// unknown name yields a constant `false` (PHP does not error there), while
+    /// `self`/`parent` outside a class is a hard error.
+    fn compile_instance_of(&mut self, expr: &Expr, class: IdentId, span: Span) -> Reg {
+        let cname = self.interner.resolve(class);
+        let target: Option<ClassId> = if cname.eq_ignore_ascii_case(b"self") {
+            if self.cur_class.is_none() {
+                self.scope_error("cannot use \"self\" outside a class", span);
+            }
+            self.cur_class
+        } else if cname.eq_ignore_ascii_case(b"parent") {
+            match self.cur_class {
+                None => {
+                    self.scope_error("cannot use \"parent\" outside a class", span);
+                    None
+                }
+                Some(c) => self.class_ctx.parent[c as usize],
+            }
+        } else {
+            self.class_ctx.map.get(&class).copied()
+        };
+
+        let mark = self.temp_top;
+        let obj_reg = self.compile_expr(expr);
+        self.free_to(mark);
+        let dst = self.alloc_temp();
+        match target {
+            Some(cid) => {
+                self.emit(Op::InstanceOf { dst, obj: obj_reg, class: cid });
+            }
+            None => {
+                self.emit(Op::LoadBool { dst, val: false });
+            }
+        }
+        dst
+    }
+
+    /// Push a `self::`/`parent::` scope-misuse diagnostic.
+    fn scope_error(&mut self, msg: &str, span: Span) {
+        self.diags
+            .push(Diagnostic::error(INVALID_SCOPE, msg).with_primary(span, "invalid scope"));
+    }
+
     /// Lower a closure expression: capture the current values of its `use`
     /// variables from this frame, compile its body as its own function, and emit
     /// a `MakeClosure` that binds them together at runtime.
@@ -1084,7 +1348,7 @@ impl FnCompiler<'_> {
             params,
             uses,
             body,
-            false,
+            None,
         );
         fc.compile_stmts(body);
         fc.emit(Op::Ret { src: None });
@@ -1242,6 +1506,12 @@ fn collect_expr(e: &Expr, vars: &mut HashMap<IdentId, Reg>, next: &mut Reg) {
                 collect_expr(a, vars, next);
             }
         }
+        Expr::StaticCall { args, .. } => {
+            for a in args {
+                collect_expr(a, vars, next);
+            }
+        }
+        Expr::InstanceOf { expr, .. } => collect_expr(expr, vars, next),
         Expr::IndexAssign { base, index, value, .. } => {
             collect_expr(base, vars, next);
             if let Some(i) = index {
@@ -1883,7 +2153,13 @@ mod tests {
         // class C { public $v = 1; function get() { return $this->v; } }
         let class = Stmt::Class(rphp_ast::Class {
             name: c,
-            props: vec![rphp_ast::PropDecl { name: v, default: Some(int(1)), span: sp() }],
+            parent: None,
+            props: vec![rphp_ast::PropDecl {
+                name: v,
+                default: Some(int(1)),
+                visibility: AstVis::Public,
+                span: sp(),
+            }],
             methods: vec![rphp_ast::Method {
                 name: get,
                 params: vec![],
@@ -1891,6 +2167,7 @@ mod tests {
                     value: Some(Expr::PropGet { obj: Box::new(var(this)), name: v, span: sp() }),
                     span: sp(),
                 }],
+                visibility: AstVis::Public,
                 span: sp(),
             }],
             span: sp(),

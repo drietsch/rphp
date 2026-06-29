@@ -18,7 +18,7 @@ mod closure;
 mod object;
 pub use array::{array_key, Array, ArrayKey};
 pub use closure::Closure;
-pub use object::Object;
+pub use object::{Object, Prop, Vis};
 
 use std::fmt;
 use std::rc::Rc;

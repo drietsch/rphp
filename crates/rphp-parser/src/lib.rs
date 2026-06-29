@@ -14,7 +14,7 @@
 #![forbid(unsafe_code)]
 
 use rphp_ast::{
-    ArrayItem, BinOp, Class, Expr, Func, Method, Param, Program, PropDecl, Stmt, UnOp,
+    ArrayItem, BinOp, Class, Expr, Func, Method, Param, Program, PropDecl, Stmt, UnOp, Visibility,
 };
 use rphp_diagnostics::{codes, Diagnostic};
 use rphp_intern::{IdentId, Interner};
@@ -337,19 +337,32 @@ impl<'a> Parser<'a> {
             self.error(span, "expected class name");
             self.error_ident()
         };
+        // Optional `extends Parent`. (`implements` / multiple `extends` deferred.)
+        let parent = if self.eat(TokenKind::Keyword(Kw::Extends)) {
+            if let TokenKind::Ident(id) = self.peek() {
+                self.advance();
+                Some(id)
+            } else {
+                let span = self.cur_span();
+                self.error(span, "expected a parent class name after `extends`");
+                None
+            }
+        } else {
+            None
+        };
         let mut props = Vec::new();
         let mut methods = Vec::new();
         self.expect(TokenKind::LBrace, "expected `{` to open class body");
         while !self.at(TokenKind::RBrace) && !self.at_eof() {
             let before = self.pos;
-            // Skip leading visibility / member modifiers (parsed, not enforced).
-            self.skip_member_modifiers();
+            // Leading visibility modifier (defaults to public when omitted).
+            let vis = self.parse_member_modifiers();
             match self.peek() {
                 TokenKind::Keyword(Kw::Function) => {
-                    methods.push(self.parse_method());
+                    methods.push(self.parse_method(vis));
                 }
                 TokenKind::Variable(_) => {
-                    props.extend(self.parse_property());
+                    props.extend(self.parse_property(vis));
                 }
                 _ => {
                     let span = self.cur_span();
@@ -362,23 +375,27 @@ impl<'a> Parser<'a> {
         }
         self.expect(TokenKind::RBrace, "expected `}` to close class body");
         let span = kw_span.to(self.prev_span());
-        Stmt::Class(Class { name, props, methods, span })
+        Stmt::Class(Class { name, parent, props, methods, span })
     }
 
-    /// Consume any run of member modifiers (`public`/`private`/`protected`).
-    fn skip_member_modifiers(&mut self) {
-        while matches!(
-            self.peek(),
-            TokenKind::Keyword(Kw::Public)
-                | TokenKind::Keyword(Kw::Private)
-                | TokenKind::Keyword(Kw::Protected)
-        ) {
+    /// Consume an optional run of member modifiers, returning the visibility
+    /// (last one wins; `public` when none is present).
+    fn parse_member_modifiers(&mut self) -> Visibility {
+        let mut vis = Visibility::Public;
+        loop {
+            match self.peek() {
+                TokenKind::Keyword(Kw::Public) => vis = Visibility::Public,
+                TokenKind::Keyword(Kw::Private) => vis = Visibility::Private,
+                TokenKind::Keyword(Kw::Protected) => vis = Visibility::Protected,
+                _ => break,
+            }
             self.advance();
         }
+        vis
     }
 
     /// `function name(params) { body }` inside a class body.
-    fn parse_method(&mut self) -> Method {
+    fn parse_method(&mut self, visibility: Visibility) -> Method {
         let kw_span = self.cur_span();
         self.advance(); // `function`
         let name = if let TokenKind::Ident(id) = self.peek() {
@@ -391,12 +408,12 @@ impl<'a> Parser<'a> {
         };
         let params = self.parse_params();
         let body = self.parse_block();
-        Method { name, params, body, span: kw_span.to(self.prev_span()) }
+        Method { name, params, body, visibility, span: kw_span.to(self.prev_span()) }
     }
 
     /// `$prop [= default] (, $prop2 [= default])* ;` — one declaration line may
-    /// declare several properties. Returns one [`PropDecl`] per name.
-    fn parse_property(&mut self) -> Vec<PropDecl> {
+    /// declare several properties, all sharing the given visibility.
+    fn parse_property(&mut self, visibility: Visibility) -> Vec<PropDecl> {
         let mut decls = Vec::new();
         loop {
             let tok = self.peek_tok();
@@ -410,7 +427,7 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
-            decls.push(PropDecl { name, default, span: tok.span.to(self.prev_span()) });
+            decls.push(PropDecl { name, default, visibility, span: tok.span.to(self.prev_span()) });
             if !self.eat(TokenKind::Comma) {
                 break;
             }
@@ -568,12 +585,39 @@ impl<'a> Parser<'a> {
         let op = match tok.kind {
             TokenKind::Minus => UnOp::Neg,
             TokenKind::Bang => UnOp::Not,
-            _ => return self.parse_pow(),
+            _ => return self.parse_instanceof(),
         };
         self.advance();
         let operand = self.parse_unary();
         let span = tok.span.to(operand.span());
         Expr::Unary { op, expr: Box::new(operand), span }
+    }
+
+    /// `expr instanceof Class` — binds tighter than every binary operator and
+    /// than `!`, looser than the postfix/`**` operators (so `$a->b instanceof C`
+    /// and `!$x instanceof C` parse as PHP does).
+    fn parse_instanceof(&mut self) -> Expr {
+        let mut e = self.parse_pow();
+        while self.at(TokenKind::Keyword(Kw::Instanceof)) {
+            self.advance();
+            let class = self.expect_class_name("expected a class name after `instanceof`");
+            let span = e.span().to(self.prev_span());
+            e = Expr::InstanceOf { expr: Box::new(e), class, span };
+        }
+        e
+    }
+
+    /// A class name in operator position (`instanceof`): a bareword identifier,
+    /// also accepting the `self`/`parent` spellings (resolved by the compiler).
+    fn expect_class_name(&mut self, msg: &str) -> IdentId {
+        if let TokenKind::Ident(id) = self.peek() {
+            self.advance();
+            id
+        } else {
+            let span = self.cur_span();
+            self.error(span, msg);
+            self.error_ident()
+        }
     }
 
     /// `**` — right-associative and tighter than unary minus. The exponent is
@@ -670,7 +714,11 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident(id) => {
                 self.advance();
-                self.parse_call(id, tok.span)
+                if self.at(TokenKind::DoubleColon) {
+                    self.parse_static_access(id, tok.span)
+                } else {
+                    self.parse_call(id, tok.span)
+                }
             }
             TokenKind::Keyword(Kw::Function) => self.parse_closure(tok.span),
             TokenKind::Keyword(Kw::Fn) => self.parse_arrow_fn(tok.span),
@@ -795,6 +843,32 @@ impl<'a> Parser<'a> {
             (Vec::new(), self.prev_span())
         };
         Expr::New { class, args, span: kw_span.to(end) }
+    }
+
+    /// `Class::method(args)` / `self::method(args)` / `parent::method(args)`.
+    /// Only the method-call form is supported; class constants (`Class::CONST`)
+    /// and static properties (`Class::$p`) are deferred.
+    fn parse_static_access(&mut self, class: IdentId, start: Span) -> Expr {
+        self.advance(); // `::`
+        let method = match self.peek() {
+            TokenKind::Ident(id) => {
+                self.advance();
+                id
+            }
+            _ => {
+                let span = self.cur_span();
+                self.error(span, "expected a method name after `::`");
+                self.error_ident()
+            }
+        };
+        if self.at(TokenKind::LParen) {
+            let (args, end) = self.parse_arg_list();
+            Expr::StaticCall { class, method, args, span: start.to(end) }
+        } else {
+            let span = self.cur_span();
+            self.error(span, "expected `(` — only `Class::method(...)` calls are supported");
+            Expr::Null(start.to(self.prev_span()))
+        }
     }
 
     /// A member name after `->`: an identifier (`$o->name`) — also accepting the
@@ -957,6 +1031,12 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<IdentId>) {
                 collect_free_vars(a, out);
             }
         }
+        Expr::StaticCall { args, .. } => {
+            for a in args {
+                collect_free_vars(a, out);
+            }
+        }
+        Expr::InstanceOf { expr, .. } => collect_free_vars(expr, out),
         Expr::Null(_)
         | Expr::Bool(_, _)
         | Expr::Int(_, _)
@@ -1470,6 +1550,59 @@ mod tests {
             Expr::PropSet { .. } => {}
             other => panic!("expected PropSet, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn class_extends_and_visibility() {
+        let mut interner = Interner::new();
+        let (program, diags) = parse(
+            b"<?php class B extends A { private $x; protected function m() {} public $y = 1; }",
+            FileId(0),
+            &mut interner,
+        );
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        match &program.items[0] {
+            Stmt::Class(c) => {
+                assert!(c.parent.is_some(), "extends A recorded");
+                assert_eq!(c.props.len(), 2);
+                assert_eq!(c.props[0].visibility, Visibility::Private);
+                assert_eq!(c.props[1].visibility, Visibility::Public);
+                assert_eq!(c.methods[0].visibility, Visibility::Protected);
+            }
+            other => panic!("expected Class, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn instanceof_parses_and_binds_tighter_than_logical_and() {
+        // $x instanceof A && $y  =>  And(InstanceOf($x, A), $y)
+        match one_expr(b"<?php $x instanceof A && $y;") {
+            Expr::Binary { op: BinOp::And, lhs, .. } => {
+                assert!(matches!(*lhs, Expr::InstanceOf { .. }));
+            }
+            other => panic!("expected And, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn not_instanceof_binds_instanceof_first() {
+        // !$x instanceof A  =>  Not(InstanceOf($x, A))
+        match one_expr(b"<?php !$x instanceof A;") {
+            Expr::Unary { op: UnOp::Not, expr, .. } => {
+                assert!(matches!(*expr, Expr::InstanceOf { .. }));
+            }
+            other => panic!("expected Not(InstanceOf), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scoped_call_parses() {
+        match one_expr(b"<?php parent::__construct(1, 2);") {
+            Expr::StaticCall { args, .. } => assert_eq!(args.len(), 2),
+            other => panic!("expected StaticCall, got {other:?}"),
+        }
+        assert!(matches!(one_expr(b"<?php self::make();"), Expr::StaticCall { .. }));
+        assert!(matches!(one_expr(b"<?php Foo::bar();"), Expr::StaticCall { .. }));
     }
 
     #[test]

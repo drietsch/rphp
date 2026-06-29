@@ -17,7 +17,7 @@
 
 use rphp_intern::IdentId;
 use rphp_span::Span;
-use rphp_value::{Str, Value};
+use rphp_value::{Str, Value, Vis};
 
 /// A register index within a frame.
 pub type Reg = u16;
@@ -29,6 +29,24 @@ pub type FuncId = u32;
 pub type ClassId = u32;
 /// An instruction index within `Function::code` (a branch target).
 pub type CodeAddr = u32;
+
+/// Member visibility. `protected`/`private` are enforced at runtime against the
+/// executing class context; `public` is always accessible.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Visibility {
+    Public,
+    Protected,
+    Private,
+}
+
+/// Map bytecode visibility to the value-layer [`Vis`] stored on instances.
+fn vis_to_value(v: Visibility) -> Vis {
+    match v {
+        Visibility::Public => Vis::Public,
+        Visibility::Protected => Vis::Protected,
+        Visibility::Private => Vis::Private,
+    }
+}
 
 /// A compile-time constant in a function's constant pool.
 #[derive(Clone, PartialEq, Debug)]
@@ -132,8 +150,16 @@ pub enum Op {
     PropSet { obj: Reg, name: ConstIdx, value: Reg },
     /// Call method `consts[method]` on the object in `obj`, with `argc` args
     /// staged in `base ..= base+argc-1`; the object is bound to the callee's
-    /// `$this` (register 0). Result -> `dst`.
+    /// `$this` (register 0). Virtual dispatch — the method is resolved on the
+    /// object's runtime class, walking up the inheritance chain. Result -> `dst`.
     MethodCall { dst: Reg, obj: Reg, method: ConstIdx, base: Reg, argc: u16 },
+    /// A scoped call (`self::m()` / `parent::m()` / `Class::m()`): invoke the
+    /// statically-resolved `func` non-virtually, binding register `this` as the
+    /// callee's `$this`. Args staged in `base ..= base+argc-1`; result -> `dst`.
+    StaticCall { dst: Reg, this: Reg, func: FuncId, base: Reg, argc: u16 },
+    /// `dst = (obj instanceof <class>)` — true iff `obj` is an object whose class
+    /// is `class` or a descendant of it.
+    InstanceOf { dst: Reg, obj: Reg, class: ClassId },
 
     /// Return `src` (or null) to the caller.
     Ret { src: Option<Reg> },
@@ -172,42 +198,35 @@ pub struct Function {
     pub span: Span,
 }
 
-/// A declared property: its name (without the `$`) and the default value an
-/// instance is seeded with. Only constant defaults are modelled so far, so the
-/// default is a ready-made [`Value`] rather than an initializer expression.
+/// A declared property: its name (without the `$`), default value, and
+/// visibility. Only constant defaults are modelled so far, so the default is a
+/// ready-made [`Value`] rather than an initializer expression.
 #[derive(Clone, Debug)]
 pub struct PropDef {
     pub name: Box<[u8]>,
     pub default: Value,
+    pub visibility: Visibility,
 }
 
-/// A method: its name (for `obj->m()` dispatch) and the [`FuncId`] of its
-/// compiled body. The body takes `$this` as register 0, so its [`Function`]'s
-/// `num_params` is `1 + declared parameters`.
+/// A method: its name (for `obj->m()` dispatch), the [`FuncId`] of its compiled
+/// body, and its visibility. The body takes `$this` as register 0, so its
+/// [`Function`]'s `num_params` is `1 + declared parameters`.
 #[derive(Clone, Debug)]
 pub struct Method {
     pub name_bytes: Box<[u8]>,
     pub func: FuncId,
+    pub visibility: Visibility,
 }
 
-/// A compiled class: its declared properties and methods. Inheritance,
-/// visibility, statics, and constants are later refinements.
+/// A compiled class: its (optional) parent, declared properties, and methods.
+/// Interfaces, traits, statics, and constants are later refinements.
 #[derive(Clone, Debug)]
 pub struct Class {
     pub name: IdentId,
     pub name_bytes: Box<[u8]>,
+    pub parent: Option<ClassId>,
     pub props: Vec<PropDef>,
     pub methods: Vec<Method>,
-}
-
-impl Class {
-    /// Resolve a method name (case-insensitive, as PHP) to its [`FuncId`].
-    pub fn method(&self, name: &[u8]) -> Option<FuncId> {
-        self.methods
-            .iter()
-            .find(|m| m.name_bytes.eq_ignore_ascii_case(name))
-            .map(|m| m.func)
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -243,5 +262,80 @@ impl Module {
             .iter()
             .position(|c| c.name_bytes.eq_ignore_ascii_case(name))
             .map(|i| i as ClassId)
+    }
+
+    /// Resolve a method by name on `class`, walking up the inheritance chain.
+    /// Returns the compiled function, its visibility, and the class in the chain
+    /// that *declares* it (the lexical context for visibility checks).
+    pub fn resolve_method(&self, class: ClassId, name: &[u8]) -> Option<(FuncId, Visibility, ClassId)> {
+        let mut cur = Some(class);
+        while let Some(cid) = cur {
+            let c = self.class(cid);
+            if let Some(m) = c.methods.iter().find(|m| m.name_bytes.eq_ignore_ascii_case(name)) {
+                return Some((m.func, m.visibility, cid));
+            }
+            cur = c.parent;
+        }
+        None
+    }
+
+    /// Resolve a declared property's visibility and declaring class, walking up
+    /// the chain. `None` for an undeclared (dynamic) property — those are public.
+    pub fn resolve_prop(&self, class: ClassId, name: &[u8]) -> Option<(Visibility, ClassId)> {
+        let mut cur = Some(class);
+        while let Some(cid) = cur {
+            let c = self.class(cid);
+            if let Some(p) = c.props.iter().find(|p| p.name.as_ref() == name) {
+                return Some((p.visibility, cid));
+            }
+            cur = c.parent;
+        }
+        None
+    }
+
+    /// The [`ClassId`] that declares the method compiled to `func`, if any.
+    pub fn method_owner(&self, func: FuncId) -> Option<ClassId> {
+        self.classes
+            .iter()
+            .position(|c| c.methods.iter().any(|m| m.func == func))
+            .map(|i| i as ClassId)
+    }
+
+    /// An instance's full property set (name, default, visibility), parent-first
+    /// with a subclass redeclaration overriding the inherited default — the
+    /// layout a fresh `new <class>` is seeded with.
+    pub fn instance_props(&self, class: ClassId) -> Vec<(Box<[u8]>, Value, Vis)> {
+        // Collect the chain root-first so children override parents by name.
+        let mut chain = Vec::new();
+        let mut cur = Some(class);
+        while let Some(cid) = cur {
+            chain.push(cid);
+            cur = self.class(cid).parent;
+        }
+        let mut out: Vec<(Box<[u8]>, Value, Vis)> = Vec::new();
+        for &cid in chain.iter().rev() {
+            for p in &self.class(cid).props {
+                let vis = vis_to_value(p.visibility);
+                if let Some(slot) = out.iter_mut().find(|(n, _, _)| n.as_ref() == p.name.as_ref()) {
+                    slot.1 = p.default.clone();
+                    slot.2 = vis;
+                } else {
+                    out.push((p.name.clone(), p.default.clone(), vis));
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether `class` is `ancestor` or descends from it.
+    pub fn is_subclass_or_eq(&self, class: ClassId, ancestor: ClassId) -> bool {
+        let mut cur = Some(class);
+        while let Some(cid) = cur {
+            if cid == ancestor {
+                return true;
+            }
+            cur = self.class(cid).parent;
+        }
+        false
     }
 }

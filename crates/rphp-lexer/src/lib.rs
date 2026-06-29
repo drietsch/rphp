@@ -41,6 +41,8 @@ pub enum Kw {
     Public,
     Private,
     Protected,
+    Extends,
+    Instanceof,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -87,6 +89,7 @@ pub enum TokenKind {
     RBracket,    // ]
     DoubleArrow, // =>
     Arrow,       // -> (object member access)
+    DoubleColon, // :: (scope resolution)
     Semicolon,
     Comma,
 }
@@ -532,6 +535,10 @@ impl<'a> Lexer<'a> {
                 }
             }
             b'%' => one!(TokenKind::Percent),
+            b':' if self.peek_at(1) == Some(b':') => {
+                self.pos += 2;
+                self.push(TokenKind::DoubleColon, start);
+            }
             b'/' => one!(TokenKind::Slash),
             // A `.` adjacent to a digit was already routed to `lex_number`, so a
             // `.` reaching here is always the concatenation operator.
@@ -663,6 +670,8 @@ fn keyword(word: &[u8]) -> Option<Kw> {
         b"public" => Kw::Public,
         b"private" => Kw::Private,
         b"protected" => Kw::Protected,
+        b"extends" => Kw::Extends,
+        b"instanceof" => Kw::Instanceof,
         _ => return None,
     })
 }
@@ -847,6 +856,14 @@ mod tests {
         assert!(k.iter().any(|t| matches!(t, TokenKind::Keyword(Kw::Public))));
         assert!(k.iter().any(|t| matches!(t, TokenKind::Keyword(Kw::New))));
         assert!(k.iter().any(|t| matches!(t, TokenKind::Arrow)));
+    }
+
+    #[test]
+    fn inheritance_keywords_and_double_colon() {
+        let k = kinds(b"<?php class B extends A { } $x instanceof A; parent::m();");
+        assert!(k.iter().any(|t| matches!(t, TokenKind::Keyword(Kw::Extends))));
+        assert!(k.iter().any(|t| matches!(t, TokenKind::Keyword(Kw::Instanceof))));
+        assert!(k.iter().any(|t| matches!(t, TokenKind::DoubleColon)));
     }
 
     #[test]

@@ -23,7 +23,12 @@ Functions needing a missing language feature are **cataloged, not faked** (decis
   resolves a callable string to a user function (`Module::func_by_name`) / builtin.
   Closures capture by value (`use (...)` / arrow auto-capture). **Still pending:**
   `[$obj, 'method']` arrays, first-class `strlen(...)`, by-reference `use (&$x)`.
-- **objects** — class-returning APIs (also `json_decode`'s default object form, SPL, DateTime).
+- **objects** — ✅ *core* objects/classes landed: class declarations, properties with
+  constant defaults, constructors, methods, `$this`, method chaining, reference
+  semantics, and identity (`===`). `json_encode` now serializes an instance's public
+  properties. **Still pending:** inheritance/interfaces/traits, visibility enforcement,
+  static members & class constants, `::` access, magic methods, `instanceof`, dynamic
+  `new $cls`, `[$obj,'method']` callables, `json_decode`'s default stdClass form, SPL, DateTime.
 
 ## Implemented (Tier-A wave 1)
 
@@ -34,7 +39,7 @@ Functions needing a missing language feature are **cataloged, not faked** (decis
 | string    | 29 | `sprintf`/`printf`/`vsprintf`, `number_format`, `str_pad`, `str_split`, `strtr`, `strcmp` family, `bin2hex`/`hex2bin`, … |
 | array     | 18 + 11 + 6 | value-returning: `array_slice/flip/unique/diff/intersect/combine/chunk/column/fill/pad/search/product/…`, `array_is_list`. **By-ref:** `sort/rsort/asort/arsort/ksort/krsort`, `array_push/pop/shift/unshift`, `array_splice`. **Higher-order:** `array_map`, `array_filter`, `array_reduce`, `usort/uasort/uksort` |
 | funcs     | 2  | `call_user_func`, `call_user_func_array` |
-| json      | 2  | `json_encode` (incl. `JSON_PRETTY_PRINT`/`UNESCAPED_SLASHES`/`UNESCAPED_UNICODE`), `json_decode` |
+| json      | 2  | `json_encode` (incl. `JSON_PRETTY_PRINT`/`UNESCAPED_SLASHES`/`UNESCAPED_UNICODE`; objects → public-property objects), `json_decode` |
 | hash      | 5  | `md5`, `sha1`, `crc32`, `hash` (md5/sha1/sha256/sha384/sha512/crc32b), `hash_algos` |
 | pcre      | 5 + 1 | `preg_quote`, `preg_match` (incl. by-ref `$matches`), `preg_replace`, **`preg_replace_callback`**, `preg_split`, `preg_grep` — over PCRE2 |
 

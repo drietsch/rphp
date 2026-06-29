@@ -15,7 +15,7 @@
 #![forbid(unsafe_code)]
 
 use rphp_bytecode::{Function, Module, Op};
-use rphp_value::{array_key, Str, Value, ValueError};
+use rphp_value::{array_key, Object, Str, Value, ValueError};
 
 /// Captured side effects of a run. `echo` output accumulates into `stdout` as
 /// raw bytes — PHP strings are byte strings, so the buffer is binary-safe rather
@@ -369,6 +369,70 @@ fn run_frame(
                 let callee_val = regs[callee as usize].clone();
                 regs[dst as usize] = invoke_value(module, &callee_val, &call_args, out)?;
             }
+
+            // --- objects ---
+            Op::New { dst, class } => {
+                let cls = module.class(class);
+                let props: Vec<(Box<[u8]>, Value)> = cls
+                    .props
+                    .iter()
+                    .map(|p| (p.name.clone(), p.default.clone()))
+                    .collect();
+                regs[dst as usize] = Value::Object(Object::new(class, props));
+            }
+            Op::PropGet { dst, obj, name } => {
+                let key = function.consts[name as usize].to_value().to_php_bytes();
+                regs[dst as usize] = match &regs[obj as usize] {
+                    Value::Object(o) => o.get(&key).unwrap_or(Value::Null),
+                    // Reading a property of a non-object yields null (warning deferred).
+                    _ => Value::Null,
+                };
+            }
+            Op::PropSet { obj, name, value } => {
+                let key = function.consts[name as usize].to_value().to_php_bytes();
+                let v = regs[value as usize].clone();
+                // Writing through a non-object is a no-op (warning deferred).
+                if let Value::Object(o) = &regs[obj as usize] {
+                    o.set(&key, v);
+                }
+            }
+            Op::MethodCall { dst, obj, method, base, argc } => {
+                let mname = function.consts[method as usize].to_value().to_php_bytes();
+                let obj_val = regs[obj as usize].clone();
+                let class_id = match &obj_val {
+                    Value::Object(o) => o.class_id(),
+                    other => {
+                        return Err(RuntimeError {
+                            message: format!(
+                                "Call to a member function {}() on {}",
+                                String::from_utf8_lossy(&mname),
+                                other.type_name(),
+                            ),
+                        })
+                    }
+                };
+                let fid = module.class(class_id).method(&mname).ok_or_else(|| RuntimeError {
+                    message: format!(
+                        "Call to undefined method {}::{}()",
+                        String::from_utf8_lossy(&module.class(class_id).name_bytes),
+                        String::from_utf8_lossy(&mname),
+                    ),
+                })?;
+                let callee = module.func(fid);
+                // The method frame takes `$this` in register 0, then its declared
+                // parameters; cap the staged args to that count (extra args are
+                // ignored, missing ones default to null) so the frame never reads
+                // out of bounds.
+                let np = callee.num_params as usize;
+                let base = base as usize;
+                let mut call_args = Vec::with_capacity(np);
+                call_args.push(obj_val);
+                for i in 0..(argc as usize).min(np.saturating_sub(1)) {
+                    call_args.push(regs[base + i].clone());
+                }
+                regs[dst as usize] = exec_function(module, callee, &call_args, out)?;
+            }
+
             Op::Ret { src } => {
                 return Ok(src.map_or(Value::Null, |r| regs[r as usize].clone()));
             }
@@ -449,7 +513,7 @@ mod tests {
 
     /// A single-function module whose lone function is `main`.
     fn module(main: Function) -> Module {
-        Module { funcs: vec![main], main: 0 }
+        Module { funcs: vec![main], classes: Vec::new(), main: 0 }
     }
 
     /// Run a module and decode its (binary-safe) stdout as UTF-8 for assertions.
@@ -554,7 +618,7 @@ mod tests {
             ],
             vec![],
         );
-        let m = Module { funcs: vec![main, add2], main: 0 };
+        let m = Module { funcs: vec![main, add2], classes: Vec::new(), main: 0 };
         assert_eq!(out_str(&m), "42");
     }
 
@@ -589,7 +653,7 @@ mod tests {
             ],
             vec![Const::Int(1)],
         );
-        let m = Module { funcs: vec![main, fact], main: 0 };
+        let m = Module { funcs: vec![main, fact], classes: Vec::new(), main: 0 };
         assert_eq!(out_str(&m), "120");
     }
 

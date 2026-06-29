@@ -36,6 +36,11 @@ pub enum Kw {
     Array,
     Foreach,
     As,
+    Class,
+    New,
+    Public,
+    Private,
+    Protected,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -81,6 +86,7 @@ pub enum TokenKind {
     LBracket,    // [
     RBracket,    // ]
     DoubleArrow, // =>
+    Arrow,       // -> (object member access)
     Semicolon,
     Comma,
 }
@@ -517,7 +523,14 @@ impl<'a> Lexer<'a> {
         }
         match c {
             b'+' => one!(TokenKind::Plus),
-            b'-' => one!(TokenKind::Minus),
+            b'-' => {
+                if self.peek_at(1) == Some(b'>') {
+                    self.pos += 2;
+                    self.push(TokenKind::Arrow, start);
+                } else {
+                    one!(TokenKind::Minus);
+                }
+            }
             b'%' => one!(TokenKind::Percent),
             b'/' => one!(TokenKind::Slash),
             // A `.` adjacent to a digit was already routed to `lex_number`, so a
@@ -645,6 +658,11 @@ fn keyword(word: &[u8]) -> Option<Kw> {
         b"array" => Kw::Array,
         b"foreach" => Kw::Foreach,
         b"as" => Kw::As,
+        b"class" => Kw::Class,
+        b"new" => Kw::New,
+        b"public" => Kw::Public,
+        b"private" => Kw::Private,
+        b"protected" => Kw::Protected,
         _ => return None,
     })
 }
@@ -820,5 +838,25 @@ mod tests {
         let k = kinds(b"<?php $a = 1; $b => 2;");
         assert!(k.iter().any(|t| matches!(t, TokenKind::Assign)));
         assert!(k.iter().any(|t| matches!(t, TokenKind::DoubleArrow)));
+    }
+
+    #[test]
+    fn class_keywords_and_arrow() {
+        let k = kinds(b"<?php class C { public $x; } $o = new C(); $o->x;");
+        assert!(k.iter().any(|t| matches!(t, TokenKind::Keyword(Kw::Class))));
+        assert!(k.iter().any(|t| matches!(t, TokenKind::Keyword(Kw::Public))));
+        assert!(k.iter().any(|t| matches!(t, TokenKind::Keyword(Kw::New))));
+        assert!(k.iter().any(|t| matches!(t, TokenKind::Arrow)));
+    }
+
+    #[test]
+    fn arrow_is_distinct_from_minus_and_greater() {
+        // `->` is one token; `- >` (with a space) is minus then greater-than.
+        let arrow = kinds(b"<?php $a->b;");
+        assert!(arrow.iter().any(|t| matches!(t, TokenKind::Arrow)));
+        assert!(!arrow.iter().any(|t| matches!(t, TokenKind::Minus)));
+        let minus = kinds(b"<?php $a - 1;");
+        assert!(minus.iter().any(|t| matches!(t, TokenKind::Minus)));
+        assert!(!minus.iter().any(|t| matches!(t, TokenKind::Arrow)));
     }
 }

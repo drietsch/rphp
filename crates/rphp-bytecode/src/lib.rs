@@ -25,6 +25,8 @@ pub type Reg = u16;
 pub type ConstIdx = u32;
 /// An index into `Module::funcs`.
 pub type FuncId = u32;
+/// An index into `Module::classes`.
+pub type ClassId = u32;
 /// An instruction index within `Function::code` (a branch target).
 pub type CodeAddr = u32;
 
@@ -116,6 +118,23 @@ pub enum Op {
     /// Call the callable in register `callee` (a closure or callable string) with
     /// `argc` args staged in `base ..= base+argc-1`; result -> `dst`.
     CallDynamic { dst: Reg, callee: Reg, base: Reg, argc: u16 },
+
+    // --- objects ---
+    /// `dst = new <class>` — allocate an instance with its declared properties
+    /// initialized to their defaults. The constructor (if any) is invoked by a
+    /// separate `MethodCall` the compiler emits right after.
+    New { dst: Reg, class: ClassId },
+    /// `dst = obj->{name}` where `name` is the string constant `consts[name]`
+    /// (null if the property is absent, or `obj` is not an object).
+    PropGet { dst: Reg, obj: Reg, name: ConstIdx },
+    /// `obj->{name} = value` (a no-op if `obj` is not an object). `name` is the
+    /// string constant `consts[name]`.
+    PropSet { obj: Reg, name: ConstIdx, value: Reg },
+    /// Call method `consts[method]` on the object in `obj`, with `argc` args
+    /// staged in `base ..= base+argc-1`; the object is bound to the callee's
+    /// `$this` (register 0). Result -> `dst`.
+    MethodCall { dst: Reg, obj: Reg, method: ConstIdx, base: Reg, argc: u16 },
+
     /// Return `src` (or null) to the caller.
     Ret { src: Option<Reg> },
 
@@ -153,9 +172,49 @@ pub struct Function {
     pub span: Span,
 }
 
+/// A declared property: its name (without the `$`) and the default value an
+/// instance is seeded with. Only constant defaults are modelled so far, so the
+/// default is a ready-made [`Value`] rather than an initializer expression.
+#[derive(Clone, Debug)]
+pub struct PropDef {
+    pub name: Box<[u8]>,
+    pub default: Value,
+}
+
+/// A method: its name (for `obj->m()` dispatch) and the [`FuncId`] of its
+/// compiled body. The body takes `$this` as register 0, so its [`Function`]'s
+/// `num_params` is `1 + declared parameters`.
+#[derive(Clone, Debug)]
+pub struct Method {
+    pub name_bytes: Box<[u8]>,
+    pub func: FuncId,
+}
+
+/// A compiled class: its declared properties and methods. Inheritance,
+/// visibility, statics, and constants are later refinements.
+#[derive(Clone, Debug)]
+pub struct Class {
+    pub name: IdentId,
+    pub name_bytes: Box<[u8]>,
+    pub props: Vec<PropDef>,
+    pub methods: Vec<Method>,
+}
+
+impl Class {
+    /// Resolve a method name (case-insensitive, as PHP) to its [`FuncId`].
+    pub fn method(&self, name: &[u8]) -> Option<FuncId> {
+        self.methods
+            .iter()
+            .find(|m| m.name_bytes.eq_ignore_ascii_case(name))
+            .map(|m| m.func)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Module {
     pub funcs: Vec<Function>,
+    /// Declared classes, indexed by [`ClassId`].
+    pub classes: Vec<Class>,
     /// The synthetic top-level `{main}` function id.
     pub main: FuncId,
 }
@@ -165,6 +224,10 @@ impl Module {
         &self.funcs[id as usize]
     }
 
+    pub fn class(&self, id: ClassId) -> &Class {
+        &self.classes[id as usize]
+    }
+
     /// Resolve a function name (case-insensitive, as PHP) to its id. Used to turn
     /// a callable string into a callable target at runtime.
     pub fn func_by_name(&self, name: &[u8]) -> Option<FuncId> {
@@ -172,5 +235,13 @@ impl Module {
             .iter()
             .position(|f| f.name_bytes.eq_ignore_ascii_case(name))
             .map(|i| i as FuncId)
+    }
+
+    /// Resolve a class name (case-insensitive, as PHP) to its id.
+    pub fn class_by_name(&self, name: &[u8]) -> Option<ClassId> {
+        self.classes
+            .iter()
+            .position(|c| c.name_bytes.eq_ignore_ascii_case(name))
+            .map(|i| i as ClassId)
     }
 }

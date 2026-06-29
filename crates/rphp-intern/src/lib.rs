@@ -49,6 +49,13 @@ impl Interner {
         String::from_utf8_lossy(self.resolve(id))
     }
 
+    /// The id for `bytes` if it has already been interned, without interning it.
+    /// Lets the compiler find a well-known name (e.g. `this`) through the
+    /// immutable interner it is handed.
+    pub fn get(&self, bytes: &[u8]) -> Option<IdentId> {
+        self.map.get(bytes).copied()
+    }
+
     pub fn len(&self) -> usize {
         self.vec.len()
     }

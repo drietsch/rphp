@@ -15,8 +15,10 @@
 
 mod array;
 mod closure;
+mod object;
 pub use array::{array_key, Array, ArrayKey};
 pub use closure::Closure;
+pub use object::Object;
 
 use std::fmt;
 use std::rc::Rc;
@@ -77,6 +79,7 @@ pub enum Value {
     Str(Str),
     Array(Array),
     Closure(Closure),
+    Object(Object),
 }
 
 /// Recoverable value-level errors that surface as PHP `Error`s at runtime.
@@ -109,7 +112,7 @@ impl Value {
             Value::Float(_) => "float",
             Value::Str(_) => "string",
             Value::Array(_) => "array",
-            Value::Closure(_) => "object",
+            Value::Closure(_) | Value::Object(_) => "object",
         }
     }
 
@@ -125,8 +128,8 @@ impl Value {
             Value::Str(s) => !(s.is_empty() || s.as_bytes() == b"0"),
             // An array is truthy iff it is non-empty.
             Value::Array(a) => !a.is_empty(),
-            // Any object (a closure here) is always truthy.
-            Value::Closure(_) => true,
+            // Any object (a closure or class instance) is always truthy.
+            Value::Closure(_) | Value::Object(_) => true,
         }
     }
 
@@ -152,7 +155,7 @@ impl Value {
             // PHP: `(int)` of an array is 0 if empty, else 1.
             Value::Array(a) => i64::from(!a.is_empty()),
             // PHP casts any object to int as 1 (with a notice we do not emit).
-            Value::Closure(_) => 1,
+            Value::Closure(_) | Value::Object(_) => 1,
         }
     }
 
@@ -167,7 +170,7 @@ impl Value {
                 None => 0.0,
             },
             Value::Array(a) => f64::from(!a.is_empty()),
-            Value::Closure(_) => 1.0,
+            Value::Closure(_) | Value::Object(_) => 1.0,
         }
     }
 
@@ -195,9 +198,10 @@ impl Value {
             // PHP stringifies an array to the literal "Array" (with an
             // E_WARNING we do not yet emit).
             Value::Array(_) => out.extend_from_slice(b"Array"),
-            // PHP throws when an object is converted to a string; until the
-            // engine has that error channel, a closure stringifies to nothing.
-            Value::Closure(_) => {}
+            // PHP throws when an object without __toString is converted to a
+            // string; until the engine has that error channel, an object (a
+            // closure or class instance) stringifies to nothing.
+            Value::Closure(_) | Value::Object(_) => {}
         }
     }
 
@@ -227,7 +231,7 @@ impl Value {
             Value::Null => Value::Int(0),
             Value::Str(s) => leading_number(s.as_bytes()).unwrap_or(Value::Int(0)),
             Value::Array(a) => Value::Int(i64::from(!a.is_empty())),
-            Value::Closure(_) => Value::Int(1),
+            Value::Closure(_) | Value::Object(_) => Value::Int(1),
         }
     }
 
@@ -252,6 +256,7 @@ impl Value {
                 .ok_or(ValueError::TypeError("non-numeric string in arithmetic")),
             Value::Array(_) => Err(ValueError::TypeError("array operand in arithmetic")),
             Value::Closure(_) => Err(ValueError::TypeError("closure operand in arithmetic")),
+            Value::Object(_) => Err(ValueError::TypeError("object operand in arithmetic")),
         }
     }
 
@@ -350,6 +355,10 @@ impl Value {
             // Closures compare by identity; never equal to a non-closure.
             (Closure(a), Closure(b)) => a == b,
             (Closure(_), _) | (_, Closure(_)) => false,
+            // Objects: identity here (loose `==` of distinct same-class instances
+            // with equal properties is a documented divergence, not yet modelled).
+            (Object(a), Object(b)) => a == b,
+            (Object(_), _) | (_, Object(_)) => false,
             (Str(a), Str(b)) => {
                 match (numeric_string(a.as_bytes()), numeric_string(b.as_bytes())) {
                     (Some(x), Some(y)) => x.loose_eq(&y),
@@ -381,6 +390,7 @@ impl Value {
             (Str(a), Str(b)) => a == b,
             (Array(a), Array(b)) => a.identical(b),
             (Closure(a), Closure(b)) => a == b,
+            (Object(a), Object(b)) => a == b,
             _ => false,
         }
     }
@@ -403,6 +413,10 @@ impl Value {
             (Closure(a), Closure(b)) => i64::from(a != b),
             (Closure(_), _) => 1,
             (_, Closure(_)) => -1,
+            // Objects: uncomparable beyond identity, ordered greater than scalars.
+            (Object(a), Object(b)) => i64::from(a != b),
+            (Object(_), _) => 1,
+            (_, Object(_)) => -1,
             (Str(a), Str(b)) => {
                 match (numeric_string(a.as_bytes()), numeric_string(b.as_bytes())) {
                     (Some(x), Some(y)) => x.spaceship(&y),

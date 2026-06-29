@@ -93,6 +93,23 @@ fn dump(out: &mut Vec<u8>, v: &Value, pad: usize) {
         // A closure is an object; PHP prints `object(Closure)#N (0) {}` with a
         // live object id we don't model, so this is a documented divergence.
         Value::Closure(_) => out.extend_from_slice(b"object(Closure) {\n}\n"),
+        // A class instance: PHP prints `object(ClassName)#N (count) { ... }` with
+        // a live object id and the class name (which the value does not carry), so
+        // the precise form is deferred — dump the property bag without the header.
+        Value::Object(o) => {
+            let props = o.props();
+            out.extend_from_slice(format!("object(#{}) ({}) {{\n", o.class_id(), props.len()).as_bytes());
+            for (k, val) in &props {
+                indent(out, pad + 2);
+                out.extend_from_slice(b"[\"");
+                out.extend_from_slice(k);
+                out.extend_from_slice(b"\"]=>\n");
+                indent(out, pad + 2);
+                dump(out, val, pad + 2);
+            }
+            indent(out, pad);
+            out.extend_from_slice(b"}\n");
+        }
     }
 }
 

@@ -515,6 +515,85 @@ fn curried_and_chained_dynamic_calls() {
     assert_eq!(eval_ok(b"<?php $a = fn($x) => fn($y) => $x + $y; echo $a(10)(20);"), "30");
 }
 
+// ---- objects & classes -----------------------------------------------------
+
+#[test]
+fn new_constructor_and_method() {
+    assert_eq!(
+        eval_ok(b"<?php class C { public $v = 0; function __construct($v) { $this->v = $v; } function get() { return $this->v; } } $c = new C(7); echo $c->get();"),
+        "7"
+    );
+}
+
+#[test]
+fn property_default_applies_without_constructor() {
+    assert_eq!(
+        eval_ok(b"<?php class C { public $n = 42; } $c = new C(); echo $c->n;"),
+        "42"
+    );
+}
+
+#[test]
+fn property_read_write() {
+    assert_eq!(
+        eval_ok(b"<?php class C { public $x = 1; } $c = new C(); $c->x = 9; echo $c->x;"),
+        "9"
+    );
+}
+
+#[test]
+fn method_chaining_mutates_same_instance() {
+    assert_eq!(
+        eval_ok(b"<?php class N { public $v = 0; function inc() { $this->v = $this->v + 1; return $this; } } $n = new N(); $n->inc()->inc()->inc(); echo $n->v;"),
+        "3"
+    );
+}
+
+#[test]
+fn objects_have_reference_semantics() {
+    // Aliasing copies the handle, not the instance: a write through $b is seen
+    // through $a, and `===` is identity.
+    assert_eq!(
+        eval_ok(b"<?php class C { public $x = 1; } $a = new C(); $b = $a; $b->x = 5; echo $a->x;"),
+        "5"
+    );
+    assert_eq!(
+        eval_ok(b"<?php class C {} $a = new C(); $b = $a; echo ($a === $b);"),
+        "1"
+    );
+    assert_eq!(
+        eval_ok(b"<?php class C {} $a = new C(); $b = new C(); echo ($a === $b);"),
+        ""
+    );
+}
+
+#[test]
+fn class_declaration_is_hoisted() {
+    // A class may be instantiated before its textual declaration.
+    assert_eq!(
+        eval_ok(b"<?php $c = new C(); echo $c->hi(); class C { function hi() { return 7; } }"),
+        "7"
+    );
+}
+
+#[test]
+fn json_encode_object_uses_public_properties() {
+    assert_eq!(
+        eval_ok(br#"<?php class P { public $x = 1; public $y = 2; } echo json_encode(new P());"#),
+        r#"{"x":1,"y":2}"#
+    );
+}
+
+#[test]
+fn method_call_on_non_object_faults() {
+    assert!(eval_to_string(b"<?php $x = 5; echo $x->foo();").is_err());
+}
+
+#[test]
+fn undefined_class_diagnoses() {
+    assert!(eval_to_string(b"<?php $x = new Nope();").is_err());
+}
+
 // ---- argument-handling tests through the public `run` entry point ----------
 
 fn write_temp(name: &str, contents: &[u8]) -> PathBuf {

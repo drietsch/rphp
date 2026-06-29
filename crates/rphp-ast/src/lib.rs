@@ -41,6 +41,34 @@ pub enum Stmt {
     },
     Return { value: Option<Expr>, span: Span },
     Func(Func),
+    Class(Class),
+}
+
+#[derive(Clone, Debug)]
+pub struct Class {
+    pub name: IdentId,
+    pub props: Vec<PropDecl>,
+    pub methods: Vec<Method>,
+    pub span: Span,
+}
+
+/// A declared property `[visibility] $name [= default];`. Visibility is parsed
+/// but not yet enforced (everything is effectively public).
+#[derive(Clone, Debug)]
+pub struct PropDecl {
+    pub name: IdentId,
+    pub default: Option<Expr>,
+    pub span: Span,
+}
+
+/// A method `[visibility] function name(params) { body }`. The body sees an
+/// implicit `$this`; `params` lists only the declared parameters.
+#[derive(Clone, Debug)]
+pub struct Method {
+    pub name: IdentId,
+    pub params: Vec<Param>,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +125,14 @@ pub enum Expr {
     /// `base[index]` read. A read with no index (`$a[]`) is invalid and rejected
     /// by the compiler; the node exists so `$a[] = v` can be recognized.
     Index { base: Box<Expr>, index: Option<Box<Expr>>, span: Span },
+    /// `new Class(args...)`
+    New { class: IdentId, args: Vec<Expr>, span: Span },
+    /// `obj->name` property read.
+    PropGet { obj: Box<Expr>, name: IdentId, span: Span },
+    /// `obj->name = value` property write.
+    PropSet { obj: Box<Expr>, name: IdentId, value: Box<Expr>, span: Span },
+    /// `obj->method(args...)`
+    MethodCall { obj: Box<Expr>, method: IdentId, args: Vec<Expr>, span: Span },
 }
 
 /// One element of an array literal: `value`, or `key => value`.
@@ -123,7 +159,11 @@ impl Expr {
             | Expr::CallDynamic { span: s, .. }
             | Expr::Closure { span: s, .. }
             | Expr::Array { span: s, .. }
-            | Expr::Index { span: s, .. } => *s,
+            | Expr::Index { span: s, .. }
+            | Expr::New { span: s, .. }
+            | Expr::PropGet { span: s, .. }
+            | Expr::PropSet { span: s, .. }
+            | Expr::MethodCall { span: s, .. } => *s,
         }
     }
 }

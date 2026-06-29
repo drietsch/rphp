@@ -14,12 +14,15 @@
 
 use std::collections::HashMap;
 
-use rphp_ast::{BinOp, Expr, Func, Param, Program, Stmt, UnOp};
-use rphp_bytecode::{ClosureProto, CodeAddr, Const, FuncId, Function, Module, Op, Reg};
+use rphp_ast::{BinOp, Class, Expr, Func, Param, Program, Stmt, UnOp};
+use rphp_bytecode::{
+    Class as BcClass, ClassId, ClosureProto, CodeAddr, Const, FuncId, Function, Method as BcMethod,
+    Module, Op, PropDef, Reg,
+};
 use rphp_diagnostics::{codes, Diagnostic};
 use rphp_intern::{IdentId, Interner};
 use rphp_span::Span;
-use rphp_value::Str;
+use rphp_value::{Str, Value};
 
 /// Diagnostic code for a duplicate function declaration. `rphp-diagnostics`
 /// does not (yet) expose a shared constant for this, so the compiler owns it.
@@ -30,6 +33,12 @@ const NESTED_ARRAY_WRITE: &str = "RPHP_E0103";
 const INVALID_APPEND_READ: &str = "RPHP_E0104";
 /// A by-reference parameter (e.g. `sort($a)`) was passed a non-variable.
 const BY_REF_NOT_VARIABLE: &str = "RPHP_E0105";
+/// A duplicate class declaration.
+const REDECLARED_CLASS: &str = "RPHP_E0106";
+/// `new Foo(...)` where `Foo` is not a declared class.
+const UNDEFINED_CLASS: &str = "RPHP_E0107";
+/// A property default that is not a constant expression.
+const NON_CONST_PROP_DEFAULT: &str = "RPHP_E0108";
 
 /// Compile a parsed program into a bytecode module. Function `0` is the
 /// synthetic `{main}` entry containing the top-level statements; each top-level
@@ -37,7 +46,7 @@ const BY_REF_NOT_VARIABLE: &str = "RPHP_E0105";
 pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Diagnostic>> {
     let mut diags: Vec<Diagnostic> = Vec::new();
 
-    // ---- pre-pass: collect function ids (main = 0, user funcs 1..) ----
+    // ---- pre-pass A: function ids (main = 0, user funcs 1..=U) ----
     let mut func_map: HashMap<IdentId, FuncId> = HashMap::new();
     let mut user_funcs: Vec<&Func> = Vec::new();
     // Argument counts indexed by FuncId; index 0 is `{main}` (never called).
@@ -65,41 +74,117 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
         }
     }
 
-    // ---- compile bodies ----
-    // Closures discovered while compiling bodies are appended after the top-level
-    // functions; their FuncId is `top_level_count + sink index`.
-    let top_level_count = (user_funcs.len() + 1) as FuncId;
-    let mut funcs: Vec<Function> = Vec::with_capacity(user_funcs.len() + 1);
+    // ---- pre-pass B: class ids + method func ids (U+1 ..= U+M) ----
+    // Methods compile to ordinary functions appended right after the user
+    // functions. Their ids are fixed *before* any body is compiled, so closure
+    // ids (`top_level_count + sink index`) stay stable as bodies are lowered.
+    let mut class_map: HashMap<IdentId, ClassId> = HashMap::new();
+    let mut user_classes: Vec<&Class> = Vec::new();
+    // The FuncId for each method, parallel to each class's `.methods`.
+    let mut method_ids: Vec<Vec<FuncId>> = Vec::new();
+    let mut class_has_ctor: Vec<bool> = Vec::new();
+    let mut next_method_id: FuncId = next_id;
+    for item in &program.items {
+        if let Stmt::Class(c) = item {
+            if class_map.contains_key(&c.name) {
+                diags.push(
+                    Diagnostic::error(
+                        REDECLARED_CLASS,
+                        format!("cannot redeclare class {}", interner.resolve_lossy(c.name)),
+                    )
+                    .with_primary(c.span, "duplicate declaration"),
+                );
+                continue;
+            }
+            class_map.insert(c.name, user_classes.len() as ClassId);
+            let ids: Vec<FuncId> = c
+                .methods
+                .iter()
+                .map(|_| {
+                    let id = next_method_id;
+                    next_method_id += 1;
+                    id
+                })
+                .collect();
+            let has_ctor = c
+                .methods
+                .iter()
+                .any(|m| interner.resolve(m.name).eq_ignore_ascii_case(b"__construct"));
+            method_ids.push(ids);
+            class_has_ctor.push(has_ctor);
+            user_classes.push(c);
+        }
+    }
+
+    let class_ctx = ClassCtx { map: &class_map, has_ctor: &class_has_ctor };
+    let total_methods: usize = method_ids.iter().map(Vec::len).sum();
+    // Closures discovered while compiling bodies are appended after main, the
+    // user functions, and the methods; their FuncId is `top_level_count + sink`.
+    let top_level_count = (user_funcs.len() + 1 + total_methods) as FuncId;
+    let mut funcs: Vec<Function> = Vec::with_capacity(top_level_count as usize);
     let mut closure_sink: Vec<Function> = Vec::new();
-    // Function 0: synthetic `{main}`. Non-`Func` top-level statements only —
-    // `compile_stmts` ignores `Stmt::Func`, so passing all items is correct.
+
+    // Function 0: synthetic `{main}`. Non-`Func`/`Class` top-level statements
+    // only — `compile_stmts` ignores both, so passing all items is correct.
     funcs.push(compile_function(
-        interner,
-        &func_map,
-        &arities,
-        &mut diags,
-        &mut closure_sink,
-        top_level_count,
-        IdentId(0),
-        Box::from(&b""[..]),
-        &[],
-        &program.items,
-        Span::dummy(),
+        interner, &func_map, &class_ctx, &arities, &mut diags, &mut closure_sink,
+        top_level_count, IdentId(0), Box::from(&b""[..]), &[], &program.items, Span::dummy(), false,
     ));
     for f in &user_funcs {
         funcs.push(compile_function(
-            interner,
-            &func_map,
-            &arities,
-            &mut diags,
-            &mut closure_sink,
-            top_level_count,
-            f.name,
-            interner.resolve(f.name).into(),
-            &f.params,
-            &f.body,
-            f.span,
+            interner, &func_map, &class_ctx, &arities, &mut diags, &mut closure_sink,
+            top_level_count, f.name, interner.resolve(f.name).into(), &f.params, &f.body, f.span, false,
         ));
+    }
+    // Methods, in the same class-then-declaration order as pre-pass B so each
+    // lands at exactly the FuncId reserved for it.
+    for c in &user_classes {
+        for m in &c.methods {
+            funcs.push(compile_function(
+                interner, &func_map, &class_ctx, &arities, &mut diags, &mut closure_sink,
+                top_level_count, m.name, interner.resolve(m.name).into(), &m.params, &m.body, m.span, true,
+            ));
+        }
+    }
+
+    // Build the bytecode classes: defaults evaluated, methods linked to ids.
+    let mut classes: Vec<BcClass> = Vec::with_capacity(user_classes.len());
+    for (ci, c) in user_classes.iter().enumerate() {
+        let props = c
+            .props
+            .iter()
+            .map(|p| {
+                let default = match &p.default {
+                    None => Value::Null,
+                    Some(e) => const_default(e, interner).unwrap_or_else(|| {
+                        diags.push(
+                            Diagnostic::error(
+                                NON_CONST_PROP_DEFAULT,
+                                "property default must be a constant expression",
+                            )
+                            .with_primary(p.span, "not a constant"),
+                        );
+                        Value::Null
+                    }),
+                };
+                PropDef { name: interner.resolve(p.name).into(), default }
+            })
+            .collect();
+        let methods = c
+            .methods
+            .iter()
+            .enumerate()
+            .map(|(mi, m)| BcMethod {
+                name_bytes: interner.resolve(m.name).into(),
+                func: method_ids[ci][mi],
+            })
+            .collect();
+        classes.push(BcClass {
+            name: c.name,
+            name_bytes: interner.resolve(c.name).into(),
+            props,
+            methods,
+        });
     }
 
     if diags.iter().any(Diagnostic::is_error) {
@@ -107,13 +192,42 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
     }
     // Append the compiled closures so `FuncId`s line up with their indices.
     funcs.extend(closure_sink);
-    Ok(Module { funcs, main: 0 })
+    Ok(Module { funcs, classes, main: 0 })
+}
+
+/// Constant-fold a property default. Only literals (and a unary minus over a
+/// numeric literal) are supported; anything else returns `None` and is reported.
+fn const_default(e: &Expr, interner: &Interner) -> Option<Value> {
+    Some(match e {
+        Expr::Null(_) => Value::Null,
+        Expr::Bool(b, _) => Value::Bool(*b),
+        Expr::Int(i, _) => Value::Int(*i),
+        Expr::Float(f, _) => Value::Float(*f),
+        Expr::Str(id, _) => Value::Str(Str::new(interner.resolve(*id))),
+        Expr::Unary { op: UnOp::Neg, expr, .. } => match const_default(expr, interner)? {
+            Value::Int(i) => i
+                .checked_neg()
+                .map(Value::Int)
+                .unwrap_or(Value::Float(-(i as f64))),
+            Value::Float(f) => Value::Float(-f),
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+/// Shared class lookup tables threaded into every function compilation: class
+/// name -> id, and whether each class declares a `__construct`.
+struct ClassCtx<'a> {
+    map: &'a HashMap<IdentId, ClassId>,
+    has_ctor: &'a [bool],
 }
 
 #[allow(clippy::too_many_arguments)]
 fn compile_function(
     interner: &Interner,
     func_map: &HashMap<IdentId, FuncId>,
+    class_ctx: &ClassCtx,
     arities: &[u16],
     diags: &mut Vec<Diagnostic>,
     closure_sink: &mut Vec<Function>,
@@ -123,10 +237,12 @@ fn compile_function(
     params: &[Param],
     body: &[Stmt],
     span: Span,
+    is_method: bool,
 ) -> Function {
     let mut fc = FnCompiler::new(
         interner,
         func_map,
+        class_ctx,
         arities,
         diags,
         closure_sink,
@@ -134,6 +250,7 @@ fn compile_function(
         params,
         &[],
         body,
+        is_method,
     );
     fc.compile_stmts(body);
     // Always terminate with a fall-through return so every code path (and every
@@ -142,7 +259,9 @@ fn compile_function(
     Function {
         name,
         name_bytes,
-        num_params: params.len() as u16,
+        // A method's register 0 holds the implicit `$this`, so its declared
+        // parameters occupy registers `1 ..= n` and the frame takes `n + 1`.
+        num_params: params.len() as u16 + u16::from(is_method),
         num_regs: fc.num_regs,
         code: fc.code,
         consts: fc.consts,
@@ -155,6 +274,7 @@ fn compile_function(
 struct FnCompiler<'a> {
     interner: &'a Interner,
     func_map: &'a HashMap<IdentId, FuncId>,
+    class_ctx: &'a ClassCtx<'a>,
     arities: &'a [u16],
     diags: &'a mut Vec<Diagnostic>,
     /// Where nested closures register their compiled `Function`s. Their `FuncId`
@@ -186,6 +306,7 @@ impl<'a> FnCompiler<'a> {
     fn new(
         interner: &'a Interner,
         func_map: &'a HashMap<IdentId, FuncId>,
+        class_ctx: &'a ClassCtx<'a>,
         arities: &'a [u16],
         diags: &'a mut Vec<Diagnostic>,
         closure_sink: &'a mut Vec<Function>,
@@ -193,13 +314,24 @@ impl<'a> FnCompiler<'a> {
         params: &[Param],
         captures: &[IdentId],
         body: &[Stmt],
+        is_method: bool,
     ) -> Self {
-        // Params take registers 0 .. np; captured `use` vars follow in np .. np+nc.
+        // A method reserves register 0 for the implicit `$this`; parameters then
+        // start at register 1. (If the body names `$this`, the lexer has interned
+        // it, so we can bind that id to register 0.)
         let mut vars: HashMap<IdentId, Reg> = HashMap::new();
-        for (i, p) in params.iter().enumerate() {
-            vars.insert(p.name, i as Reg);
+        let mut base = 0;
+        if is_method {
+            if let Some(this_id) = interner.get(b"this") {
+                vars.insert(this_id, 0);
+            }
+            base = 1;
         }
-        let mut var_count = params.len() as Reg;
+        // Params take registers `base .. base+np`; captured `use` vars follow.
+        for (i, p) in params.iter().enumerate() {
+            vars.insert(p.name, base + i as Reg);
+        }
+        let mut var_count = base + params.len() as Reg;
         let mut capture_regs = Vec::with_capacity(captures.len());
         for &c in captures {
             let reg = var_count;
@@ -219,6 +351,7 @@ impl<'a> FnCompiler<'a> {
         FnCompiler {
             interner,
             func_map,
+            class_ctx,
             arities,
             diags,
             closure_sink,
@@ -385,9 +518,9 @@ impl<'a> FnCompiler<'a> {
                     self.emit(Op::Ret { src: None });
                 }
             },
-            // Nested/top-level function declarations are compiled as their own
-            // `Function`s by the driver; they contribute no code to this frame.
-            Stmt::Func(_) => {}
+            // Function and class declarations are compiled as their own
+            // `Function`s/`Class`es by the driver; they emit no code in a frame.
+            Stmt::Func(_) | Stmt::Class(_) => {}
         }
     }
 
@@ -471,6 +604,10 @@ impl<'a> FnCompiler<'a> {
             Expr::IndexAssign { base, index, value, span } => {
                 self.compile_index_assign(base, index.as_deref(), value, *span)
             }
+            Expr::New { class, args, span } => self.compile_new(*class, args, *span),
+            Expr::PropGet { obj, name, .. } => self.compile_prop_get(obj, *name),
+            Expr::PropSet { obj, name, value, .. } => self.compile_prop_set(obj, *name, value),
+            Expr::MethodCall { obj, method, args, .. } => self.compile_method_call(obj, *method, args),
         }
     }
 
@@ -807,6 +944,102 @@ impl FnCompiler<'_> {
         dst
     }
 
+    /// Intern a member name (property / method) as a string constant in the
+    /// pool, returning its index — the form `PropGet`/`PropSet`/`MethodCall` use.
+    fn name_const(&mut self, name: IdentId) -> u32 {
+        self.push_const(Const::Str(Str::new(self.interner.resolve(name))))
+    }
+
+    /// `new Class(args...)`: allocate the instance with its default properties,
+    /// then — if the class declares a constructor — invoke `__construct` with the
+    /// arguments, discarding its result. Evaluates to the new object.
+    fn compile_new(&mut self, class: IdentId, args: &[Expr], span: Span) -> Reg {
+        let Some(&cid) = self.class_ctx.map.get(&class) else {
+            self.diags.push(
+                Diagnostic::error(
+                    UNDEFINED_CLASS,
+                    format!("class \"{}\" not found", self.interner.resolve_lossy(class)),
+                )
+                .with_primary(span, "not defined"),
+            );
+            let dst = self.alloc_temp();
+            self.emit(Op::LoadNull { dst });
+            return dst;
+        };
+        let dst = self.alloc_temp();
+        self.emit(Op::New { dst, class: cid });
+        if self.class_ctx.has_ctor[cid as usize] {
+            let argc = args.len() as u16;
+            // Stage constructor args in a window *above* the object register, so
+            // the object (the result) is never clobbered.
+            let base = self.temp_top;
+            self.set_top(base + argc);
+            for (i, arg) in args.iter().enumerate() {
+                let slot = base + i as Reg;
+                let mark = self.temp_top;
+                let r = self.compile_expr(arg);
+                if r != slot {
+                    self.emit(Op::Move { dst: slot, src: r });
+                }
+                self.free_to(mark);
+            }
+            self.free_to(base);
+            let ret = self.alloc_temp(); // constructor result, discarded
+            let method = self.push_const(Const::Str(Str::new(b"__construct")));
+            self.emit(Op::MethodCall { dst: ret, obj: dst, method, base, argc });
+            self.free_to(dst + 1); // release the window and discarded result
+        }
+        dst
+    }
+
+    /// `obj->name` property read.
+    fn compile_prop_get(&mut self, obj: &Expr, name: IdentId) -> Reg {
+        let mark = self.temp_top;
+        let obj_reg = self.compile_expr(obj);
+        self.free_to(mark);
+        let dst = self.alloc_temp();
+        let name = self.name_const(name);
+        self.emit(Op::PropGet { dst, obj: obj_reg, name });
+        dst
+    }
+
+    /// `obj->name = value`. The value is the expression's result; the write goes
+    /// through the object's shared cell (objects are reference handles), so `obj`
+    /// may be any expression, not just a variable.
+    fn compile_prop_set(&mut self, obj: &Expr, name: IdentId, value: &Expr) -> Reg {
+        let vr = self.compile_expr(value);
+        let obj_mark = self.temp_top;
+        let obj_reg = self.compile_expr(obj);
+        let name = self.name_const(name);
+        self.emit(Op::PropSet { obj: obj_reg, name, value: vr });
+        self.free_to(obj_mark); // drop the object temp, keep the value
+        vr
+    }
+
+    /// `obj->method(args...)`. The object is evaluated and kept live below the
+    /// argument window; the runtime binds it to the callee's `$this`.
+    fn compile_method_call(&mut self, obj: &Expr, method: IdentId, args: &[Expr]) -> Reg {
+        let argc = args.len() as u16;
+        let obj_reg = self.compile_expr(obj);
+        let base = self.temp_top;
+        self.set_top(base + argc);
+        for (i, arg) in args.iter().enumerate() {
+            let slot = base + i as Reg;
+            let mark = self.temp_top;
+            let r = self.compile_expr(arg);
+            if r != slot {
+                self.emit(Op::Move { dst: slot, src: r });
+            }
+            self.free_to(mark);
+        }
+        self.free_to(base);
+        let dst = self.alloc_temp();
+        debug_assert_eq!(dst, base);
+        let method = self.name_const(method);
+        self.emit(Op::MethodCall { dst, obj: obj_reg, method, base, argc });
+        dst
+    }
+
     /// Lower a closure expression: capture the current values of its `use`
     /// variables from this frame, compile its body as its own function, and emit
     /// a `MakeClosure` that binds them together at runtime.
@@ -843,6 +1076,7 @@ impl FnCompiler<'_> {
         let mut fc = FnCompiler::new(
             self.interner,
             self.func_map,
+            self.class_ctx,
             self.arities,
             &mut *self.diags,
             &mut *self.closure_sink,
@@ -850,6 +1084,7 @@ impl FnCompiler<'_> {
             params,
             uses,
             body,
+            false,
         );
         fc.compile_stmts(body);
         fc.emit(Op::Ret { src: None });
@@ -940,8 +1175,9 @@ fn collect_stmt(s: &Stmt, vars: &mut HashMap<IdentId, Reg>, next: &mut Reg) {
                 collect_expr(e, vars, next);
             }
         }
-        // Nested functions are a separate scope; do not pull their variables in.
-        Stmt::Func(_) => {}
+        // Functions and classes are separate scopes; do not pull their
+        // variables (or their methods' variables) into this frame.
+        Stmt::Func(_) | Stmt::Class(_) => {}
     }
 }
 
@@ -988,6 +1224,22 @@ fn collect_expr(e: &Expr, vars: &mut HashMap<IdentId, Reg>, next: &mut Reg) {
             collect_expr(base, vars, next);
             if let Some(i) = index {
                 collect_expr(i, vars, next);
+            }
+        }
+        Expr::New { args, .. } => {
+            for a in args {
+                collect_expr(a, vars, next);
+            }
+        }
+        Expr::PropGet { obj, .. } => collect_expr(obj, vars, next),
+        Expr::PropSet { obj, value, .. } => {
+            collect_expr(obj, vars, next);
+            collect_expr(value, vars, next);
+        }
+        Expr::MethodCall { obj, args, .. } => {
+            collect_expr(obj, vars, next);
+            for a in args {
+                collect_expr(a, vars, next);
             }
         }
         Expr::IndexAssign { base, index, value, .. } => {
@@ -1617,6 +1869,74 @@ mod tests {
             .expect("expected Add");
         assert_eq!(add_op, (0, 1));
         assert!(add_fn.num_regs >= 2);
+    }
+
+    #[test]
+    fn class_compiles_methods_and_binds_this_to_reg_zero() {
+        let mut interner = Interner::new();
+        let c = interner.intern_str("C");
+        let get = interner.intern_str("get");
+        let v = interner.intern_str("v");
+        let this = interner.intern_str("this");
+        let cvar = interner.intern_str("c");
+
+        // class C { public $v = 1; function get() { return $this->v; } }
+        let class = Stmt::Class(rphp_ast::Class {
+            name: c,
+            props: vec![rphp_ast::PropDecl { name: v, default: Some(int(1)), span: sp() }],
+            methods: vec![rphp_ast::Method {
+                name: get,
+                params: vec![],
+                body: vec![Stmt::Return {
+                    value: Some(Expr::PropGet { obj: Box::new(var(this)), name: v, span: sp() }),
+                    span: sp(),
+                }],
+                span: sp(),
+            }],
+            span: sp(),
+        });
+        // $c = new C(); $c->get();
+        let new_c = expr_stmt(Expr::Assign {
+            target: cvar,
+            value: Box::new(Expr::New { class: c, args: vec![], span: sp() }),
+            span: sp(),
+        });
+        let call = expr_stmt(Expr::MethodCall {
+            obj: Box::new(var(cvar)),
+            method: get,
+            args: vec![],
+            span: sp(),
+        });
+        let m = compile_ok(vec![class, new_c, call], &interner);
+
+        // One class, with its property default folded to a constant value.
+        assert_eq!(m.classes.len(), 1);
+        assert_eq!(m.classes[0].props.len(), 1);
+        assert_eq!(m.classes[0].props[0].default, rphp_value::Value::Int(1));
+        assert_eq!(m.classes[0].methods.len(), 1);
+
+        // main instantiates and dispatches.
+        let main = &m.func(0).code;
+        assert!(main.iter().any(|op| matches!(op, Op::New { class: 0, .. })));
+        assert!(main.iter().any(|op| matches!(op, Op::MethodCall { .. })));
+
+        // The method body reads `$this` (register 0) for the property access, and
+        // the method frame reserves register 0 for `$this` (num_params == 1).
+        let fid = m.classes[0].methods[0].func;
+        let method = m.func(fid);
+        assert_eq!(method.num_params, 1, "$this occupies the sole parameter slot");
+        assert!(method.code.iter().any(|op| matches!(op, Op::PropGet { obj: 0, .. })));
+    }
+
+    #[test]
+    fn undefined_class_diagnoses() {
+        let mut interner = Interner::new();
+        let nope = interner.intern_str("Nope");
+        let diags = compile_err(
+            vec![expr_stmt(Expr::New { class: nope, args: vec![], span: sp() })],
+            &interner,
+        );
+        assert!(diags.iter().any(|d| d.code == UNDEFINED_CLASS && d.is_error()));
     }
 
     /// Every branch target must point at a valid instruction index.

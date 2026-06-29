@@ -44,7 +44,7 @@ pub fn array_key(v: &Value) -> Option<ArrayKey> {
             Some(i) => ArrayKey::Int(i),
             None => ArrayKey::Str(Box::from(s.as_bytes())),
         },
-        Value::Array(_) | Value::Closure(_) => return None,
+        Value::Array(_) | Value::Closure(_) | Value::Object(_) => return None,
     })
 }
 

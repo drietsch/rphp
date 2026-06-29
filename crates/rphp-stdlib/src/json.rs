@@ -55,7 +55,9 @@ fn encode(out: &mut Vec<u8>, v: &Value, flags: i64, depth: usize) -> Result<(), 
         }
         Value::Str(s) => encode_string(out, s.as_bytes(), flags)?,
         Value::Array(a) => encode_array(out, a, flags, depth)?,
-        // An object with no public properties encodes as `{}` (a closure here).
+        // A class instance encodes as a JSON object over its public properties.
+        Value::Object(o) => encode_object(out, &o.props(), flags, depth)?,
+        // A closure has no public properties, so it encodes as `{}`.
         Value::Closure(_) => out.extend_from_slice(b"{}"),
     }
     Ok(())
@@ -109,6 +111,43 @@ fn encode_array(out: &mut Vec<u8>, a: &Array, flags: i64, depth: usize) -> Resul
         indent(out, depth * 4);
     }
     out.push(close);
+    Ok(())
+}
+
+/// Encode an object's public properties as a JSON object (the same layout as a
+/// non-list array, but keyed by the property names in declaration order).
+fn encode_object(
+    out: &mut Vec<u8>,
+    props: &[(Box<[u8]>, Value)],
+    flags: i64,
+    depth: usize,
+) -> Result<(), ()> {
+    let pretty = flags & JSON_PRETTY_PRINT != 0;
+    out.push(b'{');
+    if props.is_empty() {
+        out.push(b'}');
+        return Ok(());
+    }
+    for (i, (name, v)) in props.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        if pretty {
+            out.push(b'\n');
+            indent(out, (depth + 1) * 4);
+        }
+        encode_string(out, name, flags)?;
+        out.push(b':');
+        if pretty {
+            out.push(b' ');
+        }
+        encode(out, v, flags, depth + 1)?;
+    }
+    if pretty {
+        out.push(b'\n');
+        indent(out, depth * 4);
+    }
+    out.push(b'}');
     Ok(())
 }
 

@@ -13,7 +13,9 @@
 //! picture and the returned `Program` may be partial.
 #![forbid(unsafe_code)]
 
-use rphp_ast::{ArrayItem, BinOp, Expr, Func, Param, Program, Stmt, UnOp};
+use rphp_ast::{
+    ArrayItem, BinOp, Class, Expr, Func, Method, Param, Program, PropDecl, Stmt, UnOp,
+};
 use rphp_diagnostics::{codes, Diagnostic};
 use rphp_intern::{IdentId, Interner};
 use rphp_lexer::{lex, Kw, LexResult, Token, TokenKind};
@@ -173,6 +175,7 @@ impl<'a> Parser<'a> {
             TokenKind::Keyword(Kw::Function) if matches!(self.peek_at(1), TokenKind::Ident(_)) => {
                 Some(self.parse_function(tok.span))
             }
+            TokenKind::Keyword(Kw::Class) => Some(self.parse_class(tok.span)),
             // Empty statement.
             TokenKind::Semicolon => {
                 self.advance();
@@ -321,6 +324,101 @@ impl<'a> Parser<'a> {
         Stmt::Func(Func { name, params, body, span })
     }
 
+    /// `class Name { (modifier* (property | method))* }`. Visibility modifiers
+    /// (`public`/`private`/`protected`) are accepted and discarded; inheritance,
+    /// statics, and constants are deferred.
+    fn parse_class(&mut self, kw_span: Span) -> Stmt {
+        self.advance(); // `class`
+        let name = if let TokenKind::Ident(id) = self.peek() {
+            self.advance();
+            id
+        } else {
+            let span = self.cur_span();
+            self.error(span, "expected class name");
+            self.error_ident()
+        };
+        let mut props = Vec::new();
+        let mut methods = Vec::new();
+        self.expect(TokenKind::LBrace, "expected `{` to open class body");
+        while !self.at(TokenKind::RBrace) && !self.at_eof() {
+            let before = self.pos;
+            // Skip leading visibility / member modifiers (parsed, not enforced).
+            self.skip_member_modifiers();
+            match self.peek() {
+                TokenKind::Keyword(Kw::Function) => {
+                    methods.push(self.parse_method());
+                }
+                TokenKind::Variable(_) => {
+                    props.extend(self.parse_property());
+                }
+                _ => {
+                    let span = self.cur_span();
+                    self.error(span, "expected a property or method declaration");
+                }
+            }
+            if self.pos == before {
+                self.advance(); // guarantee forward progress
+            }
+        }
+        self.expect(TokenKind::RBrace, "expected `}` to close class body");
+        let span = kw_span.to(self.prev_span());
+        Stmt::Class(Class { name, props, methods, span })
+    }
+
+    /// Consume any run of member modifiers (`public`/`private`/`protected`).
+    fn skip_member_modifiers(&mut self) {
+        while matches!(
+            self.peek(),
+            TokenKind::Keyword(Kw::Public)
+                | TokenKind::Keyword(Kw::Private)
+                | TokenKind::Keyword(Kw::Protected)
+        ) {
+            self.advance();
+        }
+    }
+
+    /// `function name(params) { body }` inside a class body.
+    fn parse_method(&mut self) -> Method {
+        let kw_span = self.cur_span();
+        self.advance(); // `function`
+        let name = if let TokenKind::Ident(id) = self.peek() {
+            self.advance();
+            id
+        } else {
+            let span = self.cur_span();
+            self.error(span, "expected method name");
+            self.error_ident()
+        };
+        let params = self.parse_params();
+        let body = self.parse_block();
+        Method { name, params, body, span: kw_span.to(self.prev_span()) }
+    }
+
+    /// `$prop [= default] (, $prop2 [= default])* ;` — one declaration line may
+    /// declare several properties. Returns one [`PropDecl`] per name.
+    fn parse_property(&mut self) -> Vec<PropDecl> {
+        let mut decls = Vec::new();
+        loop {
+            let tok = self.peek_tok();
+            let TokenKind::Variable(name) = tok.kind else {
+                self.error(tok.span, "expected a property name");
+                break;
+            };
+            self.advance();
+            let default = if self.eat(TokenKind::Assign) {
+                Some(self.parse_expr())
+            } else {
+                None
+            };
+            decls.push(PropDecl { name, default, span: tok.span.to(self.prev_span()) });
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect_semi();
+        decls
+    }
+
     /// `function (params) [use ($a, $b)] { body }` — an anonymous closure with
     /// by-value captures.
     fn parse_closure(&mut self, kw_span: Span) -> Expr {
@@ -431,6 +529,12 @@ impl<'a> Parser<'a> {
                     value: Box::new(value),
                     span: ispan.to(vspan),
                 },
+                Expr::PropGet { obj, name, span: pspan } => Expr::PropSet {
+                    obj,
+                    name,
+                    value: Box::new(value),
+                    span: pspan.to(vspan),
+                },
                 other => {
                     self.error(eq_span, "invalid assignment target (expected a variable or array element)");
                     other // recover by keeping the parsed left-hand side
@@ -514,6 +618,17 @@ impl<'a> Parser<'a> {
                 let start = e.span();
                 let (args, end) = self.parse_arg_list();
                 e = Expr::CallDynamic { callee: Box::new(e), args, span: start.to(end) };
+            } else if self.at(TokenKind::Arrow) {
+                // `expr->name` (property) or `expr->name(...)` (method call).
+                self.advance(); // `->`
+                let start = e.span();
+                let name = self.expect_member_name();
+                if self.at(TokenKind::LParen) {
+                    let (args, end) = self.parse_arg_list();
+                    e = Expr::MethodCall { obj: Box::new(e), method: name, args, span: start.to(end) };
+                } else {
+                    e = Expr::PropGet { obj: Box::new(e), name, span: start.to(self.prev_span()) };
+                }
             } else {
                 break;
             }
@@ -559,6 +674,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Keyword(Kw::Function) => self.parse_closure(tok.span),
             TokenKind::Keyword(Kw::Fn) => self.parse_arrow_fn(tok.span),
+            TokenKind::Keyword(Kw::New) => self.parse_new(tok.span),
             TokenKind::LBracket => {
                 self.advance(); // `[`
                 let items = self.parse_array_items(TokenKind::RBracket);
@@ -658,6 +774,44 @@ impl<'a> Parser<'a> {
             };
         }
         acc
+    }
+
+    /// `new ClassName ( args )`. Only a bareword class name is supported (no
+    /// `new $var` / `new (expr)` dynamic instantiation yet). The argument list is
+    /// optional: `new Foo` is equivalent to `new Foo()`.
+    fn parse_new(&mut self, kw_span: Span) -> Expr {
+        self.advance(); // `new`
+        let class = if let TokenKind::Ident(id) = self.peek() {
+            self.advance();
+            id
+        } else {
+            let span = self.cur_span();
+            self.error(span, "expected a class name after `new`");
+            self.error_ident()
+        };
+        let (args, end) = if self.at(TokenKind::LParen) {
+            self.parse_arg_list()
+        } else {
+            (Vec::new(), self.prev_span())
+        };
+        Expr::New { class, args, span: kw_span.to(end) }
+    }
+
+    /// A member name after `->`: an identifier (`$o->name`) — also accepting the
+    /// bareword spelling of a keyword, since `class`/`new`/… are valid member
+    /// names in PHP.
+    fn expect_member_name(&mut self) -> IdentId {
+        match self.peek() {
+            TokenKind::Ident(id) => {
+                self.advance();
+                id
+            }
+            _ => {
+                let span = self.cur_span();
+                self.error(span, "expected a property or method name after `->`");
+                self.error_ident()
+            }
+        }
     }
 
     /// `name ( arg, arg, ... )`. A bareword not followed by `(` has no node in
@@ -785,6 +939,22 @@ fn collect_free_vars(e: &Expr, out: &mut Vec<IdentId>) {
             collect_free_vars(base, out);
             if let Some(i) = index {
                 collect_free_vars(i, out);
+            }
+        }
+        Expr::New { args, .. } => {
+            for a in args {
+                collect_free_vars(a, out);
+            }
+        }
+        Expr::PropGet { obj, .. } => collect_free_vars(obj, out),
+        Expr::PropSet { obj, value, .. } => {
+            collect_free_vars(obj, out);
+            collect_free_vars(value, out);
+        }
+        Expr::MethodCall { obj, args, .. } => {
+            collect_free_vars(obj, out);
+            for a in args {
+                collect_free_vars(a, out);
             }
         }
         Expr::Null(_)
@@ -1243,6 +1413,73 @@ mod tests {
         match &items[0] {
             Stmt::Foreach { key_var, .. } => assert!(key_var.is_some()),
             other => panic!("expected Foreach, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn class_declaration_with_props_and_methods() {
+        let mut interner = Interner::new();
+        let (program, diags) = parse(
+            b"<?php class C { public $a = 1; private $b; function m($x) { return $x; } }",
+            FileId(0),
+            &mut interner,
+        );
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        match &program.items[0] {
+            Stmt::Class(c) => {
+                assert_eq!(interner.resolve(c.name), b"C");
+                assert_eq!(c.props.len(), 2);
+                assert!(c.props[0].default.is_some());
+                assert!(c.props[1].default.is_none());
+                assert_eq!(c.methods.len(), 1);
+                assert_eq!(c.methods[0].params.len(), 1);
+            }
+            other => panic!("expected Class, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn new_expression_with_args() {
+        match one_expr(b"<?php new Point(1, 2);") {
+            Expr::New { args, .. } => assert_eq!(args.len(), 2),
+            other => panic!("expected New, got {other:?}"),
+        }
+        // `new Foo` with no parens is equivalent to `new Foo()`.
+        match one_expr(b"<?php new Foo;") {
+            Expr::New { args, .. } => assert!(args.is_empty()),
+            other => panic!("expected New, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn property_access_and_method_call() {
+        // `$o->p` is a property read; `$o->m(1)` is a method call.
+        match one_expr(b"<?php $o->p;") {
+            Expr::PropGet { .. } => {}
+            other => panic!("expected PropGet, got {other:?}"),
+        }
+        match one_expr(b"<?php $o->m(1);") {
+            Expr::MethodCall { args, .. } => assert_eq!(args.len(), 1),
+            other => panic!("expected MethodCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn property_assignment_becomes_propset() {
+        match one_expr(b"<?php $o->p = 5;") {
+            Expr::PropSet { .. } => {}
+            other => panic!("expected PropSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn method_chaining_nests_left_to_right() {
+        // `$o->a()->b()` => MethodCall(MethodCall($o, a), b)
+        match one_expr(b"<?php $o->a()->b();") {
+            Expr::MethodCall { obj, .. } => {
+                assert!(matches!(*obj, Expr::MethodCall { .. }));
+            }
+            other => panic!("expected MethodCall, got {other:?}"),
         }
     }
 

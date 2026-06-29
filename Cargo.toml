@@ -22,6 +22,7 @@ version = "0.0.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/drietsch/rphp"
+authors = ["Dietmar Rietsch <dietmar.rietsch@andthenext.at>"]
 rust-version = "1.95"
 
 # Internal crates, referenced by path so the whole graph builds from source.

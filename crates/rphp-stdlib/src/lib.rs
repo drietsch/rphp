@@ -12,19 +12,29 @@
 
 use rphp_runtime::{NativeFn, Registry};
 
+mod array2;
 mod arrays;
+mod base64;
 mod basic_functions;
 mod ctype;
 mod errorfunc;
+mod formatted_print;
 mod funcs;
 mod hash;
+mod html;
+mod info;
 mod json;
 mod math;
 mod output;
 mod output_buffering;
 mod pcre;
+mod string2;
 mod strings;
 mod types;
+mod uniqid;
+mod url;
+mod var;
+mod versioning;
 
 /// Every module's `FUNCTIONS` slice, in registration order.
 const MODULES: &[&[NativeFn]] = &[
@@ -41,6 +51,16 @@ const MODULES: &[&[NativeFn]] = &[
     output_buffering::FUNCTIONS,
     basic_functions::FUNCTIONS,
     errorfunc::FUNCTIONS,
+    string2::FUNCTIONS,
+    array2::FUNCTIONS,
+    var::FUNCTIONS,
+    url::FUNCTIONS,
+    info::FUNCTIONS,
+    versioning::FUNCTIONS,
+    formatted_print::FUNCTIONS,
+    html::FUNCTIONS,
+    base64::FUNCTIONS,
+    uniqid::FUNCTIONS,
 ];
 
 /// Register every module's functions and constants into an interpreter.

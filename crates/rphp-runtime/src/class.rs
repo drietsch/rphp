@@ -16,6 +16,7 @@
 //! inherited, so `class MyEx extends Exception` gets `file`/`line`/`trace`
 //! filled in and `getMessage()` for free.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -265,6 +266,94 @@ impl MagicFlags {
     }
 }
 
+/// One **static** property of a class, own or inherited.
+///
+/// The value lives in a shared cell: a subclass that does not redeclare the
+/// property inherits the *same* `Rc`, so `B::$n` and `A::$n` are one storage
+/// location (php's semantics). Redeclaring in a subclass creates a new cell.
+///
+/// The initializer is evaluated lazily on first access (`statics.rs`) rather
+/// than at link time, so linking never runs user code.
+pub struct StaticPropInfo {
+    /// Name without the `$`.
+    pub name: Box<[u8]>,
+    /// Visibility.
+    pub vis: Visibility,
+    /// The declaring class (process-wide id).
+    pub decl: u32,
+    /// Declared type, if any.
+    pub ty: Option<TypeDecl>,
+    /// The shared storage. `Value::Uninit` until `init` has been evaluated.
+    pub cell: Rc<RefCell<Value>>,
+    /// The declared initializer, consumed on first access.
+    pub init: Option<PropDefault>,
+    /// Whether `init` has been evaluated into `cell`.
+    pub ready: Rc<std::cell::Cell<bool>>,
+}
+
+impl Clone for StaticPropInfo {
+    fn clone(&self) -> StaticPropInfo {
+        StaticPropInfo {
+            name: self.name.clone(),
+            vis: self.vis,
+            decl: self.decl,
+            ty: self.ty.clone(),
+            cell: self.cell.clone(),
+            init: self.init.clone(),
+            ready: self.ready.clone(),
+        }
+    }
+}
+
+/// The evaluation state of a class constant or enum case value.
+pub enum ConstState {
+    /// Not evaluated yet.
+    Pending(PropDefault),
+    /// Being evaluated — a second visit is a cycle.
+    Evaluating,
+    /// Evaluated.
+    Ready(Value),
+}
+
+/// One class constant (own or inherited), evaluated lazily in the declaring
+/// class's scope with cycle detection.
+pub struct ClassConst {
+    /// Declared name (case-sensitive).
+    pub name: Box<[u8]>,
+    /// Visibility.
+    pub vis: Visibility,
+    /// The declaring class (process-wide id).
+    pub decl: u32,
+    /// `final`.
+    pub is_final: bool,
+    /// Declared type (8.3 typed constants), if any.
+    pub ty: Option<TypeDecl>,
+    /// Lazy value.
+    pub state: RefCell<ConstState>,
+}
+
+/// What an enum's cases are backed by.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EnumBacking {
+    /// A pure enum: cases have no value.
+    None,
+    /// `enum E: int`.
+    Int,
+    /// `enum E: string`.
+    String,
+}
+
+/// One enum case. The case object is a singleton, materialized on first use
+/// and then shared by every `E::Case` evaluation (`enums.rs`).
+pub struct EnumCaseInfo {
+    /// Case name.
+    pub name: Box<[u8]>,
+    /// The backing value (`None` for a pure enum).
+    pub value: Option<Value>,
+    /// The singleton instance, once materialized.
+    pub instance: RefCell<Option<Value>>,
+}
+
 /// A class as the runtime holds it (user or native), linked: parent and
 /// interfaces resolved, properties laid out, methods flattened.
 pub struct ClassDef {
@@ -309,6 +398,20 @@ pub struct ClassDef {
     pub internal: bool,
     /// The unit that compiled the class (user classes), for `declare_class`.
     pub unit: Option<Rc<crate::unit::UnitRt>>,
+    /// Static properties in declaration order (own and inherited).
+    pub static_props: Vec<StaticPropInfo>,
+    /// Static property name → index into `static_props`.
+    pub static_index: HashMap<Box<[u8]>, u16>,
+    /// Class constants by name (own, inherited and from interfaces).
+    pub consts: HashMap<Box<[u8]>, Rc<ClassConst>>,
+    /// Constant names in declaration order (own first, then inherited).
+    pub const_order: Vec<Box<[u8]>>,
+    /// Enum cases in declaration order (empty for non-enums).
+    pub enum_cases: Vec<Rc<EnumCaseInfo>>,
+    /// Enum case name → index into `enum_cases`.
+    pub enum_index: HashMap<Box<[u8]>, u16>,
+    /// What the enum's cases are backed by (`None` for non-enums too).
+    pub enum_backing: EnumBacking,
 }
 
 impl ClassDef {
@@ -333,6 +436,13 @@ impl ClassDef {
             linked: false,
             internal: false,
             unit: None,
+            static_props: Vec::new(),
+            static_index: HashMap::new(),
+            consts: HashMap::new(),
+            const_order: Vec::new(),
+            enum_cases: Vec::new(),
+            enum_index: HashMap::new(),
+            enum_backing: EnumBacking::None,
         }
     }
 
@@ -408,6 +518,28 @@ pub struct ClassSpec {
     pub declared_at: Option<(Rc<str>, u32)>,
     /// Registered by the engine / an extension.
     pub internal: bool,
+    /// Own static properties: name, visibility, type, initializer.
+    pub static_props: Vec<(Box<[u8]>, Visibility, Option<TypeDecl>, Option<PropDefault>)>,
+    /// Own class constants, in declaration order.
+    pub consts: Vec<ConstSpec>,
+    /// Own enum cases, in declaration order (name, backing value).
+    pub enum_cases: Vec<(Box<[u8]>, Option<Value>)>,
+    /// What this enum's cases are backed by.
+    pub enum_backing: EnumBacking,
+}
+
+/// One own class constant of a [`ClassSpec`].
+pub struct ConstSpec {
+    /// Declared name.
+    pub name: Box<[u8]>,
+    /// Visibility.
+    pub vis: Visibility,
+    /// `final`.
+    pub is_final: bool,
+    /// Declared type (8.3), if any.
+    pub ty: Option<TypeDecl>,
+    /// The initializer, evaluated on first use.
+    pub init: PropDefault,
 }
 
 /// One own method of a [`ClassSpec`].
@@ -445,6 +577,10 @@ impl Interp {
             native_init,
             declared_at,
             internal,
+            static_props,
+            consts,
+            enum_cases,
+            enum_backing,
         } = spec;
         let name_str = String::from_utf8_lossy(&name).into_owned();
         let mut def = ClassDef::stub(id, &name, kind, flags, declared_at);
@@ -485,6 +621,14 @@ impl Interp {
             }
             def.magic = p.magic;
             def.native_init = p.native_init;
+            // Static properties are inherited by *sharing* the parent's cell:
+            // `B::$n` and `A::$n` are one location unless B redeclares it.
+            def.static_props = p.static_props.clone();
+            def.static_index = p.static_index.clone();
+            for (k, c) in &p.consts {
+                def.consts.insert(k.clone(), c.clone());
+            }
+            def.const_order = p.const_order.clone();
             if p.allows_dynamic_props() {
                 def.flags |= ClassFlags::ALLOW_DYNAMIC;
             }
@@ -511,6 +655,13 @@ impl Interp {
             for (k, m) in &i.methods {
                 def.methods.entry(k.clone()).or_insert_with(|| m.clone());
             }
+            // Interface constants are inherited by the implementing class.
+            for (k, c) in &i.consts {
+                if !def.consts.contains_key(k) {
+                    def.consts.insert(k.clone(), c.clone());
+                    def.const_order.push(k.clone());
+                }
+            }
         }
         for (pname, vis, ty, readonly, default) in props {
             match def.prop_index.get(&pname).copied() {
@@ -536,6 +687,65 @@ impl Interp {
                     });
                 }
             }
+        }
+        for (sname, vis, ty, init) in static_props {
+            let info = StaticPropInfo {
+                name: sname.clone(),
+                vis,
+                decl: id,
+                ty,
+                cell: Rc::new(RefCell::new(Value::Uninit)),
+                init,
+                ready: Rc::new(std::cell::Cell::new(false)),
+            };
+            match def.static_index.get(&sname).copied() {
+                // A redeclaration in a subclass gets its own cell.
+                Some(i) => def.static_props[i as usize] = info,
+                None => {
+                    let slot = def.static_props.len() as u16;
+                    def.static_index.insert(sname, slot);
+                    def.static_props.push(info);
+                }
+            }
+        }
+        let mut own_consts: Vec<Box<[u8]>> = Vec::new();
+        for c in consts {
+            if let Some(prev) = def.consts.get(&c.name) {
+                if prev.is_final && prev.decl != id {
+                    return Err(Unwind::error(format!(
+                        "{name_str}::{} cannot override final constant {}::{}",
+                        String::from_utf8_lossy(&c.name),
+                        self.classes[prev.decl as usize].name_str(),
+                        String::from_utf8_lossy(&prev.name)
+                    )));
+                }
+            } else {
+                own_consts.push(c.name.clone());
+            }
+            def.consts.insert(
+                c.name.clone(),
+                Rc::new(ClassConst {
+                    name: c.name,
+                    vis: c.vis,
+                    decl: id,
+                    is_final: c.is_final,
+                    ty: c.ty,
+                    state: RefCell::new(ConstState::Pending(c.init)),
+                }),
+            );
+        }
+        // Own constants come first in `get_class_constants` order.
+        own_consts.extend(std::mem::take(&mut def.const_order));
+        def.const_order = own_consts;
+        def.enum_backing = enum_backing;
+        for (cname, value) in enum_cases {
+            let slot = def.enum_cases.len() as u16;
+            def.enum_index.insert(cname.clone(), slot);
+            def.enum_cases.push(Rc::new(EnumCaseInfo {
+                name: cname,
+                value,
+                instance: RefCell::new(None),
+            }));
         }
         let mut own_order: Vec<Box<[u8]>> = Vec::new();
         for m in methods {

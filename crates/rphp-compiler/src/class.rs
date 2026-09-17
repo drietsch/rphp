@@ -164,11 +164,11 @@ pub(crate) fn compile_class(
                         None => Value::Null,
                         Some(e) => prop_default(e, item.span, interner, diags),
                     };
-                    props.push(PropDef {
-                        name: interner.resolve(item.name).into(),
+                    props.push(PropDef::new(
+                        interner.resolve(item.name),
                         default,
                         visibility,
-                    });
+                    ));
                 }
             }
             Member::Method(md) => {
@@ -202,11 +202,11 @@ pub(crate) fn compile_class(
                         ret: md.ret.as_ref(),
                     },
                 );
-                methods.push(BcMethod {
-                    name_bytes: interner.resolve(md.name).into(),
+                methods.push(BcMethod::new(
+                    interner.resolve(md.name),
                     func,
                     visibility,
-                });
+                ));
             }
             Member::Const(k) => unsupported(diags, k.span, "class constant"),
             Member::EnumCase(e) => unsupported(diags, e.span, "enum case"),
@@ -224,6 +224,10 @@ pub(crate) fn compile_class(
         interfaces,
         kind: BcClassKind::Class,
         flags,
+        consts: Vec::new(),
+        traits: Vec::new(),
+        enum_cases: Vec::new(),
+        enum_backing: rphp_bytecode::EnumBackingType::None,
     };
     mx.sink.borrow_mut().classes[id as usize] = Some(class);
     Some(id)

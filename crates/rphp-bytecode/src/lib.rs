@@ -36,7 +36,8 @@ mod types;
 mod unit;
 
 pub use class::{
-    Class, ClassDecl, ClassFlags, ClassKind, ConstDecl, EnumCase, Hooks, Method, MethodDecl,
+    Class, ClassConstDef, ClassDecl, ClassFlags, ClassKind, ConstDecl, EnumBackingType,
+    EnumCase, EnumCaseDef, Hooks, Method, MethodDecl,
     PropDecl, PropDef, TraitAdaptation, TraitUse,
 };
 pub use consts::{Const, NameConst};

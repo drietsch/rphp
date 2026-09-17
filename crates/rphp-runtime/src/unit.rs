@@ -351,32 +351,78 @@ impl Interp {
                 }
             }
         }
+        // E6: a property declaration is an instance slot or a static cell;
+        // both carry the declared type, `readonly` and the initializer, which
+        // is a folded value or a thunk run in the class's scope.
+        let prop_default = |p: &rphp_bytecode::PropDef| match p.default_thunk {
+            Some(t) => PropDefault::Thunk(unit.func_base + t),
+            None => PropDefault::Value(p.default.clone()),
+        };
         let props = decl
             .props
             .iter()
+            .filter(|p| !p.is_static)
             .map(|p| {
                 (
                     p.name.clone(),
                     p.visibility,
-                    None,
-                    false,
-                    PropDefault::Value(p.default.clone()),
+                    p.ty.clone(),
+                    p.readonly,
+                    prop_default(p),
                 )
             })
             .collect();
+        let static_props = decl
+            .props
+            .iter()
+            .filter(|p| p.is_static)
+            .map(|p| {
+                (
+                    p.name.clone(),
+                    p.visibility,
+                    p.ty.clone(),
+                    Some(prop_default(p)),
+                )
+            })
+            .collect();
+        let consts = decl
+            .consts
+            .iter()
+            .map(|c| crate::class::ConstSpec {
+                name: c.name.clone(),
+                vis: c.visibility,
+                is_final: c.is_final,
+                ty: c.ty.clone(),
+                init: match c.thunk {
+                    Some(t) => PropDefault::Thunk(unit.func_base + t),
+                    None => PropDefault::Value(c.value.clone().unwrap_or(Value::Null)),
+                },
+            })
+            .collect();
+        let enum_cases = decl
+            .enum_cases
+            .iter()
+            .map(|c| (c.name.clone(), c.value.clone()))
+            .collect();
+        let enum_backing = match decl.enum_backing {
+            rphp_bytecode::EnumBackingType::None => crate::class::EnumBacking::None,
+            rphp_bytecode::EnumBackingType::Int => crate::class::EnumBacking::Int,
+            rphp_bytecode::EnumBackingType::String => crate::class::EnumBacking::String,
+        };
         let methods = decl
             .methods
             .iter()
             .map(|m| {
                 let func = self.funcs[(unit.func_base + m.func) as usize].clone();
-                let is_static = func.f.flags.contains(rphp_bytecode::FnFlags::STATIC);
+                let is_static =
+                    m.is_static || func.f.flags.contains(rphp_bytecode::FnFlags::STATIC);
                 MethodSpec {
                     name: m.name_bytes.clone(),
                     body: MethodBody::User(func),
                     vis: m.visibility,
                     is_static,
-                    is_abstract: false,
-                    is_final: false,
+                    is_abstract: m.is_abstract,
+                    is_final: m.is_final,
                 }
             })
             .collect();
@@ -391,7 +437,15 @@ impl Interp {
             native_init: None,
             declared_at: stub.declared_at.clone(),
             internal: false,
+            static_props,
+            consts,
+            enum_cases,
+            enum_backing,
         };
+        // E6: traits are copied in before linking, so `link_class` only ever
+        // sees own members (`traits.rs`).
+        let mut spec = spec;
+        self.apply_trait_uses(&mut spec, &decl.traits)?;
         let mut def = match self.link_class(id, spec) {
             Ok(d) => d,
             Err(Unwind::Pending(p)) => {

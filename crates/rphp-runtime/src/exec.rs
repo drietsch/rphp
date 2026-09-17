@@ -210,7 +210,7 @@ impl Interp {
     // ---- properties ---------------------------------------------------------
 
     /// Enforce property visibility. An undeclared (dynamic) property is public.
-    fn check_prop_access(&self, class: u32, name: &[u8]) -> Result<(), Unwind> {
+    pub(crate) fn check_prop_access(&self, class: u32, name: &[u8]) -> Result<(), Unwind> {
         if let Some((vis, decl)) = self.resolve_prop(class, name) {
             let scope = self.current_user_frame().and_then(|f| f.scope);
             if !self.access_ok(vis, decl, scope) {
@@ -226,79 +226,7 @@ impl Interp {
     }
 
     /// `obj->name` read with php's diagnostics.
-    fn fetch_prop(&mut self, obj: &Value, name: &[u8]) -> Result<Value, Unwind> {
-        match &*obj.deref() {
-            Value::Object(o) => {
-                self.check_prop_access(o.class_id(), name)?;
-                match o.get_deref(name) {
-                    Some(v) if !v.is_uninit() => Ok(v),
-                    _ => {
-                        let msg = format!(
-                            "Undefined property: {}::${}",
-                            self.class_name_of(o),
-                            String::from_utf8_lossy(name)
-                        );
-                        self.warn(&msg)?;
-                        Ok(Value::Null)
-                    }
-                }
-            }
-            other => {
-                let msg = format!(
-                    "Attempt to read property \"{}\" on {}",
-                    String::from_utf8_lossy(name),
-                    value_name(other)
-                );
-                self.warn(&msg)?;
-                Ok(Value::Null)
-            }
-        }
-    }
-
-    /// `obj->name = v` with php's diagnostics (dynamic-property deprecation).
-    fn assign_prop(&mut self, obj: &Value, name: &[u8], v: Value) -> Result<(), Unwind> {
-        match &*obj.deref() {
-            Value::Object(o) => {
-                self.check_prop_access(o.class_id(), name)?;
-                if o.get(name).is_none() {
-                    self.dynamic_prop_notice(o, name)?;
-                }
-                o.set(name, v);
-                Ok(())
-            }
-            other => Err(Unwind::error(format!(
-                "Attempt to assign property \"{}\" on {}",
-                String::from_utf8_lossy(name),
-                value_name(other)
-            ))),
-        }
-    }
-
-    /// php 8.2: creating a dynamic property on a class without
-    /// `#[AllowDynamicProperties]` is deprecated (`stdClass` is exempt).
-    fn dynamic_prop_notice(&mut self, o: &Object, name: &[u8]) -> Result<(), Unwind> {
-        if self.class_of(o).allows_dynamic_props() {
-            return Ok(());
-        }
-        let class = self.class_name_of(o);
-        self.deprecated(&format!(
-            "Creation of dynamic property {class}::${} is deprecated",
-            String::from_utf8_lossy(name)
-        ))
-    }
-
-    /// The object in a register for a property write, or php's `Error`.
-    fn prop_holder(&self, obj: &Value, name: &[u8]) -> Result<Object, Unwind> {
-        match &*obj.deref() {
-            Value::Object(o) => Ok(o.clone()),
-            other => Err(Unwind::error(format!(
-                "Attempt to assign property \"{}\" on {}",
-                String::from_utf8_lossy(name),
-                value_name(other)
-            ))),
-        }
-    }
-
+ 
     // ---- the loop -------------------------------------------------------------
 
     /// Execute the top frame's ops until it switches frames.
@@ -1230,10 +1158,9 @@ impl Interp {
                         }
                     }
                 }
-                Op::MakeCallableClosure { .. } => {
-                    return Err(Unwind::error(
-                        "first-class callable syntax is not supported yet",
-                    ));
+                Op::MakeCallableClosure { dst, .. } => {
+                    let v = self.make_callable_closure(&func, base, &op)?;
+                    self.set(base, dst, v);
                 }
                 Op::MakeClosure { dst, proto } => {
                     let fid = func.unit.func_id(proto);
@@ -1454,11 +1381,14 @@ impl Interp {
                         let v = Value::string(&self.classes[cid as usize].name);
                         self.set(base, dst, v);
                     } else {
-                        return Err(Unwind::error(format!(
-                            "Undefined constant {}::{}",
-                            String::from_utf8_lossy(&self.classes[cid as usize].name),
-                            String::from_utf8_lossy(&n)
-                        )));
+                        // `statics.rs` owns constants, `enums.rs` owns cases.
+                        let scope = self.frames[fi].scope;
+                        let v = if self.classes[cid as usize].enum_index.contains_key(&n[..]) {
+                            self.enum_case(cid, &n)?
+                        } else {
+                            self.class_const(cid, &n, scope)?
+                        };
+                        self.set(base, dst, v);
                     }
                 }
                 Op::FetchStaticProp { class, name, .. }
@@ -1534,26 +1464,8 @@ impl Interp {
                 }
                 Op::Clone { dst, src, .. } => {
                     let v = self.rd(base, src);
-                    let Value::Object(o) = v else {
-                        return Err(Unwind::error("__clone method called on non-object"));
-                    };
-                    let id = self.object_ids.alloc();
-                    let layout = o.layout();
-                    let slots = o.with_data(|d| d.slots().to_vec());
-                    let copy = Object::new(o.class_id(), id, layout, slots);
-                    if self.class_of(&o).magic.contains(MagicFlags::DESTRUCT) {
-                        copy.add_flags(rphp_value::ObjFlags::HAS_DESTRUCTOR);
-                        self.destructibles.push(copy.downgrade());
-                    }
-                    let dyns: Vec<(Box<[u8]>, Value)> = o.with_data(|d| {
-                        d.dyn_props()
-                            .map(|p| p.iter().map(|(n, v)| (Box::from(n), v.clone())).collect())
-                            .unwrap_or_default()
-                    });
-                    for (n, v) in dyns {
-                        copy.dyn_set(&n, v);
-                    }
-                    self.set(base, dst, Value::Object(copy));
+                    let copy = self.clone_object(&v)?;
+                    self.set(base, dst, copy);
                 }
 
                 // --- units ---

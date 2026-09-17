@@ -19,6 +19,72 @@ pub struct PropDef {
     pub name: Box<[u8]>,
     pub default: Value,
     pub visibility: Visibility,
+    /// E6: `static` — the property lives on the class, not the instance.
+    pub is_static: bool,
+    /// E6: `readonly`.
+    pub readonly: bool,
+    /// E6: the `set` visibility of an asymmetric declaration
+    /// (`public private(set) int $n`), when it differs from `visibility`.
+    pub set_vis: Option<Visibility>,
+    /// E6: the declared type, checked on assignment.
+    pub ty: Option<TypeDecl>,
+    /// E6: property hooks (`get`/`set`), compiled as methods of the class.
+    pub hooks: Option<Hooks>,
+    /// E6: a non-constant default (`new Foo`, `self::CONST`, …) compiled as a
+    /// zero-argument thunk evaluated at `new` in the class's scope. When set,
+    /// `default` is ignored.
+    pub default_thunk: Option<FuncId>,
+}
+
+impl PropDef {
+    /// A public instance property with a constant default.
+    pub fn new(name: &[u8], default: Value, visibility: Visibility) -> PropDef {
+        PropDef {
+            name: Box::from(name),
+            default,
+            visibility,
+            is_static: false,
+            readonly: false,
+            set_vis: None,
+            ty: None,
+            hooks: None,
+            default_thunk: None,
+        }
+    }
+}
+
+/// E6: one class constant of an M0 [`Class`]. The initializer is a ready value
+/// when it folds, otherwise a zero-argument thunk evaluated on first use in the
+/// declaring class's scope (so `self::` and `static::` resolve).
+#[derive(Clone, Debug)]
+pub struct ClassConstDef {
+    pub name: Box<[u8]>,
+    pub visibility: Visibility,
+    pub is_final: bool,
+    /// The declared type (8.3 typed constants), if any.
+    pub ty: Option<TypeDecl>,
+    /// The folded value, when the initializer is constant.
+    pub value: Option<Value>,
+    /// The initializer thunk, when it is not.
+    pub thunk: Option<FuncId>,
+}
+
+/// E6: one case of an enum declaration.
+#[derive(Clone, Debug)]
+pub struct EnumCaseDef {
+    pub name: Box<[u8]>,
+    /// The backing value (`None` for a pure enum).
+    pub value: Option<Value>,
+}
+
+/// E6: what an enum's cases are backed by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EnumBackingType {
+    /// A pure enum, or a non-enum class.
+    #[default]
+    None,
+    Int,
+    String,
 }
 
 /// A method: its name (for `obj->m()` dispatch), the [`FuncId`] of its compiled
@@ -29,6 +95,27 @@ pub struct Method {
     pub name_bytes: Box<[u8]>,
     pub func: FuncId,
     pub visibility: Visibility,
+    /// E6: `static` — no `$this`, dispatched against the called scope.
+    pub is_static: bool,
+    /// E6: `abstract` — no body; instantiating a class that still has one is
+    /// an `Error`.
+    pub is_abstract: bool,
+    /// E6: `final` — an override is a link-time fatal.
+    pub is_final: bool,
+}
+
+impl Method {
+    /// A public, non-static, concrete method.
+    pub fn new(name_bytes: &[u8], func: FuncId, visibility: Visibility) -> Method {
+        Method {
+            name_bytes: Box::from(name_bytes),
+            func,
+            visibility,
+            is_static: false,
+            is_abstract: false,
+            is_final: false,
+        }
+    }
 }
 
 /// A compiled class: its (optional) parent, declared properties, and methods.
@@ -56,6 +143,15 @@ pub struct Class {
     pub kind: ClassKind,
     /// Modifiers (`abstract`, `final`, `readonly`, `#[AllowDynamicProperties]`).
     pub flags: ClassFlags,
+    /// E6: class constants, in declaration order.
+    pub consts: Vec<ClassConstDef>,
+    /// E6: `use T1, T2 { ... }` statements, in order. Resolved and copied in
+    /// at declaration time.
+    pub traits: Vec<TraitUse>,
+    /// E6: enum cases, in declaration order (empty for non-enums).
+    pub enum_cases: Vec<EnumCaseDef>,
+    /// E6: the enum's backing type.
+    pub enum_backing: EnumBackingType,
 }
 
 impl Class {
@@ -72,6 +168,10 @@ impl Class {
             interfaces: Vec::new(),
             kind: ClassKind::Class,
             flags: ClassFlags::NONE,
+            consts: Vec::new(),
+            traits: Vec::new(),
+            enum_cases: Vec::new(),
+            enum_backing: EnumBackingType::None,
         }
     }
 }

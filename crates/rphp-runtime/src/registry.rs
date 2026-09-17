@@ -485,6 +485,10 @@ impl ClassBuilder<'_> {
             native_init,
             declared_at: None,
             internal: true,
+            static_props: Vec::new(),
+            consts: Vec::new(),
+            enum_cases: Vec::new(),
+            enum_backing: crate::class::EnumBacking::None,
         };
         interp.register_class_spec(spec)
     }

@@ -19,17 +19,23 @@
 mod api;
 mod call;
 mod class;
+mod enums;
 mod errors;
 mod exec;
 mod frame;
 mod ini;
 mod interp;
+mod methods;
+mod objects;
 mod ops;
 mod output;
+mod props;
 mod registry;
 mod resources;
+mod statics;
 mod symtab;
 mod throwable;
+mod traits;
 mod types;
 mod unit;
 mod unwind;
@@ -54,8 +60,9 @@ pub use symtab::{Symtab, SymtabData};
 pub use types::Coerced;
 pub use unit::{FuncRt, IcSlot, UnitRt};
 pub use class::{
-    ClassDef, ClassSpec, MagicFlags, MethodBody, MethodDef, MethodSpec, NativeInit, NativeMethod,
-    NativeMethodHandler, PropDefault, PropInfo, WellKnown,
+    ClassConst, ClassDef, ClassSpec, ConstSpec, ConstState, EnumBacking, EnumCaseInfo, MagicFlags,
+    MethodBody, MethodDef, MethodSpec, NativeInit, NativeMethod, NativeMethodHandler, PropDefault,
+    PropInfo, StaticPropInfo, WellKnown,
 };
 pub use output::{
     NullSink, ObLevel, OutputSink, OutputStack, SharedBuffer, PHP_OUTPUT_HANDLER_CLEAN,

@@ -1,0 +1,17 @@
+[package]
+name = "rphp-hir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rphp-span.workspace = true
+rphp-source.workspace = true
+rphp-intern.workspace = true
+rphp-diagnostics.workspace = true
+rphp-ast.workspace = true
+
+[dev-dependencies]
+rphp-parser.workspace = true
+insta.workspace = true

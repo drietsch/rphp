@@ -18,6 +18,7 @@ members = [
     "crates/rphp-test",
     "crates/rphp-tokenizer",
     "crates/rphp-embed",
+    "crates/rphp-hir",
     "tools/rphp",
     "xtask",
 ]
@@ -50,6 +51,7 @@ rphp-ext-api = { path = "crates/rphp-ext-api" }
 rphp-test = { path = "crates/rphp-test" }
 rphp-tokenizer = { path = "crates/rphp-tokenizer" }
 rphp-embed = { path = "crates/rphp-embed" }
+rphp-hir = { path = "crates/rphp-hir" }
 
 # External crates. Versions are pinned here once; member crates use
 # `{ workspace = true }` so the whole workspace agrees on one version.

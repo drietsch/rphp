@@ -1,0 +1,216 @@
+(program file=0
+  (echo
+    (binary concat
+      (binary add
+        (int 1)
+        (binary mul
+          (int 2)
+          (binary pow
+            (int 3)
+            (int 2))))
+      (str "x")))
+  (expr-stmt
+    (call
+      (name var_dump kind=u)
+      (arg
+        (unary not
+          (instanceof
+            (var $a)
+            (name B kind=u))))))
+  (expr-stmt
+    (assign
+      (var $r)
+      (ternary short
+        (binary coalesce
+          (var $a)
+          (var $b))
+        (var $c))))
+  (expr-stmt
+    (assign
+      (var $s)
+      (unary neg
+        (binary pow
+          (int 2)
+          (int 2)))))
+  (expr-stmt
+    (assign
+      (var $t)
+      (binary add
+        (unary cast-int
+          (index
+            (var $a)
+            (str "x")))
+        (int 1))))
+  (expr-stmt
+    (assign
+      (var $u)
+      (assign
+        (var $a)
+        (assign op=add
+          (var $b)
+          (int 1)))))
+  (expr-stmt
+    (assign
+      (var $v)
+      (binary coalesce
+        (var $x)
+        (assign
+          (var $y)
+          (int 1)))))
+  (expr-stmt
+    (assign
+      (var $w)
+      (binary pow
+        (int 2)
+        (binary pow
+          (int 3)
+          (int 2)))))
+  (expr-stmt
+    (assign
+      (var $z)
+      (binary sub
+        (binary sub
+          (int 1)
+          (int 2))
+        (int 3))))
+  (expr-stmt
+    (assign
+      (var $p)
+      (binary concat
+        (var $a)
+        (binary add
+          (var $b)
+          (var $c)))))
+  (expr-stmt
+    (binary and
+      (assign
+        (var $q)
+        (var $a))
+      (var $b)))
+  (expr-stmt
+    (assign
+      (var $k)
+      (binary spaceship
+        (var $a)
+        (var $b))))
+  (expr-stmt
+    (binary xor
+      (assign
+        (var $m)
+        (var $a))
+      (var $b)))
+  (expr-stmt
+    (assign
+      (var $n)
+      (binary bit-or
+        (binary bit-and
+          (unary bit-not
+            (var $a))
+          (unary plus
+            (var $b)))
+        (binary bit-xor
+          (var $c)
+          (binary shr
+            (binary shl
+              (var $d)
+              (int 1))
+            (int 2))))))
+  (expr-stmt
+    (assign
+      (var $o)
+      (binary mod
+        (unary silence
+          (call
+            (name f kind=u)))
+        (int 3))))
+  (expr-stmt
+    (assign
+      (var $i)
+      (binary sub
+        (binary sub
+          (binary add
+            (unary post-inc
+              (var $j))
+            (unary pre-inc
+              (var $j)))
+          (unary post-dec
+            (var $j)))
+        (unary pre-dec
+          (var $j)))))
+  (expr-stmt
+    (assign
+      (var $c1)
+      (binary concat
+        (binary concat
+          (binary concat
+            (binary add
+              (unary cast-float
+                (var $a))
+              (unary cast-string
+                (var $b)))
+            (unary cast-bool
+              (var $c)))
+          (unary cast-array
+            (var $d)))
+        (unary cast-object
+          (var $e)))))
+  (expr-stmt
+    (assign
+      (var $c2)
+      (binary concat
+        (binary concat
+          (binary add
+            (unary cast-int
+              (var $a))
+            (unary cast-float
+              (var $b)))
+          (unary cast-bool
+            (var $c)))
+        (unary cast-string
+          (var $d)))))
+  (expr-stmt
+    (assign
+      (var $eq)
+      (binary ne
+        (binary eq
+          (var $a)
+          (var $b))
+        (binary identical
+          (var $c)
+          (var $d)))))
+  (expr-stmt
+    (assign
+      (var $ne)
+      (binary not-identical
+        (var $e)
+        (var $f))))
+  (expr-stmt
+    (assign
+      (var $lt)
+      (binary ne
+        (var $g)
+        (var $h))))
+  (expr-stmt
+    (assign
+      (var $cmp)
+      (binary le
+        (binary lt
+          (var $a)
+          (var $b))
+        (binary gt
+          (var $c)
+          (var $d)))))
+  (expr-stmt
+    (assign
+      (var $ge)
+      (binary ge
+        (var $e)
+        (var $f))))
+  (expr-stmt
+    (assign
+      (var $lg)
+      (binary or
+        (binary and
+          (var $a)
+          (var $b))
+        (var $c)))))

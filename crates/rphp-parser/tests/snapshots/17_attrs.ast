@@ -1,0 +1,53 @@
+(program file=0
+  (class-like kind=class name=C
+    (attr-group
+      (attr A kind=u)
+      (attr B kind=u
+        (arg
+          (int 1))
+        (arg name=x
+          (int 2)))
+      (attr C\D kind=fq
+        (arg
+          (class-const const=F
+            (name E kind=u)))))
+    (attr-group
+      (attr G kind=u))
+    (method __construct mods=public
+      (attr-group
+        (attr P kind=u))
+      (params
+        (param $x promote=public
+          (attr-group
+            (attr Q kind=u))
+          (type int)
+          (default
+            (int 1)))
+        (param $rest variadic
+          (attr-group
+            (attr R kind=u))))
+      (body))
+    (const
+      (attr-group
+        (attr S kind=u))
+      (item K
+        (int 1)))
+    (prop mods=public
+      (attr-group
+        (attr T kind=u))
+      (item $p)))
+  (class-like kind=enum name=E
+    (attr-group
+      (attr U kind=u))
+    (case A
+      (attr-group
+        (attr V kind=u))))
+  (expr-stmt
+    (assign
+      (var $f)
+      (arrow-fn
+        (attr-group
+          (attr W kind=u))
+        (params)
+        (body
+          (int 1))))))

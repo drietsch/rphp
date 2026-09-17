@@ -1,0 +1,1 @@
+<?php public class C {}

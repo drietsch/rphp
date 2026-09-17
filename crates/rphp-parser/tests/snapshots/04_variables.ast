@@ -1,0 +1,226 @@
+(program file=0
+  (expr-stmt
+    (assign
+      (var $a)
+      (int 1)))
+  (expr-stmt
+    (assign
+      (var-var
+        (var $a))
+      (int 2)))
+  (expr-stmt
+    (assign
+      (var-var
+        (var-var
+          (var $b)))
+      (int 3)))
+  (expr-stmt
+    (assign
+      (var-var
+        (str "c"))
+      (int 4)))
+  (expr-stmt
+    (assign
+      (var-var
+        (var $d))
+      (int 5)))
+  (expr-stmt
+    (assign
+      (index append
+        (var $a))
+      (int 1)))
+  (expr-stmt
+    (assign
+      (index
+        (index
+          (var $a)
+          (int 1))
+        (int 2))
+      (int 3)))
+  (expr-stmt
+    (assign
+      (index
+        (index append
+          (var $a))
+        (int 0))
+      (int 1)))
+  (expr-stmt
+    (assign
+      (prop name=b
+        (index append
+          (var $a)))
+      (int 1)))
+  (expr-stmt
+    (assign
+      (prop name=p
+        (var $o))
+      (int 1)))
+  (expr-stmt
+    (assign
+      (index
+        (prop name=q
+          (prop name=p
+            (var $o)))
+        (int 3))
+      (int 2)))
+  (expr-stmt
+    (assign
+      (prop
+        (var $o)
+        (name-expr
+          (str "x")))
+      (int 1)))
+  (expr-stmt
+    (assign
+      (prop
+        (var $o)
+        (name-expr
+          (var $n)))
+      (int 2)))
+  (expr-stmt
+    (assign
+      (static-prop name=s
+        (name C kind=u))
+      (int 1)))
+  (expr-stmt
+    (assign
+      (static-prop
+        (name C kind=u)
+        (name-expr
+          (var $s)))
+      (int 2)))
+  (expr-stmt
+    (assign
+      (static-prop name=s
+        (class-expr
+          (var $x)))
+      (int 3)))
+  (expr-stmt
+    (assign
+      (array syntax=short
+        (item
+          (var $a))
+        (item
+          (var $b)))
+      (var $c)))
+  (expr-stmt
+    (assign
+      (array syntax=list
+        (item
+          (key
+            (str "k"))
+          (var $x))
+        (item
+          (key
+            (str "l"))
+          (array syntax=list
+            (item
+              (var $y))
+            (item
+              (var $z)))))
+      (var $arr)))
+  (expr-stmt
+    (assign
+      (array syntax=short
+        (item
+          (skip))
+        (item
+          (var $b)))
+      (var $a)))
+  (expr-stmt
+    (assign
+      (array syntax=short
+        (item by-ref
+          (var $r))
+        (item
+          (array syntax=short
+            (item
+              (var $s)))))
+      (var $e)))
+  (expr-stmt
+    (assign by-ref
+      (var $a)
+      (var $b)))
+  (expr-stmt
+    (assign by-ref
+      (var $c)
+      (index
+        (var $d)
+        (int 0))))
+  (expr-stmt
+    (assign by-ref
+      (var $e)
+      (prop name=g
+        (var $f))))
+  (expr-stmt
+    (assign by-ref
+      (var $h)
+      (index append
+        (var $i))))
+  (expr-stmt
+    (assign op=add
+      (var $a)
+      (int 1)))
+  (expr-stmt
+    (assign op=concat
+      (var $a)
+      (str "x")))
+  (expr-stmt
+    (assign op=coalesce
+      (var $a)
+      (int 1)))
+  (expr-stmt
+    (assign op=pow
+      (var $a)
+      (int 2)))
+  (expr-stmt
+    (assign op=shl
+      (var $a)
+      (int 1)))
+  (expr-stmt
+    (assign op=shr
+      (var $a)
+      (int 1)))
+  (expr-stmt
+    (assign op=bit-and
+      (var $a)
+      (int 1)))
+  (expr-stmt
+    (assign op=bit-or
+      (var $a)
+      (int 1)))
+  (expr-stmt
+    (assign op=bit-xor
+      (var $a)
+      (int 1)))
+  (expr-stmt
+    (assign op=mod
+      (var $a)
+      (int 2)))
+  (expr-stmt
+    (assign op=div
+      (var $a)
+      (int 2)))
+  (expr-stmt
+    (assign op=sub
+      (var $a)
+      (int 1)))
+  (expr-stmt
+    (assign op=mul
+      (var $a)
+      (int 2)))
+  (expr-stmt
+    (assign
+      (prop name=x
+        (var $this))
+      (int 1)))
+  (expr-stmt
+    (assign
+      (index
+        (var $GLOBALS)
+        (str "k"))
+      (int 1)))
+  (expr-stmt
+    (assign op=add
+      (var $this)
+      (int 1))))

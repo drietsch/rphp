@@ -1,0 +1,1 @@
+<?php $c = &new Foo();

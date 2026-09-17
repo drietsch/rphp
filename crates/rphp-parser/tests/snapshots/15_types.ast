@@ -1,0 +1,71 @@
+(program file=0
+  (func f
+    (params
+      (param $a
+        (nullable
+          (type int)))
+      (param $b
+        (union
+          (type int)
+          (type string)
+          (type null)))
+      (param $c
+        (union
+          (intersection
+            (type-name A kind=u)
+            (type-name B kind=u))
+          (type null)))
+      (param $d
+        (intersection
+          (type-name A kind=u)
+          (type-name B kind=u)))
+      (param $f
+        (type iterable))
+      (param $g
+        (type mixed))
+      (param $h
+        (type callable))
+      (param $i
+        (type object))
+      (param $j
+        (type array))
+      (param $k
+        (type bool))
+      (param $l
+        (type float))
+      (param $m
+        (type false))
+      (param $n
+        (type true))
+      (param $o
+        (type null)))
+    (ret
+      (type void))
+    (body))
+  (func g
+    (params)
+    (ret
+      (type never))
+    (body))
+  (class-like kind=class name=K
+    (extends
+      (name L kind=u))
+    (method m
+      (params
+        (param $e
+          (type self))
+        (param $p
+          (type parent))
+        (param $q
+          (nullable
+            (type self))))
+      (ret
+        (type static))
+      (body))
+    (method h
+      (params)
+      (ret
+        (union
+          (type static)
+          (type null)))
+      (body))))

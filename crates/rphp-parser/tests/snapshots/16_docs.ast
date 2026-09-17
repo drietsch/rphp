@@ -1,0 +1,45 @@
+(program file=0
+  (func f doc="/** doc1 */"
+    (attr-group
+      (attr A kind=u))
+    (params)
+    (body))
+  (func g doc="/** doc2 */"
+    (attr-group
+      (attr A kind=u))
+    (params)
+    (body))
+  (class-like kind=class name=C doc="/** doc3 */"
+    (prop mods=public doc="/** p */"
+      (item $p))
+    (method m mods=public doc="/** m */"
+      (attr-group
+        (attr X kind=u))
+      (params)
+      (body))
+    (const doc="/** k */"
+      (item K
+        (int 1)))
+    (trait-use
+      (name T kind=u)))
+  (class-like kind=enum name=E doc="/** e */"
+    (case A doc="/** case */"))
+  (expr-stmt
+    (assign
+      (var $c)
+      (closure
+        (params)
+        (uses)
+        (body))))
+  (expr-stmt
+    (assign
+      (var $d)
+      (arrow-fn
+        (params)
+        (body
+          (int 1)))))
+  (echo
+    (int 1))
+  (func h
+    (params)
+    (body)))

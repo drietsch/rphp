@@ -1,0 +1,166 @@
+(program file=0
+  (if
+    (var $a)
+    (then
+      (echo
+        (int 1)))
+    (else
+      (if
+        (var $b)
+        (then
+          (echo
+            (int 2)))
+        (else
+          (echo
+            (int 3))))))
+  (if
+    (var $a)
+    (then)
+    (elseif
+      (var $b)
+      (body))
+    (else))
+  (if
+    (var $a)
+    (then
+      (echo
+        (int 1)))
+    (elseif
+      (var $b)
+      (body
+        (echo
+          (int 2))))
+    (else
+      (echo
+        (int 3))))
+  (while
+    (var $a)
+    (body
+      (echo
+        (int 1))))
+  (while
+    (var $a)
+    (body
+      (echo
+        (int 1))))
+  (do-while
+    (body
+      (echo
+        (int 1)))
+    (var $a))
+  (for
+    (init
+      (assign
+        (var $i)
+        (int 0))
+      (assign
+        (var $j)
+        (int 1)))
+    (cond
+      (binary lt
+        (var $i)
+        (int 2))
+      (binary lt
+        (var $j)
+        (int 3)))
+    (step
+      (unary post-inc
+        (var $i))
+      (unary post-inc
+        (var $j)))
+    (body))
+  (for
+    (init)
+    (cond)
+    (step)
+    (body
+      (break 1)))
+  (foreach
+    (var $a)
+    (value
+      (var $v))
+    (body))
+  (foreach by-ref
+    (var $a)
+    (key
+      (var $k))
+    (value
+      (var $v))
+    (body))
+  (foreach
+    (var $a)
+    (value
+      (array syntax=short
+        (item
+          (var $x))
+        (item
+          (var $y))))
+    (body))
+  (foreach
+    (var $a)
+    (key
+      (var $k))
+    (value
+      (array syntax=short
+        (item
+          (var $x))))
+    (body))
+  (switch
+    (var $a)
+    (case
+      (int 1))
+    (case
+      (int 2)
+      (echo
+        (int 1))
+      (break 1))
+    (default
+      (echo
+        (int 2))))
+  (switch
+    (var $a)
+    (case
+      (int 1)
+      (break 1)))
+  (while
+    (int 1)
+    (body
+      (while
+        (int 1)
+        (body
+          (break 2)
+          (continue 1)))))
+  (goto end)
+  (label end)
+  (echo
+    (int 1))
+  (try
+    (body)
+    (catch var=$e
+      (name Exception kind=fq)
+      (body))
+    (catch
+      (name A\B kind=q)
+      (name C kind=u)
+      (body))
+    (finally))
+  (declare
+    (directive ticks
+      (int 1))
+    (body
+      (echo
+        (int 1))))
+  (declare
+    (directive ticks
+      (int 1))
+    (body
+      (echo
+        (int 1))))
+  (declare
+    (directive ticks
+      (int 1)))
+  (block
+    (echo
+      (int 1)))
+  (nop)
+  (return))

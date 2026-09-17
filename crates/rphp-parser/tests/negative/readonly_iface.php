@@ -1,0 +1,1 @@
+<?php readonly interface I {}

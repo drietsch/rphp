@@ -1,0 +1,8 @@
+(program file=0
+  (namespace braced
+    (name A kind=u)
+    (echo
+      (int 1)))
+  (namespace braced
+    (echo
+      (int 2))))

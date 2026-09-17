@@ -1,0 +1,101 @@
+(program file=0
+  (expr-stmt
+    (assign
+      (var $a)
+      (interp
+        (lit "AAA\n\t\x0b\x1b\x0c\\$\"\\q\xff ")
+        (var $b)
+        (lit " ")
+        (var $c)
+        (lit " ")
+        (index
+          (var $d)
+          (int 1))
+        (lit " ")
+        (method-call name=f
+          (var $e))
+        (lit " \\{")
+        (var $g)
+        (lit "}"))))
+  (expr-stmt
+    (assign
+      (var $b)
+      (str "it's \\ \\n")))
+  (expr-stmt
+    (assign
+      (var $c)
+      (binary concat
+        (str "x")
+        (str "y"))))
+  (expr-stmt
+    (assign
+      (var $d)
+      (interp
+        (index
+          (var $a)
+          (int 0))
+        (lit " ")
+        (index
+          (var $a)
+          (unary neg
+            (int 1)))
+        (lit " ")
+        (index
+          (var $a)
+          (str "k"))
+        (lit " ")
+        (index
+          (var $a)
+          (var $i))
+        (lit " ")
+        (prop name=b
+          (var $a))
+        (lit " ")
+        (prop name=b nullsafe
+          (var $a))
+        (lit " ")
+        (var $n)
+        (lit " ")
+        (index
+          (var $n)
+          (int 1))
+        (lit " ")
+        (static-prop name=b
+          (class-expr
+            (var $a)))
+        (lit " ")
+        (call
+          (var $a)))))
+  (expr-stmt
+    (assign
+      (var $e)
+      (interp
+        (lit "a ")
+        (var $a)
+        (lit "\n  b\tc"))))
+  (expr-stmt
+    (assign
+      (var $f)
+      (str "raw\\n $x")))
+  (expr-stmt
+    (assign
+      (var $g)
+      (binary concat
+        (str "z")
+        (str "x"))))
+  (expr-stmt
+    (assign
+      (var $h)
+      (shell-exec
+        (lit "ls -la ")
+        (var $dir)
+        (lit " ")
+        (var $x))))
+  (expr-stmt
+    (assign
+      (var $i)
+      (str "")))
+  (expr-stmt
+    (assign
+      (var $j)
+      (str ""))))

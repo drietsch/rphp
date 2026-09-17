@@ -1,0 +1,15 @@
+(program file=0 halt=82
+  (expr-stmt
+    (assign
+      (var $x)
+      (int 1)))
+  (inline-html "text ")
+  (echo
+    (var $x)
+    (int 2))
+  (echo
+    (int 3))
+  (inline-html "\n")
+  (echo
+    (int 4))
+  (halt-compiler))

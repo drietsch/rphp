@@ -1,0 +1,175 @@
+(program file=0
+  (class-like kind=class name=C mods=abstract
+    (attr-group
+      (attr AllowDynamicProperties kind=fq)
+      (attr Custom kind=u
+        (arg
+          (class-const const=TARGET_CLASS
+            (name Attribute kind=fq)))))
+    (extends
+      (name P kind=u))
+    (implements
+      (name I kind=u)
+      (name J kind=u))
+    (trait-use
+      (name T1 kind=u)
+      (name T2 kind=u)
+      (precedence method=m
+        (name T1 kind=u)
+        (insteadof
+          (name T2 kind=u)))
+      (alias method=m alias=n vis=protected
+        (name T2 kind=u))
+      (alias method=m vis=private)
+      (alias method=x
+        (name T1 kind=u)))
+    (const mods=public,final
+      (type int)
+      (item X
+        (int 1))
+      (item Y
+        (int 2)))
+    (prop mods=protected,static
+      (nullable
+        (type int))
+      (item $s
+        (null)))
+    (prop mods=public
+      (item $a)
+      (item $b
+        (int 1)))
+    (prop
+      (item $legacy))
+    (prop mods=public
+      (type int)
+      (item $p)
+      (hook get
+        (body
+          (return
+            (int 1))))
+      (hook set final
+        (params
+          (param $v
+            (type int)))
+        (expr
+          (var $v))))
+    (prop mods=public
+      (type string)
+      (item $q)
+      (hook get by-ref
+        (expr
+          (prop name=q
+            (var $this))))
+      (hook set
+        (body
+          (expr-stmt
+            (assign
+              (prop name=q
+                (var $this))
+              (var $value))))))
+    (method __construct mods=public
+      (params
+        (param $n promote=public,readonly
+          (type string))
+        (param $m promote=protected(set)
+          (type int))
+        (param $h promote=private(set)
+          (type int)
+          (hook get
+            (expr
+              (int 1)))))
+      (body))
+    (method f mods=protected,abstract
+      (params)
+      (ret
+        (type static))
+      (abstract))
+    (method g mods=public,static
+      (params)
+      (ret
+        (type self))
+      (body))
+    (method h by-ref
+      (params)
+      (body)))
+  (class-like kind=class name=D mods=abstract
+    (method f mods=abstract
+      (params)
+      (abstract)))
+  (class-like kind=interface name=I
+    (extends
+      (name J kind=u)
+      (name K kind=u))
+    (const
+      (item X
+        (int 1)))
+    (method f mods=public
+      (params)
+      (abstract))
+    (prop mods=public
+      (type string)
+      (item $p)
+      (hook get
+        (abstract))
+      (hook set
+        (abstract))))
+  (class-like kind=trait name=T
+    (method g mods=public,abstract
+      (params)
+      (abstract))
+    (prop mods=public,static
+      (item $x)))
+  (class-like kind=enum name=E
+    (case A)
+    (case B)
+    (const
+      (item X
+        (class-const const=A
+          (self)))))
+  (class-like kind=enum name=F
+    (implements
+      (name I kind=u))
+    (backing
+      (type string))
+    (case X
+      (str "x"))
+    (case Y
+      (attr-group
+        (attr A kind=u))
+      (str "y"))
+    (method f mods=public
+      (params)
+      (body)))
+  (class-like kind=class name=R mods=readonly
+    (method __construct mods=public
+      (params
+        (param $x promote=public
+          (type int))
+        (param $y promote=private(set)
+          (type string)))
+      (body)))
+  (expr-stmt
+    (assign
+      (var $o)
+      (new
+        (class-like kind=class))))
+  (expr-stmt
+    (assign
+      (var $p)
+      (new
+        (class-like kind=class
+          (extends
+            (name P kind=u))
+          (implements
+            (name I kind=u))
+          (prop mods=public
+            (item $x)))
+        (arg
+          (int 1)))))
+  (expr-stmt
+    (assign
+      (var $q)
+      (new
+        (class-like kind=class mods=readonly
+          (attr-group
+            (attr A kind=u)))))))

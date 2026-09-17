@@ -1,0 +1,174 @@
+(program file=0
+  (func f
+    (params
+      (param $a
+        (type int)
+        (default
+          (int 1)))
+      (param $rest variadic
+        (type string)))
+    (ret
+      (nullable
+        (type int)))
+    (body
+      (return
+        (int 1))))
+  (func g by-ref
+    (params
+      (param $x by-ref)
+      (param $y
+        (union
+          (type array)
+          (type null))
+        (default
+          (array syntax=short)))
+      (param $z
+        (intersection
+          (type-name A kind=u)
+          (type-name B kind=u))
+        (default
+          (null))))
+    (body))
+  (expr-stmt
+    (call
+      (name f kind=u)
+      (arg
+        (int 1))
+      (arg spread
+        (var $args))))
+  (expr-stmt
+    (call
+      (name f kind=u)
+      (arg name=a
+        (int 1))
+      (arg name=b
+        (int 2))))
+  (expr-stmt
+    (call
+      (name f kind=u)
+      (arg spread
+        (array syntax=short
+          (item
+            (key
+              (str "a"))
+            (int 1))))))
+  (expr-stmt
+    (call
+      (call
+        (name f kind=u)
+        (arg
+          (int 1)))
+      (arg
+        (int 2))))
+  (expr-stmt
+    (assign
+      (var $c)
+      (closure static
+        (params)
+        (uses
+          (use $a by-ref)
+          (use $b))
+        (ret
+          (type int))
+        (body
+          (return
+            (var $a))))))
+  (expr-stmt
+    (assign
+      (var $d)
+      (arrow-fn static by-ref
+        (params
+          (param $x))
+        (body
+          (var $x)))))
+  (expr-stmt
+    (assign
+      (var $e)
+      (arrow-fn
+        (attr-group
+          (attr A kind=u))
+        (params
+          (param $xs variadic
+            (type int)))
+        (ret
+          (type int))
+        (body
+          (int 1)))))
+  (expr-stmt
+    (assign
+      (var $f)
+      (closure
+        (attr-group
+          (attr B kind=u))
+        (params)
+        (uses)
+        (ret
+          (type never))
+        (body
+          (expr-stmt
+            (throw
+              (new
+                (name E kind=u))))))))
+  (expr-stmt
+    (assign
+      (var $g)
+      (callable
+        (name strlen kind=u))))
+  (expr-stmt
+    (assign
+      (var $h)
+      (callable-method name=m
+        (var $o))))
+  (expr-stmt
+    (assign
+      (var $i)
+      (callable-static name=m
+        (name A kind=u))))
+  (expr-stmt
+    (assign
+      (var $j)
+      (callable
+        (var $x))))
+  (expr-stmt
+    (assign
+      (var $k)
+      (callable-method
+        (var $o)
+        (name-expr
+          (str "m")))))
+  (expr-stmt
+    (assign
+      (var $l)
+      (closure
+        (params)
+        (uses)
+        (body
+          (expr-stmt
+            (yield
+              (value
+                (int 1))))
+          (expr-stmt
+            (yield
+              (key
+                (int 2))
+              (value
+                (int 3))))
+          (expr-stmt
+            (yield-from
+              (array syntax=short
+                (item
+                  (int 4)))))
+          (expr-stmt
+            (assign
+              (var $y)
+              (yield)))))))
+  (expr-stmt
+    (assign
+      (var $m)
+      (arrow-fn
+        (params)
+        (body
+          (arrow-fn
+            (params)
+            (body
+              (int 1))))))))

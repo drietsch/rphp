@@ -1,0 +1,22 @@
+<?php
+echo 1 + 2 * 3 ** 2 . "x";
+var_dump(!$a instanceof B);
+$r = $a ?? $b ?: $c;
+$s = -2 ** 2;
+$t = (int) $a["x"] + 1;
+$u = $a = $b += 1;
+$v = $x ?? $y = 1;
+$w = 2 ** 3 ** 2;
+$z = 1 - 2 - 3;
+$p = $a . $b + $c;
+$q = $a and $b;
+$k = $a <=> $b;
+$m = $a xor $b;
+$n = ~$a & +$b | $c ^ $d << 1 >> 2;
+$o = @f() % 3;
+$i = $j++ + ++$j - $j-- - --$j;
+$c1 = (float) $a + (string) $b . (bool) $c . (array) $d . (object) $e;
+$c2 = (integer) $a + (double) $b . (boolean) $c . (binary) $d;
+$eq = ($a == $b) != ($c === $d); $ne = $e !== $f; $lt = $g <> $h;
+$cmp = ($a < $b) <= ($c > $d); $ge = $e >= $f;
+$lg = $a && $b || $c;

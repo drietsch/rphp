@@ -1,0 +1,5 @@
+(program file=0
+  (echo
+    (int 1))
+  (echo
+    (int 2)))

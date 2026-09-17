@@ -1,0 +1,1 @@
+x<?php namespace A;

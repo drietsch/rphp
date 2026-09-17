@@ -1,0 +1,1 @@
+<?php new final class {};

@@ -1,0 +1,137 @@
+(program file=0
+  (expr-stmt
+    (exit
+      (int 1)))
+  (expr-stmt
+    (exit))
+  (expr-stmt
+    (exit))
+  (expr-stmt
+    (exit
+      (str "x")))
+  (expr-stmt
+    (print
+      (int 1)))
+  (expr-stmt
+    (assign
+      (var $r)
+      (print
+        (str "y"))))
+  (expr-stmt
+    (include kind=include
+      (str "a")))
+  (expr-stmt
+    (include kind=include_once
+      (str "b")))
+  (expr-stmt
+    (include kind=require
+      (str "c")))
+  (expr-stmt
+    (include kind=require_once
+      (str "d")))
+  (expr-stmt
+    (eval
+      (str "1")))
+  (expr-stmt
+    (isset
+      (var $a)
+      (index
+        (var $b)
+        (int 0))
+      (prop name=d
+        (var $c))
+      (static-prop name=e
+        (name C kind=u))))
+  (expr-stmt
+    (empty
+      (var $x)))
+  (unset
+    (var $a)
+    (index
+      (var $b)
+      (int 0)))
+  (global
+    (var $g)
+    (var-var
+      (var $h)))
+  (static-var
+    (item $s
+      (int 1))
+    (item $t))
+  (expr-stmt
+    (assign
+      (var $m)
+      (match
+        (bool true)
+        (arm
+          (conds
+            (int 1)
+            (int 2))
+          (str "a"))
+        (arm default
+          (str "b")))))
+  (expr-stmt
+    (assign
+      (var $n)
+      (match
+        (var $x))))
+  (expr-stmt
+    (throw
+      (new
+        (name E kind=u))))
+  (expr-stmt
+    (assign
+      (var $t)
+      (binary coalesce
+        (var $a)
+        (throw
+          (new
+            (name E kind=u))))))
+  (expr-stmt
+    (assign
+      (var $arr)
+      (array syntax=short
+        (item
+          (int 1))
+        (item
+          (key
+            (int 2))
+          (int 3))
+        (item spread
+          (var $c))
+        (item by-ref
+          (key
+            (str "k"))
+          (var $v)))))
+  (expr-stmt
+    (assign
+      (var $leg)
+      (array syntax=long
+        (item
+          (int 1))
+        (item
+          (int 2)))))
+  (expr-stmt
+    (assign
+      (var $e)
+      (binary concat
+        (binary concat
+          (index
+            (array syntax=short
+              (item
+                (int 1))
+              (item
+                (int 2)))
+            (int 0))
+          (index
+            (str "abc")
+            (int 1)))
+        (index
+          (array syntax=long
+            (item
+              (int 1)))
+          (int 0)))))
+  (expr-stmt
+    (unary void
+      (call
+        (name f kind=u)))))

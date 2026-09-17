@@ -1,0 +1,76 @@
+(program file=0 strict
+  (declare
+    (directive strict_types
+      (int 1)))
+  (namespace
+    (name A\B kind=q)
+    (use kind=class
+      (item
+        (name C\D kind=q))
+      (item alias=F
+        (name E kind=u)))
+    (use kind=function
+      (item
+        (name G\h kind=q))
+      (item alias=k
+        (name I\j kind=q)))
+    (use kind=const
+      (item
+        (name L\M kind=q)))
+    (use kind=class
+      (prefix
+        (name N kind=u))
+      (item
+        (name O kind=u))
+      (item alias=Q
+        (name P kind=u))
+      (item kind=function
+        (name r kind=u))
+      (item kind=const
+        (name S kind=u)))
+    (use kind=function
+      (prefix
+        (name T kind=u))
+      (item
+        (name u kind=u))
+      (item
+        (name v kind=u)))
+    (const-decl
+      (item X
+        (int 1))
+      (item Y
+        (int 2)))
+    (const-decl
+      (attr-group
+        (attr Z kind=u))
+      (item W
+        (int 3)))
+    (expr-stmt
+      (call
+        (name f kind=rel)))
+    (expr-stmt
+      (call
+        (name g kind=fq)))
+    (expr-stmt
+      (call
+        (name h kind=u)))
+    (expr-stmt
+      (call
+        (name A\i kind=q)))
+    (expr-stmt
+      (new
+        (name C kind=rel)))
+    (echo
+      (magic __NAMESPACE__)
+      (magic __CLASS__)
+      (magic __FUNCTION__)
+      (magic __METHOD__)
+      (magic __LINE__)
+      (magic __FILE__)
+      (magic __DIR__)
+      (magic __TRAIT__)
+      (magic __PROPERTY__)))
+  (namespace
+    (name Q kind=u)
+    (echo
+      (int 1))))

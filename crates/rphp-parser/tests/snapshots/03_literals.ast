@@ -1,0 +1,53 @@
+(program file=0
+  (expr-stmt
+    (assign
+      (var $a)
+      (array syntax=short
+        (item
+          (int 9223372036854775807))
+        (item
+          (float 9.223372036854776e18))
+        (item
+          (int 10))
+        (item
+          (int 15))
+        (item
+          (int 15))
+        (item
+          (int 0))
+        (item
+          (int 1000000))
+        (item
+          (int 9223372036854775807))
+        (item
+          (float 9.223372036854776e18)))))
+  (expr-stmt
+    (assign
+      (var $b)
+      (array syntax=short
+        (item
+          (float 1000.0))
+        (item
+          (float 0.5))
+        (item
+          (float 1.0))
+        (item
+          (float 0.0015))
+        (item
+          (float 1000.5))
+        (item
+          (float inf)))))
+  (expr-stmt
+    (assign
+      (var $c)
+      (array syntax=short
+        (item
+          (bool true))
+        (item
+          (bool false))
+        (item
+          (null))
+        (item
+          (bool true))
+        (item
+          (null))))))

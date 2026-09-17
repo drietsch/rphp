@@ -1,0 +1,1 @@
+<?php abstract interface I {}

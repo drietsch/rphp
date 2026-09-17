@@ -76,10 +76,23 @@ fn our_verdict(src: &[u8]) -> Result<(), Vec<String>> {
     let mut sources = rphp_source::SourceMap::new();
     let id = sources.add("<corpus>", src.to_vec());
     let mut interner = rphp_intern::Interner::new();
-    let (_program, diags) = rphp_parser::parse(src, id, &mut interner);
-    let errors: Vec<String> = diags
+    // F2: the mago adapter. `php -n -l` runs with `short_open_tag` on.
+    let opts = rphp_parser::ParseOptions {
+        file: id,
+        path: None,
+        short_open_tag: true,
+    };
+    let parsed = rphp_parser::parse_v2(src, opts, &mut interner);
+    // `RPHP_E0010` (unsupported node) is a coverage gap, not a verdict on the
+    // file: it is rendered first so it forms its own report group.
+    let (unsupported, errors): (Vec<_>, Vec<_>) = parsed
+        .diagnostics
         .iter()
         .filter(|d| d.is_error())
+        .partition(|d| d.code == rphp_diagnostics::codes::UNSUPPORTED_NODE);
+    let errors: Vec<String> = unsupported
+        .iter()
+        .chain(errors.iter())
         .map(|d| d.render(&sources))
         .collect();
     if errors.is_empty() {

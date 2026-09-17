@@ -1,0 +1,135 @@
+(program file=0
+  (expr-stmt
+    (prop name=b
+      (new
+        (name A kind=u))))
+  (expr-stmt
+    (method-call name=b
+      (new
+        (name A kind=u))))
+  (expr-stmt
+    (new
+      (class-expr
+        (call
+          (name f kind=u)))))
+  (expr-stmt
+    (new
+      (class-expr
+        (prop name=b
+          (var $a)))))
+  (expr-stmt
+    (new
+      (static)))
+  (expr-stmt
+    (new
+      (name A kind=u)))
+  (expr-stmt
+    (index
+      (new
+        (name A kind=u)
+        (arg
+          (int 1)))
+      (int 0)))
+  (expr-stmt
+    (class-const const=B
+      (class-expr
+        (new
+          (name A kind=u)))))
+  (expr-stmt
+    (static-call name=x
+      (static)))
+  (expr-stmt
+    (class-const const=class
+      (name X kind=u)))
+  (expr-stmt
+    (class-const const=class
+      (class-expr
+        (var $x))))
+  (expr-stmt
+    (class-const
+      (name X kind=u)
+      (const-expr
+        (var $e))))
+  (expr-stmt
+    (static-prop name=p
+      (name X kind=u)))
+  (expr-stmt
+    (static-prop
+      (name X kind=u)
+      (name-expr
+        (var $p))))
+  (expr-stmt
+    (class-const const=CONST
+      (self)))
+  (expr-stmt
+    (static-call name=m
+      (parent)))
+  (expr-stmt
+    (static-call
+      (class-expr
+        (var $a))
+      (name-expr
+        (var $b))))
+  (expr-stmt
+    (static-call
+      (class-expr
+        (var $a))
+      (name-expr
+        (var $m))))
+  (expr-stmt
+    (method-call name=list
+      (var $o)))
+  (expr-stmt
+    (prop name=class
+      (var $o)))
+  (expr-stmt
+    (static-call name=new
+      (name C kind=u)))
+  (expr-stmt
+    (prop name=fn nullsafe
+      (var $o)))
+  (expr-stmt
+    (prop name=p nullsafe
+      (prop name=n
+        (method-call name=m nullsafe
+          (var $o)))))
+  (expr-stmt
+    (call
+      (name f kind=u)
+      (arg name=name
+        (int 1))
+      (arg name=class
+        (int 2))))
+  (expr-stmt
+    (clone
+      (var $a)))
+  (expr-stmt
+    (clone
+      (var $a)))
+  (expr-stmt
+    (clone
+      (var $a)
+      (with
+        (array syntax=short
+          (item
+            (key
+              (str "x"))
+            (int 1))))))
+  (expr-stmt
+    (clone
+      (var $a)
+      (with
+        (array syntax=short))))
+  (expr-stmt
+    (binary pipe
+      (binary pipe
+        (var $x)
+        (callable
+          (name strlen kind=u)))
+      (arrow-fn
+        (params
+          (param $n))
+        (body
+          (binary add
+            (var $n)
+            (int 1)))))))

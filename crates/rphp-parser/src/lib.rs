@@ -11,7 +11,16 @@
 //! synchronizes to the next `;` or `}` rather than aborting. The lexer's own
 //! diagnostics are forwarded too, so the returned `Vec<Diagnostic>` is the full
 //! picture and the returned `Program` may be partial.
+//!
+//! **F2:** the production front end is the `mago-syntax` adapter in
+//! [`adapter`] ([`parse_v2`]), which produces `rphp_ast::v2`. The hand-written
+//! parser below and its [`parse`] entry point stay until the compiler migrates
+//! to AST v2 (F3).
 #![forbid(unsafe_code)]
+
+pub mod adapter;
+
+pub use adapter::{parse_v2, ParseOptions, Parsed};
 
 use rphp_ast::{
     ArrayItem, BinOp, Class, Expr, Func, Method, Param, Program, PropDecl, Stmt, UnOp, Visibility,

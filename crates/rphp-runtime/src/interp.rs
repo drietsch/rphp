@@ -1,22 +1,24 @@
-//! [`Interp`]: all per-request engine state (plan E1, ADR-014). One `Interp`
-//! runs one script; the SAPI (through `rphp-embed`) creates it, registers the
-//! extension bundle and engine constants, loads the compiled module, runs
-//! `{main}`, the shutdown functions and the output flush, and reads the exit
-//! code back.
+//! [`Interp`]: all per-request engine state (plan E1/E3, ADR-014/016/018/
+//! 019/020). One `Interp` runs one script; the SAPI (through `rphp-embed`)
+//! creates it, registers the extension bundle and engine constants, loads
+//! the compiled unit, runs `{main}`, the shutdown functions and the output
+//! flush, and reads the exit code back.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use rphp_bytecode::{ClassId, Module};
-use rphp_value::{Layout, ObjectIdAllocator, PropMeta, Value};
+use rphp_bytecode::Module;
+use rphp_value::{ObjectIdAllocator, Value};
 
 use crate::errors::E_ALL;
-use crate::frames::FrameInfo;
+use crate::frame::{Frame, FrameKind, RetTarget};
 use crate::ini::IniTable;
 use crate::output::{OutputStack, SharedBuffer};
 use crate::registry::{NativeFn, NativeId, Unwind};
 use crate::resources::ResourceTable;
+use crate::symtab::Symtab;
+use crate::unit::{ClassRt, FuncRt, UnitRt};
 use crate::LastError;
 
 /// Which SAPI created this interpreter (`PHP_SAPI`, `php_sapi_name()`).
@@ -54,16 +56,64 @@ pub struct ExtState {
     pub json_last_error_msg: String,
 }
 
-/// The interpreter: registry, tables, output, diagnostics, and the
-/// per-request bookkeeping the engine needs. Fields the stdlib reads and
-/// writes directly are public; the registry and frame stack go through the
-/// methods in `api.rs`.
+/// Why the compile hook could not produce a unit for `include`/`eval`.
+#[derive(Clone, Debug)]
+pub enum CompileFailure {
+    /// A parse error: php reports it as a fatal `Parse error` (or throws
+    /// `ParseError` inside `eval`).
+    Parse { message: String, line: u32 },
+    /// The compiler rejected the program (constructs not lowered yet); the
+    /// rendered diagnostics.
+    Rejected(Vec<String>),
+}
+
+/// The callback `include`/`require` use to compile a file on demand
+/// (installed by `rphp-embed`): source bytes and the file name as php
+/// reports it → a module.
+pub type CompileHook = Box<dyn Fn(&Interp, &[u8], &str) -> Result<Module, CompileFailure>>;
+
+/// The maximum nesting of native→PHP re-entries (`run_until` on the Rust
+/// stack) before the engine gives up, so the host stack cannot overflow.
+pub const MAX_REENTRY_DEPTH: usize = 512;
+/// The maximum number of frames before the engine gives up (php has no
+/// such limit — it runs out of memory instead; cataloged divergence).
+pub const MAX_FRAMES: usize = 1_000_000;
+
+/// The interpreter: registry, tables, output, diagnostics, the frame and
+/// register stacks, and the per-request bookkeeping the engine needs. Fields
+/// the stdlib reads and writes directly are public; the registry, the
+/// tables and the frame stack go through methods.
 pub struct Interp {
     pub(crate) natives: Vec<NativeFn>,
     /// Lowercased name → id.
     pub(crate) native_index: HashMap<Box<[u8]>, NativeId>,
     pub(crate) constants: HashMap<Box<[u8]>, Value>,
-    pub(crate) module: Option<Rc<Module>>,
+    /// Every loaded unit.
+    pub(crate) units: Vec<Rc<UnitRt>>,
+    /// Every function of every loaded unit, by process-wide id.
+    pub(crate) funcs: Vec<Rc<FuncRt>>,
+    /// Lowercased name → declared user function.
+    pub(crate) func_index: HashMap<Box<[u8]>, u32>,
+    /// Bumped by every function declaration (inline-cache stamp).
+    pub(crate) func_gen: u32,
+    /// Every class of every loaded unit (plus engine classes), by id.
+    pub(crate) classes: Vec<Rc<ClassRt>>,
+    /// Lowercased name → declared class.
+    pub(crate) class_index: HashMap<Box<[u8]>, u32>,
+    /// Bumped by every class declaration.
+    pub(crate) class_gen: u32,
+    /// The entry script's `{main}` (set by [`Interp::load_module`]).
+    pub(crate) main_func: Option<u32>,
+    /// The frame stack.
+    pub(crate) frames: Vec<Frame>,
+    /// The contiguous register stack (every user frame's window).
+    pub(crate) stack: Vec<Value>,
+    /// Native→PHP re-entries in progress.
+    pub(crate) reentry_depth: usize,
+    /// Canonical paths of files included with `_once`.
+    pub(crate) included: HashSet<PathBuf>,
+    /// The compile hook for `include`/`require`.
+    pub compile_hook: Option<CompileHook>,
     /// The output stack (`echo`, `ob_*`) over the SAPI's sink.
     pub out: OutputStack,
     /// The ini table.
@@ -87,11 +137,9 @@ pub struct Interp {
     pub resources: ResourceTable,
     /// Object handle allocator.
     pub object_ids: ObjectIdAllocator,
-    /// One instance layout (and default slots) per class, built lazily.
-    pub(crate) layouts: Vec<Option<(Rc<Layout>, Vec<Value>)>>,
-    /// Superglobals / globals seeded by the SAPI (`_SERVER`, `argv`, `argc`).
-    /// Not visible to PHP code until the compiler lowers global fetches.
-    pub globals: HashMap<Box<[u8]>, Value>,
+    /// The global symbol table: superglobals seeded by the SAPI (`_SERVER`,
+    /// `argv`, `argc`) and every variable of the entry script's `{main}`.
+    pub globals: Symtab,
     /// The script's argument vector (`$argv`), byte strings.
     pub argv: Vec<Vec<u8>>,
     /// The script file, when running a file.
@@ -105,21 +153,33 @@ pub struct Interp {
     pub sapi: SapiKind,
     /// `declare(strict_types=1)` default for units that do not declare it.
     pub strict_default: bool,
-    pub(crate) frames: Vec<FrameInfo>,
     pub(crate) in_error_handler: bool,
     test_buf: Option<SharedBuffer>,
 }
 
 impl Interp {
     /// A bare interpreter writing to `sink`: no natives, no constants, the
-    /// core ini defaults, `error_reporting = E_ALL`. The SAPI (rphp-embed)
-    /// populates it through [`crate::Registry`].
+    /// core ini defaults, `error_reporting = E_ALL`, and the engine class
+    /// `stdClass`. The SAPI (rphp-embed) populates it through
+    /// [`crate::Registry`].
     pub fn new(sink: Box<dyn crate::OutputSink>) -> Interp {
-        Interp {
+        let mut it = Interp {
             natives: Vec::new(),
             native_index: HashMap::new(),
             constants: HashMap::new(),
-            module: None,
+            units: Vec::new(),
+            funcs: Vec::new(),
+            func_index: HashMap::new(),
+            func_gen: 0,
+            classes: Vec::new(),
+            class_index: HashMap::new(),
+            class_gen: 0,
+            main_func: None,
+            frames: Vec::new(),
+            stack: Vec::new(),
+            reentry_depth: 0,
+            included: HashSet::new(),
+            compile_hook: None,
             out: OutputStack::new(sink),
             ini: IniTable::with_core_defaults(),
             error_reporting: E_ALL,
@@ -131,18 +191,18 @@ impl Interp {
             ext: ExtState::default(),
             resources: ResourceTable::new(),
             object_ids: ObjectIdAllocator::new(),
-            layouts: Vec::new(),
-            globals: HashMap::new(),
+            globals: Symtab::new(),
             argv: Vec::new(),
             script_path: None,
             script_name: String::from("Command line code"),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             sapi: SapiKind::Embed,
             strict_default: false,
-            frames: Vec::new(),
             in_error_handler: false,
             test_buf: None,
-        }
+        };
+        it.register_builtin_class(b"stdClass");
+        it
     }
 
     /// An interpreter for unit tests: output goes to an in-memory buffer
@@ -173,24 +233,39 @@ impl Interp {
             .unwrap_or_default()
     }
 
-    /// Install the compiled program. Replaces any earlier module (and the
-    /// layout cache built for it).
-    pub fn load_module(&mut self, module: Module) {
-        self.layouts = vec![None; module.classes.len()];
-        self.module = Some(Rc::new(module));
+    /// Install the entry program: load the unit (declaring its hoisted
+    /// functions and classes) and remember its `{main}` for
+    /// [`Interp::run_main`]. A redeclaration fault is returned.
+    pub fn load_module(&mut self, module: Module) -> Result<(), Unwind> {
+        let main = self.load_unit(module)?;
+        self.main_func = Some(main);
+        Ok(())
     }
 
-    /// The loaded module, if any.
-    pub fn module(&self) -> Option<&Rc<Module>> {
-        self.module.as_ref()
+    /// The entry program's `{main}`, if loaded.
+    pub fn main_func(&self) -> Option<&Rc<FuncRt>> {
+        self.main_func.map(|id| &self.funcs[id as usize])
     }
 
-    /// Run the loaded module's `{main}` to completion.
+    /// Run the loaded program's `{main}` to completion: its frame binds to
+    /// the globals table.
     pub fn run_main(&mut self) -> Result<Value, Unwind> {
-        let Some(module) = self.module.clone() else {
+        let Some(main) = self.main_func else {
             return Err(Unwind::error("No script loaded"));
         };
-        crate::exec::exec_function(self, &module, module.main, &[], None)
+        let func = self.funcs[main as usize].clone();
+        let depth = self.frames.len();
+        self.push_user_frame(
+            func,
+            FrameKind::ReentryBoundary,
+            &[],
+            None,
+            None,
+            None,
+            RetTarget::Discard,
+            Some(self.globals.clone()),
+        )?;
+        self.run_until(depth)
     }
 
     /// Register a native; a re-registered name keeps its id.
@@ -203,6 +278,7 @@ impl Interp {
         let id = NativeId(self.natives.len() as u32);
         self.natives.push(f);
         self.native_index.insert(key, id);
+        self.func_gen += 1;
         id
     }
 
@@ -222,63 +298,19 @@ impl Interp {
         &self.natives
     }
 
-    /// The instance layout and default slot values of `class`, built on
-    /// first use from the module's parent-first property set.
-    pub(crate) fn instance_layout(
-        &mut self,
-        module: &Module,
-        class: ClassId,
-    ) -> (Rc<Layout>, Vec<Value>) {
-        let idx = class as usize;
-        if idx >= self.layouts.len() {
-            self.layouts.resize(idx + 1, None);
-        }
-        if let Some(cached) = &self.layouts[idx] {
-            return cached.clone();
-        }
-        let mut metas = Vec::new();
-        let mut defaults = Vec::new();
-        for (name, default, vis) in module.instance_props(class) {
-            let decl_class = module.resolve_prop(class, &name).map_or(class, |(_, d)| d);
-            metas.push(PropMeta {
-                name,
-                vis,
-                decl_class,
-                decl_class_name: Rc::from(&module.class(decl_class).name_bytes[..]),
-            });
-            defaults.push(default);
-        }
-        let layout = Rc::new(Layout::new(
-            Rc::from(&module.class(class).name_bytes[..]),
-            metas,
-        ));
-        self.layouts[idx] = Some((layout.clone(), defaults.clone()));
-        (layout, defaults)
+    /// Whether a function of this name exists (user or native).
+    pub fn function_exists(&self, name: &[u8]) -> bool {
+        let name = name.strip_prefix(b"\\").unwrap_or(name);
+        self.user_function(name).is_some() || self.native_by_name(name).is_some()
     }
 
-    // ---- frame-info stack ------------------------------------------------
-
-    pub(crate) fn push_frame(&mut self, f: FrameInfo) {
-        self.frames.push(f);
-    }
-
-    pub(crate) fn pop_frame(&mut self) {
-        self.frames.pop();
-    }
-
-    pub(crate) fn set_pc(&mut self, pc: usize) {
-        if let Some(f) = self.frames.last_mut() {
-            f.pc = pc;
-        }
-    }
-
-    /// The frame-info stack (bottom first).
-    pub fn frames(&self) -> &[FrameInfo] {
-        &self.frames
+    /// Whether a class of this name is declared.
+    pub fn class_exists(&self, name: &[u8]) -> bool {
+        self.class_by_name(name).is_some()
     }
 
     /// Fill in the fault site of a pending unwind that has none yet — called
-    /// at every frame boundary while the faulting frame is still on top.
+    /// while the faulting frame is still on top.
     pub(crate) fn locate_fault<T>(&self, r: Result<T, Unwind>) -> Result<T, Unwind> {
         match r {
             Err(Unwind::Pending(mut p)) if p.site.is_none() => {
@@ -307,10 +339,7 @@ impl Interp {
             Unwind::Throw(o) => {
                 let p = crate::PendingThrow {
                     kind: crate::ErrorKind::Exception("Exception"),
-                    message: format!(
-                        "Uncaught exception of class {}",
-                        String::from_utf8_lossy(o.layout().class_name())
-                    ),
+                    message: format!("Uncaught exception of class {}", self.class_name_of(&o)),
                     site: None,
                 };
                 self.render_uncaught(&p);
@@ -324,14 +353,9 @@ impl Interp {
     /// run — and the exit code becomes 255 / the exit's code).
     pub fn run_shutdown_functions(&mut self, code: i32) -> i32 {
         let mut code = code;
-        let main = self.module.as_ref().map(|m| m.main);
         let base = self.frames.len();
-        if self.frames.is_empty() {
-            if let Some(main) = main {
-                self.frames.push(FrameInfo::user(main, Vec::new()));
-            }
-        }
-        self.frames.push(FrameInfo::internal());
+        let silence = self.silence;
+        self.frames.push(Frame::internal(silence));
         while !self.shutdown.is_empty() {
             let (cb, args) = self.shutdown.remove(0);
             match self.call_value(&cb, &args) {

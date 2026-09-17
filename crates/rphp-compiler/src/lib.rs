@@ -1,33 +1,39 @@
-//! Lower `rphp_ast::v2` to `rphp-bytecode` for the current language slice.
+//! Lower `rphp_ast::v2` to `rphp-bytecode` (the v2 contract: `Init*`/`Send*`/
+//! `DoCall` calls, late-bound names, references and fetch-for-write chains,
+//! control flow, operators).
 //!
 //! The lowering is a straightforward tree-walk into three-address register
-//! bytecode (`rphp-bytecode`). A pre-pass assigns every top-level function a
-//! [`FuncId`] (the synthetic `{main}` is `0`, user functions follow in
-//! declaration order, then the methods of every class, then the closures
-//! discovered while compiling bodies) so calls resolve regardless of source
-//! order. Each function then pre-scans its body to give every variable a
-//! permanent register; intermediate results use a stack of temporaries
-//! allocated above the variable region.
+//! bytecode (`rphp-bytecode`). Function `0` is the synthetic `{main}`; every
+//! other function (hoisted or conditional declarations, methods, closures,
+//! default-value thunks) is appended through a sink as it is compiled, so
+//! [`FuncId`]s are known before bodies finish. Classes are numbered by a
+//! pre-pass over the whole unit ([`class::collect_class_ids`]) so `extends`
+//! can name a class declared later or conditionally. Every name a program
+//! *uses* — functions, classes, constants — stays a name in the bytecode
+//! (`Const::Name`) and is resolved by the runtime (plan D5): the compiler no
+//! longer depends on the native registry.
 //!
-//! The input is the full PHP 8.5 tree (roadmap F1/F2). What the compiler
-//! lowers today is the M0 slice described in [`stmt`], [`expr`] and
-//! [`class`]; every other node, variant or flag is reported as
-//! `RPHP_E0300 unsupported construct: <what> (not lowered yet)` with the
-//! node's span, through the single [`unsupported`] helper, so a program
-//! outside the slice fails with a precise list rather than mis-compiling.
-//! Types on parameters, properties and returns, attributes and doc comments
-//! are metadata the slice ignores (they neither fail nor change lowering).
+//! Each function pre-scans its body to give every variable a permanent
+//! register; intermediate results use a stack of temporaries allocated above
+//! the variable region. `$this` is a frame slot read with `LoadThis`.
 //!
-//! Errors (undefined function, wrong argument count, duplicate declaration,
-//! unsupported construct) are collected as [`Diagnostic`]s; the compile fails
-//! iff any of them is an error.
+//! What the compiler lowers is described in [`stmt`], [`expr`] and [`class`];
+//! every other node, variant or flag is reported as `RPHP_E0300 unsupported
+//! construct: <what> (not lowered yet)` with the node's span, through the
+//! single [`unsupported`] helper, so a program outside the slice fails with a
+//! precise list rather than mis-compiling. Types on parameters, properties
+//! and returns, attributes and doc comments are metadata the slice ignores.
+//!
+//! Errors (duplicate declaration, invalid `break` level, `goto` into a loop,
+//! unsupported construct, …) are collected as [`Diagnostic`]s; the compile
+//! fails iff any of them is an error.
 //!
 //! | module   | contents                                                  |
 //! |----------|-----------------------------------------------------------|
-//! | [`func`] | `FnCompiler`, function/closure drivers, emit helpers      |
+//! | [`func`] | `FnCompiler`, function/closure/thunk drivers, emit helpers|
 //! | [`stmt`] | statement lowering                                        |
-//! | [`expr`] | expression lowering                                       |
-//! | [`class`]| class pre-pass, class tables, `Class` assembly            |
+//! | [`expr`] | expression lowering (calls, write targets, operators)     |
+//! | [`class`]| class pre-pass and `Class` assembly                       |
 //! | [`regs`] | register pre-scan and arrow-function capture visitors     |
 #![forbid(unsafe_code)]
 
@@ -40,40 +46,53 @@ mod stmt;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::path::PathBuf;
+use std::rc::Rc;
 
 use rphp_ast::v2::{ClassLike, FuncDecl, Program, Stmt};
-use rphp_bytecode::{ClassId, FuncId, Function, Module};
+use rphp_bytecode::{Const, FuncId, Module, Op};
 use rphp_diagnostics::{codes, Diagnostic};
-use rphp_intern::{IdentId, Interner};
+use rphp_intern::Interner;
 use rphp_span::Span;
 
-use class::ClassCtx;
-use func::{compile_function, FnSpec, ModuleCtx};
+use func::{compile_function, ClosureBody, FnSpec, ModuleCtx};
 
-/// Diagnostic code for a duplicate function declaration. `rphp-diagnostics`
-/// does not (yet) expose a shared constant for this, so the compiler owns it.
-pub const REDECLARED_FUNCTION: &str = "RPHP_E0102";
-/// Writing through a nested subscript (`$a[i][j] = v`) is not lowered yet.
-pub const NESTED_ARRAY_WRITE: &str = "RPHP_E0103";
 /// Reading `$a[]` (the empty-subscript append form) is not a valid expression.
 pub const INVALID_APPEND_READ: &str = "RPHP_E0104";
-/// A by-reference parameter (e.g. `sort($a)`) was passed a non-variable.
-pub const BY_REF_NOT_VARIABLE: &str = "RPHP_E0105";
-/// A duplicate class declaration.
+/// A cyclic `extends`.
 pub const REDECLARED_CLASS: &str = "RPHP_E0106";
-/// `new Foo(...)` where `Foo` is not a declared class.
+/// `extends Foo` where `Foo` is not declared in the unit.
 pub const UNDEFINED_CLASS: &str = "RPHP_E0107";
 /// A property default that is not a constant expression.
 pub const NON_CONST_PROP_DEFAULT: &str = "RPHP_E0108";
-/// A scoped call (`self::m()` / `parent::m()` / `Class::m()`) to a method that
-/// does not exist.
-pub const UNDEFINED_METHOD: &str = "RPHP_E0109";
-/// `self::`/`parent::` used outside a class, or `parent::` with no parent.
+/// `self::`/`parent::`/`static::` used outside a class.
 pub const INVALID_SCOPE: &str = "RPHP_E0110";
+/// `break`/`continue` outside a loop or with too many levels.
+pub const INVALID_BREAK: &str = "RPHP_E0111";
+/// `goto` to an undefined label, or a label defined twice.
+pub const UNDEFINED_LABEL: &str = "RPHP_E0112";
+/// `goto` into a loop or `switch`.
+pub const GOTO_INTO_LOOP: &str = "RPHP_E0113";
+/// An expression that cannot be written to (`f() = 1`, `$this = …`).
+pub const INVALID_WRITE_TARGET: &str = "RPHP_E0114";
 /// A syntactically valid construct the compiler does not lower yet
 /// (`codes::UNSUPPORTED_CONSTRUCT`).
 pub const UNSUPPORTED_CONSTRUCT: &str = codes::UNSUPPORTED_CONSTRUCT;
+
+/// Whether a written name resolves as spelled: every unit compiled today is
+/// in the global namespace (namespace declarations are not lowered), so an
+/// unqualified, qualified (`Foo\Bar`), fully qualified (`\Foo\Bar`) or
+/// `namespace\`-relative name all denote the global symbol with that
+/// spelling. Namespaced *resolution* (imports, the two-step fallback) is F4.
+pub(crate) fn name_is_global(name: &rphp_ast::v2::Name) -> bool {
+    matches!(
+        name.kind,
+        rphp_ast::v2::NameKind::Unqualified
+            | rphp_ast::v2::NameKind::Qualified
+            | rphp_ast::v2::NameKind::FullyQualified
+            | rphp_ast::v2::NameKind::Relative
+    )
+}
 
 /// Report a construct outside the lowered slice:
 /// `RPHP_E0300 unsupported construct: <what> (not lowered yet)` at `span`.
@@ -87,57 +106,21 @@ pub(crate) fn unsupported(diags: &mut Vec<Diagnostic>, span: Span, what: &str) {
     );
 }
 
-/// The arity/by-ref shape of a native the runtime provides, as the compiler
-/// needs it: `id` is the runtime's process-local `NativeId` (baked into
-/// `Op::CallNative` — valid only for the interpreter it was resolved against,
-/// ADR-014), the rest drives the call-site range check and the by-reference
-/// write-back lowering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeSig {
-    /// The runtime's native id.
-    pub id: u32,
-    /// The minimum argument count.
-    pub min_args: usize,
-    /// The maximum argument count; `None` = variadic.
-    pub max_args: Option<usize>,
-    /// Bitmask of by-reference parameter positions.
-    pub by_ref: u32,
-}
-
-/// The set of native functions a call site may bind to — supplied by the
-/// embedder (rphp-embed builds it from the interpreter's registry) so the
-/// compiler has no dependency on any extension crate.
-pub trait KnownFunctions {
-    /// Look a (case-insensitive) function name up.
-    fn native(&self, name: &[u8]) -> Option<NativeSig>;
-}
-
-/// A [`KnownFunctions`] that knows no natives (every builtin call is
-/// "undefined function").
-pub struct NoNatives;
-
-impl KnownFunctions for NoNatives {
-    fn native(&self, _name: &[u8]) -> Option<NativeSig> {
-        None
-    }
-}
-
 /// What [`compile`] needs besides the program.
+#[derive(Default)]
 pub struct CompileOptions<'a> {
-    /// The natives call sites may bind to.
-    pub natives: &'a dyn KnownFunctions,
     /// Maps a byte offset in the source to its 1-based line, for
-    /// `Function::lines`; `None` leaves the line tables empty.
+    /// `Function::lines` and `__LINE__`; `None` leaves the line tables empty.
     pub line_of: Option<&'a dyn Fn(u32) -> u32>,
+    /// The script's path as php reports it (`__FILE__`; `__DIR__` is its
+    /// parent). `None` for `-r`/eval code (`Command line code`, cwd).
+    pub file: Option<PathBuf>,
 }
 
 impl<'a> CompileOptions<'a> {
-    /// Options binding natives through `natives`, without line tables.
-    pub fn new(natives: &'a dyn KnownFunctions) -> CompileOptions<'a> {
-        CompileOptions {
-            natives,
-            line_of: None,
-        }
+    /// Options without line tables or a file.
+    pub fn new() -> CompileOptions<'a> {
+        CompileOptions::default()
     }
 }
 
@@ -161,9 +144,10 @@ fn hoisted<'a>(stmts: &'a [Stmt], funcs: &mut Vec<&'a FuncDecl>, classes: &mut V
 }
 
 /// Compile a parsed program into a bytecode module. Function `0` is the
-/// synthetic `{main}` entry containing the top-level statements; each hoisted
-/// function becomes its own [`Function`] appended afterwards, then the
-/// methods of every class, then the closures.
+/// synthetic `{main}` entry containing the top-level statements; hoisted
+/// functions and classes are declared by the runtime before `{main}` runs
+/// (`Module::hoist_funcs` / `hoist_classes`), conditional ones by their
+/// `DeclareFunction` / `DeclareClass` ops.
 pub fn compile(
     program: &Program,
     interner: &Interner,
@@ -175,147 +159,111 @@ pub fn compile(
     let mut class_decls: Vec<&ClassLike> = Vec::new();
     hoisted(&program.items, &mut func_decls, &mut class_decls);
 
-    // ---- pre-pass A: function ids (main = 0, user funcs 1..=U) ----
-    let mut func_map: HashMap<IdentId, FuncId> = HashMap::new();
-    let mut user_funcs: Vec<&FuncDecl> = Vec::new();
-    // Argument counts indexed by FuncId; index 0 is `{main}` (never called).
-    let mut arities: Vec<u16> = vec![0];
-    let mut next_id: FuncId = 1;
-    for f in func_decls {
-        if f.by_ref {
-            unsupported(&mut diags, f.span, "function returning by reference");
-        }
-        if func_map.contains_key(&f.name) {
-            diags.push(
-                Diagnostic::error(
-                    REDECLARED_FUNCTION,
-                    format!(
-                        "cannot redeclare function {}()",
-                        interner.resolve_lossy(f.name)
-                    ),
-                )
-                .with_primary(f.span, "duplicate declaration"),
-            );
-            continue;
-        }
-        func_map.insert(f.name, next_id);
-        user_funcs.push(f);
-        arities.push(f.params.len() as u16);
-        next_id += 1;
-    }
-
-    // ---- pre-pass B: class ids + method func ids (U+1 ..= U+M) ----
-    // Methods compile to ordinary functions appended right after the user
-    // functions. Their ids are fixed *before* any body is compiled, so closure
-    // ids (`top_level_count + sink index`) stay stable as bodies are lowered.
-    let (classes, method_ids, class_map) =
-        class::collect_classes(&class_decls, interner, next_id, &mut diags);
-    let parent_id = class::resolve_parents(&classes, &class_map, interner, &mut diags);
-    let class_has_ctor = class::constructor_chain(&classes, &parent_id, interner);
-    let methods_ct = class::method_tables(&classes, &method_ids, interner);
-    let class_ctx = ClassCtx {
-        map: &class_map,
-        has_ctor: &class_has_ctor,
-        parent: &parent_id,
-        methods: &methods_ct,
-    };
-    let total_methods: usize = method_ids.iter().map(Vec::len).sum();
-    // Closures discovered while compiling bodies are appended after main, the
-    // user functions, and the methods; their FuncId is `top_level_count + sink`.
-    let top_level_count = (user_funcs.len() + 1 + total_methods) as FuncId;
+    let (class_map, class_ids) = class::collect_class_ids(program, interner);
     let mx = ModuleCtx::new(
         interner,
-        &func_map,
-        &class_ctx,
-        &arities,
-        top_level_count,
+        &class_map,
+        &class_ids,
+        class_ids.len(),
+        program.strict_types,
         opts,
     );
-    let mut funcs: Vec<Function> = Vec::with_capacity(top_level_count as usize);
-    let mut closure_sink: Vec<Function> = Vec::new();
 
-    // Function 0: synthetic `{main}`: the top-level statements (declarations
-    // emit no code there).
-    funcs.push(compile_main(&mx, &mut diags, &mut closure_sink, program));
-    for f in &user_funcs {
-        funcs.push(compile_function(
-            &mx,
-            &mut diags,
-            &mut closure_sink,
-            FnSpec {
-                name: f.name,
-                params: &f.params,
-                body: &f.body,
-                span: f.span,
-                cur_class: None,
-            },
-        ));
+    // Hoisted functions first, so their ids come right after `{main}`. A
+    // duplicate declaration is php's runtime fatal (`Cannot redeclare …`),
+    // raised when the runtime declares the second one.
+    let mut hoist_funcs: Vec<FuncId> = Vec::new();
+    for f in &func_decls {
+        hoist_funcs.push(compile_nested_function(&mx, &mut diags, f));
     }
-    // Methods, in the same class-then-declaration order as pre-pass B so each
-    // lands at exactly the FuncId reserved for it. Each carries its class as the
-    // lexical context (`cur_class`) for `$this`, `self::`/`parent::`, visibility.
-    for (ci, c) in classes.iter().enumerate() {
-        for m in &c.methods {
-            funcs.push(compile_function(
-                &mx,
-                &mut diags,
-                &mut closure_sink,
-                FnSpec {
-                    name: m.decl.name,
-                    params: &m.decl.params,
-                    body: m.body,
-                    span: m.decl.span,
-                    cur_class: Some(ci as ClassId),
-                },
-            ));
+    let mut hoist_classes = Vec::new();
+    for c in &class_decls {
+        if let Some(id) = class::compile_class(&mx, &mut diags, c) {
+            hoist_classes.push(id);
         }
     }
 
-    let bc_classes = class::lower_classes(&classes, &method_ids, &parent_id, interner, &mut diags);
+    // Function 0: synthetic `{main}`: the top-level statements (hoisted
+    // declarations emit no code there).
+    let main = compile_main(&mx, &mut diags, program);
 
     if diags.iter().any(Diagnostic::is_error) {
         return Err(diags);
     }
-    // Append the compiled closures so `FuncId`s line up with their indices.
-    funcs.extend(closure_sink);
+    let sink = mx.sink.into_inner();
+    let mut funcs = sink.funcs;
+    funcs[0] = main;
+    let classes = sink
+        .classes
+        .into_iter()
+        .map(|c| c.unwrap_or_else(|| rphp_bytecode::Class {
+            name: rphp_intern::IdentId(0),
+            name_bytes: Box::from(&b""[..]),
+            parent: None,
+            props: Vec::new(),
+            methods: Vec::new(),
+            line: 0,
+        }))
+        .collect();
+    let file: Rc<str> = Rc::from(String::from_utf8_lossy(&mx.file).as_ref());
     Ok(Module {
         funcs,
-        classes: bc_classes,
+        classes,
         main: 0,
+        hoist_funcs,
+        hoist_classes,
+        file,
     })
 }
 
+/// Compile a named function declaration (hoisted or conditional) into the
+/// sink, returning its id.
+pub(crate) fn compile_nested_function(
+    mx: &ModuleCtx<'_>,
+    diags: &mut Vec<Diagnostic>,
+    f: &FuncDecl,
+) -> FuncId {
+    compile_function(
+        mx,
+        diags,
+        FnSpec {
+            name: f.name,
+            params: &f.params,
+            body: &f.body,
+            span: f.span,
+            by_ref: f.by_ref,
+            cur_class: None,
+            is_static: false,
+        },
+    )
+}
+
 /// `{main}`: the program's statement list compiled with top-level
-/// declarations recognised as already hoisted.
+/// declarations recognised as already hoisted. It is a `NEEDS_SYMTAB`
+/// frame (its variables are the globals) and returns `1` when it falls off
+/// the end, the value an `include` of the file evaluates to.
 fn compile_main(
     mx: &ModuleCtx<'_>,
     diags: &mut Vec<Diagnostic>,
-    closure_sink: &mut Vec<Function>,
     program: &Program,
-) -> Function {
+) -> rphp_bytecode::Function {
     let mut fc = func::FnCompiler::new(
         mx,
         diags,
-        closure_sink,
         &[],
         &[],
-        func::ClosureBody::Stmts(&program.items),
+        ClosureBody::Stmts(&program.items),
         None,
+        Box::from(&b""[..]),
     );
     fc.at_top_level = true;
+    fc.is_main = true;
+    fc.flags |= rphp_bytecode::FnFlags::NEEDS_SYMTAB;
+    fc.emit(Op::BindSymtab);
     fc.compile_stmts(&program.items);
-    fc.emit(rphp_bytecode::Op::Ret { src: None });
-    Function {
-        name: IdentId(0),
-        name_bytes: Box::from(&b""[..]),
-        num_params: 0,
-        num_regs: fc.num_regs,
-        code: fc.code,
-        consts: fc.consts,
-        capture_regs: fc.capture_regs,
-        closures: fc.closures,
-        span: Span::dummy(),
-        lines: fc.lines,
-        ..Function::default()
-    }
+    let k = fc.push_const(Const::Int(1));
+    let one = fc.alloc_temp();
+    fc.emit(Op::LoadConst { dst: one, k });
+    fc.emit(Op::Ret { src: Some(one) });
+    fc.finish(Box::from(&b""[..]), Vec::new(), Span::dummy())
 }

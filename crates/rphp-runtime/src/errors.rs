@@ -10,7 +10,6 @@
 
 use rphp_value::Value;
 
-use crate::frames::render_trace;
 use crate::{Interp, PendingThrow, Unwind};
 
 /// `E_ERROR`.
@@ -305,10 +304,44 @@ impl Interp {
         Ok(())
     }
 
-    /// php's `Stack trace:` body for the current frames.
-    pub fn render_trace(&self) -> String {
-        let file = self.current_file().to_string();
-        render_trace(self.module.as_deref(), &self.frames, &file)
+    /// Emit a fatal error (`Fatal error: <msg> in <file> on line <N>` plus
+    /// the backtrace) and return the unwind that ends the request.
+    pub fn fatal(&mut self, message: &str) -> Unwind {
+        match self.emit_error(ErrLevel::Error, message) {
+            Err(u) => u,
+            Ok(()) => Unwind::Exit(255),
+        }
+    }
+
+    /// [`Interp::fatal`] at an explicit location.
+    pub fn fatal_at(&mut self, message: &str, file: &str, line: u32) -> Unwind {
+        match self.emit_error_at(ErrLevel::Error, message, file, line) {
+            Err(u) => u,
+            Ok(()) => Unwind::Exit(255),
+        }
+    }
+
+    /// Emit a parse error for a unit compiled on demand (`include`):
+    /// `Parse error: <msg> in <file> on line <N>`, no backtrace.
+    pub fn parse_error(&mut self, message: &str, file: &str, line: u32) -> Unwind {
+        self.last_error = Some(LastError {
+            kind: E_PARSE,
+            message: message.to_string(),
+            file: file.to_string(),
+            line,
+        });
+        if self.effective_error_reporting() & E_PARSE != 0 {
+            if self.ini.bool("log_errors") {
+                eprintln!("PHP Parse error:  {message} in {file} on line {line}");
+            }
+            let text = format!("\nParse error: {message} in {file} on line {line}\n");
+            match DisplayMode::parse(self.ini.get("display_errors").unwrap_or("")) {
+                DisplayMode::Stdout => self.echo(text.as_bytes()),
+                DisplayMode::Stderr => eprint!("{text}"),
+                DisplayMode::Off => {}
+            }
+        }
+        Unwind::Exit(255)
     }
 
     /// Render an uncaught fault exactly like php-cli:
@@ -319,11 +352,7 @@ impl Interp {
     pub fn render_uncaught(&mut self, p: &PendingThrow) {
         let (file, line, trace) = match &p.site {
             Some(site) => (site.file.clone(), site.line, site.trace.clone()),
-            None => (
-                self.current_file().to_string(),
-                self.current_line(),
-                self.render_trace(),
-            ),
+            None => (self.current_file(), self.current_line(), self.render_trace()),
         };
         let message = format!(
             "Uncaught {}: {} in {}:{}\nStack trace:\n{}\n  thrown",

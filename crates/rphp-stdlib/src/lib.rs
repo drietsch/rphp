@@ -72,6 +72,8 @@ pub fn register(r: &mut Registry) {
     }
     math::register_constants(r);
     output_buffering::register_constants(r);
+    string2::register_constants(r);
+    array2::register_constants(r);
     var::register_constants(r);
     random::register_constants(r);
     url::register_constants(r);

@@ -7,10 +7,12 @@ the per-item details live in the doc comments (`cargo doc -p rphp-bytecode`).
 Plan reference: `Track E` (E3 calls, E5 exceptions, E6 objects, E7 units,
 E8 generators, E10 reflection, E11 performance).
 
-Status: **frozen but not yet lowered.** Every v2 item is additive next to the
-M0 set; the current compiler never emits a v2 op and the tier-0 interpreter
-returns a runtime error for any of them. Section 8 lists exactly what is not
-implemented.
+Status: **frozen; the E3 slice is live.** The compiler emits the v2 call
+sequence, prologue, reference / fetch-for-write, isset / unset, late-bound
+name, control-flow and operator ops, and the runtime executes them over an
+explicit frame stack (plan E3). Section 8 lists what is still not lowered
+(E5 exceptions, E6 object model, E7 units, E8 generators) and the additive
+changes E3 made to the frozen set.
 
 ## 1. Frames and registers
 
@@ -144,26 +146,80 @@ frame; conditional/nested declarations happen at their `DeclareFunction` /
 `DeclareClass` / `DeclareConst` ops in statement order. Cross-unit references
 never use ids — always names.
 
-## 8. What the current compiler and runtime do **not** implement
+## 8. What the current compiler and runtime do **not** implement, and the E3 additions
 
-Everything v2 is "not lowered yet":
+### 8.1 Additive changes made by E3 (plan E3, ADR-016/019)
 
-* Ops after `Op::Echo` (the whole `Init*`/`Send*`/`DoCall` sequence,
-  prologue ops, references/fetch-for-write, isset/empty/unset, late-bound
-  names, `Switch`/`MatchError`/`Silence`/`Include`/`Eval`/`Declare*`/`Exit`/
-  `Throw`/`FinallyEnd`, generators, `Clone`, `Iter*`, `InstanceOfRef`,
-  compound assignment, `IncDec`, `Cast`, bitwise/shift ops, `ConcatN`,
-  `LoadThis`, `FetchProp`/`AssignProp`). The tier-0 interpreter's wildcard
-  arm returns `internal error: opcode not implemented` for them.
-* `Function`'s v2 fields (`params`, `ret_ty`, `flags`, `ex_regions`,
-  `captures`, `statics`, `var_names`, `lines`, `ic_count`, `doc`, `attrs`,
-  `decl_line`, `end_line`, `in_class`) are emitted empty by the compiler.
-* `ClassDecl`, `CompiledUnit` and `Const::{Name, JumpTable, ArgNames, Type,
-  Bool, Null}` have no producer or consumer yet; `Module`/`Class` remain the
-  live path until E3/E6 remove `Call`/`CallNative`/`CallDynamic`/
-  `MethodCall`/`StaticCall`/`New`/`PropGet`/`PropSet`/`InstanceOf`/
-  `MakeClosure`/`ForeachNext`, `Function.capture_regs`/`closures`, `Class`,
-  `PropDef`, `Method`, `Module`.
+* **New ops** — needed by the lowering and missing from the freeze:
+  * `AssignRefElem{arr, key: Option<Reg>, src}` — `$a[k] = &$x` / `$a[] = &$x`
+    (`RefElem` binds the *variable* to the element; this binds the *element*
+    to the variable's cell).
+  * `AssignRefProp{obj, name, src}` — `$o->p = &$x`.
+  * `FetchDynVar{dst, name, global}` / `BindDynVar{reg, name, global}` —
+    symbol-table access by a runtime name (`$$x`, `${expr}`, `$GLOBALS[$k]`
+    as a write container); §4 mentioned `$$x` without an op for it.
+  * `BindStaticOrJmp{reg, idx, target}` — `static $x = <expr>` with a
+    non-constant initializer: php 8.3 evaluates the expression in the
+    function's own scope (it may read locals and recurse), which a
+    zero-argument thunk cannot do; the initializer is compiled inline
+    between two `BindStaticOrJmp`s (see the op's docs).
+  * `ListGet{dst, base, key}` — the element read of a destructuring
+    pattern (`[$a, $b] = $x`), whose non-array diagnostics differ from
+    `ArrayGet` (`Cannot use int as array`, silent null).
+* **`Module` gained `hoist_funcs`, `hoist_classes` and `file`** (the
+  `CompiledUnit` fields the runtime needs today; `Module::new_hoisted` keeps
+  the M0 shape), and **`Class` gained `line`** (for `Cannot redeclare class
+  X (previously declared in file:line)`).
+* **`MakeClosure{dst, proto}`** is reused with `proto` = the closure
+  function's unit-local `FuncId`; the closure's `Function::captures`
+  (`CaptureDesc{src, dst, by_ref}`) drive the capture, `capture_regs` /
+  `closures` / `ClosureProto` are no longer produced. The runtime's interim
+  closure value (`Value::Closure`, until E6 makes closures objects) stores
+  `[captures…, bound $this | null, scope class id | null]`.
+* **`FetchElemW` / `FetchPropW` semantics refined**: the handle is not a
+  `Ref` to the slot (a permanent reference cell would change `$b = $a` copy
+  semantics, since refcount-1 references are not collapsed on array copy).
+  Instead the element is **moved out** of its container (or, when the
+  element already is a reference, its cell is shared) into `dst`, the nested
+  lvalue op mutates it in place, and the compiler **writes it back** with
+  `ArraySet` / `ArrayPush` / `AssignProp` in reverse order. The intermediate
+  state is unobservable because every key and the assigned value are
+  evaluated before the fetch chain starts.
+* Symbol-table frames: any op that rebinds a named register to another cell
+  (`AssignRef`, `RefElem`, `RefProp`, `BindGlobal`, `BindStatic`,
+  `IterNext` by reference) also updates the frame's table entry for that
+  name, so `compact()` / `get_defined_vars()` see the new binding.
+* `Function.lines` is populated by the compiler; `{main}` ends with
+  `return 1` (the value an `include` of the unit evaluates to).
+
+### 8.2 Not lowered / executed yet
+
+* **E5**: `try`/`catch`/`finally` (`ExRegion`, `FinallyEnd`), `Throw` is
+  executed as `Unwind::Throw(object)` but nothing catches it; engine faults
+  stay `Unwind::Pending` (no Throwable objects); VM warnings for undefined
+  variables / the `Only variables should be passed by reference` notice.
+* **E6**: `ClassDecl` (interfaces, traits, enums, class constants, static
+  properties and methods, abstract/readonly/hooks/promotion, magic methods,
+  `__invoke`, `Closure` as a class, `ArrayAccess`/`Iterator` protocols,
+  `MakeCallableClosure`, `FetchClassConst` except `::class`,
+  `FetchStaticProp`/`AssignStaticProp`/`RefStaticProp`/`IssetStaticProp`
+  (executed as `Access to undeclared static property`), `Clone` with
+  `__clone`/`with`). Anonymous classes.
+* **E7**: `Eval`, namespaces (`InitFCall.ns_fallback`, `FetchConst.ns_fallback`
+  are always `None`), `use` imports, `FetchClass.autoload`, `__halt_compiler`.
+  `Include` is executed for files (no `include_path` search beyond the ini
+  value, the including file's directory and the cwd).
+* **E8**: `Yield`, `YieldFrom`, `GenReturn`, `FnFlags::GENERATOR`.
+* `Const::ArgNames`, `Const::Type` have no producer; `TypeDecl` metadata
+  (`ParamDef.ty`, `ret_ty`) is not emitted (types are ignored).
+* `RetRef` / `FnFlags::RETURNS_REF`: `function &f()` compiles with the flag
+  set but returns by value.
+* The M0 ops (`Call`, `CallNative`, `CallDynamic`, `New`, `PropGet`,
+  `PropSet`, `MethodCall`, `StaticCall`, `InstanceOf`, `ForeachNext`) and
+  `Function.capture_regs`/`closures` are dead: the compiler never emits them
+  and the runtime returns an internal error for them. They are removed
+  together with `Class`/`PropDef`/`Method`/`Module` when E6 switches to
+  `ClassDecl`/`CompiledUnit`.
 * Deliberately left out of the ops (lowerable from existing ones or too rare
   for the freeze): a dynamic-name static-property fetch beyond `NameRef`,
   `NewDyn` (covered by `InitNew{ClassRef::reg}`), `InstanceOfDyn` (covered by

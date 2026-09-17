@@ -5,12 +5,12 @@
 use rphp_value::Value;
 
 use crate::errors::ErrLevel;
-use crate::frames::{frame_line, FrameInfo, FrameKind};
+use crate::frame::Frame;
 use crate::output::{
     ObLevel, PHP_OUTPUT_HANDLER_CLEAN, PHP_OUTPUT_HANDLER_FINAL, PHP_OUTPUT_HANDLER_FLUSH,
     PHP_OUTPUT_HANDLER_START,
 };
-use crate::registry::{Ctx, ErrorKind, NativeId, NativeResult, Unwind};
+use crate::registry::{ErrorKind, Unwind};
 use crate::Interp;
 
 impl Interp {
@@ -59,58 +59,6 @@ impl Interp {
             message: message.into(),
             site: None,
         })
-    }
-
-    // ---- calling back into PHP ---------------------------------------------
-
-    /// Invoke a callable value — a closure, or a function-name string naming
-    /// a user function or a native — with `args`. The single re-entry path
-    /// for higher-order natives (`array_map`, `usort`, `ob_start` handlers,
-    /// `set_error_handler` callbacks, shutdown functions).
-    pub fn call_value(&mut self, callee: &Value, args: &[Value]) -> NativeResult {
-        match self.module.clone() {
-            Some(module) => crate::exec::invoke_value(self, &module, callee, args),
-            None => {
-                // No program loaded (a bare test interpreter): natives only.
-                let name = callee.to_php_bytes();
-                match self.native_by_name(&name) {
-                    Some(id) => {
-                        let mut args = args.to_vec();
-                        self.call_native(id, &mut args)
-                    }
-                    None => Err(Unwind::error(format!(
-                        "Call to undefined function {}()",
-                        String::from_utf8_lossy(&name)
-                    ))),
-                }
-            }
-        }
-    }
-
-    /// Call a function by name (user or native).
-    pub fn call_function(&mut self, name: &[u8], args: &[Value]) -> NativeResult {
-        self.call_value(&Value::string(name), args)
-    }
-
-    /// Invoke a registered native with already-evaluated arguments: arity is
-    /// checked (`ArgumentCountError`), a native frame is pushed for traces,
-    /// staged output is flushed afterwards. `args` is `&mut` so a
-    /// by-reference native can write back through its slots; propagating
-    /// those to the caller's variables is the caller's job.
-    pub fn call_native(&mut self, id: NativeId, args: &mut [Value]) -> NativeResult {
-        let f = self.natives[id.0 as usize];
-        if !f.accepts(args.len()) {
-            return Err(Unwind::argument_count_error(f.arity_message(args.len())));
-        }
-        self.push_frame(FrameInfo::native(f.name, args.to_vec()));
-        let r = {
-            let mut ctx = Ctx(self);
-            (f.handler)(&mut ctx, args)
-        };
-        let r = self.locate_fault(r);
-        self.pop_frame();
-        self.out.flush_pending();
-        r
     }
 
     // ---- ini ---------------------------------------------------------------
@@ -187,19 +135,16 @@ impl Interp {
     /// The source line of the innermost user frame's current op (0 when the
     /// function carries no line table).
     pub fn current_line(&self) -> u32 {
-        let Some(module) = self.module.as_deref() else {
-            return 0;
-        };
-        self.frames
-            .iter()
-            .rev()
-            .find(|f| matches!(f.kind, FrameKind::User { .. }))
-            .map_or(0, |f| frame_line(module, f))
+        self.current_user_frame().map_or(0, |f| self.frame_line(f))
     }
 
-    /// The file name diagnostics print for the running unit.
-    pub fn current_file(&self) -> &str {
-        &self.script_name
+    /// The file name diagnostics print for the running unit: the innermost
+    /// user frame's file, else the script name.
+    pub fn current_file(&self) -> String {
+        match self.current_user_frame() {
+            Some(f) => self.frame_file(f),
+            None => self.script_name.clone(),
+        }
     }
 
     /// The script's `$argv`.
@@ -228,7 +173,8 @@ impl Interp {
             level.started = true;
         }
         let base = self.frames.len();
-        self.frames.push(FrameInfo::internal());
+        let silence = self.silence;
+        self.frames.push(Frame::internal(silence));
         let r = self.call_value(&cb, &[Value::string(&buf), Value::Int(phase)]);
         self.frames.truncate(base);
         match r? {

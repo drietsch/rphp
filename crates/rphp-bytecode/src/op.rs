@@ -1179,6 +1179,66 @@ pub enum Op {
         base: Reg,
         n: u16,
     },
+
+    // --- E3 additions (CONTRACT.md §8): reference stores into containers and
+    // symbol-table access by a runtime name ---
+    /// `$arr[$key] = &$src` / `$arr[] = &$src` (`key` `None`): make `src` a
+    /// reference (as [`Op::MakeRef`]) and bind the element to the same cell,
+    /// replacing whatever the element held. Autovivifies a null base.
+    AssignRefElem {
+        arr: Reg,
+        key: Option<Reg>,
+        src: Reg,
+    },
+    /// `$obj->name = &$src`: make `src` a reference and bind the property
+    /// (declared or dynamic) to the same cell.
+    AssignRefProp {
+        obj: Reg,
+        name: NameRef,
+        src: Reg,
+    },
+    /// `dst = $$name` (`global` = `$GLOBALS[$name]`): read the symbol-table
+    /// entry named by the string in `name` from the frame's symbol table (or
+    /// the globals table); null (no entry created) when absent. The frame must
+    /// be `NEEDS_SYMTAB` for the local form.
+    FetchDynVar {
+        dst: Reg,
+        name: Reg,
+        global: bool,
+    },
+    /// Bind register `reg` to the symbol-table cell named by the string in
+    /// `name` (local table, or the globals table when `global`), creating a
+    /// null entry if absent, so that a following [`Op::AssignThroughRef`] /
+    /// [`Op::Deref`] / lvalue op on `reg` reads and writes the named variable
+    /// (`$$name = v`, `$GLOBALS[$name][..] = v`).
+    BindDynVar {
+        reg: Reg,
+        name: Reg,
+        global: bool,
+    },
+    /// `static $x = <expr>;` with a non-constant initializer, php 8.3
+    /// semantics (`BIND_INIT_STATIC_OR_JMP`): if the cell
+    /// `Function::statics[idx]` already exists, bind `reg` to it and jump to
+    /// `target` (skipping the inline initializer code that follows);
+    /// otherwise fall through. The initializer is compiled inline in the
+    /// function's own scope (it may read its variables and recurse), and is
+    /// followed by a second `BindStaticOrJmp` (a recursive call may have
+    /// created the cell meanwhile — that one wins) and a plain
+    /// [`Op::BindStatic`] + [`Op::AssignThroughRef`] storing the value.
+    BindStaticOrJmp {
+        reg: Reg,
+        idx: u16,
+        target: CodeAddr,
+    },
+    /// `dst = base[key]` as a destructuring pattern reads it (`[$a] = $x`):
+    /// like [`Op::ArrayGet`] on arrays (missing key warns), silently null on
+    /// a null source, `Cannot use int as array` warning + null on other
+    /// scalars, `Error` on objects.
+    ListGet {
+        dst: Reg,
+        base: Reg,
+        key: Reg,
+    },
 }
 
 // `Op` is copied on every dispatch and stored in `Vec<Op>`; keeping it at two

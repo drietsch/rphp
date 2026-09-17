@@ -1,31 +1,80 @@
 //! Expression lowering.
 //!
-//! [`FnCompiler::compile_expr`] returns the register holding the value.
-//! Invariant: the call leaves exactly one extra live temporary (the result)
-//! when the result is a fresh temp, or zero when it is an existing variable
-//! register. Every construct outside the lowered slice is reported as
-//! `RPHP_E0300` and yields a `null` temporary so lowering can continue.
+//! [`FnCompiler::compile_expr`] returns the register holding the value: a
+//! fresh temporary or, for a plain variable read, the variable's own
+//! register. Callers bracket an expression with `let mark = self.temp_top;
+//! … self.free_to(mark)` once they have consumed the result. Every
+//! construct outside the lowered slice is reported as `RPHP_E0300` and yields
+//! a `null` temporary so lowering can continue.
+//!
+//! Write targets go through one path ([`FnCompiler::compile_write`]): the
+//! container chain is *planned* first (root register and every key/object
+//! evaluated in source order, [`Plan`]), then the value, then the
+//! fetch-for-write chain (`FetchElemW`/`FetchPropW`, which move the element
+//! out), the innermost store, and the write-backs in reverse
+//! (`ArraySet`/`ArrayPush`/`AssignProp`) — see CONTRACT.md §8.
 
 use rphp_ast::v2::{
-    Arg, ArrayItem, BinOp, Callee, ClassRef, Expr, InterpPart, MemberName, Name, NameKind,
-    NewTarget, UnOp,
+    Arg, ArrayItem, BinOp, CallableTarget, Callee, CastKind as AstCast, ClassRef as AstClassRef,
+    ConstSel, Expr, InterpPart, MagicKind, MatchArm, MemberName, Name, NewTarget, UnOp,
 };
-use rphp_bytecode::{ClassId, Const, FuncId, Op, Reg};
-use rphp_diagnostics::{codes, Diagnostic};
+use rphp_bytecode::{
+    AssignOpKind, CastKind, ClassRef, Const, IncludeKind as BcInclude, NameRef, Op, Reg,
+};
+use rphp_diagnostics::Diagnostic;
 use rphp_intern::IdentId;
 use rphp_span::Span;
-use rphp_value::Str;
+use rphp_value::{Str, Value};
 
-use crate::func::{CallTarget, FnCompiler};
-use crate::{
-    unsupported, BY_REF_NOT_VARIABLE, INVALID_APPEND_READ, INVALID_SCOPE, NESTED_ARRAY_WRITE,
-    UNDEFINED_CLASS, UNDEFINED_METHOD,
-};
+use crate::func::{FnCompiler, NullsafeCtx};
+use crate::stmt::literal_value;
+use crate::{name_is_global, unsupported, INVALID_APPEND_READ, INVALID_SCOPE, INVALID_WRITE_TARGET};
+
+/// One step of a write-target chain below its root.
+pub(crate) enum Step {
+    /// `[key]` (`None` = `[]`).
+    Elem(Option<Reg>),
+    /// `->name`.
+    Prop(NameRef),
+}
+
+/// A planned write-target container: the root register and the steps to
+/// the container being written, with every key / object already evaluated.
+pub(crate) struct Plan {
+    pub(crate) root: Reg,
+    pub(crate) steps: Vec<Step>,
+}
+
+/// A pending write-back after a nested store.
+pub(crate) enum Wb {
+    Elem {
+        arr: Reg,
+        key: Option<Reg>,
+        val: Reg,
+    },
+    Prop {
+        obj: Reg,
+        name: NameRef,
+        val: Reg,
+    },
+}
+
+/// Where an assignment's value comes from: an expression still to be
+/// evaluated (at the point PHP evaluates it) or an already-computed register.
+#[derive(Clone, Copy)]
+pub(crate) enum ValueSrc<'e> {
+    Expr(&'e Expr),
+    Reg(Reg),
+}
 
 impl FnCompiler<'_> {
     /// Compile `e`, returning the register that holds its value.
     pub(crate) fn compile_expr(&mut self, e: &Expr) -> Reg {
         self.mark_line(e.span());
+        // A nullsafe chain is bracketed once at its outermost link.
+        if !self.in_nullsafe && chain_has_nullsafe(e) {
+            return self.compile_nullsafe_chain(e);
+        }
         match e {
             Expr::Null(_) => self.null_temp(),
             Expr::Bool(b, _) => {
@@ -37,7 +86,27 @@ impl FnCompiler<'_> {
             Expr::Float(f, _) => self.load_const(Const::Float(*f)),
             Expr::Str(id, _) => self.load_str(*id),
             Expr::Interp { parts, .. } => self.compile_interp(parts),
-            Expr::Var(id, _) => self.var_reg(*id),
+            Expr::Var(id, _) => {
+                if self.is_this(*id) {
+                    self.load_this()
+                } else if self.is_globals(*id) {
+                    let dst = self.alloc_temp();
+                    self.emit(Op::FetchGlobals { dst });
+                    dst
+                } else {
+                    self.var_reg(*id)
+                }
+            }
+            Expr::VarVar { name, .. } => {
+                let n = self.compile_expr(name);
+                let dst = self.alloc_temp();
+                self.emit(Op::FetchDynVar {
+                    dst,
+                    name: n,
+                    global: false,
+                });
+                dst
+            }
             Expr::Assign {
                 target,
                 value,
@@ -45,38 +114,36 @@ impl FnCompiler<'_> {
                 by_ref,
                 span,
             } => {
-                if let Some(op) = op {
-                    return self
-                        .unsupported_expr(*span, &format!("compound assignment `{}=`", op.name()));
-                }
                 if *by_ref {
-                    return self.unsupported_expr(*span, "assignment by reference");
+                    return self.compile_assign_ref(target, value, *span);
                 }
-                self.compile_assign(target, value, *span)
-            }
-            Expr::Unary { op, expr, span } => {
-                if !matches!(op, UnOp::Neg | UnOp::Not) {
-                    return self
-                        .unsupported_expr(*span, &format!("unary operator `{}`", op.name()));
+                match op {
+                    Some(BinOp::Coalesce) => self.compile_coalesce_assign(target, value, true),
+                    Some(op) => self.compile_compound(target, *op, value, true),
+                    None => self.compile_write(target, ValueSrc::Expr(value), true),
                 }
-                let mark = self.temp_top;
-                let r = self.compile_expr(expr);
-                self.free_to(mark);
-                let dst = self.alloc_temp();
-                self.emit(match op {
-                    UnOp::Neg => Op::Neg { dst, src: r },
-                    _ => Op::Not { dst, src: r },
-                });
-                dst
             }
+            Expr::Unary { op, expr, span } => self.compile_unary(*op, expr, *span, true),
             Expr::Binary { op, lhs, rhs, span } => match op {
                 BinOp::And => self.compile_and(lhs, rhs),
                 BinOp::Or => self.compile_or(lhs, rhs),
+                BinOp::Xor => {
+                    let mark = self.temp_top;
+                    let a = self.compile_expr(lhs);
+                    let b = self.compile_expr(rhs);
+                    let ta = self.alloc_temp();
+                    let tb = self.alloc_temp();
+                    self.emit(Op::Not { dst: ta, src: a });
+                    self.emit(Op::Not { dst: tb, src: b });
+                    self.free_to(mark);
+                    let dst = self.alloc_temp();
+                    self.emit(Op::CmpNotIdentical { dst, a: ta, b: tb });
+                    dst
+                }
+                BinOp::Coalesce => self.compile_coalesce(lhs, rhs),
+                BinOp::Pipe => self.unsupported_expr(*span, "pipe operator"),
                 _ => {
-                    let Some(make) = binary_op(*op) else {
-                        return self
-                            .unsupported_expr(*span, &format!("binary operator `{}`", op.name()));
-                    };
+                    let make = binary_op(*op).expect("every remaining operator lowers");
                     let mark = self.temp_top;
                     let a = self.compile_expr(lhs);
                     let b = self.compile_expr(rhs);
@@ -106,12 +173,16 @@ impl FnCompiler<'_> {
                 self.compile_index_read(base, index.as_deref(), *span)
             }
             Expr::New { class, args, span } => match class {
-                NewTarget::Ref(ClassRef::Named(name)) => self.compile_new(name, args, *span),
-                NewTarget::Ref(ClassRef::SelfKw(_)) => self.unsupported_expr(*span, "new self"),
-                NewTarget::Ref(ClassRef::Static(_)) => self.unsupported_expr(*span, "new static"),
-                NewTarget::Ref(ClassRef::Parent(_)) => self.unsupported_expr(*span, "new parent"),
-                NewTarget::Ref(ClassRef::Expr(_)) => {
-                    self.unsupported_expr(*span, "dynamic class instantiation")
+                NewTarget::Ref(class) => {
+                    let Some(class) = self.class_ref(class, *span) else {
+                        return self.null_temp();
+                    };
+                    let ic = self.ic();
+                    self.emit(Op::InitNew { class, ic });
+                    self.compile_sends(args);
+                    let dst = self.alloc_temp();
+                    self.emit(Op::DoCall { dst });
+                    dst
                 }
                 NewTarget::Anon(_) => self.unsupported_expr(*span, "anonymous class"),
             },
@@ -119,30 +190,49 @@ impl FnCompiler<'_> {
                 obj,
                 name,
                 nullsafe,
-                span,
+                ..
             } => {
+                let mark = self.temp_top;
+                let obj_reg = self.compile_chain_obj(obj);
                 if *nullsafe {
-                    return self.unsupported_expr(*span, "nullsafe property fetch");
+                    self.nullsafe_check(obj_reg);
                 }
-                let Some(name) = self.member_ident(name, "dynamic property name") else {
-                    return self.null_temp();
-                };
-                self.compile_prop_get(obj, name)
+                let name = self.member_name_ref(name);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                let ic = self.ic();
+                self.emit(Op::FetchProp {
+                    dst,
+                    obj: obj_reg,
+                    name,
+                    ic,
+                });
+                dst
             }
             Expr::MethodCall {
                 obj,
                 name,
                 args,
                 nullsafe,
-                span,
+                ..
             } => {
+                let mark = self.temp_top;
+                let obj_reg = self.compile_chain_obj(obj);
                 if *nullsafe {
-                    return self.unsupported_expr(*span, "nullsafe method call");
+                    self.nullsafe_check(obj_reg);
                 }
-                let Some(name) = self.member_ident(name, "dynamic method name") else {
-                    return self.null_temp();
-                };
-                self.compile_method_call(obj, name, args)
+                let name = self.member_name_ref(name);
+                let ic = self.ic();
+                self.emit(Op::InitMethodCall {
+                    obj: obj_reg,
+                    name,
+                    ic,
+                });
+                self.free_to(mark);
+                self.compile_sends(args);
+                let dst = self.alloc_temp();
+                self.emit(Op::DoCall { dst });
+                dst
             }
             Expr::StaticCall {
                 class,
@@ -150,33 +240,119 @@ impl FnCompiler<'_> {
                 args,
                 span,
             } => {
-                let Some(method) = self.member_ident(name, "dynamic static method name") else {
+                let mark = self.temp_top;
+                let Some(class) = self.class_ref(class, *span) else {
                     return self.null_temp();
                 };
-                self.compile_static_call(class, method, args, *span)
+                let name = self.member_name_ref(name);
+                let ic = self.ic();
+                self.emit(Op::InitStaticCall { class, name, ic });
+                self.free_to(mark);
+                self.compile_sends(args);
+                let dst = self.alloc_temp();
+                self.emit(Op::DoCall { dst });
+                dst
             }
-            Expr::InstanceOf { expr, class, span } => self.compile_instance_of(expr, class, *span),
+            Expr::InstanceOf { expr, class, span } => {
+                let mark = self.temp_top;
+                let obj = self.compile_expr(expr);
+                let Some(class) = self.class_ref(class, *span) else {
+                    return self.null_temp();
+                };
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.emit(Op::InstanceOfRef { dst, obj, class });
+                dst
+            }
+            Expr::Const(name) => {
+                if !name_is_global(name) {
+                    return self.unsupported_expr(name.span, "namespaced constant");
+                }
+                let k = self.sym_const(self.interner().resolve(name.text));
+                let dst = self.alloc_temp();
+                self.emit(Op::FetchConst {
+                    dst,
+                    name: k,
+                    ns_fallback: None,
+                });
+                dst
+            }
+            Expr::MagicConst { kind, span } => self.compile_magic_const(*kind, *span),
+            Expr::ClassConst { class, name, span } => match name {
+                ConstSel::Class(_) => self.compile_class_name(class, *span),
+                ConstSel::Ident(..) => self.unsupported_expr(*span, "class constant"),
+                ConstSel::Expr(_) => self.unsupported_expr(*span, "dynamic class constant"),
+            },
+            Expr::Ternary {
+                cond, then, else_, ..
+            } => self.compile_ternary(cond, then.as_deref(), else_),
+            Expr::Isset { vars, .. } => self.compile_isset(vars),
+            Expr::Empty { expr, .. } => self.compile_empty(expr),
+            Expr::Exit { arg, .. } => {
+                let mark = self.temp_top;
+                let src = arg.as_ref().map(|a| self.compile_expr(a));
+                self.emit(Op::Exit { src });
+                self.free_to(mark);
+                self.null_temp()
+            }
+            Expr::Print { expr, .. } => {
+                let mark = self.temp_top;
+                let r = self.compile_expr(expr);
+                self.emit(Op::Echo { src: r });
+                self.free_to(mark);
+                self.load_const(Const::Int(1))
+            }
+            Expr::Include { kind, path, .. } => {
+                let mark = self.temp_top;
+                let p = self.compile_expr(path);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                let kind = match kind {
+                    rphp_ast::v2::IncludeKind::Include => BcInclude::Include,
+                    rphp_ast::v2::IncludeKind::IncludeOnce => BcInclude::IncludeOnce,
+                    rphp_ast::v2::IncludeKind::Require => BcInclude::Require,
+                    rphp_ast::v2::IncludeKind::RequireOnce => BcInclude::RequireOnce,
+                };
+                self.emit(Op::Include { dst, path: p, kind });
+                dst
+            }
+            Expr::Match {
+                subject,
+                arms,
+                span,
+            } => self.compile_match(subject, arms, *span),
+            Expr::Throw { expr, .. } => {
+                let mark = self.temp_top;
+                let src = self.compile_expr(expr);
+                self.emit(Op::Throw { src });
+                self.free_to(mark);
+                self.null_temp()
+            }
+            Expr::Clone { expr, with, span } => {
+                if with.is_some() {
+                    return self.unsupported_expr(*span, "clone with properties");
+                }
+                let mark = self.temp_top;
+                let src = self.compile_expr(expr);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.emit(Op::Clone {
+                    dst,
+                    src,
+                    with: None,
+                });
+                dst
+            }
 
             // ----- everything else is not lowered yet ---------------------------
             Expr::ShellExec { span, .. } => self.unsupported_expr(*span, "shell execution"),
-            Expr::VarVar { span, .. } => self.unsupported_expr(*span, "variable variable"),
             Expr::StaticProp { span, .. } => self.unsupported_expr(*span, "static property"),
-            Expr::ClassConst { span, .. } => self.unsupported_expr(*span, "class constant"),
-            Expr::Const(name) => self.unsupported_expr(name.span, "constant"),
-            Expr::MagicConst { kind, span } => {
-                self.unsupported_expr(*span, &format!("magic constant {}", kind.as_str()))
-            }
-            Expr::Callable { span, .. } => self.unsupported_expr(*span, "first-class callable"),
-            Expr::Clone { span, .. } => self.unsupported_expr(*span, "clone"),
-            Expr::Ternary { span, .. } => self.unsupported_expr(*span, "ternary"),
-            Expr::Isset { span, .. } => self.unsupported_expr(*span, "isset"),
-            Expr::Empty { span, .. } => self.unsupported_expr(*span, "empty"),
-            Expr::Include { kind, span, .. } => self.unsupported_expr(*span, kind.as_str()),
+            Expr::Callable { span, target } => match target {
+                CallableTarget::Func(_) | CallableTarget::Method { .. } | CallableTarget::Static { .. } => {
+                    self.unsupported_expr(*span, "first-class callable")
+                }
+            },
             Expr::Eval { span, .. } => self.unsupported_expr(*span, "eval"),
-            Expr::Exit { span, .. } => self.unsupported_expr(*span, "exit"),
-            Expr::Print { span, .. } => self.unsupported_expr(*span, "print"),
-            Expr::Match { span, .. } => self.unsupported_expr(*span, "match"),
-            Expr::Throw { span, .. } => self.unsupported_expr(*span, "throw"),
             Expr::Yield { span, .. } => self.unsupported_expr(*span, "yield"),
             Expr::YieldFrom { span, .. } => self.unsupported_expr(*span, "yield from"),
             Expr::Let { span, .. } => self.unsupported_expr(*span, "HIR let"),
@@ -186,9 +362,37 @@ impl FnCompiler<'_> {
         }
     }
 
+    /// Compile an expression whose value is not needed (an expression
+    /// statement, a `for` clause): assignment forms skip materializing their
+    /// result.
+    pub(crate) fn compile_expr_discard(&mut self, e: &Expr) {
+        self.mark_line(e.span());
+        match e {
+            Expr::Assign {
+                target,
+                value,
+                op,
+                by_ref: false,
+                ..
+            } if !chain_has_nullsafe(e) => {
+                match op {
+                    Some(BinOp::Coalesce) => self.compile_coalesce_assign(target, value, false),
+                    Some(op) => self.compile_compound(target, *op, value, false),
+                    None => self.compile_write(target, ValueSrc::Expr(value), false),
+                };
+            }
+            Expr::Unary { op, expr, span } if op.is_inc_dec() && !chain_has_nullsafe(e) => {
+                self.compile_unary(*op, expr, *span, false);
+            }
+            _ => {
+                self.compile_expr(e);
+            }
+        }
+    }
+
     // ---- literals -----------------------------------------------------------
 
-    fn load_const(&mut self, c: Const) -> Reg {
+    pub(crate) fn load_const(&mut self, c: Const) -> Reg {
         let k = self.push_const(c);
         let dst = self.alloc_temp();
         self.emit(Op::LoadConst { dst, k });
@@ -200,94 +404,1219 @@ impl FnCompiler<'_> {
         self.load_const(Const::Str(Str::new(bytes)))
     }
 
-    /// `"a $b {$c->d}"`: a left-associative concatenation seeded with an empty
-    /// string, so the result is always a string (a lone `"$x"` is `(string)$x`,
-    /// not the raw value of `$x`).
+    fn load_bytes(&mut self, bytes: &[u8]) -> Reg {
+        self.load_const(Const::Str(Str::new(bytes)))
+    }
+
+    /// `"a $b {$c->d}"`: every part staged into consecutive temporaries, then
+    /// one `ConcatN` (a lone `"$x"` is still `(string)$x`).
     fn compile_interp(&mut self, parts: &[InterpPart]) -> Reg {
-        let mark = self.temp_top;
-        let mut acc = self.load_const(Const::Str(Str::new(b"")));
-        for part in parts {
+        let n = parts.len() as u16;
+        if n == 0 {
+            return self.load_bytes(b"");
+        }
+        let base = self.temp_top;
+        self.set_top(base + n);
+        for (i, part) in parts.iter().enumerate() {
+            let slot = base + i as Reg;
+            let mark = self.temp_top;
             let r = match part {
                 InterpPart::Lit(id, _) => self.load_str(*id),
                 InterpPart::Expr(e) => self.compile_expr(e),
             };
-            // Release the part's temporaries and the previous accumulator;
-            // the new accumulator takes the accumulator's register (`dst ==
-            // acc`, which the runtime handles like any `a == dst` operand).
+            if r != slot {
+                self.emit(Op::Move { dst: slot, src: r });
+            }
             self.free_to(mark);
-            let dst = self.alloc_temp();
-            self.emit(Op::Concat { dst, a: acc, b: r });
-            acc = dst;
         }
-        acc
+        self.free_to(base);
+        let dst = self.alloc_temp();
+        self.emit(Op::ConcatN { dst, base, n });
+        dst
     }
 
-    // ---- assignment ---------------------------------------------------------
-
-    /// `target = value` for the lowered target shapes: a variable, `$var[i]`
-    /// / `$var[]`, or `obj->name`.
-    fn compile_assign(&mut self, target: &Expr, value: &Expr, span: Span) -> Reg {
-        match target {
-            Expr::Var(id, _) => {
-                let dst = self.var_reg(*id);
-                let mark = self.temp_top;
-                let r = self.compile_expr(value);
-                if r != dst {
-                    self.emit(Op::Move { dst, src: r });
+    fn compile_magic_const(&mut self, kind: MagicKind, span: Span) -> Reg {
+        match kind {
+            MagicKind::Line => {
+                let line = self.mx.line(span.lo);
+                self.load_const(Const::Int(i64::from(line)))
+            }
+            MagicKind::File => {
+                let f = self.mx.file.clone();
+                self.load_bytes(&f)
+            }
+            MagicKind::Dir => {
+                let d = self.mx.dir.clone();
+                self.load_bytes(&d)
+            }
+            MagicKind::Function => {
+                let n = self.func_name.clone();
+                self.load_bytes(&n)
+            }
+            MagicKind::Class => match self.cur_class {
+                Some((_, name)) => {
+                    let n = self.interner().resolve(name).to_vec();
+                    self.load_bytes(&n)
                 }
+                None => self.load_bytes(b""),
+            },
+            MagicKind::Method => {
+                let mut n = Vec::new();
+                if let Some((_, class)) = self.cur_class {
+                    if !self.flags.contains(rphp_bytecode::FnFlags::CLOSURE) {
+                        n.extend_from_slice(self.interner().resolve(class));
+                        n.extend_from_slice(b"::");
+                    }
+                }
+                n.extend_from_slice(&self.func_name);
+                self.load_bytes(&n)
+            }
+            MagicKind::Namespace => self.load_bytes(b""),
+            MagicKind::Trait | MagicKind::Property => self.load_bytes(b""),
+        }
+    }
+
+    // ---- names --------------------------------------------------------------
+
+    /// Lower a member name to a [`NameRef`]: a `Const::Str` for a literal
+    /// identifier, a register for a computed name.
+    pub(crate) fn member_name_ref(&mut self, name: &MemberName) -> NameRef {
+        match name {
+            MemberName::Ident(id, _) => NameRef::constant(self.name_const(*id)),
+            MemberName::Expr(e) => NameRef::reg(self.compile_expr(e)),
+        }
+    }
+
+    /// Lower a class reference operand. `self`/`parent` outside a class are
+    /// compile errors (as in PHP); a dynamic reference evaluates to a
+    /// register.
+    pub(crate) fn class_ref(&mut self, class: &AstClassRef, span: Span) -> Option<ClassRef> {
+        Some(match class {
+            AstClassRef::Named(name) => {
+                if !name_is_global(name) {
+                    unsupported(self.diags, name.span, "namespaced class name");
+                    return None;
+                }
+                let k = self.sym_const(self.interner().resolve(name.text));
+                ClassRef::named(k)
+            }
+            AstClassRef::SelfKw(_) => {
+                if self.cur_class.is_none() {
+                    self.scope_error("Cannot use \"self\" when no class scope is active", span);
+                    return None;
+                }
+                ClassRef::SELF_KW
+            }
+            AstClassRef::Parent(_) => {
+                if self.cur_class.is_none() {
+                    self.scope_error("Cannot use \"parent\" when no class scope is active", span);
+                    return None;
+                }
+                ClassRef::PARENT
+            }
+            AstClassRef::Static(_) => {
+                if self.cur_class.is_none() {
+                    self.scope_error("Cannot use \"static\" when no class scope is active", span);
+                    return None;
+                }
+                ClassRef::STATIC
+            }
+            AstClassRef::Expr(e) => ClassRef::reg(self.compile_expr(e)),
+        })
+    }
+
+    /// `X::class`.
+    fn compile_class_name(&mut self, class: &AstClassRef, span: Span) -> Reg {
+        match class {
+            AstClassRef::Named(name) => {
+                if !name_is_global(name) {
+                    return self.unsupported_expr(name.span, "namespaced class name");
+                }
+                let n = self.interner().resolve(name.text).to_vec();
+                self.load_bytes(&n)
+            }
+            AstClassRef::SelfKw(_) => match self.cur_class {
+                Some((_, name)) => {
+                    let n = self.interner().resolve(name).to_vec();
+                    self.load_bytes(&n)
+                }
+                None => {
+                    self.scope_error("Cannot use \"self\" when no class scope is active", span);
+                    self.null_temp()
+                }
+            },
+            other => {
+                let mark = self.temp_top;
+                let Some(class) = self.class_ref(other, span) else {
+                    return self.null_temp();
+                };
                 self.free_to(mark);
-                // The assignment expression evaluates to the assigned register.
+                let dst = self.alloc_temp();
+                let name = NameRef::constant(self.str_const(b"class"));
+                let ic = self.ic();
+                self.emit(Op::FetchClassConst {
+                    dst,
+                    class,
+                    name,
+                    ic,
+                });
                 dst
             }
+        }
+    }
+
+    /// Push a `self::`/`parent::` scope-misuse diagnostic.
+    fn scope_error(&mut self, msg: &str, span: Span) {
+        self.diags
+            .push(Diagnostic::error(INVALID_SCOPE, msg).with_primary(span, "invalid scope"));
+    }
+
+    // ---- nullsafe chains ---------------------------------------------------------
+
+    /// The object/base part of a member chain, compiled inside the chain (so
+    /// a nested nullsafe link short-circuits the whole chain).
+    fn compile_chain_obj(&mut self, e: &Expr) -> Reg {
+        if self.nullsafe.is_empty() {
+            return self.compile_expr(e);
+        }
+        let saved = self.in_nullsafe;
+        self.in_nullsafe = true;
+        let r = self.compile_expr(e);
+        self.in_nullsafe = saved;
+        r
+    }
+
+    /// Bracket a chain containing `?->`: the result register is `null` when
+    /// any nullsafe link sees `null`.
+    fn compile_nullsafe_chain(&mut self, e: &Expr) -> Reg {
+        let res = self.alloc_temp();
+        let mark = self.temp_top;
+        self.nullsafe.push(NullsafeCtx { jumps: Vec::new() });
+        let saved = self.in_nullsafe;
+        self.in_nullsafe = true;
+        let r = self.compile_expr(e);
+        self.in_nullsafe = saved;
+        let ctx = self.nullsafe.pop().expect("nullsafe ctx");
+        self.emit(Op::Move { dst: res, src: r });
+        let jend = self.jmp_fwd();
+        let lnull = self.here();
+        for j in ctx.jumps {
+            self.patch(j, lnull);
+        }
+        self.emit(Op::LoadNull { dst: res });
+        let lend = self.here();
+        self.patch(jend, lend);
+        self.free_to(mark);
+        res
+    }
+
+    /// `?->`: jump to the chain's null exit when `obj` is null.
+    fn nullsafe_check(&mut self, obj: Reg) {
+        let c = self.alloc_temp();
+        self.emit(Op::IssetVar { dst: c, var: obj });
+        let j = self.emit(Op::JmpIfFalse { cond: c, target: 0 });
+        match self.nullsafe.last_mut() {
+            Some(ctx) => ctx.jumps.push(j),
+            None => {
+                // Not inside a bracketed chain (cannot happen: the outermost
+                // link brackets); degrade to a plain read.
+                let here = self.here();
+                self.patch(j, here);
+            }
+        }
+    }
+
+    // ---- write targets ------------------------------------------------------------
+
+    /// Plan the container chain of a write target (everything but the last
+    /// `[key]` / `->name`), evaluating the root and every key/object in
+    /// source order. `None` after a diagnostic.
+    pub(crate) fn plan_chain(&mut self, e: &Expr) -> Option<Plan> {
+        match e {
+            Expr::Var(id, _) => {
+                if self.is_this(*id) {
+                    let r = self.load_this();
+                    return Some(Plan {
+                        root: r,
+                        steps: Vec::new(),
+                    });
+                }
+                if self.is_globals(*id) {
+                    self.diags.push(
+                        Diagnostic::error(INVALID_WRITE_TARGET, "Cannot re-assign $GLOBALS")
+                            .with_primary(e.span(), "read-only"),
+                    );
+                    return None;
+                }
+                Some(Plan {
+                    root: self.var_reg(*id),
+                    steps: Vec::new(),
+                })
+            }
+            Expr::VarVar { name, .. } => {
+                let n = self.compile_expr(name);
+                let reg = self.alloc_temp();
+                self.emit(Op::BindDynVar {
+                    reg,
+                    name: n,
+                    global: false,
+                });
+                Some(Plan {
+                    root: reg,
+                    steps: Vec::new(),
+                })
+            }
             Expr::Index { base, index, .. } => {
-                self.compile_index_assign(base, index.as_deref(), value, span)
+                // `$GLOBALS[key]` as a container: bind a temp to the global cell.
+                if let Expr::Var(id, _) = &**base {
+                    if self.is_globals(*id) {
+                        let Some(index) = index else {
+                            unsupported(self.diags, e.span(), "append to $GLOBALS");
+                            return None;
+                        };
+                        let reg = self.alloc_temp();
+                        if let Expr::Str(s, _) = &**index {
+                            let name = self.name_const(*s);
+                            self.emit(Op::BindGlobal { reg, name });
+                        } else {
+                            let n = self.compile_expr(index);
+                            self.emit(Op::BindDynVar {
+                                reg,
+                                name: n,
+                                global: true,
+                            });
+                        }
+                        return Some(Plan {
+                            root: reg,
+                            steps: Vec::new(),
+                        });
+                    }
+                }
+                let mut plan = self.plan_chain(base)?;
+                let key = index.as_ref().map(|i| self.compile_expr(i));
+                plan.steps.push(Step::Elem(key));
+                Some(plan)
             }
             Expr::Prop {
                 obj,
                 name,
                 nullsafe,
-                span: pspan,
+                span,
             } => {
                 if *nullsafe {
-                    return self.unsupported_expr(*pspan, "nullsafe property write");
+                    self.diags.push(
+                        Diagnostic::error(INVALID_WRITE_TARGET, "Can't use nullsafe operator in write context")
+                            .with_primary(*span, "nullsafe in write context"),
+                    );
+                    return None;
                 }
-                let Some(name) = self.member_ident(name, "dynamic property name") else {
-                    return self.null_temp();
-                };
-                self.compile_prop_set(obj, name, value)
+                // Objects are handles: the holder is read (quietly — a
+                // missing holder is the `Attempt to assign property on null`
+                // error, not an undefined-key/property warning), the property
+                // is the step.
+                let root = self.compile_quiet(obj);
+                let name = self.member_name_ref(name);
+                Some(Plan {
+                    root,
+                    steps: vec![Step::Prop(name)],
+                })
             }
-            Expr::Array { .. } => self.unsupported_expr(span, "destructuring assignment"),
-            Expr::VarVar { .. } => self.unsupported_expr(span, "variable-variable assignment"),
-            Expr::StaticProp { .. } => self.unsupported_expr(span, "static property assignment"),
-            other => self.unsupported_expr(other.span(), "assignment target"),
-        }
-    }
-
-    /// A literal member name, or `None` after reporting the dynamic form.
-    fn member_ident(&mut self, name: &MemberName, what: &str) -> Option<IdentId> {
-        match name {
-            MemberName::Ident(id, _) => Some(*id),
-            MemberName::Expr(e) => {
-                unsupported(self.diags, e.span(), what);
+            Expr::StaticProp { span, .. } => {
+                unsupported(self.diags, *span, "static property");
+                None
+            }
+            Expr::Temp(_, span) => {
+                unsupported(self.diags, *span, "HIR temporary");
+                None
+            }
+            other => {
+                self.diags.push(
+                    Diagnostic::error(INVALID_WRITE_TARGET, "Cannot use temporary expression in write context")
+                        .with_primary(other.span(), "not a variable"),
+                );
                 None
             }
         }
     }
 
-    /// The positional argument expressions of a call; named arguments and
-    /// unpacking are reported.
-    fn plain_args<'e>(&mut self, args: &'e [Arg]) -> Vec<&'e Expr> {
-        let mut out = Vec::with_capacity(args.len());
-        for a in args {
-            if a.name.is_some() {
-                unsupported(self.diags, a.span, "named argument");
+    /// Emit the fetch-for-write chain of a plan; returns the handle register
+    /// of the container to write and the write-backs to emit afterwards.
+    pub(crate) fn plan_fetch_w(&mut self, plan: &Plan) -> (Reg, Vec<Wb>) {
+        let mut cur = plan.root;
+        let mut wbs = Vec::with_capacity(plan.steps.len());
+        for step in &plan.steps {
+            let t = self.alloc_temp();
+            match step {
+                Step::Elem(key) => {
+                    self.emit(Op::FetchElemW {
+                        dst: t,
+                        arr: cur,
+                        key: *key,
+                    });
+                    wbs.push(Wb::Elem {
+                        arr: cur,
+                        key: *key,
+                        val: t,
+                    });
+                }
+                Step::Prop(name) => {
+                    self.emit(Op::FetchPropW {
+                        dst: t,
+                        obj: cur,
+                        name: *name,
+                    });
+                    wbs.push(Wb::Prop {
+                        obj: cur,
+                        name: *name,
+                        val: t,
+                    });
+                }
             }
-            if a.spread {
-                unsupported(self.diags, a.span, "argument unpacking");
-            }
-            out.push(&a.value);
+            cur = t;
         }
-        out
+        (cur, wbs)
+    }
+
+    /// Read the container a plan denotes without warnings (for `??=`,
+    /// nested `unset`), into a register.
+    pub(crate) fn plan_read_quiet(&mut self, plan: &Plan) -> Reg {
+        let mut cur = plan.root;
+        for step in &plan.steps {
+            let t = self.alloc_temp();
+            match step {
+                Step::Elem(Some(key)) => {
+                    self.emit(Op::ArrayGetQuiet {
+                        dst: t,
+                        base: cur,
+                        key: *key,
+                    });
+                }
+                Step::Elem(None) => {
+                    self.emit(Op::LoadNull { dst: t });
+                }
+                Step::Prop(name) => self.quiet_prop_into(t, cur, *name),
+            }
+            cur = t;
+        }
+        cur
+    }
+
+    /// `dst = obj->name` without an "undefined property" warning (`dst` may
+    /// alias `obj`, so the object is read before anything lands in `dst`).
+    fn quiet_prop_into(&mut self, dst: Reg, obj: Reg, name: NameRef) {
+        let c = self.alloc_temp();
+        self.emit(Op::IssetProp { dst: c, obj, name });
+        let jnull = self.emit(Op::JmpIfFalse { cond: c, target: 0 });
+        let ic = self.ic();
+        self.emit(Op::FetchProp { dst, obj, name, ic });
+        let jend = self.jmp_fwd();
+        let lnull = self.here();
+        self.patch(jnull, lnull);
+        self.emit(Op::LoadNull { dst });
+        let lend = self.here();
+        self.patch(jend, lend);
+    }
+
+    /// Emit the write-backs of a nested store, innermost first.
+    pub(crate) fn emit_writebacks(&mut self, wbs: Vec<Wb>) {
+        for wb in wbs.into_iter().rev() {
+            match wb {
+                Wb::Elem {
+                    arr,
+                    key: Some(key),
+                    val,
+                } => {
+                    self.emit(Op::ArraySet {
+                        arr,
+                        key,
+                        value: val,
+                    });
+                }
+                Wb::Elem {
+                    arr,
+                    key: None,
+                    val,
+                } => {
+                    self.emit(Op::ArrayPush { arr, value: val });
+                }
+                Wb::Prop { obj, name, val } => {
+                    let ic = self.ic();
+                    self.emit(Op::AssignProp {
+                        obj,
+                        name,
+                        src: val,
+                        ic,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Materialize a [`ValueSrc`].
+    fn value_reg(&mut self, v: ValueSrc<'_>) -> Reg {
+        match v {
+            ValueSrc::Expr(e) => self.compile_expr(e),
+            ValueSrc::Reg(r) => r,
+        }
+    }
+
+    /// Assign an already-computed register to a write target.
+    pub(crate) fn assign_to_target(&mut self, target: &Expr, val: Reg) {
+        self.compile_write(target, ValueSrc::Reg(val), false);
+    }
+
+    /// `target = value` for every target shape. Returns the register holding
+    /// the assigned value (the expression's result).
+    pub(crate) fn compile_write(&mut self, target: &Expr, value: ValueSrc<'_>, want: bool) -> Reg {
+        let _ = want;
+        match target {
+            Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => {
+                let dst = self.var_reg(*id);
+                let mark = self.temp_top;
+                let r = self.value_reg(value);
+                self.store_var(dst, r);
+                self.free_to(mark);
+                dst
+            }
+            Expr::Var(id, span) => {
+                let what = if self.is_this(*id) {
+                    "Cannot re-assign $this"
+                } else {
+                    "Cannot re-assign $GLOBALS"
+                };
+                self.diags.push(
+                    Diagnostic::error(INVALID_WRITE_TARGET, what).with_primary(*span, "read-only"),
+                );
+                self.null_temp()
+            }
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } if matches!(&**base, Expr::Var(id, _) if self.is_globals(*id)) => {
+                let key = self.compile_expr(index);
+                let src = self.value_reg(value);
+                self.emit(Op::AssignGlobal { key, src });
+                src
+            }
+            Expr::Index { base, index, .. } => {
+                let plan = self.plan_chain(base);
+                let key = index.as_ref().map(|i| self.compile_expr(i));
+                let v = self.value_reg(value);
+                let Some(plan) = plan else {
+                    return v;
+                };
+                let (handle, wbs) = self.plan_fetch_w(&plan);
+                match key {
+                    Some(key) => {
+                        self.emit(Op::ArraySet {
+                            arr: handle,
+                            key,
+                            value: v,
+                        });
+                    }
+                    None => {
+                        self.emit(Op::ArrayPush {
+                            arr: handle,
+                            value: v,
+                        });
+                    }
+                }
+                self.emit_writebacks(wbs);
+                v
+            }
+            Expr::Prop {
+                obj,
+                name,
+                nullsafe,
+                span,
+            } => {
+                if *nullsafe {
+                    self.diags.push(
+                        Diagnostic::error(INVALID_WRITE_TARGET, "Can't use nullsafe operator in write context")
+                            .with_primary(*span, "nullsafe in write context"),
+                    );
+                    return self.null_temp();
+                }
+                let o = self.compile_quiet(obj);
+                let name = self.member_name_ref(name);
+                let v = self.value_reg(value);
+                let ic = self.ic();
+                self.emit(Op::AssignProp {
+                    obj: o,
+                    name,
+                    src: v,
+                    ic,
+                });
+                v
+            }
+            Expr::Array { items, .. } => {
+                let v = self.value_reg(value);
+                // A pattern with `&$x` items binds into the source variable
+                // itself; otherwise the pattern reads from a snapshot of the
+                // source so that targets inside the source array do not
+                // disturb it (`[$a[1], $a[0]] = $a`).
+                let src = if pattern_has_ref(items) {
+                    v
+                } else {
+                    let src = self.alloc_temp();
+                    self.emit(Op::Deref { dst: src, src: v });
+                    src
+                };
+                self.destructure(items, src);
+                v
+            }
+            Expr::VarVar { name, .. } => {
+                let n = self.compile_expr(name);
+                let reg = self.alloc_temp();
+                self.emit(Op::BindDynVar {
+                    reg,
+                    name: n,
+                    global: false,
+                });
+                let v = self.value_reg(value);
+                self.emit(Op::AssignThroughRef { dst: reg, src: v });
+                v
+            }
+            Expr::StaticProp { span, .. } => self.unsupported_expr(*span, "static property assignment"),
+            other => {
+                self.diags.push(
+                    Diagnostic::error(INVALID_WRITE_TARGET, "Cannot use temporary expression in write context")
+                        .with_primary(other.span(), "not a variable"),
+                );
+                self.null_temp()
+            }
+        }
+    }
+
+    /// `[$a, 'k' => $b, [$c, $d]] = src`: each element is read from `src`
+    /// (with PHP's undefined-key warning) and assigned to its target.
+    fn destructure(&mut self, items: &[ArrayItem], src: Reg) {
+        let mut pos: i64 = 0;
+        for item in items {
+            let Some(value) = &item.value else {
+                pos += 1;
+                continue;
+            };
+            if item.spread {
+                unsupported(self.diags, item.span, "spread in a destructuring pattern");
+                continue;
+            }
+            let mark = self.temp_top;
+            let key = match &item.key {
+                Some(k) => self.compile_expr(k),
+                None => {
+                    let k = self.load_const(Const::Int(pos));
+                    pos += 1;
+                    k
+                }
+            };
+            if item.by_ref {
+                match value {
+                    Expr::Var(id, _) if !self.is_this(*id) => {
+                        let dst = self.var_reg(*id);
+                        self.emit(Op::RefElem { dst, arr: src, key });
+                    }
+                    other => unsupported(self.diags, other.span(), "by-reference destructuring into a non-variable"),
+                }
+            } else {
+                let t = self.alloc_temp();
+                self.emit(Op::ListGet {
+                    dst: t,
+                    base: src,
+                    key,
+                });
+                self.assign_to_target(value, t);
+            }
+            self.free_to(mark);
+        }
+    }
+
+    /// `$a = &$b`, `$a = &$b[k]`, `$a = &$o->p`, `$a[k] = &$b`, `$o->p = &$b`.
+    fn compile_assign_ref(&mut self, target: &Expr, value: &Expr, span: Span) -> Reg {
+        // The source must be a referenceable place; the register that will
+        // hold (or be bound to) the shared cell.
+        let mark = self.temp_top;
+        let src: Reg = match value {
+            Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => self.var_reg(*id),
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } => {
+                match &**base {
+                    Expr::Var(id, _) if self.is_globals(*id) => {
+                        let reg = self.alloc_temp();
+                        if let Expr::Str(s, _) = &**index {
+                            let name = self.name_const(*s);
+                            self.emit(Op::BindGlobal { reg, name });
+                        } else {
+                            let n = self.compile_expr(index);
+                            self.emit(Op::BindDynVar {
+                                reg,
+                                name: n,
+                                global: true,
+                            });
+                        }
+                        // `&$GLOBALS['x']` is the global cell itself.
+                        return self.bind_ref_target(target, reg, span, mark);
+                    }
+                    _ => {
+                        let Some(plan) = self.plan_chain(base) else {
+                            return self.null_temp();
+                        };
+                        let key = self.compile_expr(index);
+                        let (handle, wbs) = self.plan_fetch_w(&plan);
+                        let dst = self.alloc_temp();
+                        self.emit(Op::RefElem {
+                            dst,
+                            arr: handle,
+                            key,
+                        });
+                        self.emit_writebacks(wbs);
+                        dst
+                    }
+                }
+            }
+            Expr::Prop {
+                obj,
+                name,
+                nullsafe: false,
+                ..
+            } => {
+                let o = self.compile_expr(obj);
+                let name = self.member_name_ref(name);
+                let dst = self.alloc_temp();
+                self.emit(Op::RefProp { dst, obj: o, name });
+                dst
+            }
+            Expr::VarVar { name, .. } => {
+                let n = self.compile_expr(name);
+                let reg = self.alloc_temp();
+                self.emit(Op::BindDynVar {
+                    reg,
+                    name: n,
+                    global: false,
+                });
+                reg
+            }
+            Expr::Closure(_) | Expr::ArrowFn(_) | Expr::New { .. } => {
+                // `$x = &new Foo` is gone since 7.0; `= &function` binds the value.
+                self.compile_expr(value)
+            }
+            other if other.is_call() => {
+                // `$x = &f()`: no reference return yet — bind to a fresh cell.
+                self.compile_expr(value)
+            }
+            other => {
+                unsupported(self.diags, other.span(), "reference to a non-variable");
+                return self.null_temp();
+            }
+        };
+        self.bind_ref_target(target, src, span, mark)
+    }
+
+    /// Bind `target` to the cell of `src` (making `src` a reference).
+    fn bind_ref_target(&mut self, target: &Expr, src: Reg, span: Span, mark: Reg) -> Reg {
+        match target {
+            Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => {
+                let dst = self.var_reg(*id);
+                self.emit(Op::AssignRef { dst, src });
+                self.free_to(mark);
+                dst
+            }
+            Expr::Index { base, index, .. } => {
+                if let Expr::Var(id, _) = &**base {
+                    if self.is_globals(*id) {
+                        // `$GLOBALS['x'] = &$y`: bind the global cell.
+                        let Some(index) = index else {
+                            return self.unsupported_expr(span, "append to $GLOBALS");
+                        };
+                        let reg = self.alloc_temp();
+                        if let Expr::Str(s, _) = &**index {
+                            let name = self.name_const(*s);
+                            self.emit(Op::BindGlobal { reg, name });
+                        } else {
+                            let n = self.compile_expr(index);
+                            self.emit(Op::BindDynVar {
+                                reg,
+                                name: n,
+                                global: true,
+                            });
+                        }
+                        // Rebinding a global entry needs the table itself:
+                        // not expressible through the cell — assign by value.
+                        self.emit(Op::AssignThroughRef { dst: reg, src });
+                        self.free_to(mark);
+                        return src;
+                    }
+                }
+                let Some(plan) = self.plan_chain(base) else {
+                    return self.null_temp();
+                };
+                let key = index.as_ref().map(|i| self.compile_expr(i));
+                let (handle, wbs) = self.plan_fetch_w(&plan);
+                self.emit(Op::AssignRefElem {
+                    arr: handle,
+                    key,
+                    src,
+                });
+                self.emit_writebacks(wbs);
+                src
+            }
+            Expr::Prop {
+                obj,
+                name,
+                nullsafe: false,
+                ..
+            } => {
+                let o = self.compile_expr(obj);
+                let name = self.member_name_ref(name);
+                self.emit(Op::AssignRefProp {
+                    obj: o,
+                    name,
+                    src,
+                });
+                src
+            }
+            Expr::VarVar { name, .. } => {
+                let n = self.compile_expr(name);
+                let reg = self.alloc_temp();
+                self.emit(Op::BindDynVar {
+                    reg,
+                    name: n,
+                    global: false,
+                });
+                // Rebinding a symbol-table entry: assign by value instead.
+                self.emit(Op::AssignThroughRef { dst: reg, src });
+                src
+            }
+            other => self.unsupported_expr(other.span(), "reference assignment target"),
+        }
+    }
+
+    /// `target OP= value`.
+    fn compile_compound(&mut self, target: &Expr, op: BinOp, value: &Expr, want: bool) -> Reg {
+        let Some(kind) = assign_op_kind(op) else {
+            return self.unsupported_expr(target.span(), &format!("compound assignment `{}=`", op.name()));
+        };
+        match target {
+            Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => {
+                let var = self.var_reg(*id);
+                let mark = self.temp_top;
+                let src = self.compile_expr(value);
+                self.emit(Op::AssignOp { op: kind, var, src });
+                self.free_to(mark);
+                var
+            }
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } if matches!(&**base, Expr::Var(id, _) if self.is_globals(*id)) => {
+                let reg = self.alloc_temp();
+                if let Expr::Str(s, _) = &**index {
+                    let name = self.name_const(*s);
+                    self.emit(Op::BindGlobal { reg, name });
+                } else {
+                    let n = self.compile_expr(index);
+                    self.emit(Op::BindDynVar {
+                        reg,
+                        name: n,
+                        global: true,
+                    });
+                }
+                let src = self.compile_expr(value);
+                self.emit(Op::AssignOp {
+                    op: kind,
+                    var: reg,
+                    src,
+                });
+                reg
+            }
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } => {
+                let plan = self.plan_chain(base);
+                let key = self.compile_expr(index);
+                let src = self.compile_expr(value);
+                let Some(plan) = plan else {
+                    return src;
+                };
+                let (handle, wbs) = self.plan_fetch_w(&plan);
+                self.emit(Op::AssignOpElem {
+                    op: kind,
+                    arr: handle,
+                    key,
+                    src,
+                });
+                let res = if want {
+                    let res = self.alloc_temp();
+                    self.emit(Op::ArrayGetQuiet {
+                        dst: res,
+                        base: handle,
+                        key,
+                    });
+                    res
+                } else {
+                    src
+                };
+                self.emit_writebacks(wbs);
+                res
+            }
+            Expr::Index { span, .. } => {
+                self.diags.push(
+                    Diagnostic::error(INVALID_APPEND_READ, "cannot use `[]` for reading")
+                        .with_primary(*span, "expected an index"),
+                );
+                self.null_temp()
+            }
+            Expr::Prop {
+                obj,
+                name,
+                nullsafe: false,
+                ..
+            } => {
+                let o = self.compile_expr(obj);
+                let name = self.member_name_ref(name);
+                let src = self.compile_expr(value);
+                self.emit(Op::AssignOpProp {
+                    op: kind,
+                    obj: o,
+                    name,
+                    src,
+                });
+                if want {
+                    let res = self.alloc_temp();
+                    let ic = self.ic();
+                    self.emit(Op::FetchProp {
+                        dst: res,
+                        obj: o,
+                        name,
+                        ic,
+                    });
+                    res
+                } else {
+                    src
+                }
+            }
+            Expr::VarVar { name, .. } => {
+                let n = self.compile_expr(name);
+                let reg = self.alloc_temp();
+                self.emit(Op::BindDynVar {
+                    reg,
+                    name: n,
+                    global: false,
+                });
+                let src = self.compile_expr(value);
+                self.emit(Op::AssignOp {
+                    op: kind,
+                    var: reg,
+                    src,
+                });
+                reg
+            }
+            Expr::StaticProp { span, .. } => self.unsupported_expr(*span, "static property"),
+            other => {
+                self.diags.push(
+                    Diagnostic::error(INVALID_WRITE_TARGET, "Cannot use temporary expression in write context")
+                        .with_primary(other.span(), "not a variable"),
+                );
+                self.null_temp()
+            }
+        }
+    }
+
+    /// `target ??= value`: assign only when the target is unset or null.
+    fn compile_coalesce_assign(&mut self, target: &Expr, value: &Expr, want: bool) -> Reg {
+        let _ = want;
+        let res = self.alloc_temp();
+        let mark = self.temp_top;
+        match target {
+            Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => {
+                let var = self.var_reg(*id);
+                let c = self.alloc_temp();
+                self.emit(Op::IssetVar { dst: c, var });
+                let jset = self.emit(Op::JmpIfTrue { cond: c, target: 0 });
+                let v = self.compile_expr(value);
+                self.store_var(var, v);
+                let lend = self.here();
+                self.patch(jset, lend);
+                self.free_to(mark);
+                var
+            }
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } => {
+                let (plan, probe) = if matches!(&**base, Expr::Var(id, _) if self.is_globals(*id)) {
+                    let g = self.alloc_temp();
+                    self.emit(Op::FetchGlobals { dst: g });
+                    (None, g)
+                } else {
+                    let plan = self.plan_chain(base);
+                    let probe = match &plan {
+                        Some(p) => self.plan_read_quiet(p),
+                        None => self.null_temp(),
+                    };
+                    (plan, probe)
+                };
+                let key = self.compile_expr(index);
+                let t = self.alloc_temp();
+                self.emit(Op::ArrayGetQuiet {
+                    dst: t,
+                    base: probe,
+                    key,
+                });
+                let c = self.alloc_temp();
+                self.emit(Op::IssetVar { dst: c, var: t });
+                let jassign = self.emit(Op::JmpIfFalse { cond: c, target: 0 });
+                self.emit(Op::Move { dst: res, src: t });
+                let jend = self.jmp_fwd();
+                let lassign = self.here();
+                self.patch(jassign, lassign);
+                let v = self.compile_expr(value);
+                match plan {
+                    Some(plan) => {
+                        let (handle, wbs) = self.plan_fetch_w(&plan);
+                        self.emit(Op::ArraySet {
+                            arr: handle,
+                            key,
+                            value: v,
+                        });
+                        self.emit_writebacks(wbs);
+                    }
+                    None if matches!(&**base, Expr::Var(id, _) if self.is_globals(*id)) => {
+                        self.emit(Op::AssignGlobal { key, src: v });
+                    }
+                    None => {}
+                }
+                self.emit(Op::Move { dst: res, src: v });
+                let lend = self.here();
+                self.patch(jend, lend);
+                self.free_to(mark);
+                res
+            }
+            Expr::Prop {
+                obj,
+                name,
+                nullsafe: false,
+                ..
+            } => {
+                let o = self.compile_expr(obj);
+                let name = self.member_name_ref(name);
+                let c = self.alloc_temp();
+                self.emit(Op::IssetProp {
+                    dst: c,
+                    obj: o,
+                    name,
+                });
+                let jassign = self.emit(Op::JmpIfFalse { cond: c, target: 0 });
+                let ic = self.ic();
+                self.emit(Op::FetchProp {
+                    dst: res,
+                    obj: o,
+                    name,
+                    ic,
+                });
+                let jend = self.jmp_fwd();
+                let lassign = self.here();
+                self.patch(jassign, lassign);
+                let v = self.compile_expr(value);
+                let ic = self.ic();
+                self.emit(Op::AssignProp {
+                    obj: o,
+                    name,
+                    src: v,
+                    ic,
+                });
+                self.emit(Op::Move { dst: res, src: v });
+                let lend = self.here();
+                self.patch(jend, lend);
+                self.free_to(mark);
+                res
+            }
+            other => {
+                self.free_to(mark);
+                self.unsupported_expr(other.span(), "??= target")
+            }
+        }
+    }
+
+    // ---- unary ------------------------------------------------------------------
+
+    fn compile_unary(&mut self, op: UnOp, expr: &Expr, span: Span, want: bool) -> Reg {
+        match op {
+            UnOp::PreInc | UnOp::PreDec | UnOp::PostInc | UnOp::PostDec => {
+                let pre = matches!(op, UnOp::PreInc | UnOp::PreDec);
+                let inc = matches!(op, UnOp::PreInc | UnOp::PostInc);
+                self.compile_incdec(expr, pre, inc, want)
+            }
+            UnOp::Silence => {
+                self.emit(Op::Silence { begin: true });
+                let r = self.compile_expr(expr);
+                self.emit(Op::Silence { begin: false });
+                r
+            }
+            UnOp::Void => {
+                let mark = self.temp_top;
+                self.compile_expr_discard(expr);
+                self.free_to(mark);
+                self.null_temp()
+            }
+            UnOp::Cast(kind) => {
+                let mark = self.temp_top;
+                let r = self.compile_expr(expr);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                let kind = match kind {
+                    AstCast::Int => CastKind::Int,
+                    AstCast::Float => CastKind::Float,
+                    AstCast::String => CastKind::String,
+                    AstCast::Bool => CastKind::Bool,
+                    AstCast::Array => CastKind::Array,
+                    AstCast::Object => CastKind::Object,
+                };
+                self.emit(Op::Cast { dst, src: r, kind });
+                dst
+            }
+            UnOp::Neg | UnOp::Plus | UnOp::Not | UnOp::BitNot => {
+                let mark = self.temp_top;
+                let r = self.compile_expr(expr);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.emit(match op {
+                    UnOp::Neg => Op::Neg { dst, src: r },
+                    UnOp::Plus => Op::Plus { dst, src: r },
+                    UnOp::BitNot => Op::BitNot { dst, src: r },
+                    _ => Op::Not { dst, src: r },
+                });
+                let _ = span;
+                dst
+            }
+        }
+    }
+
+    /// `++$x` / `$x++` / `--` on a variable, element or property.
+    fn compile_incdec(&mut self, target: &Expr, pre: bool, inc: bool, want: bool) -> Reg {
+        match target {
+            Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => {
+                let var = self.var_reg(*id);
+                let dst = if want { Some(self.alloc_temp()) } else { None };
+                self.emit(Op::IncDec { var, dst, pre, inc });
+                dst.unwrap_or(var)
+            }
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } if matches!(&**base, Expr::Var(id, _) if self.is_globals(*id)) => {
+                let reg = self.alloc_temp();
+                if let Expr::Str(s, _) = &**index {
+                    let name = self.name_const(*s);
+                    self.emit(Op::BindGlobal { reg, name });
+                } else {
+                    let n = self.compile_expr(index);
+                    self.emit(Op::BindDynVar {
+                        reg,
+                        name: n,
+                        global: true,
+                    });
+                }
+                let dst = if want { Some(self.alloc_temp()) } else { None };
+                self.emit(Op::IncDec {
+                    var: reg,
+                    dst,
+                    pre,
+                    inc,
+                });
+                dst.unwrap_or(reg)
+            }
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } => {
+                let res = if want { Some(self.alloc_temp()) } else { None };
+                let Some(plan) = self.plan_chain(base) else {
+                    return self.null_temp();
+                };
+                let key = self.compile_expr(index);
+                let (handle, wbs) = self.plan_fetch_w(&plan);
+                let cur = self.alloc_temp();
+                self.emit(Op::ArrayGet {
+                    dst: cur,
+                    base: handle,
+                    key,
+                });
+                self.emit(Op::IncDec {
+                    var: cur,
+                    dst: res,
+                    pre,
+                    inc,
+                });
+                self.emit(Op::ArraySet {
+                    arr: handle,
+                    key,
+                    value: cur,
+                });
+                self.emit_writebacks(wbs);
+                res.unwrap_or(cur)
+            }
+            Expr::Prop {
+                obj,
+                name,
+                nullsafe: false,
+                ..
+            } => {
+                let res = if want { Some(self.alloc_temp()) } else { None };
+                let o = self.compile_expr(obj);
+                let name = self.member_name_ref(name);
+                let cur = self.alloc_temp();
+                let ic = self.ic();
+                self.emit(Op::FetchProp {
+                    dst: cur,
+                    obj: o,
+                    name,
+                    ic,
+                });
+                self.emit(Op::IncDec {
+                    var: cur,
+                    dst: res,
+                    pre,
+                    inc,
+                });
+                let ic = self.ic();
+                self.emit(Op::AssignProp {
+                    obj: o,
+                    name,
+                    src: cur,
+                    ic,
+                });
+                res.unwrap_or(cur)
+            }
+            Expr::VarVar { name, .. } => {
+                let n = self.compile_expr(name);
+                let reg = self.alloc_temp();
+                self.emit(Op::BindDynVar {
+                    reg,
+                    name: n,
+                    global: false,
+                });
+                let dst = if want { Some(self.alloc_temp()) } else { None };
+                self.emit(Op::IncDec {
+                    var: reg,
+                    dst,
+                    pre,
+                    inc,
+                });
+                dst.unwrap_or(reg)
+            }
+            other => self.unsupported_expr(other.span(), "increment/decrement target"),
+        }
     }
 
     // ---- arrays ---------------------------------------------------------------
@@ -299,32 +1628,41 @@ impl FnCompiler<'_> {
         self.emit(Op::NewArray { dst });
         let mark = self.temp_top;
         for item in items {
-            if item.by_ref {
-                unsupported(self.diags, item.span, "by-reference array element");
-            }
             if item.spread {
                 unsupported(self.diags, item.span, "array spread");
+                continue;
             }
             let Some(value) = &item.value else {
                 unsupported(self.diags, item.span, "skipped array element");
                 continue;
             };
-            match &item.key {
-                Some(key) => {
-                    let kr = self.compile_expr(key);
-                    let vr = self.compile_expr(value);
-                    self.emit(Op::ArraySet {
-                        arr: dst,
-                        key: kr,
-                        value: vr,
-                    });
-                }
-                None => {
-                    let vr = self.compile_expr(value);
-                    self.emit(Op::ArrayPush {
-                        arr: dst,
-                        value: vr,
-                    });
+            let key = item.key.as_ref().map(|k| self.compile_expr(k));
+            if item.by_ref {
+                let src = match value {
+                    Expr::Var(id, _) if !self.is_this(*id) => self.var_reg(*id),
+                    other => {
+                        unsupported(self.diags, other.span(), "by-reference array element of a non-variable");
+                        self.free_to(mark);
+                        continue;
+                    }
+                };
+                self.emit(Op::AssignRefElem { arr: dst, key, src });
+            } else {
+                let vr = self.compile_expr(value);
+                match key {
+                    Some(key) => {
+                        self.emit(Op::ArraySet {
+                            arr: dst,
+                            key,
+                            value: vr,
+                        });
+                    }
+                    None => {
+                        self.emit(Op::ArrayPush {
+                            arr: dst,
+                            value: vr,
+                        });
+                    }
                 }
             }
             self.free_to(mark);
@@ -342,7 +1680,7 @@ impl FnCompiler<'_> {
             return self.null_temp();
         };
         let mark = self.temp_top;
-        let br = self.compile_expr(base);
+        let br = self.compile_chain_obj(base);
         let kr = self.compile_expr(index);
         self.free_to(mark);
         let dst = self.alloc_temp();
@@ -354,46 +1692,38 @@ impl FnCompiler<'_> {
         dst
     }
 
-    /// `base[index] = value` / `base[] = value`. Only a plain `$var` base is
-    /// supported so far (nested-subscript writes need an lvalue chain). The
-    /// expression evaluates to the assigned value.
-    fn compile_index_assign(
-        &mut self,
-        base: &Expr,
-        index: Option<&Expr>,
-        value: &Expr,
-        span: Span,
-    ) -> Reg {
-        let Expr::Var(id, _) = base else {
-            self.diags.push(
-                Diagnostic::error(
-                    NESTED_ARRAY_WRITE,
-                    "nested array assignment is not supported yet",
-                )
-                .with_primary(span, "write through a single `$var[...]` for now"),
-            );
-            return self.null_temp();
-        };
-        let arr = self.var_reg(*id);
-        // The assigned value is the result of the expression, so keep it live
-        // while the (freed) index temp sits above it.
-        let vr = self.compile_expr(value);
-        let key_mark = self.temp_top;
-        match index {
-            Some(index) => {
-                let kr = self.compile_expr(index);
-                self.emit(Op::ArraySet {
-                    arr,
-                    key: kr,
-                    value: vr,
+    /// Read an lvalue-shaped expression without "undefined" warnings (the
+    /// left side of `??`, the operands of `isset`/`empty`).
+    fn compile_quiet(&mut self, e: &Expr) -> Reg {
+        match e {
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } => {
+                let mark = self.temp_top;
+                let b = self.compile_quiet(base);
+                let k = self.compile_expr(index);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.emit(Op::ArrayGetQuiet {
+                    dst,
+                    base: b,
+                    key: k,
                 });
+                dst
             }
-            None => {
-                self.emit(Op::ArrayPush { arr, value: vr });
+            Expr::Prop { obj, name, .. } => {
+                let mark = self.temp_top;
+                let o = self.compile_quiet(obj);
+                let name = self.member_name_ref(name);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.quiet_prop_into(dst, o, name);
+                dst
             }
+            _ => self.compile_expr(e),
         }
-        self.free_to(key_mark); // release the index temp, keep `vr`
-        vr
     }
 
     // ---- short-circuit logic ----------------------------------------------------
@@ -413,7 +1743,7 @@ impl FnCompiler<'_> {
         self.emit(Op::Not { dst, src: rb });
         self.emit(Op::Not { dst, src: dst });
         self.free_to(mark);
-        let jend = self.emit(Op::Jmp { target: 0 });
+        let jend = self.jmp_fwd();
         // False path: lhs was falsy -> result is `false`.
         let lfalse = self.here();
         self.patch(jf, lfalse);
@@ -438,7 +1768,7 @@ impl FnCompiler<'_> {
         self.emit(Op::Not { dst, src: rb });
         self.emit(Op::Not { dst, src: dst });
         self.free_to(mark);
-        let jend = self.emit(Op::Jmp { target: 0 });
+        let jend = self.jmp_fwd();
         // True path: lhs was truthy -> result is `true`.
         let ltrue = self.here();
         self.patch(jt, ltrue);
@@ -448,437 +1778,450 @@ impl FnCompiler<'_> {
         dst
     }
 
-    // ---- calls ------------------------------------------------------------------
-
-    /// Stage `args` into the contiguous window `base ..= base+argc-1` (the
-    /// current temp top), leaving the window allocated.
-    fn stage_args(&mut self, args: &[&Expr]) -> (Reg, u16) {
-        let argc = args.len() as u16;
-        let base = self.temp_top;
-        self.set_top(base + argc);
-        for (i, arg) in args.iter().enumerate() {
-            let slot = base + i as Reg;
-            let mark = self.temp_top;
-            let r = self.compile_expr(arg);
-            if r != slot {
-                self.emit(Op::Move { dst: slot, src: r });
-            }
-            self.free_to(mark);
-        }
-        (base, argc)
-    }
-
-    /// `name(args...)`: a user function takes precedence over a builtin of
-    /// the same name; a builtin is matched case-insensitively by its bytes.
-    /// Only unqualified and fully qualified names resolve (namespaces are
-    /// resolved in F4).
-    fn compile_call(&mut self, name: &Name, args: &[Arg], span: Span) -> Reg {
-        if !matches!(name.kind, NameKind::Unqualified | NameKind::FullyQualified) {
-            return self.unsupported_expr(name.span, "namespaced function call");
-        }
-        let args = self.plain_args(args);
-        let argc = args.len() as u16;
-        let name = name.text;
-
-        let target = if let Some(&id) = self.mx.func_map.get(&name) {
-            self.check_user_arity(name, id, argc, span);
-            Some(CallTarget::User(id))
-        } else if let Some(sig) = self.mx.natives.native(self.interner().resolve(name)) {
-            self.check_native_arity(name, &sig, argc, span);
-            Some(CallTarget::Native {
-                id: sig.id,
-                by_ref: sig.by_ref,
-            })
-        } else {
-            self.diags.push(
-                Diagnostic::error(
-                    codes::UNDEFINED_FUNCTION,
-                    format!(
-                        "call to undefined function {}()",
-                        self.interner().resolve_lossy(name)
-                    ),
-                )
-                .with_primary(span, "not defined"),
-            );
-            None
-        };
-        let Some(target) = target else {
-            return self.null_temp();
-        };
-
-        // Builtins may declare by-reference parameters (user by-ref is not
-        // modelled yet). A call that actually passes an argument into a by-ref
-        // slot needs a write-back, handled on a separate path.
-        let by_ref = match &target {
-            CallTarget::Native { by_ref, .. } => *by_ref,
-            CallTarget::User(_) => 0,
-        };
-        if let (true, CallTarget::Native { id, .. }) =
-            ((0..argc).any(|i| is_by_ref(by_ref, i)), &target)
-        {
-            return self.compile_native_by_ref(name, *id, by_ref, &args);
-        }
-
-        let (base, argc) = self.stage_args(&args);
-        // Free the window; the result lands in `dst == base` (the runtime copies
-        // the args into the callee frame before writing the return value).
-        self.free_to(base);
-        let dst = self.alloc_temp();
-        debug_assert_eq!(dst, base);
-        let op = match target {
-            CallTarget::User(func) => Op::Call {
-                dst,
-                func,
-                base,
-                argc,
-            },
-            CallTarget::Native { id, .. } => Op::CallNative {
-                dst,
-                native: id,
-                base,
-                argc,
-            },
-        };
-        self.emit(op);
-        dst
-    }
-
-    /// Lower a builtin call that passes one or more arguments **by reference**
-    /// (`sort($a)`, `array_push($a, …)`, `preg_match($p, $s, $m)`). A by-ref
-    /// argument must be a plain variable; its value is copied into the call
-    /// window, and after the call the (mutated) window slot is copied back into
-    /// that variable. The result is brought down to a single temporary so the
-    /// usual "the result is the top live temp" invariant still holds.
-    fn compile_native_by_ref(
-        &mut self,
-        name: IdentId,
-        native: u32,
-        by_ref: u32,
-        args: &[&Expr],
-    ) -> Reg {
-        let argc = args.len() as u16;
-        let base = self.temp_top;
-        self.set_top(base + argc);
-        // (variable register, window slot) pairs to copy back after the call.
-        let mut write_backs: Vec<(Reg, Reg)> = Vec::new();
-        for (i, arg) in args.iter().enumerate() {
-            let slot = base + i as Reg;
-            if is_by_ref(by_ref, i as u16) {
-                if let Expr::Var(id, _) = arg {
-                    let vr = self.var_reg(*id);
-                    self.emit(Op::Move { dst: slot, src: vr });
-                    write_backs.push((vr, slot));
-                    continue;
-                }
-                self.diags.push(
-                    Diagnostic::error(
-                        BY_REF_NOT_VARIABLE,
-                        format!(
-                            "{}(): only a variable can be passed by reference",
-                            self.interner().resolve_lossy(name)
-                        ),
-                    )
-                    .with_primary(arg.span(), "not a variable"),
-                );
-            }
-            let mark = self.temp_top;
-            let r = self.compile_expr(arg);
-            if r != slot {
-                self.emit(Op::Move { dst: slot, src: r });
-            }
-            self.free_to(mark);
-        }
-        // The result goes into a temp ABOVE the window, so it cannot alias a
-        // by-ref slot the runtime writes back into the window.
-        let dst_high = self.alloc_temp();
-        debug_assert_eq!(dst_high, base + argc);
-        self.emit(Op::CallNative {
-            dst: dst_high,
-            native,
-            base,
-            argc,
-        });
-        // Copy each mutated by-ref slot back into its variable.
-        for (vr, slot) in &write_backs {
-            self.emit(Op::Move {
-                dst: *vr,
-                src: *slot,
-            });
-        }
-        // Bring the result down to `base`, releasing the window and the high temp.
-        self.emit(Op::Move {
-            dst: base,
-            src: dst_high,
-        });
-        self.free_to(base + 1);
-        base
-    }
-
-    /// Lower `callee(args...)` where the callee is a runtime value (a closure or
-    /// callable string). The callee is evaluated first and kept live below the
-    /// argument window; the runtime resolves and invokes it.
-    fn compile_dynamic_call(&mut self, callee: &Expr, args: &[Arg]) -> Reg {
-        let args = self.plain_args(args);
-        let callee_reg = self.compile_expr(callee);
-        // Stage args into a fresh window above the (still-live) callee register.
-        let (base, argc) = self.stage_args(&args);
-        self.free_to(base);
-        let dst = self.alloc_temp();
-        debug_assert_eq!(dst, base);
-        self.emit(Op::CallDynamic {
-            dst,
-            callee: callee_reg,
-            base,
-            argc,
-        });
-        dst
-    }
-
-    // ---- objects ------------------------------------------------------------------
-
-    /// Resolve a written class name to a declared class; `None` for a
-    /// namespaced spelling (F4) or an undeclared class (reported when
-    /// `report_undefined`).
-    fn class_by_name(
-        &mut self,
-        name: &Name,
-        span: Span,
-        report_undefined: bool,
-    ) -> Option<ClassId> {
-        if !matches!(name.kind, NameKind::Unqualified | NameKind::FullyQualified) {
-            unsupported(self.diags, name.span, "namespaced class name");
-            return None;
-        }
-        let t = self.mx.class_ctx.map.get(&name.text).copied();
-        if t.is_none() && report_undefined {
-            self.diags.push(
-                Diagnostic::error(
-                    UNDEFINED_CLASS,
-                    format!(
-                        "class \"{}\" not found",
-                        self.interner().resolve_lossy(name.text)
-                    ),
-                )
-                .with_primary(span, "not defined"),
-            );
-        }
-        t
-    }
-
-    /// `new Class(args...)`: allocate the instance with its default properties,
-    /// then — if the class declares a constructor — invoke `__construct` with the
-    /// arguments, discarding its result. Evaluates to the new object.
-    fn compile_new(&mut self, class: &Name, args: &[Arg], span: Span) -> Reg {
-        let args = self.plain_args(args);
-        let Some(cid) = self.class_by_name(class, span, true) else {
-            return self.null_temp();
-        };
-        let dst = self.alloc_temp();
-        self.emit(Op::New { dst, class: cid });
-        if self.mx.class_ctx.has_ctor[cid as usize] {
-            // Stage constructor args in a window *above* the object register, so
-            // the object (the result) is never clobbered.
-            let (base, argc) = self.stage_args(&args);
-            self.free_to(base);
-            let ret = self.alloc_temp(); // constructor result, discarded
-            let method = self.push_const(Const::Str(Str::new(b"__construct")));
-            self.emit(Op::MethodCall {
-                dst: ret,
-                obj: dst,
-                method,
-                base,
-                argc,
-            });
-            self.free_to(dst + 1); // release the window and discarded result
-        }
-        dst
-    }
-
-    /// `obj->name` property read.
-    fn compile_prop_get(&mut self, obj: &Expr, name: IdentId) -> Reg {
+    /// `a ?? b`: `a` read quietly; `b` only when `a` is unset/null.
+    fn compile_coalesce(&mut self, lhs: &Expr, rhs: &Expr) -> Reg {
+        let res = self.alloc_temp();
         let mark = self.temp_top;
-        let obj_reg = self.compile_expr(obj);
+        let l = self.compile_quiet(lhs);
+        let c = self.alloc_temp();
+        self.emit(Op::IssetVar { dst: c, var: l });
+        let jelse = self.emit(Op::JmpIfFalse { cond: c, target: 0 });
+        self.emit(Op::Move { dst: res, src: l });
+        let jend = self.jmp_fwd();
         self.free_to(mark);
-        let dst = self.alloc_temp();
-        let name = self.name_const(name);
-        self.emit(Op::PropGet {
-            dst,
-            obj: obj_reg,
-            name,
-        });
-        dst
+        let lelse = self.here();
+        self.patch(jelse, lelse);
+        let r = self.compile_expr(rhs);
+        self.emit(Op::Move { dst: res, src: r });
+        self.free_to(mark);
+        let lend = self.here();
+        self.patch(jend, lend);
+        res
     }
 
-    /// `obj->name = value`. The value is the expression's result; the write goes
-    /// through the object's shared cell (objects are reference handles), so `obj`
-    /// may be any expression, not just a variable.
-    fn compile_prop_set(&mut self, obj: &Expr, name: IdentId, value: &Expr) -> Reg {
-        let vr = self.compile_expr(value);
-        let obj_mark = self.temp_top;
-        let obj_reg = self.compile_expr(obj);
-        let name = self.name_const(name);
-        self.emit(Op::PropSet {
-            obj: obj_reg,
-            name,
-            value: vr,
-        });
-        self.free_to(obj_mark); // drop the object temp, keep the value
-        vr
-    }
-
-    /// `obj->method(args...)`. The object is evaluated and kept live below the
-    /// argument window; the runtime binds it to the callee's `$this`.
-    fn compile_method_call(&mut self, obj: &Expr, method: IdentId, args: &[Arg]) -> Reg {
-        let args = self.plain_args(args);
-        let obj_reg = self.compile_expr(obj);
-        let (base, argc) = self.stage_args(&args);
-        self.free_to(base);
-        let dst = self.alloc_temp();
-        debug_assert_eq!(dst, base);
-        let method = self.name_const(method);
-        self.emit(Op::MethodCall {
-            dst,
-            obj: obj_reg,
-            method,
-            base,
-            argc,
-        });
-        dst
-    }
-
-    /// The class a `self`/`parent`/name reference denotes at compile time,
-    /// with the scope errors of a scoped call. `None` after a diagnostic (or,
-    /// for `instanceof`, for an unknown class name).
-    fn scoped_class(&mut self, class: &ClassRef, span: Span, what: &str) -> Option<ClassId> {
-        match class {
-            ClassRef::SelfKw(_) => {
-                if self.cur_class.is_none() {
-                    self.scope_error(&format!("cannot use \"self{what}\" outside a class"), span);
-                }
-                self.cur_class
-            }
-            ClassRef::Parent(_) => match self.cur_class {
-                None => {
-                    self.scope_error(
-                        &format!("cannot use \"parent{what}\" outside a class"),
-                        span,
-                    );
-                    None
-                }
-                Some(c) => {
-                    let p = self.mx.class_ctx.parent[c as usize];
-                    if p.is_none() && what == "::" {
-                        self.scope_error("current class has no parent", span);
-                    }
-                    p
-                }
-            },
-            ClassRef::Named(name) => self.class_by_name(name, span, what == "::"),
-            ClassRef::Static(s) => {
-                unsupported(self.diags, *s, "late static binding (static::)");
-                None
-            }
-            ClassRef::Expr(e) => {
-                unsupported(self.diags, e.span(), "dynamic class reference");
-                None
-            }
-        }
-    }
-
-    /// `class::method(args...)` — a scoped (non-virtual) call. Resolves the
-    /// target class (`self`/`parent`/name) and the method (compile time, walking
-    /// the chain), then forwards the current `$this` (register 0 in a method) and
-    /// the arguments to the resolved function.
-    fn compile_static_call(
-        &mut self,
-        class: &ClassRef,
-        method: IdentId,
-        args: &[Arg],
-        span: Span,
-    ) -> Reg {
-        let args = self.plain_args(args);
-        let target = self.scoped_class(class, span, "::");
-        let func: Option<FuncId> = target.and_then(|c| {
-            self.mx
-                .class_ctx
-                .resolve_method(c, self.interner().resolve(method))
-        });
-        let Some(func) = func else {
-            if target.is_some() {
-                self.diags.push(
-                    Diagnostic::error(
-                        UNDEFINED_METHOD,
-                        format!(
-                            "call to undefined method {}()",
-                            self.interner().resolve_lossy(method)
-                        ),
-                    )
-                    .with_primary(span, "no such method"),
-                );
-            }
-            return self.null_temp();
-        };
-
-        // `$this` to forward: register 0 inside a method, otherwise a fresh null.
-        let this_reg = if self.cur_class.is_some() {
-            0
-        } else {
-            self.null_temp()
-        };
-        let (base, argc) = self.stage_args(&args);
-        self.free_to(base);
-        let dst = self.alloc_temp();
-        debug_assert_eq!(dst, base);
-        self.emit(Op::StaticCall {
-            dst,
-            this: this_reg,
-            func,
-            base,
-            argc,
-        });
-        dst
-    }
-
-    /// `expr instanceof Class`. The class name resolves at compile time; an
-    /// unknown name yields a constant `false` (PHP does not error there), while
-    /// `self`/`parent` outside a class is a hard error.
-    fn compile_instance_of(&mut self, expr: &Expr, class: &ClassRef, span: Span) -> Reg {
-        let target = self.scoped_class(class, span, "");
+    /// `c ? a : b` and `c ?: b`.
+    fn compile_ternary(&mut self, cond: &Expr, then: Option<&Expr>, else_: &Expr) -> Reg {
+        let res = self.alloc_temp();
         let mark = self.temp_top;
-        let obj_reg = self.compile_expr(expr);
-        self.free_to(mark);
-        let dst = self.alloc_temp();
-        match target {
-            Some(cid) => {
-                self.emit(Op::InstanceOf {
-                    dst,
-                    obj: obj_reg,
-                    class: cid,
-                });
+        let c = self.compile_expr(cond);
+        let jelse = self.emit(Op::JmpIfFalse { cond: c, target: 0 });
+        match then {
+            Some(then) => {
+                let t = self.compile_expr(then);
+                self.emit(Op::Move { dst: res, src: t });
             }
             None => {
-                self.emit(Op::LoadBool { dst, val: false });
+                self.emit(Op::Move { dst: res, src: c });
             }
         }
+        let jend = self.jmp_fwd();
+        self.free_to(mark);
+        let lelse = self.here();
+        self.patch(jelse, lelse);
+        let e = self.compile_expr(else_);
+        self.emit(Op::Move { dst: res, src: e });
+        self.free_to(mark);
+        let lend = self.here();
+        self.patch(jend, lend);
+        res
+    }
+
+    /// `isset($a, $b[0], $c->p)`: every operand must be set (short-circuit).
+    fn compile_isset(&mut self, vars: &[Expr]) -> Reg {
+        let res = self.alloc_temp();
+        let mark = self.temp_top;
+        let mut false_jumps = Vec::new();
+        for v in vars {
+            let r = self.compile_isset_one(v);
+            false_jumps.push(self.emit(Op::JmpIfFalse { cond: r, target: 0 }));
+            self.free_to(mark);
+        }
+        self.emit(Op::LoadBool { dst: res, val: true });
+        let jend = self.jmp_fwd();
+        let lfalse = self.here();
+        for j in false_jumps {
+            self.patch(j, lfalse);
+        }
+        self.emit(Op::LoadBool {
+            dst: res,
+            val: false,
+        });
+        let lend = self.here();
+        self.patch(jend, lend);
+        res
+    }
+
+    fn compile_isset_one(&mut self, e: &Expr) -> Reg {
+        match e {
+            Expr::Var(id, _) if self.is_this(*id) => {
+                let dst = self.alloc_temp();
+                self.emit(Op::LoadBool {
+                    dst,
+                    val: self.cur_class.is_some(),
+                });
+                dst
+            }
+            Expr::Var(id, _) if self.is_globals(*id) => {
+                let dst = self.alloc_temp();
+                self.emit(Op::LoadBool { dst, val: true });
+                dst
+            }
+            Expr::Var(id, _) => {
+                let var = self.var_reg(*id);
+                let dst = self.alloc_temp();
+                self.emit(Op::IssetVar { dst, var });
+                dst
+            }
+            Expr::VarVar { name, .. } => {
+                let n = self.compile_expr(name);
+                let t = self.alloc_temp();
+                self.emit(Op::FetchDynVar {
+                    dst: t,
+                    name: n,
+                    global: false,
+                });
+                let dst = self.alloc_temp();
+                self.emit(Op::IssetVar { dst, var: t });
+                dst
+            }
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } => {
+                let b = self.compile_quiet(base);
+                let k = self.compile_expr(index);
+                let dst = self.alloc_temp();
+                self.emit(Op::IssetElem {
+                    dst,
+                    arr: b,
+                    key: k,
+                });
+                dst
+            }
+            Expr::Prop { obj, name, .. } => {
+                let o = self.compile_quiet(obj);
+                let name = self.member_name_ref(name);
+                let dst = self.alloc_temp();
+                self.emit(Op::IssetProp { dst, obj: o, name });
+                dst
+            }
+            Expr::StaticProp { span, .. } => self.unsupported_expr(*span, "isset on a static property"),
+            other => {
+                self.diags.push(
+                    Diagnostic::error(INVALID_WRITE_TARGET, "Cannot use isset() on the result of an expression (you can use \"null !== expression\" instead)")
+                        .with_primary(other.span(), "not a variable"),
+                );
+                self.null_temp()
+            }
+        }
+    }
+
+    /// `empty(e)`: `!isset(e) || !e`, never warns.
+    fn compile_empty(&mut self, e: &Expr) -> Reg {
+        match e {
+            Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => {
+                let var = self.var_reg(*id);
+                let dst = self.alloc_temp();
+                self.emit(Op::EmptyVar { dst, var });
+                dst
+            }
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } => {
+                let mark = self.temp_top;
+                let b = self.compile_quiet(base);
+                let k = self.compile_expr(index);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.emit(Op::EmptyElem {
+                    dst,
+                    arr: b,
+                    key: k,
+                });
+                dst
+            }
+            Expr::Prop { obj, name, .. } => {
+                let mark = self.temp_top;
+                let o = self.compile_quiet(obj);
+                let name = self.member_name_ref(name);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.emit(Op::EmptyProp { dst, obj: o, name });
+                dst
+            }
+            other => {
+                let mark = self.temp_top;
+                let r = self.compile_quiet(other);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.emit(Op::Not { dst, src: r });
+                dst
+            }
+        }
+    }
+
+    /// `match (subject) { conds => body, default => body }`.
+    fn compile_match(&mut self, subject: &Expr, arms: &[MatchArm], span: Span) -> Reg {
+        let _ = span;
+        let res = self.alloc_temp();
+        let mark = self.temp_top;
+        let subj = self.compile_expr(subject);
+        let all_literal = arms.iter().all(|a| {
+            a.conds
+                .as_ref()
+                .is_none_or(|cs| cs.iter().all(|c| literal_value(c, self.interner()).is_some()))
+        });
+        let default_idx = arms.iter().position(|a| a.conds.is_none());
+        // (arm index, jump) for the compare chain / the jump table.
+        let mut chain: Vec<(usize, usize)> = Vec::new();
+        let mut table: Option<(u32, usize)> = None;
+        if all_literal {
+            let mut rows: Vec<(Value, u32)> = Vec::new();
+            for a in arms {
+                if let Some(cs) = &a.conds {
+                    for c in cs {
+                        rows.push((literal_value(c, self.interner()).expect("literal"), 0));
+                    }
+                }
+            }
+            let k = self.push_const(Const::JumpTable(rows));
+            let op = self.emit(Op::Switch {
+                src: subj,
+                table: k,
+                default: 0,
+                strict: true,
+            });
+            table = Some((k, op));
+        } else {
+            for (i, a) in arms.iter().enumerate() {
+                let Some(cs) = &a.conds else { continue };
+                for c in cs {
+                    let m = self.temp_top;
+                    let cr = self.compile_expr(c);
+                    let t = self.alloc_temp();
+                    self.emit(Op::CmpIdentical {
+                        dst: t,
+                        a: subj,
+                        b: cr,
+                    });
+                    let j = self.emit(Op::JmpIfTrue { cond: t, target: 0 });
+                    self.free_to(m);
+                    chain.push((i, j));
+                }
+            }
+        }
+        let jdefault = self.jmp_fwd();
+        let mut starts = Vec::with_capacity(arms.len());
+        let mut ends = Vec::with_capacity(arms.len());
+        for a in arms {
+            starts.push(self.here());
+            self.mark_line(a.span);
+            let m = self.temp_top;
+            let r = self.compile_expr(&a.body);
+            self.emit(Op::Move { dst: res, src: r });
+            self.free_to(m);
+            ends.push(self.jmp_fwd());
+        }
+        // No default arm: the fall-through raises UnhandledMatchError.
+        let default_target = match default_idx {
+            Some(i) => starts[i],
+            None => {
+                let here = self.here();
+                self.emit(Op::MatchError { src: subj });
+                here
+            }
+        };
+        let lend = self.here();
+        match table {
+            Some((k, op)) => {
+                let mut row = 0;
+                if let Const::JumpTable(rows) = &mut self.consts[k as usize] {
+                    for (i, a) in arms.iter().enumerate() {
+                        if let Some(cs) = &a.conds {
+                            for _ in cs {
+                                rows[row].1 = starts[i];
+                                row += 1;
+                            }
+                        }
+                    }
+                }
+                self.patch(op, default_target);
+            }
+            None => {
+                for (i, j) in chain {
+                    self.patch(j, starts[i]);
+                }
+            }
+        }
+        self.patch(jdefault, default_target);
+        for j in ends {
+            self.patch(j, lend);
+        }
+        self.free_to(mark);
+        res
+    }
+
+    // ---- calls ------------------------------------------------------------------
+
+    /// Emit the `Send*` sequence for a call's arguments.
+    pub(crate) fn compile_sends(&mut self, args: &[Arg]) {
+        let mut pos: u16 = 0;
+        for a in args {
+            let mark = self.temp_top;
+            if a.spread {
+                let src = self.compile_expr(&a.value);
+                self.emit(Op::SendUnpack { src });
+            } else if let Some(name) = a.name {
+                let src = match &a.value {
+                    Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => self.var_reg(*id),
+                    other => self.compile_expr(other),
+                };
+                let name = self.name_const(name);
+                self.emit(Op::SendNamed { name, src });
+            } else {
+                self.compile_send_positional(pos, &a.value);
+                pos += 1;
+            }
+            self.free_to(mark);
+        }
+    }
+
+    /// One positional argument: a variable, element or property is sent so
+    /// the callee can take it by reference; a call result or nested place
+    /// goes through a temporary (silently by value if the parameter is
+    /// by-reference); anything else is a value.
+    fn compile_send_positional(&mut self, pos: u16, value: &Expr) {
+        match value {
+            Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => {
+                let var = self.var_reg(*id);
+                self.emit(Op::SendVar { pos, var });
+            }
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } if matches!(&**base, Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id)) => {
+                let Expr::Var(id, _) = &**base else { unreachable!() };
+                let arr = self.var_reg(*id);
+                let key = self.compile_expr(index);
+                self.emit(Op::SendRefElem { pos, arr, key });
+            }
+            Expr::Prop {
+                obj,
+                name,
+                nullsafe: false,
+                ..
+            } => {
+                let obj = self.compile_expr(obj);
+                let name = self.member_name_ref(name);
+                self.emit(Op::SendRefProp { pos, obj, name });
+            }
+            Expr::Index {
+                index: Some(_), ..
+            }
+            | Expr::VarVar { .. }
+            | Expr::Call { .. }
+            | Expr::MethodCall { .. }
+            | Expr::StaticCall { .. }
+            | Expr::New { .. } => {
+                let var = self.compile_expr(value);
+                self.emit(Op::SendVar { pos, var });
+            }
+            Expr::Index { index: None, span, .. } => {
+                unsupported(self.diags, *span, "`[]` append as an argument");
+            }
+            other => {
+                let src = self.compile_expr(other);
+                self.emit(Op::SendVal { pos, src });
+            }
+        }
+    }
+
+    /// `name(args...)`: late-bound through the runtime's function table.
+    fn compile_call(&mut self, name: &Name, args: &[Arg], span: Span) -> Reg {
+        let _ = span;
+        if !name_is_global(name) {
+            return self.unsupported_expr(name.span, "namespaced function call");
+        }
+        let k = self.sym_const(self.interner().resolve(name.text));
+        let ic = self.ic();
+        self.emit(Op::InitFCall {
+            name: k,
+            ns_fallback: None,
+            ic,
+        });
+        self.compile_sends(args);
+        let dst = self.alloc_temp();
+        self.emit(Op::DoCall { dst });
         dst
     }
 
-    /// Push a `self::`/`parent::` scope-misuse diagnostic.
-    fn scope_error(&mut self, msg: &str, span: Span) {
-        self.diags
-            .push(Diagnostic::error(INVALID_SCOPE, msg).with_primary(span, "invalid scope"));
+    /// `callee(args...)` where the callee is a runtime value.
+    fn compile_dynamic_call(&mut self, callee: &Expr, args: &[Arg]) -> Reg {
+        let mark = self.temp_top;
+        let callee_reg = self.compile_chain_obj(callee);
+        let ic = self.ic();
+        self.emit(Op::InitDynCall {
+            callee: callee_reg,
+            ic,
+        });
+        self.free_to(mark);
+        self.compile_sends(args);
+        let dst = self.alloc_temp();
+        self.emit(Op::DoCall { dst });
+        dst
     }
 }
 
-/// Whether argument position `i` is a by-reference slot of `mask` (positions
-/// beyond the 32-bit mask are by value: the mask cannot describe them).
-fn is_by_ref(mask: u32, i: u16) -> bool {
-    i < 32 && mask & (1 << i) != 0
+/// Whether a destructuring pattern binds any target by reference (at any depth).
+fn pattern_has_ref(items: &[ArrayItem]) -> bool {
+    items.iter().any(|it| {
+        it.by_ref
+            || matches!(&it.value, Some(Expr::Array { items, .. }) if pattern_has_ref(items))
+    })
+}
+
+/// Whether a member chain (`a->b?->c[0]->d()`) contains a nullsafe link.
+fn chain_has_nullsafe(e: &Expr) -> bool {
+    match e {
+        Expr::Prop { obj, nullsafe, .. } | Expr::MethodCall { obj, nullsafe, .. } => {
+            *nullsafe || chain_has_nullsafe(obj)
+        }
+        Expr::Index { base, .. } => chain_has_nullsafe(base),
+        Expr::Call {
+            callee: Callee::Expr(c),
+            ..
+        } => chain_has_nullsafe(c),
+        _ => false,
+    }
+}
+
+/// The compound-assignment kind of a binary operator, if it has one.
+fn assign_op_kind(op: BinOp) -> Option<AssignOpKind> {
+    Some(match op {
+        BinOp::Add => AssignOpKind::Add,
+        BinOp::Sub => AssignOpKind::Sub,
+        BinOp::Mul => AssignOpKind::Mul,
+        BinOp::Div => AssignOpKind::Div,
+        BinOp::Mod => AssignOpKind::Mod,
+        BinOp::Pow => AssignOpKind::Pow,
+        BinOp::Concat => AssignOpKind::Concat,
+        BinOp::BitAnd => AssignOpKind::BitAnd,
+        BinOp::BitOr => AssignOpKind::BitOr,
+        BinOp::BitXor => AssignOpKind::BitXor,
+        BinOp::Shl => AssignOpKind::Shl,
+        BinOp::Shr => AssignOpKind::Shr,
+        BinOp::Coalesce => AssignOpKind::Coalesce,
+        _ => return None,
+    })
 }
 
 /// The three-address op for a plain binary operator, or `None` for the
-/// operators the slice does not lower (`&&`/`||` are lowered to branches by
-/// the caller).
+/// operators lowered to branches by the caller (`&&`, `||`, `xor`, `??`,
+/// `|>`).
 fn binary_op(op: BinOp) -> Option<fn(Reg, Reg, Reg) -> Op> {
     Some(match op {
         BinOp::Add => |dst, a, b| Op::Add { dst, a, b },
@@ -888,6 +2231,11 @@ fn binary_op(op: BinOp) -> Option<fn(Reg, Reg, Reg) -> Op> {
         BinOp::Mod => |dst, a, b| Op::Mod { dst, a, b },
         BinOp::Pow => |dst, a, b| Op::Pow { dst, a, b },
         BinOp::Concat => |dst, a, b| Op::Concat { dst, a, b },
+        BinOp::BitAnd => |dst, a, b| Op::BitAnd { dst, a, b },
+        BinOp::BitOr => |dst, a, b| Op::BitOr { dst, a, b },
+        BinOp::BitXor => |dst, a, b| Op::BitXor { dst, a, b },
+        BinOp::Shl => |dst, a, b| Op::Shl { dst, a, b },
+        BinOp::Shr => |dst, a, b| Op::Shr { dst, a, b },
         BinOp::Eq => |dst, a, b| Op::CmpEq { dst, a, b },
         BinOp::Ne => |dst, a, b| Op::CmpNe { dst, a, b },
         BinOp::Identical => |dst, a, b| Op::CmpIdentical { dst, a, b },
@@ -897,15 +2245,6 @@ fn binary_op(op: BinOp) -> Option<fn(Reg, Reg, Reg) -> Op> {
         BinOp::Gt => |dst, a, b| Op::CmpGt { dst, a, b },
         BinOp::Ge => |dst, a, b| Op::CmpGe { dst, a, b },
         BinOp::Spaceship => |dst, a, b| Op::Spaceship { dst, a, b },
-        BinOp::And
-        | BinOp::Or
-        | BinOp::Xor
-        | BinOp::BitAnd
-        | BinOp::BitOr
-        | BinOp::BitXor
-        | BinOp::Shl
-        | BinOp::Shr
-        | BinOp::Coalesce
-        | BinOp::Pipe => return None,
+        BinOp::And | BinOp::Or | BinOp::Xor | BinOp::Coalesce | BinOp::Pipe => return None,
     })
 }

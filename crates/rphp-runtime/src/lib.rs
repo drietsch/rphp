@@ -17,25 +17,34 @@
 #![forbid(unsafe_code)]
 
 mod api;
+mod call;
 mod errors;
 mod exec;
-mod frames;
+mod frame;
 mod ini;
 mod interp;
+mod ops;
 mod output;
 mod registry;
 mod resources;
+mod symtab;
+mod unit;
 
 pub use api::parse_error_reporting;
+pub use call::Callable;
 pub use errors::{
     DisplayMode, ErrLevel, LastError, E_ALL, E_COMPILE_ERROR, E_COMPILE_WARNING, E_CORE_ERROR,
     E_CORE_WARNING, E_DEPRECATED, E_ERROR, E_NOTICE, E_PARSE, E_RECOVERABLE_ERROR, E_STRICT,
     E_USER_DEPRECATED, E_USER_ERROR, E_USER_NOTICE, E_USER_WARNING, E_WARNING, SILENCE_MASK,
 };
-pub use exec::value_name;
-pub use frames::{frame_name, render_trace, trace_arg, FrameInfo, FrameKind};
+pub use frame::{trace_arg, CallTarget, Frame, FrameKind, PendingCall, RetTarget};
 pub use ini::{parse_bool, IniEntry, IniTable, CORE_DEFAULTS};
-pub use interp::{ExtState, Interp, SapiKind};
+pub use interp::{
+    CompileFailure, CompileHook, ExtState, Interp, SapiKind, MAX_FRAMES, MAX_REENTRY_DEPTH,
+};
+pub use ops::{str_increment, value_name};
+pub use symtab::{Symtab, SymtabData};
+pub use unit::{ClassRt, FuncRt, IcSlot, UnitRt};
 pub use output::{
     NullSink, ObLevel, OutputSink, OutputStack, SharedBuffer, PHP_OUTPUT_HANDLER_CLEAN,
     PHP_OUTPUT_HANDLER_CLEANABLE, PHP_OUTPUT_HANDLER_DISABLED, PHP_OUTPUT_HANDLER_FINAL,
@@ -52,7 +61,7 @@ pub use resources::ResourceTable;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rphp_bytecode::{Const, Function, Module, Op};
+    use rphp_bytecode::{Const, Function, Module, NameConst, Op, ParamDef};
     use rphp_intern::IdentId;
     use rphp_span::Span;
     use rphp_value::Value;
@@ -60,9 +69,33 @@ mod tests {
     /// Build a `Function` by hand. `name` only matters for diagnostics, which
     /// the interpreter never inspects, so a fixed id is fine.
     fn func(num_params: u16, num_regs: u16, code: Vec<Op>, consts: Vec<Const>) -> Function {
+        named_func("", num_params, num_regs, code, consts)
+    }
+
+    /// A named function with `num_params` by-value parameters in registers
+    /// `0 .. num_params`.
+    fn named_func(
+        name: &str,
+        num_params: u16,
+        num_regs: u16,
+        code: Vec<Op>,
+        consts: Vec<Const>,
+    ) -> Function {
+        let params = (0..num_params)
+            .map(|i| ParamDef {
+                name: Box::from(format!("p{i}").as_bytes()),
+                reg: i,
+                by_ref: false,
+                variadic: false,
+                default: None,
+                ty: None,
+                promoted: None,
+                attrs: Vec::new(),
+            })
+            .collect();
         Function {
             name: IdentId(0),
-            name_bytes: Box::from(&b""[..]),
+            name_bytes: Box::from(name.as_bytes()),
             num_params,
             num_regs,
             code,
@@ -70,27 +103,41 @@ mod tests {
             capture_regs: Vec::new(),
             closures: Vec::new(),
             span: Span::dummy(),
+            params,
             ..Function::default()
         }
     }
 
     /// A single-function module whose lone function is `main`.
     fn module(main: Function) -> Module {
-        Module {
-            funcs: vec![main],
-            classes: Vec::new(),
-            main: 0,
-        }
+        Module::new_hoisted(vec![main], Vec::new(), 0)
     }
 
     /// Run a module on a fresh test interpreter: the result of `{main}` and
     /// everything that reached the sink.
     fn run(m: &Module) -> (Result<Value, Unwind>, Vec<u8>) {
         let mut it = Interp::new_for_tests();
-        it.load_module(m.clone());
+        it.load_module(m.clone()).unwrap();
         let r = it.run_main();
         it.finish_output();
         (r, it.test_output())
+    }
+
+    /// `InitFCall name; SendVal args…; DoCall dst` as ops.
+    fn call(name_k: u32, args: &[u16], dst: u16) -> Vec<Op> {
+        let mut ops = vec![Op::InitFCall {
+            name: name_k,
+            ns_fallback: None,
+            ic: 0,
+        }];
+        for (i, &a) in args.iter().enumerate() {
+            ops.push(Op::SendVal {
+                pos: i as u16,
+                src: a,
+            });
+        }
+        ops.push(Op::DoCall { dst });
+        ops
     }
 
     /// Run a module and decode its (binary-safe) stdout as UTF-8 for assertions.
@@ -155,81 +202,101 @@ mod tests {
     #[test]
     fn call_returns_value() {
         // main: x = add2(20, 22); echo x   => "42"
+        let mut code = vec![
+            Op::LoadConst { dst: 0, k: 0 },
+            Op::LoadConst { dst: 1, k: 1 },
+        ];
+        code.extend(call(2, &[0, 1], 2));
+        code.push(Op::Echo { src: 2 });
+        code.push(Op::Ret { src: None });
         let main = func(
             0,
             3,
+            code,
             vec![
-                Op::LoadConst { dst: 0, k: 0 },
-                Op::LoadConst { dst: 1, k: 1 },
-                Op::Call {
-                    dst: 2,
-                    func: 1,
-                    base: 0,
-                    argc: 2,
-                },
-                Op::Echo { src: 2 },
-                Op::Ret { src: None },
+                Const::Int(20),
+                Const::Int(22),
+                Const::Name(NameConst::new(b"add2")),
             ],
-            vec![Const::Int(20), Const::Int(22)],
         );
-        let add2 = func(
+        let add2 = named_func(
+            "add2",
             2,
             3,
             vec![Op::Add { dst: 2, a: 0, b: 1 }, Op::Ret { src: Some(2) }],
             vec![],
         );
-        let m = Module {
-            funcs: vec![main, add2],
-            classes: Vec::new(),
-            main: 0,
-        };
+        let m = Module::new_hoisted(vec![main, add2], Vec::new(), 0);
         assert_eq!(out_str(&m), "42");
     }
 
     #[test]
-    fn recursive_call_factorial() {
+    fn recursive_call_factorial_and_deep_recursion() {
+        let mut code = vec![Op::LoadConst { dst: 0, k: 0 }];
+        code.extend(call(1, &[0], 1));
+        code.push(Op::Echo { src: 1 });
+        code.push(Op::Ret { src: None });
         let main = func(
             0,
             2,
-            vec![
-                Op::LoadConst { dst: 0, k: 0 },
-                Op::Call {
-                    dst: 1,
-                    func: 1,
-                    base: 0,
-                    argc: 1,
-                },
-                Op::Echo { src: 1 },
-                Op::Ret { src: None },
-            ],
-            vec![Const::Int(5)],
+            code,
+            vec![Const::Int(5), Const::Name(NameConst::new(b"fact"))],
         );
-        let fact = func(
+        let mut fcode = vec![
+            Op::LoadConst { dst: 1, k: 0 },
+            Op::CmpLe { dst: 2, a: 0, b: 1 },
+            Op::JmpIfFalse { cond: 2, target: 4 },
+            Op::Ret { src: Some(1) },
+            Op::Sub { dst: 3, a: 0, b: 1 },
+        ];
+        fcode.extend(call(1, &[3], 4));
+        fcode.push(Op::Mul { dst: 5, a: 0, b: 4 });
+        fcode.push(Op::Ret { src: Some(5) });
+        let fact = named_func(
+            "fact",
             1,
             6,
-            vec![
-                Op::LoadConst { dst: 1, k: 0 },
-                Op::CmpLe { dst: 2, a: 0, b: 1 },
-                Op::JmpIfFalse { cond: 2, target: 4 },
-                Op::Ret { src: Some(1) },
-                Op::Sub { dst: 3, a: 0, b: 1 },
-                Op::Call {
-                    dst: 4,
-                    func: 1,
-                    base: 3,
-                    argc: 1,
-                },
-                Op::Mul { dst: 5, a: 0, b: 4 },
-                Op::Ret { src: Some(5) },
-            ],
-            vec![Const::Int(1)],
+            fcode,
+            vec![Const::Int(1), Const::Name(NameConst::new(b"fact"))],
         );
-        let m = Module {
-            funcs: vec![main, fact],
-            classes: Vec::new(),
-            main: 0,
-        };
+        let m = Module::new_hoisted(vec![main, fact], Vec::new(), 0);
         assert_eq!(out_str(&m), "120");
+
+        // deep(n) = n == 0 ? 0 : 1 + deep(n - 1), n = 50000: no Rust recursion.
+        let mut code = vec![Op::LoadConst { dst: 0, k: 0 }];
+        code.extend(call(1, &[0], 1));
+        code.push(Op::Echo { src: 1 });
+        code.push(Op::Ret { src: None });
+        let main = func(
+            0,
+            2,
+            code,
+            vec![Const::Int(50_000), Const::Name(NameConst::new(b"deep"))],
+        );
+        let mut dcode = vec![
+            Op::LoadConst { dst: 1, k: 0 }, // 0
+            Op::CmpEq { dst: 2, a: 0, b: 1 },
+            Op::JmpIfFalse { cond: 2, target: 4 },
+            Op::Ret { src: Some(1) },
+            Op::LoadConst { dst: 3, k: 1 }, // 1
+            Op::Sub { dst: 4, a: 0, b: 3 },
+        ];
+        dcode.extend(call(2, &[4], 5));
+        dcode.push(Op::Add { dst: 5, a: 3, b: 5 });
+        dcode.push(Op::Ret { src: Some(5) });
+        let deep = named_func(
+            "deep",
+            1,
+            6,
+            dcode,
+            vec![
+                Const::Int(0),
+                Const::Int(1),
+                Const::Name(NameConst::new(b"deep")),
+            ],
+        );
+        let m = Module::new_hoisted(vec![main, deep], Vec::new(), 0);
+        assert_eq!(out_str(&m), "50000");
     }
 
     #[test]
@@ -368,17 +435,20 @@ mod tests {
                 Op::LoadConst { dst: 5, k: 2 },
                 Op::ArrayPush { arr: 0, value: 5 },
                 Op::LoadConst { dst: 1, k: 3 },
-                Op::Move { dst: 3, src: 0 },
-                Op::LoadConst { dst: 4, k: 3 },
-                Op::ForeachNext {
-                    arr: 3,
-                    cursor: 4,
-                    key_dst: 5,
-                    val_dst: 2,
-                    target: 13,
+                Op::IterInit {
+                    it: 3,
+                    src: 0,
+                    by_ref: false,
+                },
+                Op::IterNext {
+                    it: 3,
+                    key: Some(5),
+                    val: 2,
+                    target: 12,
                 },
                 Op::Add { dst: 1, a: 1, b: 2 },
-                Op::Jmp { target: 10 },
+                Op::Jmp { target: 9 },
+                Op::IterFree { it: 3 },
                 Op::Echo { src: 1 },
                 Op::Ret { src: None },
             ],
@@ -440,7 +510,9 @@ mod tests {
         let m = module(f);
         let mut it = Interp::new_for_tests();
         it.script_name = "/tmp/t.php".into();
-        it.load_module(m);
+        let mut m = m;
+        m.file = std::rc::Rc::from("/tmp/t.php");
+        it.load_module(m).unwrap();
         it.run_main().unwrap();
         assert_eq!(
             String::from_utf8(it.test_output()).unwrap(),
@@ -613,7 +685,7 @@ mod tests {
             ],
         ));
         let mut it = interp_with_handlers();
-        it.load_module(m);
+        it.load_module(m).unwrap();
         it.ob_start(None, 0, PHP_OUTPUT_HANDLER_STDFLAGS); // even buffered output survives
         let code = match it.run_main() {
             Ok(_) => 0,
@@ -631,7 +703,8 @@ mod tests {
     #[test]
     fn shutdown_functions_run_in_order_and_a_fault_stops_the_rest() {
         let mut it = interp_with_handlers();
-        it.load_module(module(func(0, 0, vec![Op::Ret { src: None }], vec![])));
+        it.load_module(module(func(0, 0, vec![Op::Ret { src: None }], vec![])))
+            .unwrap();
         it.run_main().unwrap();
         it.shutdown.push((
             Value::string(b"h_true"),

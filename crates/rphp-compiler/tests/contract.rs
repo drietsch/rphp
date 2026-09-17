@@ -9,39 +9,23 @@
 
 use std::path::{Path, PathBuf};
 
-use rphp_compiler::{compile, CompileOptions, KnownFunctions, NativeSig};
+use rphp_compiler::{compile, CompileOptions};
 use rphp_intern::Interner;
 use rphp_parser::{parse_v2, ParseOptions};
 use rphp_span::FileId;
 
-/// A permissive registry: every unknown function is a variadic native, so the
-/// contract is about lowering, not about which natives exist.
-struct AnyNative;
-
-impl KnownFunctions for AnyNative {
-    fn native(&self, _name: &[u8]) -> Option<NativeSig> {
-        Some(NativeSig {
-            id: 0,
-            min_args: 0,
-            max_args: None,
-            by_ref: 0,
-        })
-    }
-}
-
 /// The codes the compiler may report on a syntactically valid program.
 const KNOWN_CODES: &[&str] = &[
-    "RPHP_E0100", // undefined function
-    "RPHP_E0101", // wrong argument count
     "RPHP_E0102", // redeclared function
-    "RPHP_E0103", // nested array write
     "RPHP_E0104", // `[]` read
-    "RPHP_E0105", // by-ref argument not a variable
     "RPHP_E0106", // redeclared class
     "RPHP_E0107", // undefined class
     "RPHP_E0108", // non-constant property default
-    "RPHP_E0109", // undefined method
     "RPHP_E0110", // invalid scope
+    "RPHP_E0111", // invalid break/continue
+    "RPHP_E0112", // undefined / duplicate label
+    "RPHP_E0113", // goto into loop
+    "RPHP_E0114", // invalid write target
     "RPHP_E0300", // not lowered yet
 ];
 
@@ -95,8 +79,8 @@ fn compile_source(path: &Path, src: &[u8]) -> Result<Option<Vec<Reported>>, Stri
     }
     let line_of = |off: u32| 1 + src[..off as usize].iter().filter(|&&b| b == b'\n').count() as u32;
     let opts = CompileOptions {
-        natives: &AnyNative,
         line_of: Some(&line_of),
+        file: Some(path.to_path_buf()),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         compile(&parsed.program, &interner, &opts)

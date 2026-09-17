@@ -270,9 +270,9 @@ pub(crate) fn get_object_vars(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult
 /// visible from the calling scope, own class first then parents.
 pub(crate) fn get_class_methods(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let Some(mut cur) = class_arg(ctx, "get_class_methods", 1, &args[0], true)? else {
-        return Err(Unwind::type_error(format!(
-            "get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, string given"
-        )));
+        return Err(Unwind::type_error(
+            "get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, string given",
+        ));
     };
     let scope = ctx.current_user_frame().and_then(|f| f.scope);
     let mut out = rphp_value::Array::new();

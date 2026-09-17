@@ -15,3 +15,20 @@ var_dump(constant('ANSWER'));
 var_dump(ini_get('display_errors'), ini_get('precision'), ini_get('no.such.directive'));
 var_dump(ini_set('precision', '10'), ini_get('precision'));
 var_dump(error_reporting(), error_reporting(constant('E_ALL')));
+
+// --- E3: bare constant names, `const`, define() interplay, magic constants ---
+echo PHP_EOL === "\n" ? 'eol' : 'no', ' ', PHP_INT_SIZE, ' ', PHP_INT_MAX, ' ', PHP_VERSION_ID >= 80400 ? 'modern' : 'old', ' ', E_ALL, ' ', M_PI > 3 ? 'pi' : 'nopi', "\n";
+const GREETING = 'hi';
+const NUMS = [1, 2, 3];
+const COMPUTED = GREETING . '!' . PHP_INT_SIZE;
+echo GREETING, ' ', count(NUMS), ' ', NUMS[1], ' ', COMPUTED, ' ', \GREETING, "\n";
+define('DEFINED_LATER', 42);
+echo DEFINED_LATER + 1, ' ', constant('GREETING'), ' ', defined('COMPUTED') ? 'y' : 'n', "\n";
+function uses_const($x = PHP_INT_SIZE, $y = GREETING) { return "$x$y"; }
+echo uses_const(), ' ', uses_const(1), "\n";
+echo __LINE__, ' ', basename(__FILE__), ' ', basename(__DIR__), ' ', __FUNCTION__ === '' ? 'nofn' : __FUNCTION__, ' ', __CLASS__ === '' ? 'nocls' : 'cls', "\n";
+function magic() { return __FUNCTION__ . '|' . __METHOD__ . '|' . __LINE__; }
+class Magic { function m() { return __CLASS__ . '|' . __FUNCTION__ . '|' . __METHOD__; } }
+echo magic(), ' ', (new Magic)->m(), "\n";
+$closure = function () { return __FUNCTION__; };
+echo strpos($closure(), '{closure:') === 0 ? 'closure-named' : $closure(), "\n";

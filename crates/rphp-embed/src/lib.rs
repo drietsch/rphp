@@ -15,13 +15,13 @@ mod sink;
 use std::path::{Path, PathBuf};
 
 use rphp_bytecode::Module;
-use rphp_compiler::{compile, CompileOptions, KnownFunctions, NativeSig};
+use rphp_compiler::{compile, CompileOptions};
 use rphp_diagnostics::Diagnostic;
 use rphp_intern::Interner;
 use rphp_parser::{parse_v2, ParseOptions};
-use rphp_runtime::DisplayMode;
+use rphp_runtime::{CompileFailure, DisplayMode};
 use rphp_source::SourceMap;
-use rphp_value::{Array, ArrayKey, Value};
+use rphp_value::{Array, ArrayKey, PhpRef, Value};
 
 pub use constants::{php_os, php_os_family};
 pub use rphp_runtime::{Interp, OutputSink, Registry, SapiKind, Unwind};
@@ -111,22 +111,6 @@ pub struct Engine {
     config: EngineConfig,
 }
 
-/// The compiler's view of an interpreter's registry.
-struct InterpNatives<'a>(&'a Interp);
-
-impl KnownFunctions for InterpNatives<'_> {
-    fn native(&self, name: &[u8]) -> Option<NativeSig> {
-        let id = self.0.native_by_name(name)?;
-        let f = self.0.native(id);
-        Some(NativeSig {
-            id: id.0,
-            min_args: f.min_args as usize,
-            max_args: f.max_args.map(usize::from),
-            by_ref: f.by_ref,
-        })
-    }
-}
-
 impl Engine {
     /// An engine with `config`.
     pub fn new(config: EngineConfig) -> Engine {
@@ -140,8 +124,8 @@ impl Engine {
 
     /// A fresh interpreter writing to `sink`: the stdlib and the engine
     /// constants registered, the ini defaults with the configured overrides
-    /// applied, `$_SERVER`/`$argv`/`$argc` seeded (not yet visible to PHP
-    /// code — the compiler does not lower global fetches).
+    /// applied, `$_SERVER`/`$argv`/`$argc` seeded into the globals table,
+    /// and the compile hook `include`/`require` use installed.
     pub fn new_interp(&self, sink: Box<dyn OutputSink>) -> Interp {
         let cfg = &self.config;
         let mut it = Interp::new(sink);
@@ -160,6 +144,12 @@ impl Engine {
         rphp_stdlib::register(&mut Registry(&mut it));
         constants::register(&mut Registry(&mut it), cfg.sapi);
         self.seed_globals(&mut it);
+        it.compile_hook = Some(Box::new(|interp: &Interp, src: &[u8], name: &str| {
+            compile_unit(interp, src, name).map_err(|e| match e {
+                CompileError::Parse { message, line, .. } => CompileFailure::Parse { message, line },
+                CompileError::Compile(lines) => CompileFailure::Rejected(lines),
+            })
+        }));
         it
     }
 
@@ -200,10 +190,9 @@ impl Engine {
         server.set(ArrayKey::str(b"argv"), Value::Array(argv.clone()));
         server.set(ArrayKey::str(b"argc"), argc.clone());
         it.globals
-            .insert(Box::from(&b"_SERVER"[..]), Value::Array(server));
-        it.globals
-            .insert(Box::from(&b"argv"[..]), Value::Array(argv));
-        it.globals.insert(Box::from(&b"argc"[..]), argc);
+            .insert(b"_SERVER", PhpRef::new(Value::Array(server)));
+        it.globals.insert(b"argv", PhpRef::new(Value::Array(argv)));
+        it.globals.insert(b"argc", PhpRef::new(argc));
     }
 
     /// Parse and compile `src` (named `name` in diagnostics) against
@@ -211,45 +200,20 @@ impl Engine {
     /// interpreter's `short_open_tag`; a parse error aborts before
     /// compilation ([`CompileError::Parse`]).
     pub fn compile(&self, interp: &Interp, src: &[u8], name: &str) -> Result<Module, CompileError> {
-        let mut sources = SourceMap::new();
-        let id = sources.add(name.to_string(), src.to_vec());
-        let mut interner = Interner::new();
-        let opts = ParseOptions {
-            file: id,
-            path: Some(Path::new(name)),
-            short_open_tag: interp
-                .ini_get("short_open_tag")
-                .is_some_and(rphp_runtime::parse_bool),
-        };
-        let parsed = parse_v2(src, opts, &mut interner);
-        let render =
-            |diags: &[Diagnostic]| diags.iter().map(|d| d.render(&sources)).collect::<Vec<_>>();
-        let file = sources.get(id);
-        if let Some(first) = parsed.diagnostics.iter().find(|d| d.is_error()) {
-            let line = first
-                .primary
-                .as_ref()
-                .map_or(1, |l| file.line_col(l.span.lo).0);
-            return Err(CompileError::Parse {
-                message: first.message.clone(),
-                line,
-                rendered: render(&parsed.diagnostics),
-            });
-        }
-        let line_of = |offset: u32| file.line_col(offset).0;
-        let natives = InterpNatives(interp);
-        let opts = CompileOptions {
-            natives: &natives,
-            line_of: Some(&line_of),
-        };
-        compile(&parsed.program, &interner, &opts).map_err(|d| CompileError::Compile(render(&d)))
+        compile_unit(interp, src, name)
     }
 
-    /// Compile `src` and install it as `interp`'s program.
+    /// Compile `src` and install it as `interp`'s program (its hoisted
+    /// functions and classes are declared; a redeclaration is a fatal error
+    /// reported through the diagnostics channel).
     pub fn load(&self, interp: &mut Interp, src: &[u8], name: &str) -> Result<(), CompileError> {
         let module = self.compile(interp, src, name)?;
         interp.script_name = name.to_string();
-        interp.load_module(module);
+        if let Err(u) = interp.load_module(module) {
+            interp.handle_top_level_unwind(u);
+            interp.finish_output();
+            return Err(CompileError::Compile(Vec::new()));
+        }
         Ok(())
     }
 
@@ -303,11 +267,13 @@ impl Engine {
     /// and a compile rejection goes to stderr; both exit 255 (php's code for
     /// a fatal compile error).
     pub fn run_code(&self, src: &[u8], name: &str, sink: Box<dyn OutputSink>) -> i32 {
-        let mut interp = self.new_interp(sink);
-        if let Err(err) = self.load(&mut interp, src, name) {
-            return self.report_load_error(&mut interp, name, err);
-        }
-        self.execute(&mut interp)
+        on_request_stack(|| {
+            let mut interp = self.new_interp(sink);
+            if let Err(err) = self.load(&mut interp, src, name) {
+                return self.report_load_error(&mut interp, name, err);
+            }
+            self.execute(&mut interp)
+        })
     }
 
     /// Run the script at `path` (diagnostics name it by its canonical
@@ -323,13 +289,80 @@ impl Engine {
         };
         let name = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let name = name.to_string_lossy().into_owned();
-        let mut interp = self.new_interp(sink);
-        interp.script_path = Some(PathBuf::from(&name));
-        if let Err(err) = self.load(&mut interp, &bytes, &name) {
-            return self.report_load_error(&mut interp, &name, err);
-        }
-        self.execute(&mut interp)
+        on_request_stack(|| {
+            let mut interp = self.new_interp(sink);
+            interp.script_path = Some(PathBuf::from(&name));
+            if let Err(err) = self.load(&mut interp, &bytes, &name) {
+                return self.report_load_error(&mut interp, &name, err);
+            }
+            self.execute(&mut interp)
+        })
     }
+}
+
+/// The stack size of the thread a request runs on. PHP→PHP calls never
+/// recurse on the Rust stack (ADR-018), but every native→PHP re-entry
+/// (`array_map` callbacks, `usort`, output handlers, default-value thunks…)
+/// nests one dispatch loop on it; the engine caps that nesting at
+/// [`rphp_runtime::MAX_REENTRY_DEPTH`], and this reservation gives every
+/// level room (debug builds spend ~50 KiB per level). Virtual only: pages
+/// are committed as they are touched.
+pub const REQUEST_STACK_SIZE: usize = 512 << 20;
+
+/// Run `f` on a thread with [`REQUEST_STACK_SIZE`] of stack, blocking until
+/// it finishes. Falls back to the current thread if no thread can be
+/// spawned.
+pub fn on_request_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| {
+        match std::thread::Builder::new()
+            .name("rphp-request".into())
+            .stack_size(REQUEST_STACK_SIZE)
+            .spawn_scoped(scope, f)
+        {
+            Ok(handle) => handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            Err(_) => unreachable!("spawn failure is handled by the caller"),
+        }
+    })
+}
+
+/// Parse and compile `src` (named `name` in diagnostics; the file path for
+/// scripts and included files, `Command line code` for `-r`) against
+/// `interp`'s ini, with line tables. The front end honours `short_open_tag`;
+/// a parse error aborts before compilation ([`CompileError::Parse`]).
+fn compile_unit(interp: &Interp, src: &[u8], name: &str) -> Result<Module, CompileError> {
+    let mut sources = SourceMap::new();
+    let id = sources.add(name.to_string(), src.to_vec());
+    let mut interner = Interner::new();
+    let opts = ParseOptions {
+        file: id,
+        path: Some(Path::new(name)),
+        short_open_tag: interp
+            .ini_get("short_open_tag")
+            .is_some_and(rphp_runtime::parse_bool),
+    };
+    let parsed = parse_v2(src, opts, &mut interner);
+    let render =
+        |diags: &[Diagnostic]| diags.iter().map(|d| d.render(&sources)).collect::<Vec<_>>();
+    let file = sources.get(id);
+    if let Some(first) = parsed.diagnostics.iter().find(|d| d.is_error()) {
+        let line = first
+            .primary
+            .as_ref()
+            .map_or(1, |l| file.line_col(l.span.lo).0);
+        return Err(CompileError::Parse {
+            message: first.message.clone(),
+            line,
+            rendered: render(&parsed.diagnostics),
+        });
+    }
+    let line_of = |offset: u32| file.line_col(offset).0;
+    // A real file path gives `__FILE__`/`__DIR__`; the `-r` unit name does not.
+    let path = Path::new(name);
+    let opts = CompileOptions {
+        line_of: Some(&line_of),
+        file: path.is_absolute().then(|| path.to_path_buf()),
+    };
+    compile(&parsed.program, &interner, &opts).map_err(|d| CompileError::Compile(render(&d)))
 }
 
 /// Evaluate PHP source through the full parse → compile → run pipeline on an
@@ -346,15 +379,19 @@ pub fn eval_to_bytes(src: &[u8]) -> Result<Vec<u8>, String> {
         .push(("display_errors".to_string(), "0".to_string()));
     let engine = Engine::new(config);
     let buffer = BufferSink::new();
-    let mut interp = engine.new_interp(Box::new(buffer.clone()));
-    engine
-        .load(&mut interp, src, "Command line code")
-        .map_err(|e| e.into_rendered().join("\n"))?;
-    match interp.run_main() {
-        Ok(_) | Err(Unwind::Exit(_)) => {}
-        Err(u) => return Err(u.describe()),
-    }
-    interp.finish_output();
+    let sink = buffer.clone();
+    on_request_stack(move || {
+        let mut interp = engine.new_interp(Box::new(sink));
+        engine
+            .load(&mut interp, src, "Command line code")
+            .map_err(|e| e.into_rendered().join("\n"))?;
+        match interp.run_main() {
+            Ok(_) | Err(Unwind::Exit(_)) => {}
+            Err(u) => return Err(u.describe()),
+        }
+        interp.finish_output();
+        Ok(())
+    })?;
     Ok(buffer.take())
 }
 
@@ -420,7 +457,7 @@ mod tests {
             other => panic!("expected a parse error, got {other:?}"),
         }
         // An unsupported construct is a compile rejection, not a parse error.
-        match engine.compile(&interp, b"<?php $a ??= 1;", "t.php") {
+        match engine.compile(&interp, b"<?php function g() { yield 1; }", "t.php") {
             Err(CompileError::Compile(lines)) => {
                 assert!(lines[0].contains("RPHP_E0300"), "{lines:?}")
             }
@@ -508,7 +545,7 @@ mod tests {
         assert_eq!(it.ini_get("display_errors"), Some("0"));
         assert_eq!(it.ini_get("custom.flag"), Some("yes"));
         assert_eq!(it.argv(), &[b"s.php".to_vec(), b"a".to_vec()]);
-        assert_eq!(it.globals.get(&b"argc"[..]), Some(&Value::Int(2)));
+        assert_eq!(it.globals.get(b"argc").map(|c| c.get()), Some(Value::Int(2)));
         assert_eq!(it.constant(b"PHP_SAPI"), Some(Value::string(b"cli")));
         it.warn("hidden").unwrap();
         assert_eq!(buffer.take(), b"");

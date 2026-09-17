@@ -18,6 +18,34 @@ pub struct Module {
     pub classes: Vec<Class>,
     /// The synthetic top-level `{main}` function id.
     pub main: FuncId,
+    /// Unconditional top-level function declarations, declared into the
+    /// interpreter's function table before `{main}` runs (E3, CONTRACT.md
+    /// §8). Every other named function in `funcs` (a conditional / nested
+    /// declaration) is declared by its [`Op::DeclareFunction`](crate::Op::DeclareFunction).
+    pub hoist_funcs: Vec<FuncId>,
+    /// Top-level class declarations, declared before `{main}` runs; the rest
+    /// by their [`Op::DeclareClass`](crate::Op::DeclareClass).
+    pub hoist_classes: Vec<ClassId>,
+    /// The file the module was compiled from (`__FILE__`), or the unit name
+    /// (`Command line code`) for `-r` / eval.
+    pub file: Rc<str>,
+}
+
+impl Module {
+    /// A module whose `funcs[main]` is the entry function, with every function
+    /// and class hoisted (the M0 shape: nothing conditional).
+    pub fn new_hoisted(funcs: Vec<Function>, classes: Vec<Class>, main: FuncId) -> Module {
+        let hoist_funcs = (0..funcs.len() as FuncId).filter(|&i| i != main).collect();
+        let hoist_classes = (0..classes.len() as ClassId).collect();
+        Module {
+            funcs,
+            classes,
+            main,
+            hoist_funcs,
+            hoist_classes,
+            file: Rc::from("Command line code"),
+        }
+    }
 }
 
 impl Module {

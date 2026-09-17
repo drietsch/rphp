@@ -1,5 +1,7 @@
 # php-src slice scored by `cargo xtask phpt --ext zend`; schema in tests/phpt/README.md
 dir = "Zend/tests"
 enabled = true
-baseline = 0
-notes = "language core: ~5k tests over syntax, classes, generators, closures, errors; the long tail of the burn-down"
+baseline = 668
+total = 5256
+updated = "2026-09-17"
+notes = "language core: ~5k tests over syntax, classes, generators, closures, errors; the long tail of the burn-down. E3 (frames, call ABI, refs, control flow, operators) lifted it from 0 to 668; the bulk of the rest waits on try/catch (E5), interfaces/traits/statics/enums/magic (E6), namespaces (F4) and generators (E8)"

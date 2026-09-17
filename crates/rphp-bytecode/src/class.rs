@@ -41,6 +41,9 @@ pub struct Class {
     pub parent: Option<ClassId>,
     pub props: Vec<PropDef>,
     pub methods: Vec<Method>,
+    /// Source line of the declaration (E3 addition, for `Cannot redeclare
+    /// class X (previously declared in file:line)`); 0 when unknown.
+    pub line: u32,
 }
 
 // ---- v2 ------------------------------------------------------------------------

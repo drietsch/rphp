@@ -210,9 +210,11 @@ fn string_offset_read() {
 }
 
 #[test]
-fn nested_write_is_a_clean_error() {
-    let err = eval_to_string(b"<?php $a = []; $a[0][1] = 5;").unwrap_err();
-    assert!(err.contains("nested array assignment"), "got: {err}");
+fn nested_write_autovivifies() {
+    assert_eq!(
+        eval_ok(b"<?php $a = []; $a[0][1] = 5; $a['x']['y'][] = 7; echo json_encode($a);"),
+        r#"{"0":{"1":5},"x":{"y":[7]}}"#
+    );
 }
 
 #[test]
@@ -441,7 +443,12 @@ fn callable_preg_replace_callback() {
 #[test]
 fn callable_to_undefined_function_errors() {
     let err = eval_to_string(b"<?php array_map('nope_fn', [1]);").unwrap_err();
-    assert!(err.contains("undefined function"), "got: {err}");
+    assert!(
+        err.contains("undefined function") || err.contains("not found or invalid function name"),
+        "got: {err}"
+    );
+    let err = eval_to_string(b"<?php $f = 'nope_fn'; $f();").unwrap_err();
+    assert_eq!(err, "Uncaught Error: Call to undefined function nope_fn()");
 }
 
 // ---- closures & arrow functions --------------------------------------------
@@ -744,6 +751,176 @@ fn missing_file_exits_one() {
 #[test]
 fn runtime_fault_exits_255() {
     let path = write_temp("divzero", b"<?php echo 1 / 0;");
+    let code = run(vec![path.to_string_lossy().into_owned()]);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(code, 255);
+}
+
+// ---- E3: explicit frames, the call ABI, references, lvalues, control flow ----
+
+#[test]
+fn e3_deep_recursion_runs_on_the_frame_stack() {
+    assert_eq!(
+        eval_ok(b"<?php function d($n) { return $n == 0 ? 0 : 1 + d($n - 1); } echo d(50000);"),
+        "50000"
+    );
+}
+
+#[test]
+fn e3_defaults_variadics_named_and_spread() {
+    assert_eq!(
+        eval_ok(b"<?php function f($a, $b = 2, ...$r) { return \"$a|$b|\" . implode(',', $r); } echo f(1), ' ', f(1, 3, 4, 5), ' ', f(b: 9, a: 8), ' ', f(...[6, 7, 8]);"),
+        "1|2| 1|3|4,5 8|9| 6|7|8"
+    );
+    assert_eq!(
+        eval_ok(b"<?php function t($x = [1, 2], $y = PHP_INT_SIZE) { return count($x) . $y; } echo t();"),
+        "28"
+    );
+}
+
+#[test]
+fn e3_too_few_arguments_is_php_exact() {
+    let err = eval_to_string(b"<?php function f($a, $b) {} f(1);").unwrap_err();
+    assert_eq!(
+        err,
+        "Uncaught ArgumentCountError: Too few arguments to function f(), 1 passed in Command line code on line 1 and exactly 2 expected"
+    );
+    let err = eval_to_string(b"<?php function f($a) {} f(x: 1);").unwrap_err();
+    assert_eq!(err, "Uncaught Error: Unknown named parameter $x");
+    let err = eval_to_string(b"<?php function f(&$a) {} f(1);").unwrap_err();
+    assert_eq!(err, "Uncaught Error: f(): Argument #1 ($a) could not be passed by reference");
+}
+
+#[test]
+fn e3_undefined_function_is_a_runtime_error() {
+    // Resolution happens at the call, so code before it runs.
+    let err = eval_to_string(b"<?php echo 'x'; nope();").unwrap_err();
+    assert_eq!(err, "Uncaught Error: Call to undefined function nope()");
+}
+
+#[test]
+fn e3_references_in_every_form() {
+    assert_eq!(
+        eval_ok(b"<?php $a = 1; $b = &$a; $b++; function inc(&$x) { $x++; } inc($a); $arr = ['k' => 1]; inc($arr['k']); $o = new stdClass; $o->p = 1; inc($o->p); echo $a, $arr['k'], $o->p;"),
+        "322"
+    );
+    assert_eq!(
+        eval_ok(b"<?php $n = [1, 2, 3]; foreach ($n as &$v) { $v *= 2; } unset($v); echo implode(',', $n);"),
+        "2,4,6"
+    );
+    assert_eq!(
+        eval_ok(b"<?php $c = 0; $f = function () use (&$c) { $c++; }; $f(); $f(); function s() { static $k = 0; return ++$k; } s(); echo $c, s();"),
+        "22"
+    );
+    assert_eq!(
+        eval_ok(b"<?php $g = 'G'; function r() { global $g; $g .= '!'; $GLOBALS['made'] = 1; } r(); echo $g, $made;"),
+        "G!1"
+    );
+    assert_eq!(
+        eval_ok(b"<?php $x = 1; $h = ['r' => &$x]; $copy = $h; $copy['r'] = 5; echo $x;"),
+        "5"
+    );
+}
+
+#[test]
+fn e3_by_ref_natives_through_elements_and_properties() {
+    assert_eq!(
+        eval_ok(b"<?php $a = ['k' => [3, 1, 2]]; sort($a['k']); echo implode($a['k']); preg_match('/(\\d)/', 'x7', $m['x']); echo $m['x'][1]; $o = new stdClass; $o->l = [2, 1]; sort($o->l); echo implode($o->l);"),
+        "123712"
+    );
+    assert_eq!(
+        eval_ok(b"<?php $a = [1, 2]; array_walk($a, function (&$v, $k) { $v = $v * 10 + $k; }); echo implode(',', $a);"),
+        "10,21"
+    );
+}
+
+#[test]
+fn e3_nested_lvalues_destructuring_unset_isset() {
+    let err = eval_to_string(b"<?php $o = new stdClass; $o->p['q']->r = 1;").unwrap_err();
+    assert_eq!(err, "Uncaught Error: Attempt to assign property \"r\" on null");
+    assert_eq!(
+        eval_ok(b"<?php $a = []; $a['x']['y'][] = 1; $a['x']['n'] = 5; $a['x']['n'] += 2; $a['x']['n']++; echo json_encode($a);"),
+        r#"{"x":{"y":[1],"n":8}}"#
+    );
+    assert_eq!(
+        eval_ok(b"<?php [$p, [$q, $r]] = [1, [2, 3]]; ['k' => $s] = ['k' => 4]; [, $t] = [8, 9]; echo $p, $q, $r, $s, $t;"),
+        "12349"
+    );
+    assert_eq!(
+        eval_ok(b"<?php $a = ['x' => ['y' => 1], 'z' => 2]; unset($a['x']['y'], $a['nope']['deep'], $a['z']); var_dump(isset($a['x']), empty($a['x']), isset($a['q']['w']), $a);"),
+        "bool(true)\nbool(true)\nbool(false)\narray(1) {\n  [\"x\"]=>\n  array(0) {\n  }\n}\n"
+    );
+}
+
+#[test]
+fn e3_control_flow_and_operators() {
+    assert_eq!(
+        eval_ok(b"<?php for ($i = 0; $i < 5; $i++) { if ($i == 1) continue; if ($i == 4) break; echo $i; } $j = 0; do { echo $j; } while (++$j < 2); switch (2) { case 1: echo 'a'; case 2: echo 'b'; case 3: echo 'c'; break; default: echo 'd'; } echo match(true) { 1 > 2 => 'x', default => 'y' };"),
+        "02301bcy"
+    );
+    assert_eq!(
+        eval_ok(b"<?php $i = 0; a: $i++; if ($i < 3) goto a; echo $i; $s = 'z'; @$s++; $n = null; $n++; echo $s, $n, 7 <=> 3, 1 << 3, 6 & 3, ~5, (int) '12x', 5 % -3, 2 ** -1, true xor true ? 't' : 'f';"),
+        "3aa1182-61220.5"
+    );
+    assert_eq!(
+        eval_ok(b"<?php $x = ['a' => null]; echo $x['a'] ?? 'd', $x['b']['c'] ?? 'e', $u ?? 'f', 0 ?: 'g', 1 ? 'h' : 'i'; $x['a'] ??= 'j'; $x['a'] ??= 'k'; echo $x['a'];"),
+        "defghj"
+    );
+    let err = eval_to_string(b"<?php echo match(5) { 1 => 'a' };").unwrap_err();
+    assert_eq!(err, "Uncaught UnhandledMatchError: Unhandled match case 5");
+}
+
+#[test]
+fn e3_symtab_natives_and_variable_variables() {
+    assert_eq!(
+        eval_ok(b"<?php function f($a) { $b = 2; extract(['c' => 3]); $n = 'd'; $$n = 4; return json_encode([compact('a', 'b', 'c', 'd'), count(get_defined_vars())]); } echo f(1);"),
+        r#"[{"a":1,"b":2,"c":3,"d":4},5]"#
+    );
+    assert_eq!(
+        eval_ok(b"<?php function f($a, $b = 0) { return json_encode([func_num_args(), func_get_args(), func_get_arg(0)]); } echo f(1), f(1, 2, 3);"),
+        "[1,[1],1][3,[1,2,3],1]"
+    );
+}
+
+#[test]
+fn e3_late_binding_dynamic_and_conditional_declarations() {
+    assert_eq!(
+        eval_ok(b"<?php echo later(); function later() { return 'l'; } if (true) { function cond() { return 'c'; } class K { public $v = 'k'; } } $cls = 'K'; $o = new $cls; echo cond(), $o->v, $o instanceof $cls ? 'y' : 'n', $o::class, [new K, 'v'] ? '' : '', function_exists('cond') ? 'e' : 'm';"),
+        "lckyKe"
+    );
+    assert_eq!(
+        eval_ok(b"<?php class A { function m($x) { return $x . 'm'; } } $f = [new A, 'm']; $g = 'strtoupper'; echo $f('a'), $g('b'), call_user_func_array($f, ['c']), implode(array_map($f, ['d']));"),
+        "amBcmdm"
+    );
+}
+
+#[test]
+fn e3_constants_and_magic_constants() {
+    assert_eq!(
+        eval_ok(b"<?php const X = 1; define('Y', 2); echo X + Y, PHP_EOL === \"\\n\" ? 'eol' : '', __LINE__, __FILE__, __FUNCTION__ === '' ? 'nofn' : ''; function f() { return __FUNCTION__; } class C { function m() { return __METHOD__ . __CLASS__; } } echo f(), (new C)->m();"),
+        "3eol1Command line codenofnfC::mC"
+    );
+    let err = eval_to_string(b"<?php echo NOPE;").unwrap_err();
+    assert_eq!(err, "Uncaught Error: Undefined constant \"NOPE\"");
+}
+
+#[test]
+fn e3_include_shares_scope_and_returns_values() {
+    let dir = std::env::temp_dir().join(format!("rphp-e2e-inc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("inc.php"), b"<?php $seen = $outer . '!'; function from_inc() { return 'fi'; } return 42;").unwrap();
+    let src = format!(
+        "<?php $outer = 'o'; $r = require '{d}/inc.php'; echo $r, $seen, from_inc(), var_export(include_once '{d}/inc.php', true), var_export(@include '{d}/nope.php', true);",
+        d = dir.display()
+    );
+    let out = eval_ok(src.as_bytes());
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out, "42o!fitruefalse");
+}
+
+#[test]
+fn e3_redeclaration_is_a_runtime_fatal() {
+    let path = write_temp("redecl", b"<?php function f() {} function F() {}");
     let code = run(vec![path.to_string_lossy().into_owned()]);
     let _ = std::fs::remove_file(&path);
     assert_eq!(code, 255);

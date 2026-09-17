@@ -1,77 +1,25 @@
-//! Tier-0 register-bytecode interpreter.
-//!
-//! A portable `loop { match op { … } }` dispatch over a function's `code`,
-//! with a `usize` program counter. Each frame owns a `Vec<Value>` of registers
-//! (sized to `Function::num_regs`, all initialized to `Value::Null` so
-//! uninitialized vars read as null). Calls recurse through [`exec_function`],
-//! threading the one [`Interp`]. Every fault is an [`Unwind`] (ADR-022): the
-//! value layer's `ValueError`s become `DivisionByZeroError` / `TypeError`
-//! pending throws, engine faults (`Call to undefined method X::m()`, …)
-//! `Error`s, and the cheap VM warnings (undefined array key / property /
-//! offset, array-to-string) go through the diagnostics channel.
-//!
-//! The recursive `exec_function` shape is replaced by E3's explicit frame
-//! stack; the frame-info stack in [`Interp`] gives line numbers and traces
-//! until then.
+//! The dispatch loop (ADR-018): [`Interp::run_until`] runs the frame on top
+//! of the explicit frame stack until the stack shrinks back to `stop_depth`,
+//! switching frames in place on calls, returns and includes — PHP→PHP calls
+//! never recurse on the Rust stack. Every fault is an [`Unwind`]
+//! (ADR-022): the frames above `stop_depth` are popped (registers released,
+//! `@` depth restored) and the error returned to the caller — a native's
+//! `call_value`, or the SAPI for the entry `{main}`.
 
-use rphp_bytecode::{ClassId, FuncId, Function, Module, Op, Visibility};
-use rphp_value::{array_key, ArrayKey, Object, Str, Value, ValueError};
+use rphp_bytecode::{
+    AssignOpKind, ClassRef, ClassRefKind, Const, FnFlags, IncludeKind, InitRef, NameRef,
+    NameRefKind, Op, Visibility,
+};
+use rphp_value::{array_key, Closure, Object, PhpRef, Value};
 
-use crate::frames::FrameInfo;
-use crate::registry::{NativeId, Unwind};
+use crate::frame::{CallTarget, FrameKind, IterState, PendingCall, RetTarget};
+use crate::ops::value_name;
+use crate::registry::Unwind;
+use crate::symtab::Symtab;
 use crate::Interp;
 
-/// Map a value-level fault to its PHP throwable.
-fn value_fault(err: ValueError) -> Unwind {
-    match err {
-        ValueError::DivisionByZero => Unwind::division_by_zero("Division by zero"),
-        ValueError::ModuloByZero => Unwind::division_by_zero("Modulo by zero"),
-        ValueError::TypeError(msg) => {
-            Unwind::type_error(format!("Unsupported operand types: {msg}"))
-        }
-    }
-}
-
-/// php's `zend_zval_value_name`: the name a value has in messages such as
-/// `Call to a member function m() on int` / `… on true`.
-pub fn value_name(v: &Value) -> String {
-    match &*v.deref() {
-        Value::Null | Value::Uninit => "null".to_string(),
-        Value::Bool(true) => "true".to_string(),
-        Value::Bool(false) => "false".to_string(),
-        Value::Int(_) => "int".to_string(),
-        Value::Float(_) => "float".to_string(),
-        Value::Str(_) => "string".to_string(),
-        Value::Array(_) => "array".to_string(),
-        Value::Closure(_) => "Closure".to_string(),
-        Value::Object(o) => String::from_utf8_lossy(o.layout().class_name()).into_owned(),
-        Value::Resource(_) => "resource".to_string(),
-        Value::Ref(_) => unreachable!("deref'd above"),
-    }
-}
-
-/// Whether a member with the given visibility, declared in `decl_class`, is
-/// reachable from code executing in `cur_class`. `protected` is visible anywhere
-/// in the same inheritance hierarchy; `private` only within the declaring class.
-fn access_ok(
-    module: &Module,
-    vis: Visibility,
-    decl_class: ClassId,
-    cur_class: Option<ClassId>,
-) -> bool {
-    match vis {
-        Visibility::Public => true,
-        Visibility::Private => cur_class == Some(decl_class),
-        Visibility::Protected => match cur_class {
-            Some(cc) => {
-                module.is_subclass_or_eq(cc, decl_class) || module.is_subclass_or_eq(decl_class, cc)
-            }
-            None => false,
-        },
-    }
-}
-
-fn vis_word(v: Visibility) -> &'static str {
+/// The keyword of a visibility, for messages.
+pub(crate) fn vis_word(v: Visibility) -> &'static str {
     match v {
         Visibility::Public => "public",
         Visibility::Protected => "protected",
@@ -79,606 +27,1854 @@ fn vis_word(v: Visibility) -> &'static str {
     }
 }
 
-/// Enforce property visibility. An undeclared (dynamic) property is public, so a
-/// `None` resolution is always allowed.
-fn check_prop_access(
-    module: &Module,
-    class: ClassId,
-    name: &[u8],
-    cur_class: Option<ClassId>,
-) -> Result<(), Unwind> {
-    if let Some((vis, decl)) = module.resolve_prop(class, name) {
-        if !access_ok(module, vis, decl, cur_class) {
-            return Err(Unwind::error(format!(
-                "Cannot access {} property {}::${}",
-                vis_word(vis),
-                String::from_utf8_lossy(&module.class(decl).name_bytes),
-                String::from_utf8_lossy(name),
-            )));
-        }
-    }
-    Ok(())
+/// What a frame did when its op stream was left.
+enum Switch {
+    /// A call, include or return replaced the top frame; keep looping.
+    Continue,
+    /// The frame at `stop_depth` returned this value.
+    Done(Value),
 }
 
-/// Invoke a callable value with `args`: a closure, or a function-name string
-/// resolving to a user function (declared params only — extra args ignored, as in
-/// PHP) or a native. The single path shared by the `CallDynamic` opcode and
-/// [`Interp::call_value`].
-pub(crate) fn invoke_value(
-    interp: &mut Interp,
-    module: &Module,
-    callee: &Value,
-    args: &[Value],
-) -> Result<Value, Unwind> {
-    let callee = callee.deref();
-    match &*callee {
-        Value::Closure(c) => return exec_closure(interp, module, c, args),
-        Value::Array(_) => {
-            return Err(Unwind::error(
-                "Array callback must have exactly two elements",
-            ))
-        }
-        Value::Object(o) => {
-            return Err(Unwind::error(format!(
-                "Object of type {} is not callable",
-                String::from_utf8_lossy(o.layout().class_name())
-            )))
-        }
-        _ => {}
-    }
-    let name = callee.to_php_bytes();
-    if !name.is_empty() {
-        if let Some(fid) = module.func_by_name(&name) {
-            let f = module.func(fid);
-            let n = (f.num_params as usize).min(args.len());
-            // A callable string resolves to a free function — no class context.
-            return exec_function(interp, module, fid, &args[..n], None);
-        }
-        if let Some(nid) = interp.native_by_name(&name) {
-            let mut args = args.to_vec();
-            return interp.call_native(nid, &mut args);
-        }
-    }
-    Err(Unwind::error(format!(
-        "Call to undefined function {}()",
-        String::from_utf8_lossy(&name)
-    )))
-}
-
-/// Execute a single function frame to completion, returning its result value.
-///
-/// `args` holds the values staged by the caller (the callee's registers
-/// `0 .. args.len()` are initialized from them, per the calling convention).
-///
-/// Calls recurse here. Very deep PHP recursion can therefore overflow the host
-/// stack; an explicit frame stack is the later (E3) design.
-pub(crate) fn exec_function(
-    interp: &mut Interp,
-    module: &Module,
-    fid: FuncId,
-    args: &[Value],
-    cur_class: Option<ClassId>,
-) -> Result<Value, Unwind> {
-    let function = module.func(fid);
-    // The frame: every register starts as null (uninitialized vars read null).
-    let mut regs = vec![Value::Null; function.num_regs as usize];
-    // Initialize parameter registers `0 .. argc` from the staged arguments.
-    for (i, arg) in args.iter().enumerate().take(regs.len()) {
-        regs[i] = arg.clone();
-    }
-    interp.push_frame(FrameInfo::user(fid, args.to_vec()));
-    let r = run_frame(interp, module, function, regs, cur_class);
-    let r = interp.locate_fault(r);
-    interp.pop_frame();
-    r
-}
-
-/// Execute a closure: seed the captured environment into the function's
-/// `capture_regs`, then bind the parameters (capped to the declared count, so an
-/// extra callback argument is ignored as in PHP), then run.
-fn exec_closure(
-    interp: &mut Interp,
-    module: &Module,
-    closure: &rphp_value::Closure,
-    args: &[Value],
-) -> Result<Value, Unwind> {
-    let fid = closure.func();
-    let function = module.func(fid);
-    let mut regs = vec![Value::Null; function.num_regs as usize];
-    for (i, &reg) in function.capture_regs.iter().enumerate() {
-        regs[reg as usize] = closure.captures()[i].clone();
-    }
-    let np = function.num_params as usize;
-    for (i, arg) in args.iter().enumerate().take(np.min(regs.len())) {
-        regs[i] = arg.clone();
-    }
-    interp.push_frame(FrameInfo::user(
-        fid,
-        args.iter().take(np).cloned().collect(),
-    ));
-    // A closure carries no class context (its `$this`/visibility binding is a
-    // later refinement).
-    let r = run_frame(interp, module, function, regs, None);
-    let r = interp.locate_fault(r);
-    interp.pop_frame();
-    r
-}
-
-/// Run a prepared frame (registers already seeded) to completion. `cur_class` is
-/// the class whose method is executing (the lexical context for visibility
-/// checks), or `None` for free functions, closures, and `{main}`.
-fn run_frame(
-    interp: &mut Interp,
-    module: &Module,
-    function: &Function,
-    mut regs: Vec<Value>,
-    cur_class: Option<ClassId>,
-) -> Result<Value, Unwind> {
-    let mut pc: usize = 0;
-    loop {
-        // Falling off the end of the code is an implicit `return null`.
-        let Some(&op) = function.code.get(pc) else {
-            return Ok(Value::Null);
-        };
-        interp.set_pc(pc);
-
-        match op {
-            // --- moves / constants ---
-            Op::LoadConst { dst, k } => {
-                regs[dst as usize] = function.consts[k as usize].to_value();
+impl Interp {
+    /// Run until the frame stack is back to `stop_depth` frames; the value
+    /// of the frame that was on top of `stop_depth` is returned (the
+    /// re-entry boundary's result).
+    pub fn run_until(&mut self, stop_depth: usize) -> Result<Value, Unwind> {
+        loop {
+            if self.frames.len() <= stop_depth {
+                return Ok(Value::Null);
             }
-            Op::LoadNull { dst } => {
-                regs[dst as usize] = Value::Null;
-            }
-            Op::LoadBool { dst, val } => {
-                regs[dst as usize] = Value::Bool(val);
-            }
-            Op::Move { dst, src } => {
-                regs[dst as usize] = regs[src as usize].clone();
-            }
-
-            // --- arithmetic (dst = a OP b) ---
-            Op::Add { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .add(&regs[b as usize])
-                    .map_err(value_fault)?;
-            }
-            Op::Sub { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .sub(&regs[b as usize])
-                    .map_err(value_fault)?;
-            }
-            Op::Mul { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .mul(&regs[b as usize])
-                    .map_err(value_fault)?;
-            }
-            Op::Div { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .div(&regs[b as usize])
-                    .map_err(value_fault)?;
-            }
-            Op::Mod { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .rem(&regs[b as usize])
-                    .map_err(value_fault)?;
-            }
-            Op::Pow { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .pow(&regs[b as usize])
-                    .map_err(value_fault)?;
-            }
-            Op::Neg { dst, src } => {
-                regs[dst as usize] = regs[src as usize].neg().map_err(value_fault)?;
-            }
-
-            // --- strings ---
-            Op::Concat { dst, a, b } => {
-                if is_array(&regs[a as usize]) {
-                    interp.warn("Array to string conversion")?;
-                }
-                if is_array(&regs[b as usize]) {
-                    interp.warn("Array to string conversion")?;
-                }
-                regs[dst as usize] = regs[a as usize].concat(&regs[b as usize]);
-            }
-
-            // --- arrays ---
-            Op::NewArray { dst } => {
-                regs[dst as usize] = Value::empty_array();
-            }
-            Op::ArrayGet { dst, base, key } => {
-                regs[dst as usize] = array_get(interp, &regs[base as usize], &regs[key as usize])?;
-            }
-            Op::ArraySet { arr, key, value } => {
-                let key = regs[key as usize].clone();
-                let value = regs[value as usize].clone();
-                array_set(&mut regs[arr as usize], &key, value);
-            }
-            Op::ArrayPush { arr, value } => {
-                let value = regs[value as usize].clone();
-                let slot = &mut regs[arr as usize];
-                if matches!(slot, Value::Null) {
-                    *slot = Value::empty_array();
-                }
-                if let Value::Array(a) = slot {
-                    a.push(value);
+            match self.run_frame(stop_depth) {
+                Ok(Switch::Continue) => continue,
+                Ok(Switch::Done(v)) => return Ok(v),
+                Err(u) => {
+                    let u = self.locate_fault(Err::<(), _>(u)).unwrap_err();
+                    self.unwind_to(stop_depth);
+                    return Err(u);
                 }
             }
-            Op::ForeachNext {
-                arr,
-                cursor,
-                key_dst,
-                val_dst,
-                target,
-            } => {
-                // The cursor is a *raw* entry position (tombstones included);
-                // `next_live_from` skips holes left by `unset`, and the value is
-                // dereferenced (a by-value `foreach` sees plain values).
-                let pos = regs[cursor as usize].to_int().max(0) as usize;
-                let entry = match &*regs[arr as usize].deref() {
-                    Value::Array(a) => a
-                        .next_live_from(pos)
-                        .map(|(raw, k, v)| (raw, k.to_value(), v.deref().into_owned())),
-                    _ => None,
-                };
-                match entry {
-                    Some((raw, k, v)) => {
-                        regs[key_dst as usize] = k;
-                        regs[val_dst as usize] = v;
-                        regs[cursor as usize] = Value::Int(raw as i64 + 1);
+        }
+    }
+
+    /// Pop every frame above `depth`, releasing its registers and restoring
+    /// the `@` depth it was entered with.
+    pub(crate) fn unwind_to(&mut self, depth: usize) {
+        while self.frames.len() > depth {
+            let f = self.frames.pop().expect("frame");
+            if f.is_user() {
+                self.stack.truncate(f.base);
+            }
+            self.silence = f.silence_base;
+        }
+    }
+
+    // ---- register access ----------------------------------------------------
+
+    #[inline]
+    fn rd(&self, base: usize, r: u16) -> Value {
+        self.stack[base + r as usize].deref().into_owned()
+    }
+
+    #[inline]
+    fn raw(&self, base: usize, r: u16) -> &Value {
+        &self.stack[base + r as usize]
+    }
+
+    #[inline]
+    fn set(&mut self, base: usize, r: u16, v: Value) {
+        self.stack[base + r as usize] = v;
+    }
+
+    /// Run `f` on the storage slot register `r` denotes: the cell behind a
+    /// `Ref`, else the register itself. `f` must not touch the interpreter.
+    fn with_slot<R>(&mut self, base: usize, r: u16, f: impl FnOnce(&mut Value) -> R) -> R {
+        let slot = &mut self.stack[base + r as usize];
+        match slot {
+            Value::Ref(cell) => {
+                let cell = cell.clone();
+                cell.update(f)
+            }
+            _ => f(slot),
+        }
+    }
+
+    /// Bind register `r` to `cell` and, in a symbol-table frame, the named
+    /// variable it holds too.
+    fn rebind(&mut self, base: usize, r: u16, cell: PhpRef) {
+        self.stack[base + r as usize] = Value::Ref(cell.clone());
+        let fi = self.frames.len() - 1;
+        let f = &self.frames[fi];
+        if let (Some(symtab), Some(func)) = (&f.symtab, &f.func) {
+            if let Some(name) = func.reg_name(r) {
+                symtab.insert(name, cell);
+            }
+        }
+    }
+
+    /// The `Ref` cell of register `r`, making it one in place.
+    fn make_ref(&mut self, base: usize, r: u16) -> PhpRef {
+        Value::make_ref(&mut self.stack[base + r as usize])
+    }
+
+    fn const_value(&self, func: &crate::unit::FuncRt, k: u32) -> Value {
+        func.f.consts[k as usize].to_value()
+    }
+
+    fn name_bytes(&self, func: &crate::unit::FuncRt, k: u32) -> Box<[u8]> {
+        match &func.f.consts[k as usize] {
+            Const::Name(n) => n.orig.clone(),
+            other => other.to_value().to_php_bytes().into_boxed_slice(),
+        }
+    }
+
+    /// A member name operand as bytes.
+    fn member_name(&self, func: &crate::unit::FuncRt, base: usize, name: NameRef) -> Result<Box<[u8]>, Unwind> {
+        Ok(match name.kind() {
+            NameRefKind::Const(k) => self.name_bytes(func, k),
+            NameRefKind::Reg(r) => {
+                let v = self.rd(base, r);
+                if matches!(v, Value::Array(_) | Value::Object(_) | Value::Closure(_)) {
+                    return Err(Unwind::error("Illegal member name"));
+                }
+                v.to_php_bytes().into_boxed_slice()
+            }
+        })
+    }
+
+    /// Resolve a `ClassRef` operand to a declared class (no autoload yet).
+    fn resolve_class_ref(
+        &mut self,
+        func: &crate::unit::FuncRt,
+        base: usize,
+        class: ClassRef,
+    ) -> Result<u32, Unwind> {
+        let fi = self.frames.len() - 1;
+        match class.kind() {
+            ClassRefKind::Named(k) => {
+                let name = self.name_bytes(func, k);
+                self.class_by_name(&name).ok_or_else(|| {
+                    Unwind::error(format!("Class \"{}\" not found", String::from_utf8_lossy(&name)))
+                })
+            }
+            ClassRefKind::SelfKw => self.frames[fi]
+                .scope
+                .ok_or_else(|| Unwind::error("Cannot use \"self\" when no class scope is active")),
+            ClassRefKind::Parent => {
+                let scope = self.frames[fi]
+                    .scope
+                    .ok_or_else(|| Unwind::error("Cannot use \"parent\" when no class scope is active"))?;
+                self.classes[scope as usize].parent.ok_or_else(|| {
+                    Unwind::error("Cannot use \"parent\" when current class scope has no parent")
+                })
+            }
+            ClassRefKind::Static => self.frames[fi]
+                .static_class
+                .or(self.frames[fi].scope)
+                .ok_or_else(|| Unwind::error("Cannot use \"static\" when no class scope is active")),
+            ClassRefKind::Reg(r) => match self.rd(base, r) {
+                Value::Object(o) => Ok(o.class_id()),
+                Value::Str(s) => self.class_by_name(s.as_bytes()).ok_or_else(|| {
+                    Unwind::error(format!(
+                        "Class \"{}\" not found",
+                        String::from_utf8_lossy(s.as_bytes())
+                    ))
+                }),
+                other => Err(Unwind::error(format!(
+                    "Cannot use value of type {} as class name",
+                    value_name(&other)
+                ))),
+            },
+        }
+    }
+
+    /// Like [`Interp::resolve_class_ref`] but never errors on an unknown
+    /// name (`instanceof`).
+    fn resolve_class_ref_quiet(&mut self, func: &crate::unit::FuncRt, base: usize, class: ClassRef) -> Result<Option<u32>, Unwind> {
+        match class.kind() {
+            ClassRefKind::Named(k) => {
+                let name = self.name_bytes(func, k);
+                Ok(self.class_by_name(&name))
+            }
+            ClassRefKind::Reg(r) => match self.rd(base, r) {
+                Value::Object(o) => Ok(Some(o.class_id())),
+                Value::Str(s) => Ok(self.class_by_name(s.as_bytes())),
+                _ => Err(Unwind::error("Class name must be a valid object or a string")),
+            },
+            _ => self.resolve_class_ref(func, base, class).map(Some),
+        }
+    }
+
+    // ---- properties ---------------------------------------------------------
+
+    /// Enforce property visibility. An undeclared (dynamic) property is public.
+    fn check_prop_access(&self, class: u32, name: &[u8]) -> Result<(), Unwind> {
+        if let Some((vis, decl)) = self.resolve_prop(class, name) {
+            let scope = self.current_user_frame().and_then(|f| f.scope);
+            if !self.access_ok(vis, decl, scope) {
+                return Err(Unwind::error(format!(
+                    "Cannot access {} property {}::${}",
+                    vis_word(vis),
+                    String::from_utf8_lossy(&self.classes[decl as usize].name),
+                    String::from_utf8_lossy(name),
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// `obj->name` read with php's diagnostics.
+    fn fetch_prop(&mut self, obj: &Value, name: &[u8]) -> Result<Value, Unwind> {
+        match &*obj.deref() {
+            Value::Object(o) => {
+                self.check_prop_access(o.class_id(), name)?;
+                match o.get_deref(name) {
+                    Some(v) if !v.is_uninit() => Ok(v),
+                    _ => {
+                        let msg = format!(
+                            "Undefined property: {}::${}",
+                            self.class_name_of(o),
+                            String::from_utf8_lossy(name)
+                        );
+                        self.warn(&msg)?;
+                        Ok(Value::Null)
                     }
-                    None => {
+                }
+            }
+            other => {
+                let msg = format!(
+                    "Attempt to read property \"{}\" on {}",
+                    String::from_utf8_lossy(name),
+                    value_name(other)
+                );
+                self.warn(&msg)?;
+                Ok(Value::Null)
+            }
+        }
+    }
+
+    /// `obj->name = v` with php's diagnostics (dynamic-property deprecation).
+    fn assign_prop(&mut self, obj: &Value, name: &[u8], v: Value) -> Result<(), Unwind> {
+        match &*obj.deref() {
+            Value::Object(o) => {
+                self.check_prop_access(o.class_id(), name)?;
+                if o.get(name).is_none() {
+                    self.dynamic_prop_notice(o, name)?;
+                }
+                o.set(name, v);
+                Ok(())
+            }
+            other => Err(Unwind::error(format!(
+                "Attempt to assign property \"{}\" on {}",
+                String::from_utf8_lossy(name),
+                value_name(other)
+            ))),
+        }
+    }
+
+    /// php 8.2: creating a dynamic property on a class without
+    /// `#[AllowDynamicProperties]` is deprecated (`stdClass` is exempt).
+    fn dynamic_prop_notice(&mut self, o: &Object, name: &[u8]) -> Result<(), Unwind> {
+        let class = self.class_name_of(o);
+        if class.eq_ignore_ascii_case("stdClass") {
+            return Ok(());
+        }
+        self.deprecated(&format!(
+            "Creation of dynamic property {class}::${} is deprecated",
+            String::from_utf8_lossy(name)
+        ))
+    }
+
+    /// The object in a register for a property write, or php's `Error`.
+    fn prop_holder(&self, obj: &Value, name: &[u8]) -> Result<Object, Unwind> {
+        match &*obj.deref() {
+            Value::Object(o) => Ok(o.clone()),
+            other => Err(Unwind::error(format!(
+                "Attempt to assign property \"{}\" on {}",
+                String::from_utf8_lossy(name),
+                value_name(other)
+            ))),
+        }
+    }
+
+    // ---- the loop -------------------------------------------------------------
+
+    /// Execute the top frame's ops until it switches frames.
+    fn run_frame(&mut self, stop_depth: usize) -> Result<Switch, Unwind> {
+        let fi = self.frames.len() - 1;
+        let func = self.frames[fi]
+            .func
+            .clone()
+            .expect("the top frame runs bytecode");
+        let base = self.frames[fi].base;
+        let mut pc = self.frames[fi].pc;
+        let code = &func.f.code;
+        loop {
+            let Some(&op) = code.get(pc) else {
+                // Falling off the end is an implicit `return null`.
+                self.frames[fi].pc = pc;
+                return self.do_return(Value::Null, stop_depth);
+            };
+            self.frames[fi].pc = pc;
+            match op {
+                // --- moves / constants ---
+                Op::LoadConst { dst, k } => {
+                    let v = self.const_value(&func, k);
+                    self.set(base, dst, v);
+                }
+                Op::LoadNull { dst } => self.set(base, dst, Value::Null),
+                Op::LoadBool { dst, val } => self.set(base, dst, Value::Bool(val)),
+                Op::Move { dst, src } => {
+                    let v = self.raw(base, src).clone();
+                    self.set(base, dst, v);
+                }
+                Op::Deref { dst, src } => {
+                    let v = self.rd(base, src);
+                    self.set(base, dst, v);
+                }
+                Op::AssignThroughRef { dst, src } => {
+                    let v = self.rd(base, src);
+                    Value::assign(&mut self.stack[base + dst as usize], v);
+                }
+                Op::MakeRef { var } => {
+                    self.make_ref(base, var);
+                }
+                Op::AssignRef { dst, src } => {
+                    let cell = self.make_ref(base, src);
+                    self.rebind(base, dst, cell);
+                }
+
+                // --- arithmetic ---
+                Op::Add { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Add)?,
+                Op::Sub { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Sub)?,
+                Op::Mul { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Mul)?,
+                Op::Div { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Div)?,
+                Op::Mod { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Mod)?,
+                Op::Pow { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Pow)?,
+                Op::Concat { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Concat)?,
+                Op::BitAnd { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::BitAnd)?,
+                Op::BitOr { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::BitOr)?,
+                Op::BitXor { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::BitXor)?,
+                Op::Shl { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Shl)?,
+                Op::Shr { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Shr)?,
+                Op::Neg { dst, src } => {
+                    let v = self.rd(base, src);
+                    let r = self.unary_neg(&v)?;
+                    self.set(base, dst, r);
+                }
+                Op::Plus { dst, src } => {
+                    let v = self.rd(base, src);
+                    let r = self.unary_plus(&v)?;
+                    self.set(base, dst, r);
+                }
+                Op::BitNot { dst, src } => {
+                    let v = self.rd(base, src);
+                    let r = self.bit_not(&v)?;
+                    self.set(base, dst, r);
+                }
+                Op::Not { dst, src } => {
+                    let v = self.rd(base, src);
+                    self.set(base, dst, v.not());
+                }
+                Op::ConcatN { dst, base: b0, n } => {
+                    let mut out = Vec::new();
+                    for i in 0..n {
+                        let v = self.rd(base, b0 + i);
+                        self.check_array_to_string(&v)?;
+                        if let Value::Object(o) = &v {
+                            return Err(Unwind::error(format!(
+                                "Object of class {} could not be converted to string",
+                                self.class_name_of(o)
+                            )));
+                        }
+                        v.append_php_bytes(&mut out);
+                    }
+                    self.set(base, dst, Value::Str(rphp_value::Str::from_vec(out)));
+                }
+                Op::Cast { dst, src, kind } => {
+                    let v = self.rd(base, src);
+                    let r = self.cast(&v, kind)?;
+                    self.set(base, dst, r);
+                }
+                Op::AssignOp { op, var, src } => {
+                    let cur = self.rd(base, var);
+                    let rhs = self.rd(base, src);
+                    let r = self.binary_op(op, &cur, &rhs)?;
+                    Value::assign(&mut self.stack[base + var as usize], r);
+                }
+                Op::AssignOpElem { op, arr, key, src } => {
+                    let k = self.rd(base, key);
+                    let rhs = self.rd(base, src);
+                    // Read the element without keeping a handle on the
+                    // container: a live clone would force a copy-on-write of
+                    // the whole array in the store below.
+                    let cur = {
+                        let container = self.rd(base, arr);
+                        match &container {
+                            Value::Null | Value::Uninit => Value::Null,
+                            _ => self.array_get(&container, &k)?,
+                        }
+                    };
+                    let r = self.binary_op(op, &cur, &rhs)?;
+                    self.array_set(base, arr, Some(key), r)?;
+                }
+                Op::AssignOpProp { op, obj, name, src } => {
+                    let o = self.rd(base, obj);
+                    let name = self.member_name(&func, base, name)?;
+                    let cur = self.fetch_prop(&o, &name)?;
+                    let rhs = self.rd(base, src);
+                    let r = self.binary_op(op, &cur, &rhs)?;
+                    self.assign_prop(&o, &name, r)?;
+                }
+                Op::IncDec { var, dst, pre, inc } => {
+                    let old = self.rd(base, var);
+                    let new = self.inc_dec(&old, inc)?;
+                    Value::assign(&mut self.stack[base + var as usize], new.clone());
+                    if let Some(d) = dst {
+                        self.set(base, d, if pre { new } else { old });
+                    }
+                }
+
+                // --- arrays ---
+                Op::NewArray { dst } => self.set(base, dst, Value::empty_array()),
+                Op::ArrayGet { dst, base: b, key } => {
+                    let container = self.rd(base, b);
+                    let k = self.rd(base, key);
+                    let v = self.array_get(&container, &k)?;
+                    self.set(base, dst, v);
+                }
+                Op::ListGet { dst, base: b, key } => {
+                    let container = self.rd(base, b);
+                    let k = self.rd(base, key);
+                    let v = match &container {
+                        Value::Array(_) => self.array_get(&container, &k)?,
+                        Value::Null | Value::Uninit => Value::Null,
+                        Value::Object(o) => {
+                            return Err(Unwind::error(format!(
+                                "Cannot use object of type {} as array",
+                                self.class_name_of(o)
+                            )))
+                        }
+                        other => {
+                            self.warn(&format!("Cannot use {} as array", value_name(other)))?;
+                            Value::Null
+                        }
+                    };
+                    self.set(base, dst, v);
+                }
+                Op::ArrayGetQuiet { dst, base: b, key } => {
+                    let container = self.rd(base, b);
+                    let k = self.rd(base, key);
+                    let v = self.array_get_quiet(&container, &k);
+                    self.set(base, dst, v);
+                }
+                Op::ArraySet { arr, key, value } => {
+                    let v = self.rd(base, value);
+                    self.array_set(base, arr, Some(key), v)?;
+                }
+                Op::ArrayPush { arr, value } => {
+                    let v = self.rd(base, value);
+                    self.array_set(base, arr, None, v)?;
+                }
+                Op::FetchElemW { dst, arr, key } => {
+                    let k = key.map(|k| self.rd(base, k));
+                    let taken = self.fetch_elem_w(base, arr, k.as_ref())?;
+                    self.set(base, dst, taken);
+                }
+                Op::FetchPropW { dst, obj, name } => {
+                    let o = self.rd(base, obj);
+                    let name = self.member_name(&func, base, name)?;
+                    let holder = self.prop_holder(&o, &name)?;
+                    self.check_prop_access(holder.class_id(), &name)?;
+                    // Take the property value out (or share its cell) so the
+                    // nested write mutates in place; the write-back restores it.
+                    let taken = holder.with_data_mut(|d| match d.get_mut(&name) {
+                        Some(slot) => match slot {
+                            Value::Ref(_) => slot.clone(),
+                            _ => std::mem::replace(slot, Value::Null),
+                        },
+                        None => Value::Null,
+                    });
+                    self.set(base, dst, taken);
+                }
+                Op::RefElem { dst, arr, key } => {
+                    let k = self.rd(base, key);
+                    let cell = self.elem_ref(base, arr, Some(&k))?;
+                    self.rebind(base, dst, cell);
+                }
+                Op::RefProp { dst, obj, name } => {
+                    let o = self.rd(base, obj);
+                    let name = self.member_name(&func, base, name)?;
+                    let holder = self.prop_holder(&o, &name)?;
+                    self.check_prop_access(holder.class_id(), &name)?;
+                    if holder.get(&name).is_none() {
+                        self.dynamic_prop_notice(&holder, &name)?;
+                    }
+                    let cell = holder.prop_ref(&name);
+                    self.rebind(base, dst, cell);
+                }
+                Op::AssignRefElem { arr, key, src } => {
+                    let cell = self.make_ref(base, src);
+                    let k = key.map(|k| self.rd(base, k));
+                    self.with_slot(base, arr, |slot| {
+                        if matches!(slot, Value::Null | Value::Uninit) {
+                            *slot = Value::empty_array();
+                        }
+                        match slot {
+                            Value::Array(a) => match &k {
+                                Some(k) => match array_key(k) {
+                                    Some(k) => {
+                                        a.set_ref(k, cell);
+                                        Ok(())
+                                    }
+                                    None => Err(Unwind::type_error(format!(
+                                        "Cannot access offset of type {} on array",
+                                        value_name(k)
+                                    ))),
+                                },
+                                None => {
+                                    a.push_ref(cell);
+                                    Ok(())
+                                }
+                            },
+                            _ => Err(Unwind::error("Cannot use a scalar value as an array")),
+                        }
+                    })?;
+                }
+                Op::AssignRefProp { obj, name, src } => {
+                    let cell = self.make_ref(base, src);
+                    let o = self.rd(base, obj);
+                    let name = self.member_name(&func, base, name)?;
+                    let holder = self.prop_holder(&o, &name)?;
+                    self.check_prop_access(holder.class_id(), &name)?;
+                    holder.with_data_mut(|d| match d.layout().slot_of(&name) {
+                        Some(i) => d.slots_mut()[usize::from(i)] = Value::Ref(cell),
+                        None => d.dyn_props_mut().set_ref(&name, cell),
+                    });
+                }
+                Op::UnsetVar { var } => {
+                    self.set(base, var, Value::Uninit);
+                    let f = &self.frames[fi];
+                    if let Some(symtab) = f.symtab.clone() {
+                        if let Some(name) = func.reg_name(var) {
+                            symtab.with_mut(|t| t.remove(name));
+                        }
+                    }
+                }
+                Op::UnsetElem { arr, key } => {
+                    let k = self.rd(base, key);
+                    self.with_slot(base, arr, |slot| match slot {
+                        Value::Array(a) => {
+                            if let Some(k) = array_key(&k) {
+                                a.unset(&k);
+                            }
+                            Ok(())
+                        }
+                        Value::Null | Value::Uninit => Ok(()),
+                        Value::Str(_) => Err(Unwind::error("Cannot unset string offsets")),
+                        Value::Object(_) | Value::Closure(_) => Err(Unwind::error(
+                            "Cannot use object as array",
+                        )),
+                        _ => Err(Unwind::error("Cannot unset offset in a non-array variable")),
+                    })?;
+                }
+                Op::UnsetProp { obj, name } => {
+                    let o = self.rd(base, obj);
+                    let name = self.member_name(&func, base, name)?;
+                    if let Value::Object(o) = &o {
+                        self.check_prop_access(o.class_id(), &name)?;
+                        o.unset(&name);
+                    }
+                }
+                Op::IssetVar { dst, var } => {
+                    let set = !matches!(self.rd(base, var), Value::Null | Value::Uninit);
+                    self.set(base, dst, Value::Bool(set));
+                }
+                Op::IssetElem { dst, arr, key } => {
+                    let container = self.rd(base, arr);
+                    let k = self.rd(base, key);
+                    let set = self.isset_elem(&container, &k);
+                    self.set(base, dst, Value::Bool(set));
+                }
+                Op::IssetProp { dst, obj, name } => {
+                    let o = self.rd(base, obj);
+                    let name = self.member_name(&func, base, name)?;
+                    let set = match &o {
+                        Value::Object(ob) => {
+                            self.check_prop_access(ob.class_id(), &name).is_ok()
+                                && ob
+                                    .get_deref(&name)
+                                    .is_some_and(|v| !matches!(v, Value::Null | Value::Uninit))
+                        }
+                        _ => false,
+                    };
+                    self.set(base, dst, Value::Bool(set));
+                }
+                Op::IssetStaticProp { dst, .. } => self.set(base, dst, Value::Bool(false)),
+                Op::EmptyVar { dst, var } => {
+                    let v = self.rd(base, var);
+                    self.set(base, dst, Value::Bool(!v.to_bool()));
+                }
+                Op::EmptyElem { dst, arr, key } => {
+                    let container = self.rd(base, arr);
+                    let k = self.rd(base, key);
+                    let v = self.array_get_quiet(&container, &k);
+                    self.set(base, dst, Value::Bool(!v.to_bool()));
+                }
+                Op::EmptyProp { dst, obj, name } => {
+                    let o = self.rd(base, obj);
+                    let name = self.member_name(&func, base, name)?;
+                    let v = match &o {
+                        Value::Object(ob) if self.check_prop_access(ob.class_id(), &name).is_ok() => {
+                            ob.get_deref(&name).unwrap_or(Value::Null)
+                        }
+                        _ => Value::Null,
+                    };
+                    self.set(base, dst, Value::Bool(!v.to_bool()));
+                }
+
+                // --- iteration ---
+                Op::IterInit { it, src, by_ref } => {
+                    let state = if by_ref {
+                        let is_arrayish = matches!(
+                            self.rd(base, src),
+                            Value::Array(_) | Value::Null | Value::Uninit
+                        );
+                        if is_arrayish {
+                            let cell = self.make_ref(base, src);
+                            cell.update(|v| {
+                                if matches!(v, Value::Null | Value::Uninit) {
+                                    *v = Value::empty_array();
+                                }
+                            });
+                            IterState::ByRef { cell, pos: 0 }
+                        } else {
+                            let v = self.rd(base, src);
+                            self.warn(&format!(
+                                "foreach() argument must be of type array|object, {} given",
+                                value_name(&v)
+                            ))?;
+                            IterState::Empty
+                        }
+                    } else {
+                        match self.rd(base, src) {
+                            Value::Array(arr) => IterState::Array { arr, pos: 0 },
+                            Value::Object(o) => {
+                                // Objects iterate their visible properties (Iterator
+                                // protocols arrive with E6).
+                                let scope = self.frames[fi].scope;
+                                let mut arr = rphp_value::Array::new();
+                                for (name, value, _) in o.props_snapshot() {
+                                    if let Some((vis, decl)) = self.resolve_prop(o.class_id(), &name) {
+                                        if !self.access_ok(vis, decl, scope) {
+                                            continue;
+                                        }
+                                    }
+                                    arr.set(rphp_value::ArrayKey::str(&name), value);
+                                }
+                                IterState::Array { arr, pos: 0 }
+                            }
+                            other => {
+                                self.warn(&format!(
+                                    "foreach() argument must be of type array|object, {} given",
+                                    value_name(&other)
+                                ))?;
+                                IterState::Empty
+                            }
+                        }
+                    };
+                    let f = &mut self.frames[fi];
+                    f.iters.retain(|(r, _)| *r != it);
+                    f.iters.push((it, state));
+                }
+                Op::IterNext { it, key, val, target } => {
+                    let f = &mut self.frames[fi];
+                    let Some(idx) = f.iters.iter().position(|(r, _)| *r == it) else {
+                        pc = target as usize;
+                        continue;
+                    };
+                    let step = match &mut f.iters[idx].1 {
+                        IterState::Empty => None,
+                        IterState::Array { arr, pos } => match arr.next_live_from(*pos) {
+                            Some((raw, k, v)) => {
+                                *pos = raw + 1;
+                                Some((k.to_value(), v.deref().into_owned(), None))
+                            }
+                            None => None,
+                        },
+                        IterState::ByRef { cell, pos } => {
+                            let p = *pos;
+                            let r = cell.update(|v| match v {
+                                Value::Array(a) => match a.next_live_from(p) {
+                                    Some((raw, k, _)) => {
+                                        let k = k.clone();
+                                        let elem = a.get_ref(k.clone());
+                                        Some((raw, k.to_value(), elem))
+                                    }
+                                    None => None,
+                                },
+                                _ => None,
+                            });
+                            match r {
+                                Some((raw, k, elem)) => {
+                                    *pos = raw + 1;
+                                    Some((k, Value::Null, Some(elem)))
+                                }
+                                None => None,
+                            }
+                        }
+                    };
+                    match step {
+                        None => {
+                            pc = target as usize;
+                            continue;
+                        }
+                        Some((k, v, elem)) => {
+                            match elem {
+                                Some(cell) => self.rebind(base, val, cell),
+                                None => Value::assign(&mut self.stack[base + val as usize], v),
+                            }
+                            if let Some(kr) = key {
+                                Value::assign(&mut self.stack[base + kr as usize], k);
+                            }
+                        }
+                    }
+                }
+                Op::IterFree { it } => {
+                    self.frames[fi].iters.retain(|(r, _)| *r != it);
+                }
+
+                // --- comparison ---
+                Op::CmpEq { dst, a, b } => {
+                    let r = self.rd(base, a).loose_eq(&self.rd(base, b));
+                    self.set(base, dst, Value::Bool(r));
+                }
+                Op::CmpNe { dst, a, b } => {
+                    let r = !self.rd(base, a).loose_eq(&self.rd(base, b));
+                    self.set(base, dst, Value::Bool(r));
+                }
+                Op::CmpIdentical { dst, a, b } => {
+                    let r = self.rd(base, a).identical(&self.rd(base, b));
+                    self.set(base, dst, Value::Bool(r));
+                }
+                Op::CmpNotIdentical { dst, a, b } => {
+                    let r = !self.rd(base, a).identical(&self.rd(base, b));
+                    self.set(base, dst, Value::Bool(r));
+                }
+                Op::CmpLt { dst, a, b } => {
+                    let r = self.rd(base, a).lt(&self.rd(base, b));
+                    self.set(base, dst, Value::Bool(r));
+                }
+                Op::CmpLe { dst, a, b } => {
+                    let r = self.rd(base, a).le(&self.rd(base, b));
+                    self.set(base, dst, Value::Bool(r));
+                }
+                Op::CmpGt { dst, a, b } => {
+                    let r = self.rd(base, a).gt(&self.rd(base, b));
+                    self.set(base, dst, Value::Bool(r));
+                }
+                Op::CmpGe { dst, a, b } => {
+                    let r = self.rd(base, a).ge(&self.rd(base, b));
+                    self.set(base, dst, Value::Bool(r));
+                }
+                Op::Spaceship { dst, a, b } => {
+                    let r = self.rd(base, a).spaceship(&self.rd(base, b));
+                    self.set(base, dst, Value::Int(r));
+                }
+
+                // --- control flow ---
+                Op::Jmp { target } => {
+                    pc = target as usize;
+                    continue;
+                }
+                Op::JmpIfTrue { cond, target } => {
+                    if self.raw(base, cond).to_bool() {
                         pc = target as usize;
                         continue;
                     }
                 }
-            }
-
-            // --- comparison (dst = bool) ---
-            Op::CmpEq { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].loose_eq(&regs[b as usize]));
-            }
-            Op::CmpNe { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(!regs[a as usize].loose_eq(&regs[b as usize]));
-            }
-            Op::CmpIdentical { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].identical(&regs[b as usize]));
-            }
-            Op::CmpNotIdentical { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(!regs[a as usize].identical(&regs[b as usize]));
-            }
-            Op::CmpLt { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].lt(&regs[b as usize]));
-            }
-            Op::CmpLe { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].le(&regs[b as usize]));
-            }
-            Op::CmpGt { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].gt(&regs[b as usize]));
-            }
-            Op::CmpGe { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].ge(&regs[b as usize]));
-            }
-            Op::Spaceship { dst, a, b } => {
-                regs[dst as usize] = Value::Int(regs[a as usize].spaceship(&regs[b as usize]));
-            }
-            Op::Not { dst, src } => {
-                regs[dst as usize] = regs[src as usize].not();
-            }
-
-            // --- control flow ---
-            Op::Jmp { target } => {
-                pc = target as usize;
-                continue;
-            }
-            Op::JmpIfTrue { cond, target } => {
-                if regs[cond as usize].to_bool() {
-                    pc = target as usize;
-                    continue;
-                }
-            }
-            Op::JmpIfFalse { cond, target } => {
-                if !regs[cond as usize].to_bool() {
-                    pc = target as usize;
-                    continue;
-                }
-            }
-
-            // --- calls ---
-            Op::Call {
-                dst,
-                func,
-                base,
-                argc,
-            } => {
-                // Stage `argc` args from the caller window `base ..= base+argc-1`.
-                let base = base as usize;
-                let call_args: Vec<Value> =
-                    (0..argc as usize).map(|i| regs[base + i].clone()).collect();
-                let ret = exec_function(interp, module, func, &call_args, None)?;
-                regs[dst as usize] = ret;
-            }
-            Op::CallNative {
-                dst,
-                native,
-                base,
-                argc,
-            } => {
-                // Same `base ..= base+argc-1` staging as a user call; the args
-                // are handed to the native and its result lands in `dst`.
-                let base = base as usize;
-                let id = NativeId(native);
-                let mut call_args: Vec<Value> =
-                    (0..argc as usize).map(|i| regs[base + i].clone()).collect();
-                let ret = interp.call_native(id, &mut call_args)?;
-                // A by-reference native mutates its argument slots in place; copy
-                // the window back so the compiler's write-back `Move`s (into the
-                // caller's variables) observe the changes. For such calls `dst` is
-                // allocated above the window, so it cannot alias a by-ref slot.
-                if interp.native(id).by_ref != 0 {
-                    for (i, v) in call_args.into_iter().enumerate() {
-                        regs[base + i] = v;
+                Op::JmpIfFalse { cond, target } => {
+                    if !self.raw(base, cond).to_bool() {
+                        pc = target as usize;
+                        continue;
                     }
                 }
-                regs[dst as usize] = ret;
-            }
-            Op::MakeClosure { dst, proto } => {
-                // Snapshot the captured registers and bind them to the closure's
-                // compiled function (the template lives in this function).
-                let proto = &function.closures[proto as usize];
-                let captures: Vec<Value> = proto
-                    .src_regs
-                    .iter()
-                    .map(|&r| regs[r as usize].clone())
-                    .collect();
-                regs[dst as usize] = Value::Closure(rphp_value::Closure::new(proto.func, captures));
-            }
-            Op::CallDynamic {
-                dst,
-                callee,
-                base,
-                argc,
-            } => {
-                let base = base as usize;
-                let call_args: Vec<Value> =
-                    (0..argc as usize).map(|i| regs[base + i].clone()).collect();
-                let callee_val = regs[callee as usize].clone();
-                regs[dst as usize] = invoke_value(interp, module, &callee_val, &call_args)?;
-            }
-
-            // --- objects ---
-            Op::New { dst, class } => {
-                // Seed the instance from the class's cached layout (its full
-                // inherited + own property set) and give it the next handle id.
-                let (layout, defaults) = interp.instance_layout(module, class);
-                let id = interp.object_ids.alloc();
-                regs[dst as usize] = Value::Object(Object::new(class, id, layout, defaults));
-            }
-            Op::PropGet { dst, obj, name } => {
-                let key = function.consts[name as usize].to_value().to_php_bytes();
-                let val = match &regs[obj as usize] {
-                    Value::Object(o) => {
-                        check_prop_access(module, o.class_id(), &key, cur_class)?;
-                        match o.get_deref(&key) {
-                            Some(v) => v,
-                            None => {
-                                let msg = format!(
-                                    "Undefined property: {}::${}",
-                                    String::from_utf8_lossy(o.layout().class_name()),
-                                    String::from_utf8_lossy(&key)
-                                );
-                                interp.warn(&msg)?;
-                                Value::Null
-                            }
+                Op::Switch {
+                    src,
+                    table,
+                    default,
+                    strict,
+                } => {
+                    let v = self.rd(base, src);
+                    let rows = func.f.consts[table as usize]
+                        .as_jump_table()
+                        .expect("Switch table");
+                    let hit = rows.iter().find(|(k, _)| {
+                        if strict {
+                            v.identical(k)
+                        } else {
+                            v.loose_eq(k)
                         }
-                    }
-                    other => {
-                        let msg = format!(
-                            "Attempt to read property \"{}\" on {}",
-                            String::from_utf8_lossy(&key),
-                            value_name(other)
-                        );
-                        interp.warn(&msg)?;
-                        Value::Null
-                    }
-                };
-                regs[dst as usize] = val;
-            }
-            Op::PropSet { obj, name, value } => {
-                let key = function.consts[name as usize].to_value().to_php_bytes();
-                let v = regs[value as usize].clone();
-                match &regs[obj as usize] {
-                    Value::Object(o) => {
-                        check_prop_access(module, o.class_id(), &key, cur_class)?;
-                        o.set(&key, v);
-                    }
-                    other => {
-                        return Err(Unwind::error(format!(
-                            "Attempt to assign property \"{}\" on {}",
-                            String::from_utf8_lossy(&key),
-                            value_name(other)
-                        )));
+                    });
+                    pc = hit.map_or(default, |(_, t)| *t) as usize;
+                    continue;
+                }
+                Op::MatchError { src } => {
+                    let v = self.rd(base, src);
+                    return Err(Unwind::unhandled_match_error(self.match_error_message(&v)));
+                }
+                Op::Silence { begin } => {
+                    if begin {
+                        self.silence += 1;
+                    } else {
+                        self.silence = self.silence.saturating_sub(1);
                     }
                 }
-            }
-            Op::MethodCall {
-                dst,
-                obj,
-                method,
-                base,
-                argc,
-            } => {
-                let mname = function.consts[method as usize].to_value().to_php_bytes();
-                let obj_val = regs[obj as usize].clone();
-                let class_id = match &obj_val {
-                    Value::Object(o) => o.class_id(),
-                    other => {
+                Op::Exit { src } => {
+                    let code = match src {
+                        None => 0,
+                        Some(r) => match self.rd(base, r) {
+                            Value::Int(i) => i as i32,
+                            other => {
+                                self.check_array_to_string(&other)?;
+                                self.echo_value(&other);
+                                0
+                            }
+                        },
+                    };
+                    return Err(Unwind::Exit(code));
+                }
+                Op::Throw { src } => {
+                    return match self.rd(base, src) {
+                        Value::Object(o) => Err(Unwind::Throw(o)),
+                        _ => Err(Unwind::error("Can only throw objects")),
+                    };
+                }
+
+                // --- calls ---
+                Op::InitFCall { name, ic, .. } => {
+                    let target = self.resolve_fcall(&func, name, ic)?;
+                    let name = self.name_bytes(&func, name);
+                    let args_base = self.stack.len();
+                    self.frames[fi].pending.push(PendingCall {
+                        target,
+                        this: None,
+                        scope: None,
+                        static_class: None,
+                        args_base,
+                        argc: 0,
+                        named: Vec::new(),
+                        new_obj: None,
+                        name,
+                    });
+                }
+                Op::InitDynCall { callee, .. } => {
+                    let v = self.rd(base, callee);
+                    let c = self.resolve_callable(&v)?;
+                    let (target, this, scope, static_class, name) = match c {
+                        crate::call::Callable::Native(id) => (
+                            CallTarget::Native(id),
+                            None,
+                            None,
+                            None,
+                            Box::from(self.natives[id.0 as usize].name.as_bytes()),
+                        ),
+                        crate::call::Callable::User {
+                            func: f,
+                            this,
+                            scope,
+                            static_class,
+                            closure,
+                        } => {
+                            let name = f.f.name_bytes.clone();
+                            (CallTarget::User { func: f, closure }, this, scope, static_class, name)
+                        }
+                    };
+                    let args_base = self.stack.len();
+                    self.frames[fi].pending.push(PendingCall {
+                        target,
+                        this,
+                        scope,
+                        static_class,
+                        args_base,
+                        argc: 0,
+                        named: Vec::new(),
+                        new_obj: None,
+                        name,
+                    });
+                }
+                Op::InitMethodCall { obj, name, .. } => {
+                    let o = self.rd(base, obj);
+                    let mname = self.member_name(&func, base, name)?;
+                    let Value::Object(o) = o else {
                         return Err(Unwind::error(format!(
                             "Call to a member function {}() on {}",
                             String::from_utf8_lossy(&mname),
-                            value_name(other),
-                        )))
-                    }
-                };
-                // Virtual dispatch: resolve up the chain from the runtime class.
-                let (fid, vis, decl_class) =
-                    module.resolve_method(class_id, &mname).ok_or_else(|| {
+                            value_name(&o),
+                        )));
+                    };
+                    let (fid, vis, decl) = self.resolve_method(o.class_id(), &mname).ok_or_else(|| {
                         Unwind::error(format!(
                             "Call to undefined method {}::{}()",
-                            String::from_utf8_lossy(&module.class(class_id).name_bytes),
+                            self.class_name_of(&o),
                             String::from_utf8_lossy(&mname),
                         ))
                     })?;
-                if !access_ok(module, vis, decl_class, cur_class) {
-                    return Err(Unwind::error(format!(
-                        "Call to {} method {}::{}() from {}",
-                        vis_word(vis),
-                        String::from_utf8_lossy(&module.class(decl_class).name_bytes),
-                        String::from_utf8_lossy(&mname),
-                        match cur_class {
-                            Some(c) => format!(
-                                "scope {}",
-                                String::from_utf8_lossy(&module.class(c).name_bytes)
-                            ),
-                            None => "global scope".to_string(),
+                    self.check_method_access(vis, decl, &mname)?;
+                    let target = CallTarget::User {
+                        func: self.funcs[fid as usize].clone(),
+                        closure: None,
+                    };
+                    let args_base = self.stack.len();
+                    let static_class = Some(o.class_id());
+                    self.frames[fi].pending.push(PendingCall {
+                        target,
+                        this: Some(o),
+                        scope: Some(decl),
+                        static_class,
+                        args_base,
+                        argc: 0,
+                        named: Vec::new(),
+                        new_obj: None,
+                        name: mname,
+                    });
+                }
+                Op::InitStaticCall { class, name, .. } => {
+                    let cid = self.resolve_class_ref(&func, base, class)?;
+                    let mname = self.member_name(&func, base, name)?;
+                    let (fid, vis, decl) = self.resolve_method(cid, &mname).ok_or_else(|| {
+                        Unwind::error(format!(
+                            "Call to undefined method {}::{}()",
+                            String::from_utf8_lossy(&self.classes[cid as usize].name),
+                            String::from_utf8_lossy(&mname),
+                        ))
+                    })?;
+                    self.check_method_access(vis, decl, &mname)?;
+                    let callee = self.funcs[fid as usize].clone();
+                    // A forwarding instance call keeps `$this` when it is an
+                    // instance of the named class.
+                    let this = self.frames[fi]
+                        .this
+                        .clone()
+                        .filter(|o| self.is_subclass_or_eq(o.class_id(), cid));
+                    if this.is_none() && !callee.f.flags.contains(FnFlags::STATIC) {
+                        return Err(Unwind::error(format!(
+                            "Non-static method {}::{}() cannot be called statically",
+                            String::from_utf8_lossy(&self.classes[decl as usize].name),
+                            String::from_utf8_lossy(&callee.f.name_bytes)
+                        )));
+                    }
+                    let forwarding = matches!(class.kind(), ClassRefKind::SelfKw | ClassRefKind::Parent | ClassRefKind::Static);
+                    let static_class = if forwarding {
+                        self.frames[fi].static_class.or(Some(cid))
+                    } else {
+                        this.as_ref().map(|o| o.class_id()).or(Some(cid))
+                    };
+                    let args_base = self.stack.len();
+                    self.frames[fi].pending.push(PendingCall {
+                        target: CallTarget::User {
+                            func: callee,
+                            closure: None,
+                        },
+                        this,
+                        scope: Some(decl),
+                        static_class,
+                        args_base,
+                        argc: 0,
+                        named: Vec::new(),
+                        new_obj: None,
+                        name: mname,
+                    });
+                }
+                Op::InitNew { class, .. } => {
+                    let cid = self.resolve_class_ref(&func, base, class)?;
+                    let obj = self.instantiate(cid);
+                    let (target, scope) = match self.resolve_method(cid, b"__construct") {
+                        Some((fid, vis, decl)) => {
+                            let scope = self.frames[fi].scope;
+                            if !self.access_ok(vis, decl, scope) {
+                                return Err(Unwind::error(format!(
+                                    "Call to {} {}::__construct() from {}",
+                                    vis_word(vis),
+                                    String::from_utf8_lossy(&self.classes[decl as usize].name),
+                                    match scope {
+                                        Some(c) => format!("scope {}", String::from_utf8_lossy(&self.classes[c as usize].name)),
+                                        None => "global scope".to_string(),
+                                    }
+                                )));
+                            }
+                            (
+                                CallTarget::User {
+                                    func: self.funcs[fid as usize].clone(),
+                                    closure: None,
+                                },
+                                Some(decl),
+                            )
                         }
-                    )));
+                        None => (CallTarget::NoCtor, None),
+                    };
+                    let args_base = self.stack.len();
+                    let name = self.classes[cid as usize].name.clone();
+                    self.frames[fi].pending.push(PendingCall {
+                        target,
+                        this: Some(obj.clone()),
+                        scope,
+                        static_class: Some(cid),
+                        args_base,
+                        argc: 0,
+                        named: Vec::new(),
+                        new_obj: Some(obj),
+                        name,
+                    });
                 }
-                let callee = module.func(fid);
-                // The method frame takes `$this` in register 0, then its declared
-                // parameters; cap the staged args to that count (extra args are
-                // ignored, missing ones default to null) so the frame never reads
-                // out of bounds.
-                let np = callee.num_params as usize;
-                let base = base as usize;
-                let mut call_args = Vec::with_capacity(np);
-                call_args.push(obj_val);
-                for i in 0..(argc as usize).min(np.saturating_sub(1)) {
-                    call_args.push(regs[base + i].clone());
+                Op::SendVal { pos, src } => {
+                    let v = self.rd(base, src);
+                    let by_ref = self.pending_by_ref(fi, pos as usize);
+                    if by_ref {
+                        let msg = self.by_ref_message(fi, pos as usize);
+                        return Err(Unwind::error(msg));
+                    }
+                    self.send(fi, v);
                 }
-                // The callee runs in the lexical context of its *declaring* class.
-                regs[dst as usize] =
-                    exec_function(interp, module, fid, &call_args, Some(decl_class))?;
-            }
-            Op::StaticCall {
-                dst,
-                this,
-                func,
-                base,
-                argc,
-            } => {
-                // Non-virtual scoped call (`self::`/`parent::`/`Class::`); the
-                // current `$this` is forwarded explicitly.
-                let this_val = regs[this as usize].clone();
-                let callee = module.func(func);
-                let np = callee.num_params as usize;
-                let base = base as usize;
-                let mut call_args = Vec::with_capacity(np);
-                call_args.push(this_val);
-                for i in 0..(argc as usize).min(np.saturating_sub(1)) {
-                    call_args.push(regs[base + i].clone());
+                Op::SendVar { pos, var } => {
+                    let v = if self.pending_by_ref(fi, pos as usize) {
+                        Value::Ref(self.make_ref(base, var))
+                    } else {
+                        self.rd(base, var)
+                    };
+                    self.send(fi, v);
                 }
-                let callee_class = module.method_owner(func);
-                regs[dst as usize] = exec_function(interp, module, func, &call_args, callee_class)?;
-            }
-            Op::InstanceOf { dst, obj, class } => {
-                let result = match &regs[obj as usize] {
-                    Value::Object(o) => module.is_subclass_or_eq(o.class_id(), class),
-                    _ => false,
-                };
-                regs[dst as usize] = Value::Bool(result);
-            }
-
-            Op::Ret { src } => {
-                return Ok(src.map_or(Value::Null, |r| regs[r as usize].clone()));
-            }
-
-            // --- io ---
-            Op::Echo { src } => {
-                if is_array(&regs[src as usize]) {
-                    interp.warn("Array to string conversion")?;
+                Op::SendRefElem { pos, arr, key } => {
+                    let k = self.rd(base, key);
+                    let v = if self.pending_by_ref(fi, pos as usize) {
+                        Value::Ref(self.elem_ref(base, arr, Some(&k))?)
+                    } else {
+                        let container = self.rd(base, arr);
+                        self.array_get(&container, &k)?
+                    };
+                    self.send(fi, v);
                 }
-                interp.echo_value(&regs[src as usize]);
-            }
-
-            // The v2 contract ops (plan Track E) are not executed by the tier-0
-            // interpreter yet; the compiler never emits them either.
-            _ => {
-                return Err(Unwind::error(format!(
-                    "internal error: opcode not implemented by the tier-0 interpreter: {op:?}"
-                )));
-            }
-        }
-
-        pc += 1;
-    }
-}
-
-fn is_array(v: &Value) -> bool {
-    matches!(&*v.deref(), Value::Array(_))
-}
-
-/// `base[key]` read. Arrays index by normalized key (absent ⇒ warning + null);
-/// strings index by byte offset (negative allowed; out of range ⇒ warning +
-/// ""). Indexing a scalar / null warns and yields null.
-fn array_get(interp: &mut Interp, base: &Value, key: &Value) -> Result<Value, Unwind> {
-    let base = base.deref();
-    match &*base {
-        Value::Array(a) => match array_key(key) {
-            // The element is dereferenced: a read never yields a `Ref`.
-            Some(k) => match a.get_deref(&k) {
-                Some(v) => Ok(v),
-                None => {
-                    let msg = match &k {
-                        ArrayKey::Int(i) => format!("Undefined array key {i}"),
-                        ArrayKey::Str(s) => {
-                            format!("Undefined array key \"{}\"", String::from_utf8_lossy(s))
+                Op::SendRefProp { pos, obj, name } => {
+                    let o = self.rd(base, obj);
+                    let name = self.member_name(&func, base, name)?;
+                    let v = if self.pending_by_ref(fi, pos as usize) {
+                        let holder = self.prop_holder(&o, &name)?;
+                        self.check_prop_access(holder.class_id(), &name)?;
+                        if holder.get(&name).is_none() {
+                            self.dynamic_prop_notice(&holder, &name)?;
+                        }
+                        Value::Ref(holder.prop_ref(&name))
+                    } else {
+                        self.fetch_prop(&o, &name)?
+                    };
+                    self.send(fi, v);
+                }
+                Op::SendUnpack { src } => {
+                    let v = self.rd(base, src);
+                    let Value::Array(a) = v else {
+                        return Err(Unwind::error("Only arrays and Traversables can be unpacked"));
+                    };
+                    for (k, val) in a.iter() {
+                        match k {
+                            rphp_value::ArrayKey::Int(_) => {
+                                if !self.frames[fi].pending.last().expect("pending").named.is_empty() {
+                                    return Err(Unwind::error(
+                                        "Cannot use positional argument after named argument during unpacking",
+                                    ));
+                                }
+                                let pos = self.frames[fi].pending.last().expect("pending").argc;
+                                let v = if self.pending_by_ref(fi, pos) {
+                                    val.clone()
+                                } else {
+                                    val.deref().into_owned()
+                                };
+                                self.send(fi, v);
+                            }
+                            rphp_value::ArrayKey::Str(s) => {
+                                let p = self.frames[fi].pending.last_mut().expect("pending");
+                                p.named.push((s.clone(), val.deref().into_owned()));
+                            }
+                        }
+                    }
+                }
+                Op::SendNamed { name, src } => {
+                    let nm = self.name_bytes(&func, name);
+                    // A by-reference parameter shares the register's cell.
+                    let by_ref = {
+                        let p = self.frames[fi].pending.last().expect("pending");
+                        match &p.target {
+                            CallTarget::User { func: f, .. } => f
+                                .f
+                                .params
+                                .iter()
+                                .find(|p| p.name.as_ref() == nm.as_ref())
+                                .is_some_and(|p| p.by_ref),
+                            _ => false,
                         }
                     };
-                    interp.warn(&msg)?;
-                    Ok(Value::Null)
+                    let v = if by_ref {
+                        Value::Ref(self.make_ref(base, src))
+                    } else {
+                        self.rd(base, src)
+                    };
+                    self.frames[fi].pending.last_mut().expect("pending").named.push((nm, v));
                 }
-            },
-            // Illegal offset type (array/object key): TypeError later (E5).
-            None => Ok(Value::Null),
-        },
-        Value::Str(s) => string_offset(interp, s, key),
-        Value::Null | Value::Uninit | Value::Bool(_) | Value::Int(_) | Value::Float(_) => {
-            let msg = format!("Trying to access array offset on {}", value_name(&base));
-            interp.warn(&msg)?;
-            Ok(Value::Null)
-        }
-        // Objects (ArrayAccess) and resources: later.
-        _ => Ok(Value::Null),
-    }
-}
+                Op::DoCall { dst } => {
+                    let pending = self.frames[fi].pending.pop().expect("DoCall without Init");
+                    let abs = base + dst as usize;
+                    match pending.target.clone() {
+                        CallTarget::Native(id) => {
+                            let PendingCall {
+                                args_base,
+                                argc,
+                                named,
+                                ..
+                            } = pending;
+                            let r = self.call_native_window(id, args_base, argc, named)?;
+                            self.stack[abs] = r;
+                        }
+                        CallTarget::NoCtor => {
+                            self.stack.truncate(pending.args_base);
+                            let obj = pending.new_obj.expect("NoCtor carries the object");
+                            self.stack[abs] = Value::Object(obj);
+                        }
+                        CallTarget::User { func: callee, closure } => {
+                            let ret = match pending.new_obj.clone() {
+                                Some(obj) => RetTarget::New { reg: abs, obj },
+                                None => RetTarget::Reg(abs),
+                            };
+                            let symtab = if callee.f.flags.contains(FnFlags::NEEDS_SYMTAB) {
+                                Some(Symtab::new())
+                            } else {
+                                None
+                            };
+                            self.frames[fi].pc = pc + 1;
+                            self.activate(pending, FrameKind::Normal, ret, symtab, closure)?;
+                            return Ok(Switch::Continue);
+                        }
+                    }
+                }
+                Op::MakeCallableClosure { .. } => {
+                    return Err(Unwind::error(
+                        "first-class callable syntax is not supported yet",
+                    ));
+                }
+                Op::MakeClosure { dst, proto } => {
+                    let fid = func.unit.func_id(proto);
+                    let cf = self.funcs[fid as usize].clone();
+                    let mut captures = Vec::with_capacity(cf.f.captures.len() + 2);
+                    for d in &cf.f.captures {
+                        if d.by_ref {
+                            captures.push(Value::Ref(self.make_ref(base, d.src)));
+                        } else {
+                            captures.push(self.rd(base, d.src));
+                        }
+                    }
+                    let f = &self.frames[fi];
+                    let this = if cf.f.flags.contains(FnFlags::STATIC) {
+                        None
+                    } else {
+                        f.this.clone()
+                    };
+                    captures.push(this.map_or(Value::Null, Value::Object));
+                    captures.push(f.scope.map_or(Value::Null, |c| Value::Int(i64::from(c))));
+                    self.set(base, dst, Value::Closure(Closure::new(fid, captures)));
+                }
+                Op::Ret { src } => {
+                    let v = src.map_or(Value::Null, |r| self.rd(base, r));
+                    return self.do_return(v, stop_depth);
+                }
+                Op::RetRef { var } => {
+                    let v = self.rd(base, var);
+                    return self.do_return(v, stop_depth);
+                }
 
-fn string_offset(interp: &mut Interp, s: &Str, key: &Value) -> Result<Value, Unwind> {
-    let len = s.len() as i64;
-    let requested = key.to_int();
-    let mut i = requested;
-    if i < 0 {
-        i += len; // PHP allows negative string offsets
-    }
-    if i >= 0 && i < len {
-        Ok(Value::string(&s.as_bytes()[i as usize..i as usize + 1]))
-    } else {
-        interp.warn(&format!("Uninitialized string offset {requested}"))?;
-        Ok(Value::string(b""))
-    }
-}
+                // --- prologue ---
+                Op::RecvInit { param, init } => {
+                    let f = &self.frames[fi];
+                    let slot = &self.stack[base + param as usize];
+                    let missing = f.argc <= param as usize || slot.is_uninit();
+                    if missing {
+                        let v = match init {
+                            InitRef::Const(k) => self.const_value(&func, k),
+                            InitRef::Thunk(t) => {
+                                let fid = func.unit.func_id(t);
+                                let (this, scope) = {
+                                    let f = &self.frames[fi];
+                                    (f.this.clone(), f.scope)
+                                };
+                                self.run_thunk(fid, this, scope)?
+                            }
+                        };
+                        let slot = &mut self.stack[base + param as usize];
+                        if slot.is_uninit() {
+                            *slot = v;
+                        } else {
+                            Value::assign(slot, v);
+                        }
+                    }
+                }
+                Op::RecvVariadic { reg } => {
+                    let f = &mut self.frames[fi];
+                    let mut arr = rphp_value::Array::new();
+                    // The extras stay on the frame for `func_get_args()`; a
+                    // by-reference variadic collects the cells themselves.
+                    for v in &f.extra_args {
+                        match v {
+                            Value::Ref(r) => arr.push_ref(r.clone()),
+                            other => arr.push(other.clone()),
+                        }
+                    }
+                    for (k, v) in &f.extra_named {
+                        arr.set(rphp_value::ArrayKey::str(k), v.clone());
+                    }
+                    Value::assign(&mut self.stack[base + reg as usize], Value::Array(arr));
+                }
+                Op::BindStatic { reg, idx } => {
+                    let existing = func.statics.borrow()[idx as usize].clone();
+                    let cell = match existing {
+                        Some(c) => c,
+                        None => {
+                            let sv = &func.f.statics[idx as usize];
+                            let v = match sv.init {
+                                None => Value::Null,
+                                Some(InitRef::Const(k)) => self.const_value(&func, k),
+                                Some(InitRef::Thunk(t)) => {
+                                    let fid = func.unit.func_id(t);
+                                    let (this, scope) = {
+                                        let f = &self.frames[fi];
+                                        (f.this.clone(), f.scope)
+                                    };
+                                    self.run_thunk(fid, this, scope)?
+                                }
+                            };
+                            // A recursive call inside the initializer may
+                            // have created the cell meanwhile: php keeps
+                            // that one (BIND_INIT_STATIC_OR_JMP).
+                            let existing = func.statics.borrow()[idx as usize].clone();
+                            match existing {
+                                Some(c) => c,
+                                None => {
+                                    let c = PhpRef::new(v);
+                                    func.statics.borrow_mut()[idx as usize] = Some(c.clone());
+                                    c
+                                }
+                            }
+                        }
+                    };
+                    self.rebind(base, reg, cell);
+                }
+                Op::BindStaticOrJmp { reg, idx, target } => {
+                    let existing = func.statics.borrow()[idx as usize].clone();
+                    if let Some(cell) = existing {
+                        self.rebind(base, reg, cell);
+                        pc = target as usize;
+                        continue;
+                    }
+                }
+                Op::BindGlobal { reg, name } => {
+                    let name = self.name_bytes(&func, name);
+                    let cell = self.globals.get_or_create(&name);
+                    self.rebind(base, reg, cell);
+                }
+                Op::BindSymtab => {
+                    let symtab = match self.frames[fi].symtab.clone() {
+                        Some(t) => t,
+                        None => {
+                            let t = Symtab::new();
+                            self.frames[fi].symtab = Some(t.clone());
+                            t
+                        }
+                    };
+                    for (name, reg) in &func.f.var_names {
+                        let slot = &mut self.stack[base + *reg as usize];
+                        match symtab.get(name) {
+                            Some(cell) => *slot = Value::Ref(cell),
+                            None => {
+                                if slot.is_uninit() {
+                                    *slot = Value::Null;
+                                }
+                                let cell = Value::make_ref(slot);
+                                symtab.insert(name, cell);
+                            }
+                        }
+                    }
+                }
+                Op::FetchDynVar { dst, name, global } => {
+                    let n = self.rd(base, name).to_php_bytes();
+                    let table = if global {
+                        Some(self.globals.clone())
+                    } else {
+                        self.frames[fi].symtab.clone()
+                    };
+                    let v = match table.and_then(|t| t.get(&n)) {
+                        Some(cell) => cell.get(),
+                        None => {
+                            self.warn(&format!(
+                                "Undefined {}variable ${}",
+                                if global { "global " } else { "" },
+                                String::from_utf8_lossy(&n)
+                            ))?;
+                            Value::Null
+                        }
+                    };
+                    self.set(base, dst, v);
+                }
+                Op::BindDynVar { reg, name, global } => {
+                    let n = self.rd(base, name).to_php_bytes();
+                    let table = if global {
+                        self.globals.clone()
+                    } else {
+                        match self.frames[fi].symtab.clone() {
+                            Some(t) => t,
+                            None => {
+                                let t = Symtab::new();
+                                self.frames[fi].symtab = Some(t.clone());
+                                t
+                            }
+                        }
+                    };
+                    let cell = table.get_or_create(&n);
+                    self.set(base, reg, Value::Ref(cell));
+                }
 
-/// `slot[key] = value`, mutating in place. Null auto-vivifies to a fresh array;
-/// an illegal offset type or a scalar base is a no-op (warning deferred). The
-/// COW separation happens inside [`rphp_value::Array::set`].
-fn array_set(slot: &mut Value, key: &Value, value: Value) {
-    if matches!(slot, Value::Null) {
-        *slot = Value::empty_array();
-    }
-    if let Value::Array(a) = slot {
-        if let Some(k) = array_key(key) {
-            a.set(k, value);
+                // --- names ---
+                Op::FetchConst { dst, name, .. } => {
+                    let n = self.name_bytes(&func, name);
+                    let v = self.constants.get(&n).cloned().ok_or_else(|| {
+                        Unwind::error(format!(
+                            "Undefined constant \"{}\"",
+                            String::from_utf8_lossy(&n)
+                        ))
+                    })?;
+                    self.set(base, dst, v);
+                }
+                Op::DeclareConst { name, src } => {
+                    let n = self.name_bytes(&func, name);
+                    let v = self.rd(base, src);
+                    if !self.define(&n, v) {
+                        self.warn(&format!(
+                            "Constant {} already defined, this will be an error in PHP 9",
+                            String::from_utf8_lossy(&n)
+                        ))?;
+                    }
+                }
+                Op::FetchClassConst { dst, class, name, .. } => {
+                    let cid = self.resolve_class_ref(&func, base, class)?;
+                    let n = self.member_name(&func, base, name)?;
+                    if n.as_ref() == b"class" {
+                        let v = Value::string(&self.classes[cid as usize].name);
+                        self.set(base, dst, v);
+                    } else {
+                        return Err(Unwind::error(format!(
+                            "Undefined constant {}::{}",
+                            String::from_utf8_lossy(&self.classes[cid as usize].name),
+                            String::from_utf8_lossy(&n)
+                        )));
+                    }
+                }
+                Op::FetchStaticProp { class, name, .. }
+                | Op::AssignStaticProp { class, name, .. }
+                | Op::RefStaticProp { class, name, .. } => {
+                    let cid = self.resolve_class_ref(&func, base, class)?;
+                    let n = self.member_name(&func, base, name)?;
+                    return Err(Unwind::error(format!(
+                        "Access to undeclared static property {}::${}",
+                        String::from_utf8_lossy(&self.classes[cid as usize].name),
+                        String::from_utf8_lossy(&n)
+                    )));
+                }
+                Op::FetchProp { dst, obj, name, .. } => {
+                    let o = self.rd(base, obj);
+                    let n = self.member_name(&func, base, name)?;
+                    let v = self.fetch_prop(&o, &n)?;
+                    self.set(base, dst, v);
+                }
+                Op::AssignProp { obj, name, src, .. } => {
+                    let o = self.rd(base, obj);
+                    let n = self.member_name(&func, base, name)?;
+                    let v = self.rd(base, src);
+                    self.assign_prop(&o, &n, v)?;
+                }
+                Op::FetchClass { dst, name, .. } => {
+                    let n = self.name_bytes(&func, name);
+                    let cid = self.class_by_name(&n).ok_or_else(|| {
+                        Unwind::error(format!("Class \"{}\" not found", String::from_utf8_lossy(&n)))
+                    })?;
+                    let v = Value::string(&self.classes[cid as usize].name);
+                    self.set(base, dst, v);
+                }
+                Op::FetchGlobals { dst } => {
+                    let arr = self.globals.with(|t| t.to_array());
+                    self.set(base, dst, Value::Array(arr));
+                }
+                Op::AssignGlobal { key, src } => {
+                    let k = self.rd(base, key).to_php_bytes();
+                    let v = self.rd(base, src);
+                    let cell = self.globals.get_or_create(&k);
+                    cell.set(v);
+                }
+                Op::LoadThis { dst } => {
+                    let this = self.frames[fi].this.clone().ok_or_else(|| {
+                        Unwind::error("Using $this when not in object context")
+                    })?;
+                    self.set(base, dst, Value::Object(this));
+                }
+                Op::InstanceOfRef { dst, obj, class } => {
+                    let o = self.rd(base, obj);
+                    let r = if let Value::Closure(_) = &o {
+                        // Closures are not class instances yet (plan E6):
+                        // only `instanceof Closure` holds.
+                        match class.kind() {
+                            ClassRefKind::Named(k) => {
+                                self.name_bytes(&func, k).eq_ignore_ascii_case(b"closure")
+                            }
+                            ClassRefKind::Reg(r) => matches!(
+                                self.rd(base, r),
+                                Value::Str(s) if s.as_bytes().eq_ignore_ascii_case(b"closure")
+                            ),
+                            _ => false,
+                        }
+                    } else {
+                        let cid = self.resolve_class_ref_quiet(&func, base, class)?;
+                        match (o, cid) {
+                            (Value::Object(o), Some(cid)) => self.is_subclass_or_eq(o.class_id(), cid),
+                            _ => false,
+                        }
+                    };
+                    self.set(base, dst, Value::Bool(r));
+                }
+                Op::Clone { dst, src, .. } => {
+                    let v = self.rd(base, src);
+                    let Value::Object(o) = v else {
+                        return Err(Unwind::error("__clone method called on non-object"));
+                    };
+                    let id = self.object_ids.alloc();
+                    let layout = o.layout();
+                    let slots = o.with_data(|d| d.slots().to_vec());
+                    let copy = Object::new(o.class_id(), id, layout, slots);
+                    let dyns: Vec<(Box<[u8]>, Value)> = o.with_data(|d| {
+                        d.dyn_props()
+                            .map(|p| p.iter().map(|(n, v)| (Box::from(n), v.clone())).collect())
+                            .unwrap_or_default()
+                    });
+                    for (n, v) in dyns {
+                        copy.dyn_set(&n, v);
+                    }
+                    self.set(base, dst, Value::Object(copy));
+                }
+
+                // --- units ---
+                Op::DeclareFunction { idx } => {
+                    let fid = func.unit.func_id(idx);
+                    self.declare_function(fid)?;
+                }
+                Op::DeclareClass { idx } => {
+                    let cid = func.unit.class_id(idx);
+                    self.declare_class(cid)?;
+                }
+                Op::Include { dst, path, kind } => {
+                    let p = self.rd(base, path).to_php_bytes();
+                    self.frames[fi].pc = pc + 1;
+                    if self.include_file(&p, kind, base + dst as usize)? {
+                        return Ok(Switch::Continue);
+                    }
+                }
+                Op::Eval { .. } => {
+                    return Err(Unwind::error("eval() is not supported yet"));
+                }
+                Op::Yield { .. } | Op::YieldFrom { .. } | Op::GenReturn { .. } => {
+                    return Err(Unwind::error("generators are not supported yet"));
+                }
+                Op::FinallyEnd { .. } => {
+                    return Err(Unwind::error("try/finally is not supported yet"));
+                }
+
+                // --- io ---
+                Op::Echo { src } => {
+                    let v = self.rd(base, src);
+                    self.check_array_to_string(&v)?;
+                    if let Value::Object(o) = &v {
+                        return Err(Unwind::error(format!(
+                            "Object of class {} could not be converted to string",
+                            self.class_name_of(o)
+                        )));
+                    }
+                    self.echo_value(&v);
+                }
+
+                // The M0 ops are no longer produced by the compiler.
+                Op::Call { .. }
+                | Op::CallNative { .. }
+                | Op::CallDynamic { .. }
+                | Op::New { .. }
+                | Op::PropGet { .. }
+                | Op::PropSet { .. }
+                | Op::MethodCall { .. }
+                | Op::StaticCall { .. }
+                | Op::InstanceOf { .. }
+                | Op::ForeachNext { .. } => {
+                    return Err(Unwind::error(format!(
+                        "internal error: M0 opcode not executed by the v2 interpreter: {op:?}"
+                    )));
+                }
+            }
+            pc += 1;
         }
+    }
+
+    /// `dst = a OP b` for the binary operators.
+    fn arith(&mut self, base: usize, dst: u16, a: u16, b: u16, op: AssignOpKind) -> Result<(), Unwind> {
+        let x = self.rd(base, a);
+        let y = self.rd(base, b);
+        let r = self.binary_op(op, &x, &y)?;
+        self.set(base, dst, r);
+        Ok(())
+    }
+
+    /// Return `v` from the top frame: pop it, release its registers, deliver
+    /// the value to its target. A re-entry boundary hands the value back to
+    /// `run_until`.
+    fn do_return(&mut self, v: Value, stop_depth: usize) -> Result<Switch, Unwind> {
+        let f = self.frames.pop().expect("frame");
+        self.stack.truncate(f.base);
+        self.silence = f.silence_base;
+        match f.ret {
+            RetTarget::Discard => {}
+            RetTarget::Reg(abs) => {
+                if abs < self.stack.len() {
+                    self.stack[abs] = v.clone();
+                }
+            }
+            RetTarget::New { reg, obj } => {
+                if reg < self.stack.len() {
+                    self.stack[reg] = Value::Object(obj);
+                }
+            }
+        }
+        if f.kind == FrameKind::ReentryBoundary || self.frames.len() <= stop_depth {
+            return Ok(Switch::Done(v));
+        }
+        Ok(Switch::Continue)
+    }
+
+    /// Whether the innermost pending call's parameter `pos` is by-reference.
+    fn pending_by_ref(&self, fi: usize, pos: usize) -> bool {
+        let Some(p) = self.frames[fi].pending.last() else {
+            return false;
+        };
+        match &p.target {
+            CallTarget::User { func, .. } => {
+                let params = &func.f.params;
+                match params.get(pos) {
+                    Some(pd) => pd.by_ref,
+                    // Past the declared parameters: a by-ref variadic takes
+                    // the rest by reference.
+                    None => params.last().is_some_and(|l| l.variadic && l.by_ref),
+                }
+            }
+            CallTarget::Native(id) => self.natives[id.0 as usize].is_by_ref(pos),
+            CallTarget::NoCtor => false,
+        }
+    }
+
+    /// `f(): Argument #n ($x) could not be passed by reference`.
+    fn by_ref_message(&self, fi: usize, pos: usize) -> String {
+        let p = self.frames[fi].pending.last().expect("pending");
+        let param = match &p.target {
+            CallTarget::User { func, .. } => func
+                .f
+                .params
+                .get(pos)
+                .map(|pd| format!(" (${})", String::from_utf8_lossy(&pd.name)))
+                .unwrap_or_default(),
+            CallTarget::Native(id) => self.natives[id.0 as usize]
+                .params
+                .get(pos)
+                .map(|n| format!(" (${n})"))
+                .unwrap_or_default(),
+            CallTarget::NoCtor => String::new(),
+        };
+        let name = match &p.target {
+            CallTarget::User { func, .. } => self.callable_display_name(func),
+            _ => String::from_utf8_lossy(&p.name).into_owned(),
+        };
+        format!(
+            "{name}(): Argument #{}{param} could not be passed by reference",
+            pos + 1
+        )
+    }
+
+    /// Stage one positional argument of the innermost pending call.
+    fn send(&mut self, fi: usize, v: Value) {
+        let p = self.frames[fi].pending.last_mut().expect("Send without Init");
+        debug_assert_eq!(p.args_base + p.argc, self.stack.len());
+        p.argc += 1;
+        self.stack.push(v);
+    }
+
+    /// Resolve the target of an `InitFCall` through the inline cache.
+    fn resolve_fcall(&mut self, func: &crate::unit::FuncRt, name: u32, ic: u16) -> Result<CallTarget, Unwind> {
+        use crate::unit::IcSlot;
+        let gen = self.func_gen;
+        if let Some(slot) = func.ics.borrow().get(ic as usize) {
+            match slot {
+                IcSlot::Func { gen: g, id } if *g == gen => {
+                    return Ok(CallTarget::User {
+                        func: self.funcs[*id as usize].clone(),
+                        closure: None,
+                    })
+                }
+                IcSlot::Native { gen: g, id } if *g == gen => return Ok(CallTarget::Native(*id)),
+                _ => {}
+            }
+        }
+        let n = match &func.f.consts[name as usize] {
+            Const::Name(n) => n,
+            _ => return Err(Unwind::error("internal error: InitFCall without a name")),
+        };
+        let target = if let Some(&id) = self.func_index.get(&n.lower) {
+            if let Some(slot) = func.ics.borrow_mut().get_mut(ic as usize) {
+                *slot = IcSlot::Func { gen, id };
+            }
+            CallTarget::User {
+                func: self.funcs[id as usize].clone(),
+                closure: None,
+            }
+        } else if let Some(&id) = self.native_index.get(&n.lower) {
+            if let Some(slot) = func.ics.borrow_mut().get_mut(ic as usize) {
+                *slot = IcSlot::Native { gen, id };
+            }
+            CallTarget::Native(id)
+        } else {
+            return Err(Unwind::error(format!(
+                "Call to undefined function {}()",
+                String::from_utf8_lossy(&n.orig)
+            )));
+        };
+        Ok(target)
+    }
+
+    /// `arr[key] = v` / `arr[] = v` on the container in register `arr`
+    /// (through a reference binding), with php's autovivification rules.
+    fn array_set(&mut self, base: usize, arr: u16, key: Option<u16>, v: Value) -> Result<(), Unwind> {
+        let k = key.map(|k| self.rd(base, k));
+        let classes = self.classes.clone();
+        let class_name = move |o: &Object| {
+            String::from_utf8_lossy(&classes[o.class_id() as usize].name).into_owned()
+        };
+        let notice =
+            self.with_slot(base, arr, |slot| Interp::array_set_in(slot, k.as_ref(), v, &class_name))?;
+        match notice {
+            crate::ops::SetNotice::None => {}
+            crate::ops::SetNotice::FalseToArray => {
+                self.deprecated("Automatic conversion of false to array is deprecated")?;
+            }
+            crate::ops::SetNotice::FirstByteOnly => {
+                self.warn("Only the first byte will be assigned to the string offset")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Fetch-for-write of `arr[key]`: the element is moved out of the
+    /// container (or its reference cell shared) so the following nested
+    /// write mutates it in place; the compiler writes it back afterwards.
+    fn fetch_elem_w(&mut self, base: usize, arr: u16, key: Option<&Value>) -> Result<Value, Unwind> {
+        let classes = self.classes.clone();
+        let key = key.cloned();
+        let r = self.with_slot(base, arr, |slot| {
+            let mut deprecated_false = false;
+            if matches!(slot, Value::Bool(false)) {
+                deprecated_false = true;
+                *slot = Value::empty_array();
+            }
+            if matches!(slot, Value::Null | Value::Uninit) {
+                *slot = Value::empty_array();
+            }
+            match slot {
+                Value::Array(a) => {
+                    let Some(k) = &key else {
+                        return Ok((Value::Null, deprecated_false));
+                    };
+                    let Some(k) = array_key(k) else {
+                        return Err(Unwind::type_error(format!(
+                            "Cannot access offset of type {} on array",
+                            value_name(k)
+                        )));
+                    };
+                    let taken = match a.get_mut(&k) {
+                        Some(elem) => match elem {
+                            Value::Ref(_) => elem.clone(),
+                            _ => std::mem::replace(elem, Value::Null),
+                        },
+                        None => Value::Null,
+                    };
+                    Ok((taken, deprecated_false))
+                }
+                Value::Str(_) => Err(Unwind::error("Cannot use string offset as an array")),
+                Value::Object(o) => Err(Unwind::error(format!(
+                    "Cannot use object of type {} as array",
+                    String::from_utf8_lossy(&classes[o.class_id() as usize].name)
+                ))),
+                Value::Closure(_) => Err(Unwind::error("Cannot use object of type Closure as array")),
+                _ => Err(Unwind::error("Cannot use a scalar value as an array")),
+            }
+        })?;
+        if r.1 {
+            self.deprecated("Automatic conversion of false to array is deprecated")?;
+        }
+        Ok(r.0)
+    }
+
+    /// `&$arr[$key]`: the element's reference cell (autovivified).
+    fn elem_ref(&mut self, base: usize, arr: u16, key: Option<&Value>) -> Result<PhpRef, Unwind> {
+        let key = key.cloned();
+        self.with_slot(base, arr, |slot| {
+            if matches!(slot, Value::Null | Value::Uninit) {
+                *slot = Value::empty_array();
+            }
+            match slot {
+                Value::Array(a) => match key {
+                    Some(k) => match array_key(&k) {
+                        Some(k) => Ok(a.get_ref(k)),
+                        None => Err(Unwind::type_error(format!(
+                            "Cannot access offset of type {} on array",
+                            value_name(&k)
+                        ))),
+                    },
+                    None => {
+                        let k = rphp_value::ArrayKey::Int(a.next_free_index());
+                        Ok(a.get_ref(k))
+                    }
+                },
+                Value::Str(_) => Err(Unwind::error("Cannot create references to/from string offsets")),
+                Value::Object(_) | Value::Closure(_) => Err(Unwind::error("Cannot use object as array")),
+                _ => Err(Unwind::error("Cannot use a scalar value as an array")),
+            }
+        })
+    }
+
+    /// `include`/`require`: resolve, compile (through the hook), load and
+    /// push the file's `{main}` as an `Include` frame sharing the current
+    /// symbol table. Returns `Ok(true)` when a frame was pushed (the loop
+    /// must switch), `Ok(false)` when the value was delivered directly
+    /// (`false` for a missing include, `true` for a repeated `_once`).
+    fn include_file(&mut self, path: &[u8], kind: IncludeKind, dst_abs: usize) -> Result<bool, Unwind> {
+        let keyword = match kind {
+            IncludeKind::Include => "include",
+            IncludeKind::IncludeOnce => "include_once",
+            IncludeKind::Require => "require",
+            IncludeKind::RequireOnce => "require_once",
+        };
+        let is_require = matches!(kind, IncludeKind::Require | IncludeKind::RequireOnce);
+        let once = matches!(kind, IncludeKind::IncludeOnce | IncludeKind::RequireOnce);
+        let path_str = String::from_utf8_lossy(path).into_owned();
+        let include_path = self.ini_get("include_path").unwrap_or(".").to_string();
+        let resolved = self.resolve_include_path(path);
+        let Some(resolved) = resolved else {
+            self.warn(&format!(
+                "{keyword}({path_str}): Failed to open stream: No such file or directory"
+            ))?;
+            if is_require {
+                return Err(Unwind::error(format!(
+                    "Failed opening required '{path_str}' (include_path='{include_path}')"
+                )));
+            }
+            self.warn(&format!(
+                "{keyword}(): Failed opening '{path_str}' for inclusion (include_path='{include_path}')"
+            ))?;
+            self.stack[dst_abs] = Value::Bool(false);
+            return Ok(false);
+        };
+        let canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+        if once && self.included.contains(&canonical) {
+            self.stack[dst_abs] = Value::Bool(true);
+            return Ok(false);
+        }
+        let bytes = match std::fs::read(&resolved) {
+            Ok(b) => b,
+            Err(_) => {
+                self.warn(&format!(
+                    "{keyword}({path_str}): Failed to open stream: No such file or directory"
+                ))?;
+                if is_require {
+                    return Err(Unwind::error(format!(
+                        "Failed opening required '{path_str}' (include_path='{include_path}')"
+                    )));
+                }
+                self.stack[dst_abs] = Value::Bool(false);
+                return Ok(false);
+            }
+        };
+        let name = canonical.to_string_lossy().into_owned();
+        let Some(hook) = self.compile_hook.take() else {
+            return Err(Unwind::error("include is not available: no compile hook installed"));
+        };
+        let compiled = hook(self, &bytes, &name);
+        self.compile_hook = Some(hook);
+        let module = match compiled {
+            Ok(m) => m,
+            Err(crate::interp::CompileFailure::Parse { message, line }) => {
+                return Err(self.parse_error(&message, &name, line));
+            }
+            Err(crate::interp::CompileFailure::Rejected(lines)) => {
+                return Err(Unwind::error(format!(
+                    "{name}: the engine cannot lower this file yet:\n{}",
+                    lines.join("\n")
+                )));
+            }
+        };
+        self.included.insert(canonical);
+        let main = self.load_unit(module)?;
+        let func = self.funcs[main as usize].clone();
+        let fi = self.frames.len() - 1;
+        let (this, scope, static_class, symtab) = {
+            let f = &self.frames[fi];
+            (f.this.clone(), f.scope, f.static_class, f.symtab.clone())
+        };
+        let symtab = symtab.unwrap_or_else(|| self.globals.clone());
+        self.push_user_frame(
+            func,
+            FrameKind::Include,
+            &[],
+            this,
+            scope,
+            static_class,
+            RetTarget::Reg(dst_abs),
+            Some(symtab),
+        )?;
+        let top = self.frames.len() - 1;
+        self.frames[top].include_kind = Some(kind);
+        Ok(true)
+    }
+
+    /// Resolve an include path: absolute as is; otherwise the `include_path`
+    /// entries, then the including file's directory, then the cwd.
+    fn resolve_include_path(&self, path: &[u8]) -> Option<std::path::PathBuf> {
+        let p = std::path::PathBuf::from(String::from_utf8_lossy(path).into_owned());
+        if p.is_absolute() || path.starts_with(b"./") || path.starts_with(b"../") {
+            let full = if p.is_absolute() { p } else { self.cwd.join(p) };
+            return full.is_file().then_some(full);
+        }
+        let include_path = self.ini_get("include_path").unwrap_or(".").to_string();
+        let mut candidates: Vec<std::path::PathBuf> = include_path
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(|dir| {
+                if dir == "." {
+                    self.cwd.join(&p)
+                } else {
+                    std::path::Path::new(dir).join(&p)
+                }
+            })
+            .collect();
+        if let Some(f) = self.current_user_frame() {
+            let file = self.frame_file(f);
+            if let Some(dir) = std::path::Path::new(&file).parent() {
+                candidates.push(dir.join(&p));
+            }
+        }
+        candidates.push(self.cwd.join(&p));
+        candidates.into_iter().find(|c| c.is_file())
     }
 }

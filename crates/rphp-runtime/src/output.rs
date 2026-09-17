@@ -12,8 +12,6 @@
 //! PHP, so the level bookkeeping lives here and the callback protocol lives in
 //! [`crate::Interp`] (`ob_start`, `ob_discard_top`, `ob_flush_top`).
 
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use rphp_value::Value;
 
@@ -45,7 +43,7 @@ pub const PHP_OUTPUT_HANDLER_USER: i64 = 1;
 /// Where the bytes finally go: the SAPI's stdout, an HTTP response body, a
 /// test buffer. `write` must not buffer indefinitely — `flush` is called at
 /// exit and after fatal errors, but a streaming sink should write through.
-pub trait OutputSink {
+pub trait OutputSink: Send {
     /// Deliver `bytes` (raw; PHP strings are byte strings).
     fn write(&mut self, bytes: &[u8]);
     /// Push everything delivered so far to its destination.
@@ -192,9 +190,10 @@ impl OutputStack {
 }
 
 /// An in-memory sink shared with the test that owns it: the interpreter writes
-/// through one handle while the test reads the other.
+/// through one handle while the test reads the other. `Send`, so a request
+/// can run on a dedicated (large-stack) thread while the owner keeps a handle.
 #[derive(Clone, Default)]
-pub struct SharedBuffer(Rc<RefCell<Vec<u8>>>);
+pub struct SharedBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
 impl SharedBuffer {
     /// A fresh, empty buffer.
@@ -202,20 +201,24 @@ impl SharedBuffer {
         SharedBuffer::default()
     }
 
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<u8>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Everything written so far.
     pub fn contents(&self) -> Vec<u8> {
-        self.0.borrow().clone()
+        self.lock().clone()
     }
 
     /// Everything written so far, leaving the buffer empty.
     pub fn take(&self) -> Vec<u8> {
-        std::mem::take(&mut *self.0.borrow_mut())
+        std::mem::take(&mut *self.lock())
     }
 }
 
 impl OutputSink for SharedBuffer {
     fn write(&mut self, bytes: &[u8]) {
-        self.0.borrow_mut().extend_from_slice(bytes);
+        self.lock().extend_from_slice(bytes);
     }
     fn flush(&mut self) {}
 }

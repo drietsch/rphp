@@ -121,6 +121,39 @@ pub mod codes {
     pub const STRICT_TYPES: &str = "RPHP_E0025";
     pub const UNDEFINED_FUNCTION: &str = "RPHP_E0100";
     pub const WRONG_ARG_COUNT: &str = "RPHP_E0101";
+    /// Two unconditional declarations of the same function in one file
+    /// (`Cannot redeclare function f() (previously declared in ...)`).
+    /// Shared with `rphp-compiler`'s `REDECLARED_FUNCTION`.
+    pub const REDECLARED_FUNCTION: &str = "RPHP_E0102";
+    /// Two unconditional declarations of the same class-like in one file
+    /// (`Cannot redeclare class A (previously declared in ...)`). Shared
+    /// with `rphp-compiler`'s `REDECLARED_CLASS`.
+    pub const REDECLARED_CLASS: &str = "RPHP_E0106";
+    /// Resolution (`rphp-hir`): a `use` import conflicts with another import
+    /// or with a declaration in the same file (`Cannot use X as Y because the
+    /// name is already in use`, `... (previously declared as local import)`).
+    pub const IMPORT_CONFLICT: &str = "RPHP_E0200";
+    /// Resolution: a reserved class name (`int`, `self`, ...) declared,
+    /// aliased, extended, caught or written fully qualified
+    /// (`Cannot use "int" as a class name as it is reserved`).
+    pub const RESERVED_CLASS_NAME: &str = "RPHP_E0201";
+    /// Validation: `goto` to a label the function body does not define, or a
+    /// label defined twice (`'goto' to undefined label 'x'`).
+    pub const UNDEFINED_LABEL: &str = "RPHP_E0202";
+    /// Validation: an illegal jump — `goto` into a loop/switch or across a
+    /// `finally` boundary, `break`/`continue` outside a loop or with too many
+    /// levels (`'goto' into loop or switch statement is disallowed`).
+    pub const INVALID_JUMP: &str = "RPHP_E0203";
+    /// Resolution: `self`/`static` where no class scope is active
+    /// (`Cannot use "self" when no class scope is active`).
+    pub const NO_CLASS_SCOPE: &str = "RPHP_E0204";
+    /// Resolution: `parent` in a class without a parent
+    /// (`Cannot use "parent" when current class scope has no parent`).
+    pub const NO_PARENT_SCOPE: &str = "RPHP_E0205";
+    /// Resolution: braced and unbraced namespace declarations in one file
+    /// (`Cannot mix bracketed namespace declarations with unbracketed
+    /// namespace declarations`).
+    pub const NAMESPACE_MIX: &str = "RPHP_E0206";
     /// A syntactically valid construct the compiler does not lower yet
     /// (`unsupported construct: <what> (not lowered yet)`).
     pub const UNSUPPORTED_CONSTRUCT: &str = "RPHP_E0300";

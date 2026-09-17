@@ -1,0 +1,23 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (expr-stmt
+    (call
+      (name var_dump kind=u resolved=func global=var_dump)
+      (arg
+        (binary and
+          (binary and
+            (isset
+              (var $a))
+            (isset
+              (index
+                (var $b)
+                (int 0))))
+          (isset
+            (prop name=d
+              (var $c)))))
+      (arg
+        (isset
+          (var $x))))))

@@ -1,0 +1,101 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (expr-stmt
+    (call
+      (name var_dump kind=u resolved=func global=var_dump)
+      (arg
+        (binary and
+          (let t0
+            (var $o)
+            (ternary
+              (binary identical
+                (temp t0)
+                (null))
+              (bool false)
+              (isset
+                (prop name=a
+                  (temp t0)))))
+          (isset
+            (var $b))))
+      (arg
+        (let t1
+          (var $o)
+          (ternary
+            (binary identical
+              (temp t1)
+              (null))
+            (bool true)
+            (empty
+              (prop name=b
+                (prop name=a
+                  (temp t1)))))))
+      (arg
+        (let t2
+          (var $o)
+          (ternary
+            (binary identical
+              (temp t2)
+              (null))
+            (int 5)
+            (binary coalesce
+              (prop name=a
+                (temp t2))
+              (int 5)))))
+      (arg
+        (let t3
+          (var $o)
+          (ternary
+            (binary identical
+              (temp t3)
+              (null))
+            (let t5
+              (var $o)
+              (ternary
+                (binary identical
+                  (temp t5)
+                  (null))
+                (int 7)
+                (binary coalesce
+                  (prop name=c
+                    (temp t5))
+                  (int 7))))
+            (let t4
+              (prop name=a
+                (temp t3))
+              (ternary
+                (binary identical
+                  (temp t4)
+                  (null))
+                (let t5
+                  (var $o)
+                  (ternary
+                    (binary identical
+                      (temp t5)
+                      (null))
+                    (int 7)
+                    (binary coalesce
+                      (prop name=c
+                        (temp t5))
+                      (int 7))))
+                (binary coalesce
+                  (prop name=b
+                    (temp t4))
+                  (let t5
+                    (var $o)
+                    (ternary
+                      (binary identical
+                        (temp t5)
+                        (null))
+                      (int 7)
+                      (binary coalesce
+                        (prop name=c
+                          (temp t5))
+                        (int 7))))))))))
+      (arg
+        (binary coalesce
+          (prop name=a
+            (var $o))
+          (int 1))))))

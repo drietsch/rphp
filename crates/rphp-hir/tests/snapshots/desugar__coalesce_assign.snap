@@ -1,0 +1,124 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (expr-stmt
+    (let t0
+      (call
+        (name k kind=u resolved=func global=k)
+        (arg
+          (str "x")))
+      (binary coalesce
+        (index
+          (var $a)
+          (temp t0))
+        (assign
+          (index
+            (var $a)
+            (temp t0))
+          (call
+            (name t kind=u resolved=func global=t)
+            (arg
+              (int 1)))))))
+  (expr-stmt
+    (binary coalesce
+      (index
+        (var $a)
+        (var $i))
+      (assign
+        (index
+          (var $a)
+          (var $i))
+        (assign
+          (var $i)
+          (int 5)))))
+  (expr-stmt
+    (let t1
+      (call
+        (name f kind=u resolved=func global=f))
+      (binary coalesce
+        (index
+          (index
+            (prop name=arr
+              (var $o))
+            (temp t1))
+          (var $j))
+        (assign
+          (index
+            (index
+              (prop name=arr
+                (var $o))
+              (temp t1))
+            (var $j))
+          (int 2)))))
+  (expr-stmt
+    (let t2
+      (binary concat
+        (var $n)
+        (str ""))
+      (binary coalesce
+        (prop
+          (var $o)
+          (name-expr
+            (temp t2)))
+        (assign
+          (prop
+            (var $o)
+            (name-expr
+              (temp t2)))
+          (int 1)))))
+  (expr-stmt
+    (binary coalesce
+      (var-var
+        (var $name))
+      (assign
+        (var-var
+          (var $name))
+        (int 3))))
+  (expr-stmt
+    (let t3
+      (call
+        (name f kind=u resolved=func global=f))
+      (binary coalesce
+        (prop name=p
+          (temp t3))
+        (assign
+          (prop name=p
+            (temp t3))
+          (int 4)))))
+  (expr-stmt
+    (binary coalesce
+      (var $x)
+      (assign
+        (var $x)
+        (int 5))))
+  (expr-stmt
+    (binary coalesce
+      (static-prop
+        (name C kind=u resolved=class fqn=C key=c)
+        (name-expr
+          (var $dyn)))
+      (assign
+        (static-prop
+          (name C kind=u resolved=class fqn=C key=c)
+          (name-expr
+            (var $dyn)))
+        (int 6))))
+  (expr-stmt
+    (assign
+      (var $k)
+      (int 0)))
+  (expr-stmt
+    (let t4
+      (unary post-inc
+        (var $k))
+      (binary coalesce
+        (index
+          (var $arr)
+          (temp t4))
+        (assign
+          (index
+            (var $arr)
+            (temp t4))
+          (int 5))))))

@@ -1,0 +1,80 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (expr-stmt
+    (seq
+      (assign
+        (var $p)
+        (index
+          (var $arr)
+          (int 0)))
+      (assign by-ref
+        (var $q)
+        (index
+          (var $arr)
+          (int 1)))
+      (var $arr)))
+  (expr-stmt
+    (let t0
+      (call
+        (name f kind=u resolved=func global=f))
+      (seq
+        (assign by-ref
+          (var $a)
+          (index
+            (index
+              (var $m)
+              (temp t0))
+            (int 0)))
+        (seq
+          (assign
+            (var $b)
+            (index
+              (index
+                (index
+                  (var $m)
+                  (temp t0))
+                (int 1))
+              (int 0)))
+          (assign by-ref
+            (var $c)
+            (index
+              (index
+                (index
+                  (var $m)
+                  (temp t0))
+                (int 1))
+              (int 1)))
+          (index
+            (index
+              (var $m)
+              (temp t0))
+            (int 1)))
+        (index
+          (var $m)
+          (temp t0)))))
+  (expr-stmt
+    (seq
+      (assign
+        (var $x)
+        (index
+          (prop name=p
+            (var $o))
+          (int 0)))
+      (seq
+        (assign by-ref
+          (var $y)
+          (index
+            (index
+              (prop name=p
+                (var $o))
+              (int 1))
+            (int 0)))
+        (index
+          (prop name=p
+            (var $o))
+          (int 1)))
+      (prop name=p
+        (var $o)))))

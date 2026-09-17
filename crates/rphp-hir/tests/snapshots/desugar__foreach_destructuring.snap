@@ -1,0 +1,69 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (foreach
+    (var $rows)
+    (value
+      (temp t0))
+    (body
+      (expr-stmt
+        (seq
+          (assign
+            (var $p)
+            (index
+              (temp t0)
+              (int 0)))
+          (let t1
+            (index
+              (temp t0)
+              (int 1))
+            (seq
+              (assign
+                (var $q)
+                (index
+                  (temp t1)
+                  (int 0)))
+              (temp t1)))
+          (temp t0)))
+      (echo
+        (var $p))))
+  (foreach
+    (var $m)
+    (key
+      (var $key))
+    (value
+      (temp t2))
+    (body
+      (expr-stmt
+        (seq
+          (assign
+            (var $p)
+            (index
+              (temp t2)
+              (str "0")))
+          (assign
+            (var $q)
+            (index
+              (temp t2)
+              (str "1")))
+          (temp t2)))))
+  (foreach by-ref
+    (var $rows)
+    (value
+      (temp t3))
+    (body
+      (expr-stmt
+        (seq
+          (assign by-ref
+            (var $first)
+            (index
+              (temp t3)
+              (int 0)))
+          (assign
+            (var $second)
+            (index
+              (temp t3)
+              (int 1)))
+          (temp t3))))))

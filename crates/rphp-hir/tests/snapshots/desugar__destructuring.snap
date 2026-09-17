@@ -1,0 +1,125 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (expr-stmt
+    (let t0
+      (array syntax=short
+        (item
+          (call
+            (name t kind=u resolved=func global=t)
+            (arg
+              (int 6))))
+        (item
+          (call
+            (name t kind=u resolved=func global=t)
+            (arg
+              (int 7)))))
+      (seq
+        (assign
+          (var $p)
+          (index
+            (temp t0)
+            (int 0)))
+        (assign
+          (var $q)
+          (index
+            (temp t0)
+            (int 1)))
+        (temp t0))))
+  (expr-stmt
+    (let t1
+      (call
+        (name f kind=u resolved=func global=f))
+      (seq
+        (assign
+          (var $p)
+          (index
+            (temp t1)
+            (call
+              (name k kind=u resolved=func global=k)
+              (arg
+                (str "a")))))
+        (assign
+          (var $q)
+          (index
+            (temp t1)
+            (call
+              (name k kind=u resolved=func global=k)
+              (arg
+                (str "b")))))
+        (temp t1))))
+  (expr-stmt
+    (let t2
+      (var $arr)
+      (seq
+        (assign
+          (var $p)
+          (index
+            (temp t2)
+            (int 0)))
+        (let t3
+          (index
+            (temp t2)
+            (int 1))
+          (seq
+            (assign
+              (var $q)
+              (index
+                (temp t3)
+                (int 1)))
+            (temp t3)))
+        (temp t2))))
+  (expr-stmt
+    (let t4
+      (call
+        (name g kind=u resolved=func global=g))
+      (seq
+        (assign
+          (var $a)
+          (index
+            (temp t4)
+            (int 0)))
+        (let t5
+          (index
+            (temp t4)
+            (int 1))
+          (seq
+            (assign
+              (var $b)
+              (index
+                (temp t5)
+                (int 0)))
+            (temp t5)))
+        (temp t4))))
+  (expr-stmt
+    (assign
+      (var $r)
+      (let t6
+        (array syntax=short
+          (item
+            (int 5)))
+        (seq
+          (assign
+            (var $h)
+            (index
+              (temp t6)
+              (int 0)))
+          (temp t6)))))
+  (expr-stmt
+    (let t7
+      (var $src)
+      (seq
+        (let t8
+          (index
+            (temp t7)
+            (str "x"))
+          (seq
+            (assign
+              (var $deep)
+              (index
+                (temp t8)
+                (str "y")))
+            (temp t8)))
+        (temp t7)))))

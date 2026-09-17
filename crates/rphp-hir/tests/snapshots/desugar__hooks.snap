@@ -1,0 +1,92 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (class-like kind=class name=H mods=abstract
+    (prop mods=public
+      (type int)
+      (item $p)
+      (hook set
+        (params
+          (param $v
+            (type int)))
+        (body
+          (expr-stmt
+            (assign
+              (prop name=p
+                (var $this))
+              (binary mul
+                (var $v)
+                (int 2))))))
+      (hook get
+        (body
+          (return
+            (binary add
+              (prop name=p
+                (var $this))
+              (int 1))))))
+    (prop mods=public
+      (type string)
+      (item $q)
+      (hook set
+        (params
+          (param $value
+            (type string)))
+        (body
+          (expr-stmt
+            (assign
+              (prop name=q
+                (var $this))
+              (call
+                (name strtolower kind=u resolved=func global=strtolower)
+                (arg
+                  (var $value)))))))
+      (hook get by-ref
+        (body
+          (return
+            (prop name=q
+              (var $this))))))
+    (prop mods=public,abstract
+      (nullable
+        (type array))
+      (item $r)
+      (hook get
+        (abstract))
+      (hook set
+        (params
+          (param $value
+            (nullable
+              (type array))))
+        (abstract)))
+    (method __construct mods=public
+      (params
+        (param $s promote=public
+          (type string)
+          (default
+            (str ""))
+          (hook set
+            (params
+              (param $value
+                (type string)))
+            (body
+              (expr-stmt
+                (assign
+                  (prop name=s
+                    (var $this))
+                  (call
+                    (name trim kind=u resolved=func global=trim)
+                    (arg
+                      (var $value)))))))))
+      (body)))
+  (class-like kind=interface name=I
+    (prop mods=public
+      (type string)
+      (item $t)
+      (hook get
+        (abstract))
+      (hook set
+        (params
+          (param $value
+            (type string)))
+        (abstract)))))

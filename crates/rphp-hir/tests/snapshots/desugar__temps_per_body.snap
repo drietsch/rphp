@@ -1,0 +1,64 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (expr-stmt
+    (assign
+      (var $a)
+      (let t0
+        (var $b)
+        (ternary
+          (temp t0)
+          (temp t0)
+          (int 1)))))
+  (func f
+    (params)
+    (body
+      (expr-stmt
+        (assign
+          (var $c)
+          (let t0
+            (var $d)
+            (ternary
+              (temp t0)
+              (temp t0)
+              (int 2)))))
+      (expr-stmt
+        (assign
+          (var $e)
+          (arrow-fn
+            (params)
+            (body
+              (let t0
+                (var $g)
+                (ternary
+                  (temp t0)
+                  (temp t0)
+                  (int 3)))))))))
+  (class-like kind=class name=K
+    (method m
+      (params)
+      (body
+        (expr-stmt
+          (let t0
+            (var $y)
+            (seq
+              (assign
+                (var $x)
+                (index
+                  (temp t0)
+                  (int 0)))
+              (temp t0))))))
+    (prop mods=public
+      (item $p)
+      (hook get
+        (body
+          (return
+            (let t0
+              (prop name=q
+                (var $this))
+              (ternary
+                (temp t0)
+                (temp t0)
+                (int 0)))))))))

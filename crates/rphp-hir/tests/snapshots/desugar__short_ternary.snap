@@ -1,0 +1,34 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (expr-stmt
+    (assign
+      (var $r)
+      (let t0
+        (call
+          (name t kind=u resolved=func global=t)
+          (arg
+            (int 0)))
+        (ternary
+          (temp t0)
+          (temp t0)
+          (call
+            (name t kind=u resolved=func global=t)
+            (arg
+              (int 3)))))))
+  (expr-stmt
+    (assign
+      (var $q)
+      (let t2
+        (let t1
+          (var $a)
+          (ternary
+            (temp t1)
+            (temp t1)
+            (var $b)))
+        (ternary
+          (temp t2)
+          (temp t2)
+          (var $c))))))

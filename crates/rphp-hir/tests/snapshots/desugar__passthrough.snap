@@ -1,0 +1,105 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (for
+    (init
+      (assign
+        (var $i)
+        (int 0)))
+    (cond
+      (binary lt
+        (var $i)
+        (int 3)))
+    (step
+      (unary post-inc
+        (var $i)))
+    (body
+      (switch
+        (var $i)
+        (case
+          (int 1)
+          (break 1))
+        (default
+          (continue 2)))))
+  (expr-stmt
+    (assign
+      (var $m)
+      (match
+        (bool true)
+        (arm
+          (conds
+            (var $a)
+            (var $b))
+          (int 1))
+        (arm default
+          (int 2)))))
+  (expr-stmt
+    (assign
+      (var $x)
+      (binary coalesce
+        (var $y)
+        (var $z))))
+  (expr-stmt
+    (assign op=add
+      (var $x)
+      (int 1)))
+  (expr-stmt
+    (assign op=concat
+      (var $x)
+      (str "a")))
+  (expr-stmt
+    (assign
+      (var $c)
+      (unary cast-int
+        (unary silence
+          (var $d)))))
+  (expr-stmt
+    (unary void
+      (call
+        (name f kind=u resolved=func global=f))))
+  (echo
+    (interp
+      (lit "a ")
+      (var $b)
+      (lit " ")
+      (prop name=d
+        (var $c))
+      (lit " e")))
+  (expr-stmt
+    (assign
+      (var $f)
+      (callable
+        (name strlen kind=u resolved=func global=strlen))))
+  (expr-stmt
+    (assign
+      (var $g)
+      (clone
+        (var $o))))
+  (expr-stmt
+    (print
+      (int 1)))
+  (expr-stmt
+    (include kind=include
+      (str "x.php")))
+  (func gen
+    (params)
+    (body
+      (expr-stmt
+        (yield
+          (value
+            (int 1))))
+      (expr-stmt
+        (yield-from
+          (call
+            (name g kind=u resolved=func global=g))))
+      (global
+        (var $q))
+      (static-var
+        (item $s
+          (int 1)))
+      (unset
+        (var $q))
+      (label a)
+      (goto a))))

@@ -1,0 +1,139 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (expr-stmt
+    (assign
+      (var $r)
+      (let t0
+        (var $o)
+        (ternary
+          (binary identical
+            (temp t0)
+            (null))
+          (null)
+          (prop name=c
+            (method-call name=b
+              (prop name=a
+                (temp t0))
+              (arg
+                (call
+                  (name t kind=u resolved=func global=t)
+                  (arg
+                    (int 10))))))))))
+  (expr-stmt
+    (assign
+      (var $r)
+      (let t1
+        (var $o)
+        (ternary
+          (binary identical
+            (temp t1)
+            (null))
+          (null)
+          (let t2
+            (prop name=a
+              (temp t1))
+            (ternary
+              (binary identical
+                (temp t2)
+                (null))
+              (null)
+              (let t3
+                (method-call name=m
+                  (temp t2)
+                  (arg
+                    (call
+                      (name t kind=u resolved=func global=t)
+                      (arg
+                        (int 11)))))
+                (ternary
+                  (binary identical
+                    (temp t3)
+                    (null))
+                  (null)
+                  (prop name=a
+                    (temp t3))))))))))
+  (expr-stmt
+    (assign
+      (var $r)
+      (let t4
+        (var $o)
+        (ternary
+          (binary identical
+            (temp t4)
+            (null))
+          (null)
+          (index
+            (prop name=a
+              (temp t4))
+            (call
+              (name k kind=u resolved=func global=k)
+              (arg
+                (str "i"))))))))
+  (expr-stmt
+    (assign
+      (var $r)
+      (let t5
+        (var $o)
+        (ternary
+          (binary identical
+            (temp t5)
+            (null))
+          (null)
+          (static-prop name=s
+            (class-expr
+              (prop name=a
+                (temp t5))))))))
+  (expr-stmt
+    (assign
+      (var $r)
+      (let t6
+        (var $o)
+        (ternary
+          (binary identical
+            (temp t6)
+            (null))
+          (null)
+          (static-call name=m
+            (class-expr
+              (prop name=a
+                (temp t6)))
+            (arg
+              (int 1)))))))
+  (expr-stmt
+    (assign
+      (var $r)
+      (call
+        (let t7
+          (var $o)
+          (ternary
+            (binary identical
+              (temp t7)
+              (null))
+            (null)
+            (prop name=f
+              (temp t7)))))))
+  (expr-stmt
+    (assign
+      (var $r)
+      (binary concat
+        (let t8
+          (var $o)
+          (ternary
+            (binary identical
+              (temp t8)
+              (null))
+            (null)
+            (prop name=a
+              (temp t8))))
+        (let t9
+          (var $o)
+          (ternary
+            (binary identical
+              (temp t9)
+              (null))
+            (null)
+            (prop name=b
+              (temp t9))))))))

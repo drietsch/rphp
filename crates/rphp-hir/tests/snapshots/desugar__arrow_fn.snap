@@ -1,0 +1,53 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (expr-stmt
+    (assign
+      (var $f)
+      (arrow-fn
+        (params
+          (param $x))
+        (body
+          (let t0
+            (var $x)
+            (ternary
+              (temp t0)
+              (temp t0)
+              (binary coalesce
+                (var $y)
+                (int 0))))))))
+  (expr-stmt
+    (assign
+      (var $g)
+      (arrow-fn static
+        (params)
+        (body
+          (arrow-fn
+            (params)
+            (body
+              (let t0
+                (var $z)
+                (ternary
+                  (binary identical
+                    (temp t0)
+                    (null))
+                  (null)
+                  (prop name=w
+                    (temp t0))))))))))
+  (expr-stmt
+    (assign
+      (var $h)
+      (closure
+        (params)
+        (uses
+          (use $a))
+        (body
+          (return
+            (let t0
+              (var $a)
+              (ternary
+                (temp t0)
+                (temp t0)
+                (int 1)))))))))

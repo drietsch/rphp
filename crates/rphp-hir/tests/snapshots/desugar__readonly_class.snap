@@ -1,0 +1,25 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (class-like kind=class name=R mods=readonly
+    (method __construct mods=public
+      (params
+        (param $x promote=public,readonly
+          (type int))
+        (param $y promote=private(set),readonly
+          (type string)))
+      (body))
+    (prop mods=public,readonly
+      (type int)
+      (item $z)))
+  (class-like kind=class name=Plain mods=final
+    (method __construct mods=public
+      (params
+        (param $x promote=public
+          (type int)))
+      (body))
+    (prop mods=public
+      (type int)
+      (item $z))))

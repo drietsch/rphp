@@ -1,0 +1,36 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (if
+    (var $a)
+    (then
+      (echo
+        (int 1)))
+    (else
+      (if
+        (var $b)
+        (then
+          (echo
+            (int 2)))
+        (else
+          (if
+            (var $c)
+            (then
+              (echo
+                (int 3)))
+            (else
+              (echo
+                (int 4))))))))
+  (if
+    (var $a)
+    (then
+      (echo
+        (int 1)))
+    (else
+      (if
+        (var $b)
+        (then
+          (echo
+            (int 2)))))))

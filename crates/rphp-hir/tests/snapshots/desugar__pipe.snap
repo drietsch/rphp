@@ -1,0 +1,53 @@
+---
+source: crates/rphp-hir/tests/desugar.rs
+expression: l.print()
+---
+(program file=0
+  (expr-stmt
+    (assign
+      (var $r)
+      (let t6
+        (let t5
+          (let t4
+            (let t3
+              (let t2
+                (let t1
+                  (let t0
+                    (call
+                      (name t kind=u resolved=func global=t)
+                      (arg
+                        (int 1)))
+                    (call
+                      (name strval kind=u resolved=func global=strval)
+                      (arg
+                        (temp t0))))
+                  (call
+                    (var $fn)
+                    (arg
+                      (temp t1))))
+                (call
+                  (arrow-fn
+                    (params
+                      (param $v))
+                    (body
+                      (var $v)))
+                  (arg
+                    (temp t2))))
+              (method-call name=m
+                (new
+                  (name K kind=u resolved=class fqn=K key=k))
+                (arg
+                  (temp t3))))
+            (static-call name=s
+              (name K kind=u resolved=class fqn=K key=k)
+              (arg
+                (temp t4))))
+          (call
+            (str "strval")
+            (arg
+              (temp t5))))
+        (call
+          (call
+            (name g kind=u resolved=func global=g))
+          (arg
+            (temp t6)))))))

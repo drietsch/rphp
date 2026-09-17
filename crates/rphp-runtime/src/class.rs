@@ -777,6 +777,16 @@ impl Interp {
         if let Some(f) = native_init {
             def.native_init = Some(f);
         }
+        // php implicitly implements `Stringable` for any class that declares
+        // `__toString()`, so `$o instanceof Stringable` and a `Stringable`
+        // parameter type both accept it without the class saying so.
+        if def.magic.contains(MagicFlags::TOSTRING) {
+            if let Some(sid) = self.well_known.stringable {
+                if def.id != sid && !def.interfaces.contains(&sid) {
+                    def.interfaces.push(sid);
+                }
+            }
+        }
         // Method order: own methods first, then the parent's order.
         let mut order = own_order;
         if let Some(pid) = def.parent {
@@ -890,6 +900,20 @@ pub struct WellKnown {
     pub assertion_error: Option<u32>,
     /// `Closure`.
     pub closure: Option<u32>,
+    /// `Traversable` (the marker interface `foreach` tests).
+    pub traversable: Option<u32>,
+    /// `Iterator`.
+    pub iterator: Option<u32>,
+    /// `IteratorAggregate`.
+    pub iterator_aggregate: Option<u32>,
+    /// `UnitEnum`, implicitly implemented by every enum.
+    pub unit_enum: Option<u32>,
+    /// `BackedEnum`, implicitly implemented by every backed enum.
+    pub backed_enum: Option<u32>,
+    /// `ArrayAccess`, for `$o[$k]` (E6 object protocols).
+    pub array_access: Option<u32>,
+    /// `Countable`, for `count($o)`.
+    pub countable: Option<u32>,
 }
 
 impl WellKnown {
@@ -910,6 +934,13 @@ impl WellKnown {
             b"unhandledmatcherror" => &mut self.unhandled_match_error,
             b"assertionerror" => &mut self.assertion_error,
             b"closure" => &mut self.closure,
+            b"traversable" => &mut self.traversable,
+            b"iterator" => &mut self.iterator,
+            b"iteratoraggregate" => &mut self.iterator_aggregate,
+            b"unitenum" => &mut self.unit_enum,
+            b"backedenum" => &mut self.backed_enum,
+            b"arrayaccess" => &mut self.array_access,
+            b"countable" => &mut self.countable,
             _ => return,
         };
         *slot = Some(id);

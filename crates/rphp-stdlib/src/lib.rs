@@ -16,6 +16,7 @@ mod array2;
 mod arrays;
 mod base64;
 mod basic_functions;
+mod closure_class;
 mod ctype;
 mod dir;
 mod errorfunc;
@@ -36,7 +37,9 @@ mod output_buffering;
 mod pack;
 mod pcre;
 mod random;
+mod spl_containers;
 mod spl_exceptions;
+mod spl_interfaces;
 mod string2;
 mod strings;
 mod types;
@@ -44,6 +47,7 @@ mod uniqid;
 mod url;
 mod var;
 mod versioning;
+mod weak;
 mod zend_exceptions;
 
 /// Every module's `FUNCTIONS` slice, in registration order.
@@ -87,6 +91,10 @@ pub fn register(r: &mut Registry) {
     }
     zend_exceptions::register_classes(r);
     spl_exceptions::register_classes(r);
+    spl_interfaces::register_classes(r);
+    closure_class::register_classes(r);
+    weak::register_classes(r);
+    spl_containers::register_classes(r);
     math::register_constants(r);
     pcre::register_constants(r);
     json::register_constants(r);

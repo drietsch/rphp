@@ -15,16 +15,20 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use rphp_ast::v2::{Closure, Expr, Param, Stmt, TempId};
+use rphp_ast::v2::{
+    Builtin, Closure, Expr, Hook, HookBody, HookKind, Param, Stmt, TempId, Type, TypeKind,
+    Visibility as AstVis,
+};
 use rphp_bytecode::{
-    CaptureDesc, Class as BcClass, ClassId, CodeAddr, Const, FnFlags, FuncId, Function, InitRef,
-    NameConst, Op, ParamDef, Reg, StaticVar,
+    BuiltinType, CaptureDesc, Class as BcClass, ClassId, CodeAddr, Const, FnFlags, FuncId, Function,
+    InitRef, NameConst, NameRef, Op, ParamDef, PromotedProp, Reg, StaticVar, TypeDecl,
 };
 use rphp_diagnostics::Diagnostic;
 use rphp_intern::{IdentId, Interner};
 use rphp_span::Span;
 use rphp_value::Str;
 
+use crate::class::{bc_vis, class_fqn};
 use crate::{regs, unsupported, CompileOptions};
 
 /// What a closure body is: a statement list (`function () { ... }`) or the
@@ -79,6 +83,11 @@ pub(crate) struct ModuleCtx<'a> {
     pub(crate) strict_types: bool,
     /// The function/class sinks.
     pub(crate) sink: RefCell<FnSink>,
+    /// The top-level class-likes the unit hoists (declared before `{main}`
+    /// runs). Everything else is declared by an `Op::DeclareClass` at its
+    /// statement, so `hoisted` and `stmt.rs` must agree — see
+    /// [`crate::class_is_hoisted`].
+    pub(crate) hoisted_classes: std::collections::HashSet<*const rphp_ast::v2::ClassLike>,
 }
 
 impl<'a> ModuleCtx<'a> {
@@ -113,6 +122,7 @@ impl<'a> ModuleCtx<'a> {
             }
         };
         ModuleCtx {
+            hoisted_classes: std::collections::HashSet::new(),
             interner,
             class_map,
             class_ids,
@@ -546,18 +556,22 @@ impl<'a> FnCompiler<'a> {
     /// Emit the prologue: `BindSymtab` (symtab frames), `RecvInit` for every
     /// defaulted parameter, `RecvVariadic` for `...$rest`; and build the
     /// [`ParamDef`]s (default thunks are compiled into the sink).
+    ///
+    /// A **promoted** parameter (`__construct(private int $x)`) is an ordinary
+    /// parameter that is additionally assigned to `$this->x` once the whole
+    /// prologue has run, which is where php assigns it: before the
+    /// constructor body, after every argument has been received (so
+    /// `func_get_args()` still sees only the arguments actually passed). The
+    /// matching [`PropDef`](rphp_bytecode::PropDef) is added to the class by
+    /// [`crate::class::compile_class`], which reads the same parameter list.
     pub(crate) fn compile_params(&mut self, params: &[Param]) -> Vec<ParamDef> {
         if self.flags.contains(FnFlags::NEEDS_SYMTAB) {
             self.emit(Op::BindSymtab);
         }
         let mut defs = Vec::with_capacity(params.len());
+        // (register, property name) of every promoted parameter, in order.
+        let mut promoted: Vec<(Reg, Box<[u8]>)> = Vec::new();
         for (i, p) in params.iter().enumerate() {
-            if p.promote.is_some() {
-                unsupported(self.diags, p.span, "constructor property promotion");
-            }
-            if !p.hooks.is_empty() {
-                unsupported(self.diags, p.span, "property hooks on a promoted parameter");
-            }
             let reg = self.var_reg(p.name);
             let default = match &p.default {
                 None => None,
@@ -574,6 +588,14 @@ impl<'a> FnCompiler<'a> {
             if p.variadic {
                 self.emit(Op::RecvVariadic { reg });
             }
+            let promotion = p.promote.as_ref().map(|m| PromotedProp {
+                vis: bc_vis(m.vis.unwrap_or(AstVis::Public)),
+                set_vis: m.set_vis.map(bc_vis),
+                readonly: m.readonly,
+            });
+            if promotion.is_some() {
+                promoted.push((reg, self.mx.interner.resolve(p.name).into()));
+            }
             defs.push(ParamDef {
                 name: self.mx.interner.resolve(p.name).into(),
                 reg,
@@ -581,9 +603,25 @@ impl<'a> FnCompiler<'a> {
                 variadic: p.variadic,
                 default,
                 ty: p.ty.as_ref().map(|t| self.lower_type(t)),
-                promoted: None,
+                promoted: promotion,
                 attrs: Vec::new(),
             });
+        }
+        // Promotion outside a class is a compile-time fatal the front end
+        // already reported (`Cannot declare promoted property outside a
+        // constructor`); emit nothing rather than an unbound `$this`.
+        if !promoted.is_empty() && self.cur_class.is_some() {
+            let this = self.load_this();
+            for (src, name) in promoted {
+                let k = self.str_const(&name);
+                let ic = self.ic();
+                self.emit(Op::AssignProp {
+                    obj: this,
+                    name: NameRef::constant(k),
+                    src,
+                    ic,
+                });
+            }
         }
         defs
     }
@@ -608,22 +646,7 @@ impl<'a> FnCompiler<'a> {
 
     /// Compile `e` as a zero-argument function returning its value.
     pub(crate) fn compile_thunk(&mut self, e: &Expr) -> FuncId {
-        let id = self.mx.sink.borrow_mut().reserve();
-        let mut fc = FnCompiler::new(
-            self.mx,
-            &mut *self.diags,
-            &[],
-            &[],
-            ClosureBody::ReturnExpr(e),
-            self.cur_class,
-            Box::from(&b""[..]),
-        );
-        fc.mark_line(e.span());
-        let r = fc.compile_expr(e);
-        fc.emit(Op::Ret { src: Some(r) });
-        let f = fc.finish(Box::from(&b""[..]), Vec::new(), e.span());
-        self.mx.sink.borrow_mut().fill(id, f);
-        id
+        compile_thunk_in(self.mx, self.diags, e, self.cur_class)
     }
 
     // ---- closures -------------------------------------------------------------
@@ -767,4 +790,157 @@ pub(crate) fn compile_function(
     let f = fc.finish(name_bytes, defs, span);
     mx.sink.borrow_mut().fill(id, f);
     id
+}
+
+/// Compile `e` as a zero-argument function returning its value, in `cur_class`'s
+/// scope (so `self::X` and `new static` resolve). This is the form a property
+/// default, a class constant and a parameter default take when the initializer
+/// is not a literal: the runtime keeps the thunk and runs it on first use, so
+/// linking a class never executes user code.
+pub(crate) fn compile_thunk_in(
+    mx: &ModuleCtx<'_>,
+    diags: &mut Vec<Diagnostic>,
+    e: &Expr,
+    cur_class: Option<(ClassId, IdentId)>,
+) -> FuncId {
+    let id = mx.sink.borrow_mut().reserve();
+    let mut fc = FnCompiler::new(
+        mx,
+        diags,
+        &[],
+        &[],
+        ClosureBody::ReturnExpr(e),
+        cur_class,
+        Box::from(&b""[..]),
+    );
+    fc.mark_line(e.span());
+    let r = fc.compile_expr(e);
+    fc.emit(Op::Ret { src: Some(r) });
+    let f = fc.finish(Box::from(&b""[..]), Vec::new(), e.span());
+    mx.sink.borrow_mut().fill(id, f);
+    id
+}
+
+/// Compile one property hook (PHP 8.4) as a method-like function of `cur_class`.
+///
+/// php names a hook `$prop::get` / `$prop::set` (that is what a backtrace and
+/// `ReflectionProperty::getHooks()` show) and types it like the property: a
+/// `get` hook takes nothing and returns the property's type, a `set` hook takes
+/// the incoming value and returns `void`. The HIR pass has already given a
+/// parameterless `set` its implicit `$value` parameter and rewritten the
+/// `=> expr` shorthand into a block, so what arrives here is an ordinary body.
+///
+/// An abstract hook (`get;` in an interface or on an `abstract` property) has
+/// no body and therefore no function: `None`.
+pub(crate) fn compile_hook(
+    mx: &ModuleCtx<'_>,
+    diags: &mut Vec<Diagnostic>,
+    prop: &[u8],
+    prop_ty: Option<&Type>,
+    h: &Hook,
+    cur_class: (ClassId, IdentId),
+) -> Option<FuncId> {
+    let body: &[Stmt] = match &h.body {
+        HookBody::Abstract => return None,
+        HookBody::Block(b) => b,
+        HookBody::Expr(e) => {
+            // The HIR desugars both shorthands; a tree built by other means
+            // still compiles the `get` form, which is exactly `return e;`.
+            if h.kind == HookKind::Set {
+                unsupported(diags, e.span(), "`set => expr` hook shorthand");
+                return None;
+            }
+            &[]
+        }
+    };
+    let params: &[Param] = h.params.as_deref().unwrap_or(&[]);
+    let mut name_bytes: Vec<u8> = vec![b'$'];
+    name_bytes.extend_from_slice(prop);
+    name_bytes.extend_from_slice(b"::");
+    name_bytes.extend_from_slice(h.kind.as_str().as_bytes());
+    let name_bytes: Box<[u8]> = name_bytes.into();
+    let id = mx.sink.borrow_mut().reserve();
+    let expr_body = match &h.body {
+        HookBody::Expr(e) => Some(e),
+        _ => None,
+    };
+    let closure_body = match expr_body {
+        Some(e) => ClosureBody::ReturnExpr(e),
+        None => ClosureBody::Stmts(body),
+    };
+    let mut fc = FnCompiler::new(
+        mx,
+        diags,
+        params,
+        &[],
+        closure_body,
+        Some(cur_class),
+        name_bytes.clone(),
+    );
+    // A hook is always an instance method, whether or not its body says `$this`.
+    fc.flags |= FnFlags::USES_THIS;
+    if h.by_ref {
+        fc.flags |= FnFlags::RETURNS_REF;
+    }
+    fc.ret_ty = match h.kind {
+        HookKind::Get => prop_ty.map(|t| fc.lower_type(t)),
+        HookKind::Set => Some(TypeDecl::Builtin(BuiltinType::Void)),
+    };
+    fc.mark_line(h.span);
+    let defs = fc.compile_params(params);
+    match expr_body {
+        Some(e) => {
+            let mark = fc.temp_top;
+            let r = fc.compile_expr(e);
+            fc.emit(Op::Ret { src: Some(r) });
+            fc.free_to(mark);
+        }
+        None => fc.compile_stmts(body),
+    }
+    fc.emit(Op::Ret { src: None });
+    let f = fc.finish(name_bytes, defs, h.span);
+    mx.sink.borrow_mut().fill(id, f);
+    Some(id)
+}
+
+/// Lower a declared type outside a function body — a property's, a class
+/// constant's — to its bytecode form, class names as FQNs.
+///
+/// The twin of [`FnCompiler::lower_type`], which the same mapping serves from
+/// inside a body; a class-like member has no `FnCompiler` to ask.
+pub(crate) fn lower_type_at(interner: &Interner, t: &Type) -> TypeDecl {
+    match &t.kind {
+        TypeKind::Named(name) => TypeDecl::Named(class_fqn(name, interner).into_boxed_slice()),
+        TypeKind::Builtin(b) => TypeDecl::Builtin(builtin_type(*b)),
+        TypeKind::Nullable(inner) => TypeDecl::Nullable(Box::new(lower_type_at(interner, inner))),
+        TypeKind::Union(parts) => {
+            TypeDecl::Union(parts.iter().map(|p| lower_type_at(interner, p)).collect())
+        }
+        TypeKind::Intersection(parts) => {
+            TypeDecl::Intersection(parts.iter().map(|p| lower_type_at(interner, p)).collect())
+        }
+    }
+}
+
+/// The bytecode twin of a type keyword.
+pub(crate) fn builtin_type(b: Builtin) -> BuiltinType {
+    match b {
+        Builtin::Int => BuiltinType::Int,
+        Builtin::Float => BuiltinType::Float,
+        Builtin::String => BuiltinType::String,
+        Builtin::Bool => BuiltinType::Bool,
+        Builtin::Array => BuiltinType::Array,
+        Builtin::Object => BuiltinType::Object,
+        Builtin::Mixed => BuiltinType::Mixed,
+        Builtin::Void => BuiltinType::Void,
+        Builtin::Never => BuiltinType::Never,
+        Builtin::Null => BuiltinType::Null,
+        Builtin::True => BuiltinType::True,
+        Builtin::False => BuiltinType::False,
+        Builtin::Callable => BuiltinType::Callable,
+        Builtin::Iterable => BuiltinType::Iterable,
+        Builtin::SelfTy => BuiltinType::SelfTy,
+        Builtin::StaticTy => BuiltinType::StaticTy,
+        Builtin::ParentTy => BuiltinType::ParentTy,
+    }
 }

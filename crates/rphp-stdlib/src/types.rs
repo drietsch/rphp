@@ -301,8 +301,9 @@ pub(crate) fn is_callable(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
                     let (class_name, ok) = match &t {
                         Value::Object(o) => {
                             let class = o.layout().class_name().to_vec();
-                            let ok = syntax_only
-                                || ctx.resolve_method(o.class_id(), m.as_bytes()).is_some();
+                            // The engine's shared path, so `__call` and the
+                            // visibility rules count (`methods.rs`).
+                            let ok = syntax_only || ctx.is_callable(&v);
                             (class, ok)
                         }
                         Value::Str(c) => (c.as_bytes().to_vec(), syntax_only || ctx.is_callable(&v)),
@@ -315,6 +316,13 @@ pub(crate) fn is_callable(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
                 }
                 _ => (false, b"Array".to_vec()),
             }
+        }
+        // An object is callable when its class defines `__invoke`; php names
+        // it `C::__invoke`.
+        Value::Object(o) => {
+            let mut name = o.layout().class_name().to_vec();
+            name.extend_from_slice(b"::__invoke");
+            (syntax_only || ctx.is_callable(&v), name)
         }
         other => (false, other.to_php_bytes()),
     };

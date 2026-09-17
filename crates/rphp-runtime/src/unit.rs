@@ -405,9 +405,19 @@ impl Interp {
             .map(|c| (c.name.clone(), c.value.clone()))
             .collect();
         let enum_backing = match decl.enum_backing {
-            rphp_bytecode::EnumBackingType::None => crate::class::EnumBacking::None,
             rphp_bytecode::EnumBackingType::Int => crate::class::EnumBacking::Int,
             rphp_bytecode::EnumBackingType::String => crate::class::EnumBacking::String,
+            // `enum E: int` carries the backing type on the kind as well;
+            // either spelling declares a backed enum.
+            rphp_bytecode::EnumBackingType::None => match decl.kind {
+                rphp_bytecode::ClassKind::Enum {
+                    backing: Some(rphp_bytecode::BuiltinType::Int),
+                } => crate::class::EnumBacking::Int,
+                rphp_bytecode::ClassKind::Enum {
+                    backing: Some(rphp_bytecode::BuiltinType::String),
+                } => crate::class::EnumBacking::String,
+                _ => crate::class::EnumBacking::None,
+            },
         };
         let methods = decl
             .methods
@@ -442,9 +452,15 @@ impl Interp {
             enum_cases,
             enum_backing,
         };
-        // E6: traits are copied in before linking, so `link_class` only ever
-        // sees own members (`traits.rs`).
+        // E6: an enum's implicit members (`name`/`value`, `UnitEnum` /
+        // `BackedEnum`, `cases()`/`from()`/`tryFrom()`) are part of the
+        // declaration before anything else sees it (`enums.rs`), and traits
+        // are copied in before linking, so `link_class` only ever sees own
+        // members (`traits.rs`).
         let mut spec = spec;
+        if matches!(decl.kind, rphp_bytecode::ClassKind::Enum { .. }) {
+            self.enum_implicits(&mut spec);
+        }
         self.apply_trait_uses(&mut spec, &decl.traits)?;
         let mut def = match self.link_class(id, spec) {
             Ok(d) => d,

@@ -241,6 +241,10 @@ impl ObjFlags {
     /// Lazy object (8.4 `ReflectionClass::newLazyGhost/newLazyProxy`), not
     /// yet initialized.
     pub const IS_LAZY: ObjFlags = ObjFlags(1 << 3);
+    /// An enum case singleton. The formatters render these specially
+    /// (`enum(S::A)`, `\S::A`, `S Enum:string`) and `clone` refuses them, so
+    /// the flag rides on the object: the printers never see the class table.
+    pub const ENUM_CASE: ObjFlags = ObjFlags(1 << 4);
 
     /// The raw bits.
     pub const fn bits(self) -> u8 {

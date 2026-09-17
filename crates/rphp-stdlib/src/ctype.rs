@@ -158,7 +158,9 @@ mod tests {
         assert_eq!(call_named(b"ctype_punct", &[Value::Int(-500)]), Value::Bool(false));
         assert_eq!(call_named(b"ctype_graph", &[Value::Int(-300)]), Value::Bool(true));
         assert_eq!(call_named(b"ctype_space", &[Value::Int(-224)]), Value::Bool(false));
-        assert_eq!(call_named(b"ctype_alpha", &[Value::Int(-159)]), Value::Bool(true));
+        // php renders an int outside -128..=255 as its decimal string, so
+        // `-159` is checked as "-159" — the `-` makes it non-alpha.
+        assert_eq!(call_named(b"ctype_alpha", &[Value::Int(-159)]), Value::Bool(false));
         assert_eq!(call_named(b"ctype_digit", &[Value::Float(5.0)]), Value::Bool(false));
         assert_eq!(call_named(b"ctype_digit", &[Value::Null]), Value::Bool(false));
     }

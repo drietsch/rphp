@@ -400,6 +400,11 @@ fn check_impl(input: &[u8], imap: bool) -> bool {
             }
             is_surrogate = has_surrogate(cp1, is_surrogate);
             if d.at_end() {
+                // UTF7-IMAP requires an explicit `-` to close a Base64 run;
+                // plain UTF-7 lets the run end with the input.
+                if imap {
+                    return false;
+                }
                 return !(n3 & 0x3 != 0 || is_surrogate);
             }
             let n4 = d.next();
@@ -430,6 +435,9 @@ fn check_impl(input: &[u8], imap: bool) -> bool {
             }
             is_surrogate = has_surrogate(cp2, is_surrogate);
             if d.at_end() {
+                if imap {
+                    return false;
+                }
                 return !(n6 & 0xF != 0 || is_surrogate);
             }
             let n7 = d.next();
@@ -515,7 +523,9 @@ mod tests {
         let enc = name2encoding(b"UTF-7").unwrap();
         let mut buf = ConvertBuf::default_subst();
         enc.encode(&[0x61, 0xE9, 0x31, b'+' as u32, 0x1F600, 0x2E], &mut buf, true);
-        assert_eq!(buf.out, b"a+AOk-1+-+2D3eAA.");
+        // Verified against php 8.5:
+        // `mb_convert_encoding("a\u{e9}1+\u{1f600}.", "UTF-7", "UTF-8")`.
+        assert_eq!(buf.out, b"a+AOk-1+ACvYPd4A.");
         let mut out = Vec::new();
         decode_utf7(&buf.out, &mut out);
         assert_eq!(out, vec![0x61, 0xE9, 0x31, b'+' as u32, 0x1F600, 0x2E]);

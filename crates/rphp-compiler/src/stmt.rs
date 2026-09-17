@@ -12,7 +12,8 @@
 //! FQNs) and `use` imports are inert. Function and class declarations are
 //! hoisted when PHP hoists them and lowered to `DeclareFunction` /
 //! `DeclareClass` in place otherwise. `try`/`catch`/`finally` (E5) and
-//! `declare(ticks)` are reported as `RPHP_E0300`.
+//! `declare(ticks)` are reported as `RPHP_E0300`, as is `unset(A::$p)`
+//! (php raises a runtime `Error` there and the ISA has no op for it).
 
 use rphp_ast::v2::{Case, Expr, Stmt};
 use rphp_bytecode::{ClassId, Const, FuncId, InitRef, Op, Reg, StaticVar};
@@ -258,7 +259,7 @@ impl FnCompiler<'_> {
             Stmt::ClassLike(c) => {
                 // A top-level class php cannot bind early (`implements`,
                 // traits, enums) is declared in statement order too.
-                if !self.at_top_level || crate::class_declared_in_order(c) {
+                if !self.at_top_level || !crate::class_is_hoisted(self.mx, c) {
                     let idx = crate::class::compile_class(self.mx, self.diags, c);
                     if let Some(idx) = idx {
                         self.emit(Op::DeclareClass { idx });
@@ -451,6 +452,16 @@ impl FnCompiler<'_> {
                     let dst = self.alloc_temp();
                     self.emit(Op::RefProp { dst, obj, name });
                     dst
+                }
+                Expr::StaticProp { class, name, span } => {
+                    match self.static_prop_ref(class, name, *span) {
+                        Some((class, name)) => {
+                            let dst = self.alloc_temp();
+                            self.emit(Op::RefStaticProp { dst, class, name });
+                            dst
+                        }
+                        None => self.null_temp(),
+                    }
                 }
                 other => self.compile_expr(other),
             }
@@ -646,6 +657,15 @@ impl FnCompiler<'_> {
                 let obj = self.compile_expr(obj);
                 let name = self.member_name_ref(name);
                 self.emit(Op::UnsetProp { obj, name });
+            }
+            // php raises `Error: Attempt to unset static property C::$p` at
+            // run time, naming the *resolved* class (`unset(B::$p)` on a
+            // property declared in `A` says `B`). No op can express that, and
+            // the compiler cannot name the class for `static::`/`parent::`/
+            // `$cls::`, so this stays a diagnostic until the ISA grows an
+            // `UnsetStaticProp { class, name }`.
+            Expr::StaticProp { span, .. } => {
+                unsupported(self.diags, *span, "unset of a static property")
             }
             other => unsupported(self.diags, other.span(), "unset target"),
         }

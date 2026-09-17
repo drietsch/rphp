@@ -162,6 +162,17 @@ fn export(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, level: usize, seen: &mut 
                 spaces(out, level - 1);
             }
             let class = o.layout().class_name().to_vec();
+            // php exports an enum case as the case itself, `\Suit::Hearts`,
+            // not a `__set_state` reconstruction.
+            if o.flags().contains(rphp_value::ObjFlags::ENUM_CASE) {
+                out.push(b'\\');
+                out.extend_from_slice(&class);
+                out.extend_from_slice(b"::");
+                if let Some(v) = o.get_deref(b"name") {
+                    out.extend_from_slice(&v.to_php_bytes());
+                }
+                return Ok(());
+            }
             let std_class = class.eq_ignore_ascii_case(b"stdClass");
             if std_class {
                 out.extend_from_slice(b"(object) array(\n");

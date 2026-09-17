@@ -12,7 +12,7 @@ use rphp_bytecode::{
 };
 use rphp_value::{array_key, Closure, Object, PhpRef, Value};
 
-use crate::class::{MagicFlags, MethodBody};
+use crate::class::MethodBody;
 use crate::frame::{CallTarget, FrameKind, IterState, PendingCall, RetTarget};
 use crate::ops::value_name;
 use crate::registry::Unwind;
@@ -190,6 +190,22 @@ impl Interp {
         }
     }
 
+    /// How the source spelled a class reference (`self`, `parent`, `static`,
+    /// or the name as written); a dynamic one falls back to the class it
+    /// resolved to. php quotes this spelling in
+    /// `Cannot declare self-referencing constant self::X`.
+    fn class_ref_spelling(&self, func: &crate::unit::FuncRt, cid: u32, class: ClassRef) -> String {
+        match class.kind() {
+            ClassRefKind::SelfKw => "self".to_string(),
+            ClassRefKind::Parent => "parent".to_string(),
+            ClassRefKind::Static => "static".to_string(),
+            ClassRefKind::Named(k) => {
+                String::from_utf8_lossy(&self.name_bytes(func, k)).into_owned()
+            }
+            ClassRefKind::Reg(_) => self.classes[cid as usize].name_str(),
+        }
+    }
+
     /// Like [`Interp::resolve_class_ref`] but never errors on an unknown
     /// name (`instanceof`).
     fn resolve_class_ref_quiet(&mut self, func: &crate::unit::FuncRt, base: usize, class: ClassRef) -> Result<Option<u32>, Unwind> {
@@ -225,8 +241,140 @@ impl Interp {
         Ok(())
     }
 
-    /// `obj->name` read with php's diagnostics.
- 
+    // ---- iteration ----------------------------------------------------------
+
+    /// The `foreach` state for an object: php's `Iterator` protocol when the
+    /// object — or the `IteratorAggregate` behind it — implements it, else
+    /// the properties visible from the calling scope.
+    ///
+    /// An `Iterator` is carried in the `ByRef` cell of an
+    /// [`IterState`](crate::IterState) (an object there means "drive the
+    /// protocol"); `IterState` has no object variant yet because `frame.rs`
+    /// is not this wave's file to change.
+    ///
+    /// TODO(E8): a `Generator` is a `Traversable` whose iteration resumes a
+    /// suspended frame instead of calling methods. Generators are plan E8;
+    /// there is no `Generator` class yet, so nothing can reach this path as
+    /// one — when E8 lands, it branches here before `resolve_iterator`.
+    fn object_iter_state(&mut self, o: &Object, by_ref: bool) -> Result<IterState, Unwind> {
+        if let Some(iter) = self.resolve_iterator(o)? {
+            if by_ref {
+                return Err(Unwind::error(
+                    "An iterator cannot be used with foreach by reference",
+                ));
+            }
+            self.call_method(&iter, b"rewind", &[])?;
+            return Ok(IterState::ByRef {
+                cell: PhpRef::new(Value::Object(iter)),
+                pos: 0,
+            });
+        }
+        // A plain object iterates the properties visible from the calling
+        // scope; an uninitialized typed property is skipped.
+        let scope = self.current_user_frame().and_then(|f| f.scope);
+        let mut arr = rphp_value::Array::new();
+        for (name, value, _) in o.props_snapshot() {
+            if let Some((vis, decl)) = self.resolve_prop(o.class_id(), &name) {
+                if !self.access_ok(vis, decl, scope) {
+                    continue;
+                }
+            }
+            let key = rphp_value::ArrayKey::str(&name);
+            if by_ref {
+                arr.set(key, Value::Ref(o.prop_ref(&name)));
+            } else {
+                arr.set(key, value);
+            }
+        }
+        Ok(if by_ref {
+            IterState::ByRef {
+                cell: PhpRef::new(Value::Array(arr)),
+                pos: 0,
+            }
+        } else {
+            IterState::Array { arr, pos: 0 }
+        })
+    }
+
+    /// The `Iterator` an object iterates through: itself, or what its
+    /// `getIterator()` chain yields. `None` for a plain object.
+    fn resolve_iterator(&mut self, o: &Object) -> Result<Option<Object>, Unwind> {
+        // php follows `getIterator()` as deep as it goes; the engine stops
+        // before the Rust stack does.
+        const MAX_AGGREGATE_DEPTH: usize = 64;
+        if self.is_iterator(o) {
+            return Ok(Some(o.clone()));
+        }
+        let mut cur = o.clone();
+        for _ in 0..MAX_AGGREGATE_DEPTH {
+            if !self.is_iterator_aggregate(&cur) {
+                return Ok(None);
+            }
+            let got = self.call_method(&cur, b"getIterator", &[])?.unref();
+            match got {
+                Value::Object(next) if next.ptr_eq(&cur) => return Err(self.aggregate_error(&cur)),
+                Value::Object(next) if self.is_iterator(&next) => return Ok(Some(next)),
+                Value::Object(next) if self.is_iterator_aggregate(&next) => cur = next,
+                _ => return Err(self.aggregate_error(&cur)),
+            }
+        }
+        Err(self.aggregate_error(&cur))
+    }
+
+    /// One step of php's `Iterator` protocol: `next()` from the second step
+    /// on, then `valid()`, `current()` and — only when the loop binds one —
+    /// `key()`, which is the order php calls them in.
+    #[allow(clippy::type_complexity)]
+    fn iterator_step(
+        &mut self,
+        o: &Object,
+        pos: usize,
+        want_key: bool,
+    ) -> Result<Option<(Value, Value, Option<PhpRef>)>, Unwind> {
+        if pos > 0 {
+            self.call_method(o, b"next", &[])?;
+        }
+        let valid = self.call_method(o, b"valid", &[])?.unref();
+        if !valid.to_bool() {
+            return Ok(None);
+        }
+        let v = self.call_method(o, b"current", &[])?.unref();
+        let k = if want_key {
+            self.call_method(o, b"key", &[])?.unref()
+        } else {
+            Value::Null
+        };
+        Ok(Some((k, v, None)))
+    }
+
+    /// Whether the object implements `Iterator`.
+    fn is_iterator(&self, o: &Object) -> bool {
+        self.well_known
+            .iterator
+            .or_else(|| self.class_by_name(b"Iterator"))
+            .is_some_and(|id| self.object_instanceof(o, id))
+    }
+
+    /// Whether the object implements `IteratorAggregate`.
+    fn is_iterator_aggregate(&self, o: &Object) -> bool {
+        self.well_known
+            .iterator_aggregate
+            .or_else(|| self.class_by_name(b"IteratorAggregate"))
+            .is_some_and(|id| self.object_instanceof(o, id))
+    }
+
+    /// php's `Exception` for a `getIterator()` that did not yield something
+    /// iterable.
+    fn aggregate_error(&self, o: &Object) -> Unwind {
+        Unwind::exception(
+            "Exception",
+            format!(
+                "Objects returned by {}::getIterator() must be traversable or implement interface Iterator",
+                self.class_name_of(o)
+            ),
+        )
+    }
+
     // ---- the loop -------------------------------------------------------------
 
     /// Execute the top frame's ops until it switches frames.
@@ -376,7 +524,14 @@ impl Interp {
                 Op::ArrayGet { dst, base: b, key } => {
                     let container = self.rd(base, b);
                     let k = self.rd(base, key);
-                    let v = self.array_get(&container, &k)?;
+                    // E6: `ArrayAccess` takes over `$o[$k]` (`objects.rs`).
+                    let v = match &*container.deref() {
+                        Value::Object(o) if self.is_array_access(o) => {
+                            let o = o.clone();
+                            self.offset_get(&o, &k)?
+                        }
+                        _ => self.array_get(&container, &k)?,
+                    };
                     self.set(base, dst, v);
                 }
                 Op::ListGet { dst, base: b, key } => {
@@ -401,16 +556,43 @@ impl Interp {
                 Op::ArrayGetQuiet { dst, base: b, key } => {
                     let container = self.rd(base, b);
                     let k = self.rd(base, key);
-                    let v = self.array_get_quiet(&container, &k);
+                    // `$o[$k] ?? d`: php asks `offsetExists` before reading.
+                    let v = match &*container.deref() {
+                        Value::Object(o) if self.is_array_access(o) => {
+                            let o = o.clone();
+                            if self.offset_exists(&o, &k)? {
+                                self.offset_get(&o, &k)?
+                            } else {
+                                Value::Null
+                            }
+                        }
+                        _ => self.array_get_quiet(&container, &k),
+                    };
                     self.set(base, dst, v);
                 }
                 Op::ArraySet { arr, key, value } => {
                     let v = self.rd(base, value);
-                    self.array_set(base, arr, Some(key), v)?;
+                    let container = self.rd(base, arr);
+                    match &*container.deref() {
+                        Value::Object(o) if self.is_array_access(o) => {
+                            let o = o.clone();
+                            let k = self.rd(base, key);
+                            self.offset_set(&o, Some(&k), v)?;
+                        }
+                        _ => self.array_set(base, arr, Some(key), v)?,
+                    }
                 }
                 Op::ArrayPush { arr, value } => {
                     let v = self.rd(base, value);
-                    self.array_set(base, arr, None, v)?;
+                    let container = self.rd(base, arr);
+                    match &*container.deref() {
+                        // `$o[] = $v` is `offsetSet(null, $v)`.
+                        Value::Object(o) if self.is_array_access(o) => {
+                            let o = o.clone();
+                            self.offset_set(&o, None, v)?;
+                        }
+                        _ => self.array_set(base, arr, None, v)?,
+                    }
                 }
                 Op::FetchElemW { dst, arr, key } => {
                     let k = key.map(|k| self.rd(base, k));
@@ -499,6 +681,16 @@ impl Interp {
                 }
                 Op::UnsetElem { arr, key } => {
                     let k = self.rd(base, key);
+                    // E6: `unset($o[$k])` is `offsetUnset($k)`.
+                    let container = self.rd(base, arr);
+                    if let Value::Object(o) = &*container.deref() {
+                        if self.is_array_access(o) {
+                            let o = o.clone();
+                            self.offset_unset(&o, &k)?;
+                            pc += 1;
+                            continue;
+                        }
+                    }
                     self.with_slot(base, arr, |slot| match slot {
                         Value::Array(a) => {
                             if let Some(k) = array_key(&k) {
@@ -517,10 +709,7 @@ impl Interp {
                 Op::UnsetProp { obj, name } => {
                     let o = self.rd(base, obj);
                     let name = self.member_name(&func, base, name)?;
-                    if let Value::Object(o) = &o {
-                        self.check_prop_access(o.class_id(), &name)?;
-                        o.unset(&name);
-                    }
+                    self.unset_prop(&o, &name)?;
                 }
                 Op::IssetVar { dst, var } => {
                     let set = !matches!(self.rd(base, var), Value::Null | Value::Uninit);
@@ -529,24 +718,28 @@ impl Interp {
                 Op::IssetElem { dst, arr, key } => {
                     let container = self.rd(base, arr);
                     let k = self.rd(base, key);
-                    let set = self.isset_elem(&container, &k);
+                    let set = match &*container.deref() {
+                        Value::Object(o) if self.is_array_access(o) => {
+                            let o = o.clone();
+                            self.offset_exists(&o, &k)?
+                        }
+                        _ => self.isset_elem(&container, &k),
+                    };
                     self.set(base, dst, Value::Bool(set));
                 }
                 Op::IssetProp { dst, obj, name } => {
                     let o = self.rd(base, obj);
                     let name = self.member_name(&func, base, name)?;
-                    let set = match &o {
-                        Value::Object(ob) => {
-                            self.check_prop_access(ob.class_id(), &name).is_ok()
-                                && ob
-                                    .get_deref(&name)
-                                    .is_some_and(|v| !matches!(v, Value::Null | Value::Uninit))
-                        }
-                        _ => false,
-                    };
+                    let set = self.isset_prop(&o, &name)?;
                     self.set(base, dst, Value::Bool(set));
                 }
-                Op::IssetStaticProp { dst, .. } => self.set(base, dst, Value::Bool(false)),
+                Op::IssetStaticProp { dst, class, name } => {
+                    let cid = self.resolve_class_ref(&func, base, class)?;
+                    let n = self.member_name(&func, base, name)?;
+                    let scope = self.frames[fi].scope;
+                    let set = self.isset_static_prop(cid, &n, scope);
+                    self.set(base, dst, Value::Bool(set));
+                }
                 Op::EmptyVar { dst, var } => {
                     let v = self.rd(base, var);
                     self.set(base, dst, Value::Bool(!v.to_bool()));
@@ -554,62 +747,49 @@ impl Interp {
                 Op::EmptyElem { dst, arr, key } => {
                     let container = self.rd(base, arr);
                     let k = self.rd(base, key);
-                    let v = self.array_get_quiet(&container, &k);
-                    self.set(base, dst, Value::Bool(!v.to_bool()));
+                    let empty = match &*container.deref() {
+                        Value::Object(o) if self.is_array_access(o) => {
+                            let o = o.clone();
+                            self.offset_empty(&o, &k)?
+                        }
+                        _ => !self.array_get_quiet(&container, &k).to_bool(),
+                    };
+                    self.set(base, dst, Value::Bool(empty));
                 }
                 Op::EmptyProp { dst, obj, name } => {
                     let o = self.rd(base, obj);
                     let name = self.member_name(&func, base, name)?;
-                    let v = match &o {
-                        Value::Object(ob) if self.check_prop_access(ob.class_id(), &name).is_ok() => {
-                            ob.get_deref(&name).unwrap_or(Value::Null)
-                        }
-                        _ => Value::Null,
-                    };
-                    self.set(base, dst, Value::Bool(!v.to_bool()));
+                    // `empty_prop` already returns the *empty* answer.
+                    let empty = self.empty_prop(&o, &name)?;
+                    self.set(base, dst, Value::Bool(empty));
                 }
 
                 // --- iteration ---
                 Op::IterInit { it, src, by_ref } => {
                     let state = if by_ref {
-                        let is_arrayish = matches!(
-                            self.rd(base, src),
-                            Value::Array(_) | Value::Null | Value::Uninit
-                        );
-                        if is_arrayish {
-                            let cell = self.make_ref(base, src);
-                            cell.update(|v| {
-                                if matches!(v, Value::Null | Value::Uninit) {
-                                    *v = Value::empty_array();
-                                }
-                            });
-                            IterState::ByRef { cell, pos: 0 }
-                        } else {
-                            let v = self.rd(base, src);
-                            self.warn(&format!(
-                                "foreach() argument must be of type array|object, {} given",
-                                value_name(&v)
-                            ))?;
-                            IterState::Empty
+                        match self.rd(base, src) {
+                            Value::Array(_) | Value::Null | Value::Uninit => {
+                                let cell = self.make_ref(base, src);
+                                cell.update(|v| {
+                                    if matches!(v, Value::Null | Value::Uninit) {
+                                        *v = Value::empty_array();
+                                    }
+                                });
+                                IterState::ByRef { cell, pos: 0 }
+                            }
+                            Value::Object(o) => self.object_iter_state(&o, true)?,
+                            v => {
+                                self.warn(&format!(
+                                    "foreach() argument must be of type array|object, {} given",
+                                    value_name(&v)
+                                ))?;
+                                IterState::Empty
+                            }
                         }
                     } else {
                         match self.rd(base, src) {
                             Value::Array(arr) => IterState::Array { arr, pos: 0 },
-                            Value::Object(o) => {
-                                // Objects iterate their visible properties (Iterator
-                                // protocols arrive with E6).
-                                let scope = self.frames[fi].scope;
-                                let mut arr = rphp_value::Array::new();
-                                for (name, value, _) in o.props_snapshot() {
-                                    if let Some((vis, decl)) = self.resolve_prop(o.class_id(), &name) {
-                                        if !self.access_ok(vis, decl, scope) {
-                                            continue;
-                                        }
-                                    }
-                                    arr.set(rphp_value::ArrayKey::str(&name), value);
-                                }
-                                IterState::Array { arr, pos: 0 }
-                            }
+                            Value::Object(o) => self.object_iter_state(&o, false)?,
                             other => {
                                 self.warn(&format!(
                                     "foreach() argument must be of type array|object, {} given",
@@ -624,39 +804,59 @@ impl Interp {
                     f.iters.push((it, state));
                 }
                 Op::IterNext { it, key, val, target } => {
-                    let f = &mut self.frames[fi];
-                    let Some(idx) = f.iters.iter().position(|(r, _)| *r == it) else {
+                    let Some(idx) = self.frames[fi].iters.iter().position(|(r, _)| *r == it) else {
                         pc = target as usize;
                         continue;
                     };
-                    let step = match &mut f.iters[idx].1 {
-                        IterState::Empty => None,
-                        IterState::Array { arr, pos } => match arr.next_live_from(*pos) {
-                            Some((raw, k, v)) => {
-                                *pos = raw + 1;
-                                Some((k.to_value(), v.deref().into_owned(), None))
-                            }
-                            None => None,
-                        },
+                    // An `Iterator` object drives user code, which needs the
+                    // interpreter, so it is stepped outside the frame borrow.
+                    let iter_obj = match &self.frames[fi].iters[idx].1 {
                         IterState::ByRef { cell, pos } => {
-                            let p = *pos;
-                            let r = cell.update(|v| match v {
-                                Value::Array(a) => match a.next_live_from(p) {
-                                    Some((raw, k, _)) => {
-                                        let k = k.clone();
-                                        let elem = a.get_ref(k.clone());
-                                        Some((raw, k.to_value(), elem))
-                                    }
-                                    None => None,
-                                },
+                            let o = match &*cell.borrow() {
+                                Value::Object(o) => Some(o.clone()),
                                 _ => None,
-                            });
-                            match r {
-                                Some((raw, k, elem)) => {
+                            };
+                            o.map(|o| (o, *pos))
+                        }
+                        _ => None,
+                    };
+                    let step = if let Some((o, pos)) = iter_obj {
+                        let step = self.iterator_step(&o, pos, key.is_some())?;
+                        if let IterState::ByRef { pos, .. } = &mut self.frames[fi].iters[idx].1 {
+                            *pos += 1;
+                        }
+                        step
+                    } else {
+                        let f = &mut self.frames[fi];
+                        match &mut f.iters[idx].1 {
+                            IterState::Empty => None,
+                            IterState::Array { arr, pos } => match arr.next_live_from(*pos) {
+                                Some((raw, k, v)) => {
                                     *pos = raw + 1;
-                                    Some((k, Value::Null, Some(elem)))
+                                    Some((k.to_value(), v.deref().into_owned(), None))
                                 }
                                 None => None,
+                            },
+                            IterState::ByRef { cell, pos } => {
+                                let p = *pos;
+                                let r = cell.update(|v| match v {
+                                    Value::Array(a) => match a.next_live_from(p) {
+                                        Some((raw, k, _)) => {
+                                            let k = k.clone();
+                                            let elem = a.get_ref(k.clone());
+                                            Some((raw, k.to_value(), elem))
+                                        }
+                                        None => None,
+                                    },
+                                    _ => None,
+                                });
+                                match r {
+                                    Some((raw, k, elem)) => {
+                                        *pos = raw + 1;
+                                        Some((k, Value::Null, Some(elem)))
+                                    }
+                                    None => None,
+                                }
                             }
                         }
                     };
@@ -856,112 +1056,22 @@ impl Interp {
                 Op::InitMethodCall { obj, name, .. } => {
                     let o = self.rd(base, obj);
                     let mname = self.member_name(&func, base, name)?;
-                    let Value::Object(o) = o else {
-                        return Err(Unwind::error(format!(
-                            "Call to a member function {}() on {}",
-                            String::from_utf8_lossy(&mname),
-                            value_name(&o),
-                        )));
-                    };
-                    let m = self.resolve_method(o.class_id(), &mname).ok_or_else(|| {
-                        Unwind::error(format!(
-                            "Call to undefined method {}::{}()",
-                            self.class_name_of(&o),
-                            String::from_utf8_lossy(&mname),
-                        ))
-                    })?;
-                    self.check_method_access(m.vis, m.decl, &mname)?;
-                    if m.is_abstract {
-                        return Err(Unwind::error(format!(
-                            "Cannot call abstract method {}::{}()",
-                            self.classes[m.decl as usize].name_str(),
-                            String::from_utf8_lossy(&m.name)
-                        )));
-                    }
-                    let target = match &m.body {
-                        MethodBody::User(f) => CallTarget::User {
-                            func: f.clone(),
-                            closure: None,
-                        },
-                        MethodBody::Native(_) => CallTarget::NativeMethod(m.clone()),
-                    };
-                    let args_base = self.stack.len();
-                    let static_class = Some(o.class_id());
-                    let decl = m.decl;
-                    let this = if m.is_static { None } else { Some(o) };
-                    self.frames[fi].pending.push(PendingCall {
-                        target,
-                        this,
-                        scope: Some(decl),
-                        static_class,
-                        args_base,
-                        argc: 0,
-                        named: Vec::new(),
-                        new_obj: None,
-                        name: mname,
-                    });
+                    // `methods.rs` owns dispatch: virtual lookup, visibility,
+                    // `__call`, the private-shadowing retry and the `Closure`
+                    // receiver (`bindTo`/`call`/`__invoke`).
+                    self.init_method_call(fi, o, mname)?;
                 }
                 Op::InitStaticCall { class, name, .. } => {
                     let cid = self.resolve_class_ref(&func, base, class)?;
                     let mname = self.member_name(&func, base, name)?;
-                    let m = self.resolve_method(cid, &mname).ok_or_else(|| {
-                        Unwind::error(format!(
-                            "Call to undefined method {}::{}()",
-                            String::from_utf8_lossy(&self.classes[cid as usize].name),
-                            String::from_utf8_lossy(&mname),
-                        ))
-                    })?;
-                    self.check_method_access(m.vis, m.decl, &mname)?;
-                    if m.is_abstract {
-                        return Err(Unwind::error(format!(
-                            "Cannot call abstract method {}::{}()",
-                            self.classes[m.decl as usize].name_str(),
-                            String::from_utf8_lossy(&m.name)
-                        )));
-                    }
-                    let decl = m.decl;
-                    // A forwarding instance call keeps `$this` when it is an
-                    // instance of the named class.
-                    let this = if m.is_static {
-                        None
-                    } else {
-                        self.frames[fi]
-                            .this
-                            .clone()
-                            .filter(|o| self.is_subclass_or_eq(o.class_id(), cid))
-                    };
-                    if this.is_none() && !m.is_static {
-                        return Err(Unwind::error(format!(
-                            "Non-static method {}::{}() cannot be called statically",
-                            String::from_utf8_lossy(&self.classes[decl as usize].name),
-                            String::from_utf8_lossy(&m.name)
-                        )));
-                    }
-                    let forwarding = matches!(class.kind(), ClassRefKind::SelfKw | ClassRefKind::Parent | ClassRefKind::Static);
-                    let static_class = if forwarding {
-                        self.frames[fi].static_class.or(Some(cid))
-                    } else {
-                        this.as_ref().map(|o| o.class_id()).or(Some(cid))
-                    };
-                    let target = match &m.body {
-                        MethodBody::User(f) => CallTarget::User {
-                            func: f.clone(),
-                            closure: None,
-                        },
-                        MethodBody::Native(_) => CallTarget::NativeMethod(m.clone()),
-                    };
-                    let args_base = self.stack.len();
-                    self.frames[fi].pending.push(PendingCall {
-                        target,
-                        this,
-                        scope: Some(decl),
-                        static_class,
-                        args_base,
-                        argc: 0,
-                        named: Vec::new(),
-                        new_obj: None,
-                        name: mname,
-                    });
+                    // php's forwarding-call rule: `self::`/`parent::`/`static::`
+                    // keep the *called* scope (late static binding), a named
+                    // class does not.
+                    let forwarding = matches!(
+                        class.kind(),
+                        ClassRefKind::SelfKw | ClassRefKind::Parent | ClassRefKind::Static
+                    );
+                    self.init_static_call(fi, cid, mname, forwarding)?;
                 }
                 Op::InitNew { class, .. } => {
                     let cid = self.resolve_class_ref(&func, base, class)?;
@@ -1165,7 +1275,7 @@ impl Interp {
                 Op::MakeClosure { dst, proto } => {
                     let fid = func.unit.func_id(proto);
                     let cf = self.funcs[fid as usize].clone();
-                    let mut captures = Vec::with_capacity(cf.f.captures.len() + 2);
+                    let mut captures = Vec::with_capacity(cf.f.captures.len() + 3);
                     for d in &cf.f.captures {
                         if d.by_ref {
                             captures.push(Value::Ref(self.make_ref(base, d.src)));
@@ -1179,8 +1289,13 @@ impl Interp {
                     } else {
                         f.this.clone()
                     };
+                    let called = f.static_class.or(f.scope);
                     captures.push(this.map_or(Value::Null, Value::Object));
                     captures.push(f.scope.map_or(Value::Null, |c| Value::Int(i64::from(c))));
+                    // Third tail slot: the late-static-bound class, so
+                    // `static::` inside a closure declared in a static method
+                    // still means the called class (`methods.rs`).
+                    captures.push(called.map_or(Value::Null, |c| Value::Int(i64::from(c))));
                     self.set(base, dst, Value::Closure(Closure::new(fid, captures)));
                 }
                 Op::Ret { src } => {
@@ -1375,32 +1490,69 @@ impl Interp {
                     }
                 }
                 Op::FetchClassConst { dst, class, name, .. } => {
-                    let cid = self.resolve_class_ref(&func, base, class)?;
                     let n = self.member_name(&func, base, name)?;
                     if n.as_ref() == b"class" {
-                        let v = Value::string(&self.classes[cid as usize].name);
+                        // `X::class` never looks the class up: a name yields
+                        // itself (`Nope::class` is "Nope"), a register must
+                        // hold an object.
+                        let v = match class.kind() {
+                            ClassRefKind::Named(k) => Value::string(&self.name_bytes(&func, k)),
+                            ClassRefKind::Reg(r) => match self.rd(base, r) {
+                                Value::Object(o) => {
+                                    Value::string(&self.classes[o.class_id() as usize].name)
+                                }
+                                other => {
+                                    return Err(Unwind::type_error(format!(
+                                        "Cannot use \"::class\" on {}",
+                                        value_name(&other)
+                                    )))
+                                }
+                            },
+                            _ => {
+                                let cid = self.resolve_class_ref(&func, base, class)?;
+                                Value::string(&self.classes[cid as usize].name)
+                            }
+                        };
                         self.set(base, dst, v);
                     } else {
+                        let cid = self.resolve_class_ref(&func, base, class)?;
                         // `statics.rs` owns constants, `enums.rs` owns cases.
                         let scope = self.frames[fi].scope;
                         let v = if self.classes[cid as usize].enum_index.contains_key(&n[..]) {
                             self.enum_case(cid, &n)?
                         } else {
-                            self.class_const(cid, &n, scope)?
+                            // php's self-referencing-constant error quotes the
+                            // reference as written (`self::X`), so the
+                            // spelling travels with the lookup.
+                            let spelling = self.class_ref_spelling(&func, cid, class);
+                            self.class_const_spelled(cid, &n, scope, &spelling)?
                         };
                         self.set(base, dst, v);
                     }
                 }
-                Op::FetchStaticProp { class, name, .. }
-                | Op::AssignStaticProp { class, name, .. }
-                | Op::RefStaticProp { class, name, .. } => {
+                Op::FetchStaticProp { dst, class, name, .. } => {
                     let cid = self.resolve_class_ref(&func, base, class)?;
                     let n = self.member_name(&func, base, name)?;
-                    return Err(Unwind::error(format!(
-                        "Access to undeclared static property {}::${}",
-                        String::from_utf8_lossy(&self.classes[cid as usize].name),
-                        String::from_utf8_lossy(&n)
-                    )));
+                    let scope = self.frames[fi].scope;
+                    let v = self.fetch_static_prop(cid, &n, scope)?;
+                    self.set(base, dst, v);
+                }
+                Op::AssignStaticProp { class, name, src } => {
+                    let cid = self.resolve_class_ref(&func, base, class)?;
+                    let n = self.member_name(&func, base, name)?;
+                    let scope = self.frames[fi].scope;
+                    let strict = self.frames[fi].strict;
+                    let v = self.rd(base, src);
+                    self.assign_static_prop(cid, &n, scope, v, strict)?;
+                }
+                Op::RefStaticProp { dst, class, name } => {
+                    let cid = self.resolve_class_ref(&func, base, class)?;
+                    let n = self.member_name(&func, base, name)?;
+                    let scope = self.frames[fi].scope;
+                    // The shared cell itself becomes the reference, so
+                    // `$r = &A::$p; $r = 5;` is visible as `A::$p`.
+                    let cell = self.ref_static_prop(cid, &n, scope)?;
+                    self.set(base, dst, Value::Ref(cell));
                 }
                 Op::FetchProp { dst, obj, name, .. } => {
                     let o = self.rd(base, obj);
@@ -1462,9 +1614,11 @@ impl Interp {
                     };
                     self.set(base, dst, Value::Bool(r));
                 }
-                Op::Clone { dst, src, .. } => {
+                Op::Clone { dst, src, with } => {
                     let v = self.rd(base, src);
-                    let copy = self.clone_object(&v)?;
+                    // php 8.5 `clone($o, ['p' => $v])`; `None` is plain `clone`.
+                    let with = with.map(|r| self.rd(base, r));
+                    let copy = self.clone_object_with(&v, with.as_ref())?;
                     self.set(base, dst, copy);
                 }
 

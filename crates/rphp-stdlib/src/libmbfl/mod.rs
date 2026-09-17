@@ -783,7 +783,8 @@ mod tests {
         assert_eq!(name2encoding(b"html").unwrap().name, "HTML-ENTITIES");
         assert!(name2encoding(b"nope").is_none());
         assert!(name2encoding(b"pass").is_none());
-        assert_eq!(ENCODINGS.len(), 80);
+        // php 8.5 `count(mb_list_encodings())` is 79.
+        assert_eq!(ENCODINGS.len(), 79);
     }
 
     #[test]

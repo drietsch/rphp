@@ -1,9 +1,13 @@
 //! The call ABI (ADR-016): pending-call records built by `Init*`, arguments
 //! staged by `Send*` into the register stack, frames activated by `DoCall`;
 //! native invocation over the same window (by-reference positions are
-//! dereferenced before the handler runs and written back afterwards); the
-//! one shared `resolve_callable` path; and the native→PHP re-entry
-//! (`call_value`, ADR-018).
+//! dereferenced before the handler runs and written back afterwards); and the
+//! native→PHP re-entry (`call_value`, ADR-018).
+//!
+//! **Resolution** — which function or method a call names, whether it is
+//! visible from here, and every callable spelling — lives in `methods.rs`;
+//! this module only *runs* what that one resolved ([`Callable`] is the
+//! hand-over).
 
 use std::rc::Rc;
 
@@ -39,26 +43,6 @@ pub enum Callable {
 }
 
 impl Interp {
-    /// The closure binding convention: `Closure::captures()` holds the
-    /// explicit captures (`Function::captures` order), then the bound `$this`
-    /// (or null) and the scope class id (or null).
-    pub(crate) fn closure_binding(&self, c: &Closure) -> (Option<Object>, Option<u32>) {
-        let caps = c.captures();
-        let n = caps.len();
-        if n < 2 {
-            return (None, None);
-        }
-        let this = match &caps[n - 2] {
-            Value::Object(o) => Some(o.clone()),
-            _ => None,
-        };
-        let scope = match &caps[n - 1] {
-            Value::Int(i) => Some(*i as u32),
-            _ => None,
-        };
-        (this, scope)
-    }
-
     /// Bind a closure's captures and `$this` into a freshly pushed frame.
     fn bind_closure(&mut self, func: &FuncRt, base: usize, c: &Closure) {
         let caps = c.captures();
@@ -431,6 +415,13 @@ impl Interp {
     /// Invoke a native method over a staged window (`DoCall` on a
     /// `CallTarget::NativeMethod`): named arguments are placed by the
     /// method's parameter names, then [`Interp::call_native_method`] runs.
+    ///
+    /// Two engine trampolines (`methods.rs`) share this entry point and are
+    /// taken off it before the arity/named-argument machinery, because they
+    /// take the whole window: a `__call` / `__callStatic` trampoline, whose
+    /// arguments (named ones included, as string keys) become the magic
+    /// method's `$args` array, and a `Closure` instance-method trampoline,
+    /// whose argument 0 is the closure receiver.
     pub(crate) fn call_native_method_window(
         &mut self,
         m: Rc<MethodDef>,
@@ -439,6 +430,21 @@ impl Interp {
         argc: usize,
         named: Vec<(Box<[u8]>, Value)>,
     ) -> NativeResult {
+        if Interp::is_magic_trampoline(&m) {
+            let args: Vec<Value> = self.stack.drain(args_base..args_base + argc).collect();
+            return self.run_call_trampoline(m, this, args, named);
+        }
+        if Interp::is_closure_method(&m) {
+            let args: Vec<Value> = self.stack.drain(args_base..args_base + argc).collect();
+            if !named.is_empty() {
+                return Err(Unwind::error(format!(
+                    "Unknown named parameter ${}",
+                    String::from_utf8_lossy(&named[0].0)
+                )));
+            }
+            let lname = m.name.clone();
+            return self.run_closure_method(&lname, &args);
+        }
         let MethodBody::Native(nm) = &m.body else {
             unreachable!("call_native_method_window on a user method")
         };
@@ -481,6 +487,16 @@ impl Interp {
     /// a native frame (`Class->method` in traces), by-reference write-back,
     /// output flush — the method counterpart of [`Interp::call_native`].
     pub fn call_native_method(&mut self, m: Rc<MethodDef>, this: Option<Object>, args: &mut [Value]) -> NativeResult {
+        // The engine trampolines take the whole window; see
+        // [`Interp::call_native_method_window`].
+        if Interp::is_magic_trampoline(&m) {
+            let args = args.to_vec();
+            return self.run_call_trampoline(m, this, args, Vec::new());
+        }
+        if Interp::is_closure_method(&m) {
+            let lname = m.name.clone();
+            return self.run_closure_method(&lname, args);
+        }
         let MethodBody::Native(nm) = &m.body else {
             return Err(Unwind::error("internal error: call_native_method on a user method"));
         };
@@ -560,215 +576,6 @@ impl Interp {
                 self.call_user_func(func, None, Some(m.decl), Some(class), None, args)
             }
         }
-    }
-
-    // ---- callables ---------------------------------------------------------
-
-    /// Resolve a callable value — a closure, a `'func'` / `'A::m'` string,
-    /// or a `[$objOrClass, 'm']` array — to its target, checking method
-    /// visibility against the current scope. The one shared path behind
-    /// `InitDynCall`, `call_value` and `is_callable`.
-    pub fn resolve_callable(&self, callee: &Value) -> Result<Callable, Unwind> {
-        let callee = callee.deref();
-        match &*callee {
-            Value::Closure(c) => {
-                let func = self.funcs.get(c.func() as usize).cloned().ok_or_else(|| {
-                    Unwind::error("Closure refers to an unloaded function")
-                })?;
-                let (this, scope) = self.closure_binding(c);
-                let static_class = this.as_ref().map(|o| o.class_id()).or(scope);
-                Ok(Callable::User {
-                    func,
-                    this,
-                    scope,
-                    static_class,
-                    closure: Some(c.clone()),
-                })
-            }
-            Value::Str(s) => {
-                let name = s.as_bytes();
-                let name = name.strip_prefix(b"\\").unwrap_or(name);
-                if let Some(pos) = name.windows(2).position(|w| w == b"::") {
-                    let (class, method) = (&name[..pos], &name[pos + 2..]);
-                    return self.resolve_static_callable(class, method, None);
-                }
-                if let Some(id) = self.user_function(name) {
-                    return Ok(Callable::User {
-                        func: self.funcs[id as usize].clone(),
-                        this: None,
-                        scope: None,
-                        static_class: None,
-                        closure: None,
-                    });
-                }
-                if let Some(id) = self.native_by_name(name) {
-                    return Ok(Callable::Native(id));
-                }
-                Err(Unwind::error(format!(
-                    "Call to undefined function {}()",
-                    String::from_utf8_lossy(name)
-                )))
-            }
-            Value::Array(a) => {
-                if a.len() != 2 {
-                    return Err(Unwind::error("Array callback must have exactly two elements"));
-                }
-                let first = a
-                    .get_deref(&rphp_value::ArrayKey::Int(0))
-                    .ok_or_else(|| Unwind::error("Array callback has to contain indices 0 and 1"))?;
-                let second = a
-                    .get_deref(&rphp_value::ArrayKey::Int(1))
-                    .ok_or_else(|| Unwind::error("Array callback has to contain indices 0 and 1"))?;
-                if !matches!(first, Value::Object(_) | Value::Str(_)) {
-                    return Err(Unwind::error(
-                        "First array member is not a valid class name or object",
-                    ));
-                }
-                let Value::Str(method) = &second else {
-                    return Err(Unwind::error("Second array member is not a valid method"));
-                };
-                match &first {
-                    Value::Object(o) => {
-                        let m = self
-                            .resolve_method(o.class_id(), method.as_bytes())
-                            .ok_or_else(|| {
-                                Unwind::error(format!(
-                                    "Call to undefined method {}::{}()",
-                                    self.class_name_of(o),
-                                    String::from_utf8_lossy(method.as_bytes())
-                                ))
-                            })?;
-                        self.check_method_access(m.vis, m.decl, method.as_bytes())?;
-                        let this = if m.is_static { None } else { Some(o.clone()) };
-                        match &m.body {
-                            MethodBody::Native(_) => Ok(Callable::NativeMethod {
-                                method: m.clone(),
-                                this,
-                            }),
-                            MethodBody::User(func) => Ok(Callable::User {
-                                func: func.clone(),
-                                this,
-                                scope: Some(m.decl),
-                                static_class: Some(o.class_id()),
-                                closure: None,
-                            }),
-                        }
-                    }
-                    Value::Str(class) => {
-                        self.resolve_static_callable(class.as_bytes(), method.as_bytes(), None)
-                    }
-                    _ => Err(Unwind::error(
-                        "First array member is not a valid class name or object",
-                    )),
-                }
-            }
-            Value::Object(o) => Err(Unwind::error(format!(
-                "Object of type {} is not callable",
-                self.class_name_of(o)
-            ))),
-            other => Err(Unwind::error(format!(
-                "Value of type {} is not callable",
-                crate::ops::value_name(other)
-            ))),
-        }
-    }
-
-    /// `'A::m'` / `['A', 'm']`: a method called through its class. Without a
-    /// compatible `$this` in the current frame a non-static method cannot be
-    /// called statically.
-    fn resolve_static_callable(
-        &self,
-        class: &[u8],
-        method: &[u8],
-        this: Option<Object>,
-    ) -> Result<Callable, Unwind> {
-        let cid = self.class_by_name(class).ok_or_else(|| {
-            Unwind::error(format!(
-                "Class \"{}\" not found",
-                String::from_utf8_lossy(class)
-            ))
-        })?;
-        let m = self.resolve_method(cid, method).ok_or_else(|| {
-            Unwind::error(format!(
-                "Call to undefined method {}::{}()",
-                String::from_utf8_lossy(&self.classes[cid as usize].name),
-                String::from_utf8_lossy(method)
-            ))
-        })?;
-        self.check_method_access(m.vis, m.decl, method)?;
-        let this = if m.is_static {
-            None
-        } else {
-            this.or_else(|| {
-                self.current_user_frame()
-                    .and_then(|f| f.this.clone())
-                    .filter(|o| self.is_subclass_or_eq(o.class_id(), cid))
-            })
-        };
-        if this.is_none() && !m.is_static {
-            return Err(Unwind::error(format!(
-                "Non-static method {}::{}() cannot be called statically",
-                String::from_utf8_lossy(&self.classes[m.decl as usize].name),
-                String::from_utf8_lossy(&m.name)
-            )));
-        }
-        let static_class = this.as_ref().map(|o| o.class_id()).unwrap_or(cid);
-        match &m.body {
-            MethodBody::Native(_) => Ok(Callable::NativeMethod {
-                method: m.clone(),
-                this,
-            }),
-            MethodBody::User(func) => Ok(Callable::User {
-                func: func.clone(),
-                this,
-                scope: Some(m.decl),
-                static_class: Some(static_class),
-                closure: None,
-            }),
-        }
-    }
-
-    /// Enforce method visibility against the current frame's scope.
-    pub(crate) fn check_method_access(&self, vis: rphp_bytecode::Visibility, decl: u32, name: &[u8]) -> Result<(), Unwind> {
-        let scope = self.current_user_frame().and_then(|f| f.scope);
-        if self.access_ok(vis, decl, scope) {
-            return Ok(());
-        }
-        Err(Unwind::error(format!(
-            "Call to {} method {}::{}() from {}",
-            crate::exec::vis_word(vis),
-            String::from_utf8_lossy(&self.classes[decl as usize].name),
-            String::from_utf8_lossy(name),
-            match scope {
-                Some(c) => format!("scope {}", String::from_utf8_lossy(&self.classes[c as usize].name)),
-                None => "global scope".to_string(),
-            }
-        )))
-    }
-
-    /// Whether a member with the given visibility, declared in `decl`, is
-    /// reachable from code executing in `scope`.
-    pub(crate) fn access_ok(&self, vis: rphp_bytecode::Visibility, decl: u32, scope: Option<u32>) -> bool {
-        use rphp_bytecode::Visibility;
-        match vis {
-            Visibility::Public => true,
-            Visibility::Private => scope == Some(decl),
-            Visibility::Protected => match scope {
-                Some(cc) => self.is_subclass_or_eq(cc, decl) || self.is_subclass_or_eq(decl, cc),
-                None => false,
-            },
-        }
-    }
-
-    /// [`Interp::access_ok`] for natives (`get_object_vars`,
-    /// `get_class_methods`).
-    pub fn access_ok_public(&self, vis: rphp_bytecode::Visibility, decl: u32, scope: Option<u32>) -> bool {
-        self.access_ok(vis, decl, scope)
-    }
-
-    /// Whether a value is callable (`is_callable`).
-    pub fn is_callable(&self, v: &Value) -> bool {
-        self.resolve_callable(v).is_ok()
     }
 
     // ---- re-entry ---------------------------------------------------------

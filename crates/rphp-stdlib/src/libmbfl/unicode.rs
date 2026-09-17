@@ -580,7 +580,9 @@ mod tests {
 
     #[test]
     fn cut_utf8_backs_up() {
-        assert_eq!(cut_utf8("aé日".as_bytes(), 2, 10), "日".as_bytes());
+        // php backs a mid-character offset *up* to the character start, so
+        // cutting "aé日" at byte 2 (inside "é") yields "é日", not "日".
+        assert_eq!(cut_utf8("aé日".as_bytes(), 2, 10), "é日".as_bytes());
         assert_eq!(cut_utf8("aé日".as_bytes(), 0, 2), b"a");
     }
 }

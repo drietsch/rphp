@@ -243,6 +243,18 @@ fn dump_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen, p
         out.extend_from_slice(b"*RECURSION*\n");
         return;
     }
+    // php prints an enum case as `enum(Suit::Hearts)`, with no id and no
+    // property list.
+    if d.flags().contains(rphp_value::ObjFlags::ENUM_CASE) {
+        out.extend_from_slice(b"enum(");
+        out.extend_from_slice(d.layout().class_name());
+        out.extend_from_slice(b"::");
+        if let Some(p) = d.props_in_order().find(|p| p.name == b"name") {
+            out.extend_from_slice(&p.value.to_php_bytes());
+        }
+        out.extend_from_slice(b")\n");
+        return;
+    }
     out.extend_from_slice(b"object(");
     out.extend_from_slice(d.layout().class_name());
     out.extend_from_slice(format!(")#{} ({}) {{\n", d.id(), d.prop_count()).as_bytes());
@@ -330,7 +342,19 @@ fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
 /// `Class Object ( [name(:protected | :Decl:private)] => value … )`
 fn print_r_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen) {
     out.extend_from_slice(d.layout().class_name());
-    out.extend_from_slice(b" Object\n");
+    // php heads an enum case with `Enum` (pure) or `Enum:int`/`Enum:string`
+    // (backed) instead of `Object`, then lists its properties as usual.
+    if d.flags().contains(rphp_value::ObjFlags::ENUM_CASE) {
+        out.extend_from_slice(b" Enum");
+        match d.props_in_order().find(|p| p.name == b"value").map(|p| p.value.clone()) {
+            Some(rphp_value::Value::Int(_)) => out.extend_from_slice(b":int"),
+            Some(rphp_value::Value::Str(_)) => out.extend_from_slice(b":string"),
+            _ => {}
+        }
+        out.push(b'\n');
+    } else {
+        out.extend_from_slice(b" Object\n");
+    }
     if seen.objects.contains(&d.id()) {
         out.extend_from_slice(b" *RECURSION*");
         return;

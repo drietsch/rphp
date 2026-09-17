@@ -61,7 +61,9 @@ mod tests;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use rphp_ast::v2::{ClassLike, FuncDecl, Program};
+use std::collections::HashSet;
+
+use rphp_ast::v2::{ClassLike, FuncDecl, Program, Stmt};
 use rphp_bytecode::{Const, FuncId, Module, Op};
 use rphp_diagnostics::{codes, Diagnostic};
 use rphp_hir::{Hir, LowerOptions};
@@ -149,22 +151,68 @@ impl<'a> CompileOptions<'a> {
 /// numbered by the class pre-pass). Everything else (`implements`, traits,
 /// enums, nested or conditional declarations) is declared when its
 /// statement executes.
-fn hoisted(hir: &Hir) -> (Vec<&FuncDecl>, Vec<&ClassLike>) {
+fn hoisted<'a>(hir: &'a Hir, interner: &Interner) -> (Vec<&'a FuncDecl>, Vec<&'a ClassLike>) {
     let h = hir.hoisted();
-    let mut classes: Vec<&ClassLike> = h
-        .classes
-        .iter()
-        .chain(h.classes_try_early.iter())
-        .copied()
+    // php early-binds a `class B extends A` only when `A` is already known
+    // when the file is compiled. A parent declared *in this unit* is known
+    // only if it was itself early-bound and appears earlier in the file — the
+    // rule is transitive, because an `InOrder` class (one with `implements`,
+    // `use` or an enum) is not declared until its statement runs. Hoisting a
+    // child of one would leave `load_unit`'s pending loop unable to progress
+    // and fail with `Class "A" not found` at load time.
+    let key = |name: &[u8]| -> Box<[u8]> { name.to_ascii_lowercase().into() };
+    let in_unit: HashSet<Box<[u8]>> = top_level_class_likes(hir.program())
+        .filter_map(|c| c.name.map(|n| key(interner.resolve(n))))
         .collect();
+
+    let mut early: HashSet<Box<[u8]>> = HashSet::new();
+    let mut try_early_ok: Vec<&ClassLike> = Vec::new();
+    for c in top_level_class_likes(hir.program()) {
+        let own = c.name.map(|n| key(interner.resolve(n)));
+        match rphp_hir::class_hoist(c) {
+            rphp_hir::ClassHoist::Early => {
+                if let Some(k) = own {
+                    early.insert(k);
+                }
+            }
+            rphp_hir::ClassHoist::TryEarly => {
+                // `extends` holds exactly one name for a class.
+                let parent = c.extends.first().map(|n| key(&class::class_fqn(n, interner)));
+                let known = match &parent {
+                    // Not declared here: an already-loaded class (`Exception`)
+                    // that `load_unit` resolves against the class table.
+                    Some(p) => !in_unit.contains(p) || early.contains(p),
+                    None => true,
+                };
+                if known {
+                    try_early_ok.push(c);
+                    if let Some(k) = own {
+                        early.insert(k);
+                    }
+                }
+            }
+            rphp_hir::ClassHoist::InOrder => {}
+        }
+    }
+
+    let mut classes: Vec<&ClassLike> = h.classes.iter().copied().chain(try_early_ok).collect();
     classes.sort_by_key(|c| c.span.lo);
     (h.funcs, classes)
 }
 
+/// Every named class-like declared at the top level of the unit, in source
+/// order (the only ones `hoisted` may consider).
+fn top_level_class_likes(program: &Program) -> impl Iterator<Item = &ClassLike> {
+    program.items.iter().filter_map(|s| match s {
+        Stmt::ClassLike(c) => Some(c),
+        _ => None,
+    })
+}
+
 /// Whether a top-level class-like is declared in statement order rather
 /// than hoisted (see [`hoisted`]).
-pub(crate) fn class_declared_in_order(c: &ClassLike) -> bool {
-    rphp_hir::class_hoist(c) == rphp_hir::ClassHoist::InOrder
+pub(crate) fn class_is_hoisted(mx: &func::ModuleCtx<'_>, c: &ClassLike) -> bool {
+    mx.hoisted_classes.contains(&(c as *const ClassLike))
 }
 
 /// Lower a parsed program to its HIR and compile that into a bytecode
@@ -193,10 +241,10 @@ pub fn compile(
     let interner: &Interner = interner;
     let program = hir.program();
 
-    let (func_decls, class_decls) = hoisted(&hir);
+    let (func_decls, class_decls) = hoisted(&hir, interner);
 
     let (class_map, class_ids) = class::collect_class_ids(program, interner);
-    let mx = ModuleCtx::new(
+    let mut mx = ModuleCtx::new(
         interner,
         &class_map,
         &class_ids,
@@ -204,6 +252,8 @@ pub fn compile(
         program.strict_types,
         opts,
     );
+    mx.hoisted_classes = class_decls.iter().map(|c| *c as *const ClassLike).collect();
+    let mx = mx;
 
     // Hoisted functions first, so their ids come right after `{main}`. A
     // duplicate declaration is php's runtime fatal (`Cannot redeclare …`),

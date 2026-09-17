@@ -516,26 +516,25 @@ fn unsupported_constructs_report_e0300_with_a_description() {
         .iter()
         .all(|m| m.starts_with("unsupported construct: ") && m.ends_with(" (not lowered yet)")));
 
-    let msgs = unsupported_messages("<?php A::$p; A::K; strlen(...);");
-    assert!(msgs.iter().any(|m| m.contains("static property")), "{msgs:?}");
-    assert!(msgs.iter().any(|m| m.contains("class constant")), "{msgs:?}");
-    assert!(msgs.iter().any(|m| m.contains("first-class callable")), "{msgs:?}");
+    // E6 lowered static access, class constants, first-class callables and
+    // every class-like declaration, so the sources that used to belong here
+    // now compile. What is left is the genuinely unlowered tail.
+    let msgs = unsupported_messages("<?php enum E: string { case A = 1 << 0; }");
+    assert!(msgs.iter().any(|m| m.contains("non-literal enum case value")), "{msgs:?}");
 
-    let msgs = unsupported_messages(
-        "<?php interface I {} trait T {} enum E {} abstract class A { const K = 1; static $s; abstract function f(); public function __construct(private $p) {} static function s() {} }",
+    let msgs = unsupported_messages("<?php class C { public static $p; } unset(C::$p);");
+    assert!(msgs.iter().any(|m| m.contains("unset of a static property")), "{msgs:?}");
+}
+
+#[test]
+fn class_declarations_and_static_access_lower_after_e6() {
+    // The counterpart of the removed E0300 cases: these must now compile.
+    let m = compile_ok(
+        "<?php interface I {} trait T {} enum E {} abstract class A { const K = 1; static $s;\n\
+         abstract function f(); public function __construct(private $p) {} static function s() {} }",
     );
-    for what in [
-        "interface declaration",
-        "trait declaration",
-        "enum declaration",
-        "class constant",
-        "static property",
-        "abstract method",
-        "constructor property promotion",
-        "static method",
-    ] {
-        assert!(msgs.iter().any(|m| m.contains(what)), "missing {what:?} in {msgs:?}");
-    }
+    assert_eq!(m.classes.len(), 4, "interface, trait, enum and class all lower");
+    compile_ok("<?php class B { public static $p; const K = 1; } B::$p; B::K; strlen(...);");
 }
 
 #[test]

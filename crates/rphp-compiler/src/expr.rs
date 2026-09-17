@@ -27,6 +27,21 @@
 //! inside a namespace carries both candidates of php's two-step lookup
 //! (`InitFCall{name: N\f, ns_fallback: f}` — the runtime tries `name`
 //! first).
+//!
+//! Class members (E6) are all late-bound: the class part of `A::$p`,
+//! `A::C`, `A::m()`, `new A`, `$x instanceof A` becomes a
+//! [`ClassRef`] operand, never a resolved [`ClassId`](rphp_bytecode::ClassId),
+//! and `static::` is emitted as [`ClassRef::STATIC`] so the runtime resolves
+//! it against the frame's called scope — folding it here would break late
+//! static binding. A static property is a shared cell, so every position
+//! it can appear in is covered by four ops: `FetchStaticProp` (read),
+//! `AssignStaticProp` (write), `RefStaticProp` (bind the cell — used for
+//! `&A::$p`, for `A::$a['k'] = 1`, for a by-reference argument and for a
+//! by-reference `foreach`) and `IssetStaticProp`. There is no
+//! `AssignOpStaticProp`, `EmptyStaticProp` or `UnsetStaticProp`: compound
+//! assignment and `++`/`--` are lowered read-modify-write, `empty()` as
+//! `!isset || !value`, and `unset(A::$p)` — always an `Error` in php — is
+//! reported as `RPHP_E0300`.
 
 use rphp_ast::v2::{
     Arg, ArrayItem, BinOp, CallableTarget, Callee, CastKind as AstCast, ClassRef as AstClassRef,
@@ -224,6 +239,22 @@ impl FnCompiler<'_> {
                 });
                 dst
             }
+            Expr::StaticProp { class, name, span } => {
+                let mark = self.temp_top;
+                let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
+                    return self.null_temp();
+                };
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                let ic = self.ic();
+                self.emit(Op::FetchStaticProp {
+                    dst,
+                    class,
+                    name,
+                    ic,
+                });
+                dst
+            }
             Expr::MethodCall {
                 obj,
                 name,
@@ -298,8 +329,13 @@ impl FnCompiler<'_> {
             Expr::MagicConst { kind, span } => self.compile_magic_const(*kind, *span),
             Expr::ClassConst { class, name, span } => match name {
                 ConstSel::Class(_) => self.compile_class_name(class, *span),
-                ConstSel::Ident(..) => self.unsupported_expr(*span, "class constant"),
-                ConstSel::Expr(_) => self.unsupported_expr(*span, "dynamic class constant"),
+                // `A::C`, `self::C`, `static::C`, `$cls::C`, `$obj::C` and
+                // `A::{$expr}` (8.3) — and enum case access (`Suit::Hearts`),
+                // which is spelled exactly like a constant: whether a name is
+                // a constant or a case is the runtime's decision.
+                ConstSel::Ident(..) | ConstSel::Expr(_) => {
+                    self.compile_class_const(class, name, *span)
+                }
             },
             Expr::Ternary {
                 cond, then, else_, ..
@@ -364,12 +400,7 @@ impl FnCompiler<'_> {
 
             // ----- everything else is not lowered yet ---------------------------
             Expr::ShellExec { span, .. } => self.unsupported_expr(*span, "shell execution"),
-            Expr::StaticProp { span, .. } => self.unsupported_expr(*span, "static property"),
-            Expr::Callable { span, target } => match target {
-                CallableTarget::Func(_) | CallableTarget::Method { .. } | CallableTarget::Static { .. } => {
-                    self.unsupported_expr(*span, "first-class callable")
-                }
-            },
+            Expr::Callable { span, target } => self.compile_callable(target, *span),
             Expr::Eval { span, .. } => self.unsupported_expr(*span, "eval"),
             Expr::Yield { span, .. } => self.unsupported_expr(*span, "yield"),
             Expr::YieldFrom { span, .. } => self.unsupported_expr(*span, "yield from"),
@@ -628,34 +659,135 @@ impl FnCompiler<'_> {
                 let n = self.interner().resolve(id).to_vec();
                 self.load_bytes(&n)
             }
-            AstClassRef::SelfKw(_) => match self.cur_class {
-                Some((_, name)) => {
-                    let n = self.interner().resolve(name).to_vec();
-                    self.load_bytes(&n)
-                }
-                None => {
-                    self.scope_error("Cannot use \"self\" when no class scope is active", span);
-                    self.null_temp()
-                }
-            },
-            other => {
-                let mark = self.temp_top;
-                let Some(class) = self.class_ref(other, span) else {
+            // `self::class` cannot be folded to `cur_class`: inside a *trait*
+            // method php reports the **using** class, and traits are flattened
+            // by copying the body, so the lexical name is the trait's. Like
+            // `static::class`, `parent::class` and `$obj::class` (8.0), it
+            // resolves against the frame at runtime.
+            other => self.compile_class_const(other, &ConstSel::Class(span), span),
+        }
+    }
+
+    /// `Class::NAME`, `Class::{expr}` and the dynamic half of
+    /// `Class::class`: one [`Op::FetchClassConst`]. Enum case access reads
+    /// the same way — `Suit::Hearts` is spelled like a constant and the
+    /// runtime resolves it against the class's cases.
+    fn compile_class_const(&mut self, class: &AstClassRef, sel: &ConstSel, span: Span) -> Reg {
+        let mark = self.temp_top;
+        let Some(class) = self.class_ref(class, span) else {
+            return self.null_temp();
+        };
+        // Class-constant names are case-sensitive, so they are `Const::Str`
+        // pool entries (`name_const`), never the prelowercased `Const::Name`.
+        let name = match sel {
+            ConstSel::Ident(id, _) => NameRef::constant(self.name_const(*id)),
+            ConstSel::Class(_) => NameRef::constant(self.str_const(b"class")),
+            ConstSel::Expr(e) => NameRef::reg(self.compile_expr(e)),
+        };
+        self.free_to(mark);
+        let dst = self.alloc_temp();
+        let ic = self.ic();
+        self.emit(Op::FetchClassConst {
+            dst,
+            class,
+            name,
+            ic,
+        });
+        dst
+    }
+
+    /// The `(class, name)` operand pair of a static-property access —
+    /// `A::$p`, `self::$p`, `static::$p`, `parent::$p`, `$cls::$p`,
+    /// `$obj::$p`, `A::$$n` — evaluated in php's order: the class reference
+    /// first, then a computed name. `None` after a scope diagnostic.
+    ///
+    /// `static::$p` must stay [`ClassRef::STATIC`] here: the late-static-bound
+    /// class is the frame's, not the lexical scope's, so it cannot be folded
+    /// at compile time.
+    pub(crate) fn static_prop_ref(
+        &mut self,
+        class: &AstClassRef,
+        name: &MemberName,
+        span: Span,
+    ) -> Option<(ClassRef, NameRef)> {
+        let class = self.class_ref(class, span)?;
+        // Static-property names are case-sensitive: `Const::Str` entries.
+        let name = self.member_name_ref(name);
+        Some((class, name))
+    }
+
+    /// `dst = Class::$name` without the "Access to undeclared static
+    /// property" error — the read half of `??` and of `empty()`.
+    fn quiet_static_prop_into(&mut self, dst: Reg, class: ClassRef, name: NameRef) {
+        let c = self.alloc_temp();
+        self.emit(Op::IssetStaticProp { dst: c, class, name });
+        let jnull = self.emit(Op::JmpIfFalse { cond: c, target: 0 });
+        let ic = self.ic();
+        self.emit(Op::FetchStaticProp {
+            dst,
+            class,
+            name,
+            ic,
+        });
+        let jend = self.jmp_fwd();
+        let lnull = self.here();
+        self.patch(jnull, lnull);
+        self.emit(Op::LoadNull { dst });
+        let lend = self.here();
+        self.patch(jend, lend);
+    }
+
+    /// First-class callable syntax (php 8.1): `strlen(...)`, `$f(...)`,
+    /// `$obj->m(...)`, `$obj->$n(...)`, `A::m(...)`, `$cls::m(...)`,
+    /// `A::$m(...)`.
+    ///
+    /// **Encoding.** [`Op::MakeCallableClosure`] carries no operand but its
+    /// destination: it turns the frame's pending-call record into a
+    /// `Closure`. So the lowering is the ordinary call sequence with the
+    /// argument sends left out — the `Init*` op that names the target is
+    /// emitted exactly as for a real call and is always the instruction
+    /// immediately before `MakeCallableClosure`, with never a `Send*`
+    /// between them:
+    ///
+    /// | source          | emitted                                          |
+    /// |-----------------|--------------------------------------------------|
+    /// | `f(...)`        | `InitFCall{name, ns_fallback}` + `MakeCallableClosure` |
+    /// | `$f(...)`       | `InitDynCall{callee}` + `MakeCallableClosure`     |
+    /// | `$o->m(...)`    | `InitMethodCall{obj, name}` + `MakeCallableClosure` |
+    /// | `A::m(...)`     | `InitStaticCall{class, name}` + `MakeCallableClosure` |
+    ///
+    /// Every piece of the target — the class reference, the (possibly
+    /// computed) member name, the object — therefore lives on that `Init*`
+    /// op, which is what the runtime's `make_callable_closure` reads when it
+    /// binds `$this` and the scope.
+    fn compile_callable(&mut self, target: &CallableTarget, span: Span) -> Reg {
+        let mark = self.temp_top;
+        match target {
+            CallableTarget::Func(Callee::Name(name)) => self.emit_init_fcall(name),
+            CallableTarget::Func(Callee::Expr(callee)) => {
+                let callee = self.compile_expr(callee);
+                let ic = self.ic();
+                self.emit(Op::InitDynCall { callee, ic });
+            }
+            CallableTarget::Method { obj, name } => {
+                let obj = self.compile_expr(obj);
+                let name = self.member_name_ref(name);
+                let ic = self.ic();
+                self.emit(Op::InitMethodCall { obj, name, ic });
+            }
+            CallableTarget::Static { class, name } => {
+                let Some(class) = self.class_ref(class, span) else {
                     return self.null_temp();
                 };
-                self.free_to(mark);
-                let dst = self.alloc_temp();
-                let name = NameRef::constant(self.str_const(b"class"));
+                let name = self.member_name_ref(name);
                 let ic = self.ic();
-                self.emit(Op::FetchClassConst {
-                    dst,
-                    class,
-                    name,
-                    ic,
-                });
-                dst
+                self.emit(Op::InitStaticCall { class, name, ic });
             }
         }
+        self.free_to(mark);
+        let dst = self.alloc_temp();
+        self.emit(Op::MakeCallableClosure { dst });
+        dst
     }
 
     /// Push a `self::`/`parent::` scope-misuse diagnostic.
@@ -814,9 +946,21 @@ impl FnCompiler<'_> {
                     steps: vec![Step::Prop(name)],
                 })
             }
-            Expr::StaticProp { span, .. } => {
-                unsupported(self.diags, *span, "static property");
-                None
+            Expr::StaticProp { class, name, span } => {
+                let (class, name) = self.static_prop_ref(class, name, *span)?;
+                // A static property is a shared cell, so the cell itself is
+                // the container handle: `A::$a['k'] = 1` mutates it in place
+                // and needs no write-back step.
+                let root = self.alloc_temp();
+                self.emit(Op::RefStaticProp {
+                    dst: root,
+                    class,
+                    name,
+                });
+                Some(Plan {
+                    root,
+                    steps: Vec::new(),
+                })
             }
             // A stabilized chain base (`Let(t, f(), Temp(t)->p = v)`) or a
             // by-reference destructuring source.
@@ -1073,7 +1217,16 @@ impl FnCompiler<'_> {
                 self.emit(Op::AssignThroughRef { dst: reg, src: v });
                 v
             }
-            Expr::StaticProp { span, .. } => self.unsupported_expr(*span, "static property assignment"),
+            Expr::StaticProp { class, name, span } => {
+                // php evaluates the class reference (and a computed name)
+                // before the value: `cls()::$p = val()` calls `cls` first.
+                let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
+                    return self.null_temp();
+                };
+                let v = self.value_reg(value);
+                self.emit(Op::AssignStaticProp { class, name, src: v });
+                v
+            }
             other => {
                 self.diags.push(
                     Diagnostic::error(INVALID_WRITE_TARGET, "Cannot use temporary expression in write context")
@@ -1183,6 +1336,14 @@ impl FnCompiler<'_> {
                 let name = self.member_name_ref(name);
                 let dst = self.alloc_temp();
                 self.emit(Op::RefProp { dst, obj: o, name });
+                dst
+            }
+            Expr::StaticProp { class, name, span } => {
+                let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
+                    return self.null_temp();
+                };
+                let dst = self.alloc_temp();
+                self.emit(Op::RefStaticProp { dst, class, name });
                 dst
             }
             Expr::VarVar { name, .. } => {
@@ -1413,7 +1574,48 @@ impl FnCompiler<'_> {
                 });
                 reg
             }
-            Expr::StaticProp { span, .. } => self.unsupported_expr(*span, "static property"),
+            Expr::StaticProp { class, name, span } => {
+                let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
+                    return self.null_temp();
+                };
+                // There is no `AssignOpStaticProp`; read-modify-write it.
+                // php evaluates the right-hand side *before* reading the
+                // property (`A::$p += g()` sees g()'s write to `A::$p`).
+                let src = self.compile_expr(value);
+                let cur = self.alloc_temp();
+                let ic = self.ic();
+                self.emit(Op::FetchStaticProp {
+                    dst: cur,
+                    class,
+                    name,
+                    ic,
+                });
+                self.emit(Op::AssignOp {
+                    op: kind,
+                    var: cur,
+                    src,
+                });
+                self.emit(Op::AssignStaticProp {
+                    class,
+                    name,
+                    src: cur,
+                });
+                if want {
+                    // A typed static property coerces on the way in, so the
+                    // expression's value is what landed in the cell.
+                    let res = self.alloc_temp();
+                    let ic = self.ic();
+                    self.emit(Op::FetchStaticProp {
+                        dst: res,
+                        class,
+                        name,
+                        ic,
+                    });
+                    res
+                } else {
+                    cur
+                }
+            }
             other => {
                 self.diags.push(
                     Diagnostic::error(INVALID_WRITE_TARGET, "Cannot use temporary expression in write context")
@@ -1528,6 +1730,33 @@ impl FnCompiler<'_> {
                     src: v,
                     ic,
                 });
+                self.emit(Op::Move { dst: res, src: v });
+                let lend = self.here();
+                self.patch(jend, lend);
+                self.free_to(mark);
+                res
+            }
+            Expr::StaticProp { class, name, span } => {
+                let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
+                    self.free_to(mark);
+                    self.emit(Op::LoadNull { dst: res });
+                    return res;
+                };
+                let c = self.alloc_temp();
+                self.emit(Op::IssetStaticProp { dst: c, class, name });
+                let jassign = self.emit(Op::JmpIfFalse { cond: c, target: 0 });
+                let ic = self.ic();
+                self.emit(Op::FetchStaticProp {
+                    dst: res,
+                    class,
+                    name,
+                    ic,
+                });
+                let jend = self.jmp_fwd();
+                let lassign = self.here();
+                self.patch(jassign, lassign);
+                let v = self.compile_expr(value);
+                self.emit(Op::AssignStaticProp { class, name, src: v });
                 self.emit(Op::Move { dst: res, src: v });
                 let lend = self.here();
                 self.patch(jend, lend);
@@ -1710,6 +1939,32 @@ impl FnCompiler<'_> {
                 });
                 dst.unwrap_or(reg)
             }
+            Expr::StaticProp { class, name, span } => {
+                let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
+                    return self.null_temp();
+                };
+                let res = if want { Some(self.alloc_temp()) } else { None };
+                let cur = self.alloc_temp();
+                let ic = self.ic();
+                self.emit(Op::FetchStaticProp {
+                    dst: cur,
+                    class,
+                    name,
+                    ic,
+                });
+                self.emit(Op::IncDec {
+                    var: cur,
+                    dst: res,
+                    pre,
+                    inc,
+                });
+                self.emit(Op::AssignStaticProp {
+                    class,
+                    name,
+                    src: cur,
+                });
+                res.unwrap_or(cur)
+            }
             other => self.unsupported_expr(other.span(), "increment/decrement target"),
         }
     }
@@ -1825,6 +2080,16 @@ impl FnCompiler<'_> {
                 self.free_to(mark);
                 let dst = self.alloc_temp();
                 self.quiet_prop_into(dst, o, name);
+                dst
+            }
+            Expr::StaticProp { class, name, span } => {
+                let mark = self.temp_top;
+                let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
+                    return self.null_temp();
+                };
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.quiet_static_prop_into(dst, class, name);
                 dst
             }
             _ => self.compile_expr(e),
@@ -2017,7 +2282,14 @@ impl FnCompiler<'_> {
                 self.emit(Op::IssetProp { dst, obj: o, name });
                 dst
             }
-            Expr::StaticProp { span, .. } => self.unsupported_expr(*span, "isset on a static property"),
+            Expr::StaticProp { class, name, span } => {
+                let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
+                    return self.null_temp();
+                };
+                let dst = self.alloc_temp();
+                self.emit(Op::IssetStaticProp { dst, class, name });
+                dst
+            }
             other => {
                 self.diags.push(
                     Diagnostic::error(INVALID_WRITE_TARGET, "Cannot use isset() on the result of an expression (you can use \"null !== expression\" instead)")
@@ -2061,6 +2333,36 @@ impl FnCompiler<'_> {
                 self.free_to(mark);
                 let dst = self.alloc_temp();
                 self.emit(Op::EmptyProp { dst, obj: o, name });
+                dst
+            }
+            // No `EmptyStaticProp` op: `!isset(x) || !x`, spelled out.
+            Expr::StaticProp { class, name, span } => {
+                let dst = self.alloc_temp();
+                let mark = self.temp_top;
+                let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
+                    self.free_to(mark);
+                    self.emit(Op::LoadNull { dst });
+                    return dst;
+                };
+                let c = self.alloc_temp();
+                self.emit(Op::IssetStaticProp { dst: c, class, name });
+                let jset = self.emit(Op::JmpIfTrue { cond: c, target: 0 });
+                self.emit(Op::LoadBool { dst, val: true });
+                let jend = self.jmp_fwd();
+                let lset = self.here();
+                self.patch(jset, lset);
+                let v = self.alloc_temp();
+                let ic = self.ic();
+                self.emit(Op::FetchStaticProp {
+                    dst: v,
+                    class,
+                    name,
+                    ic,
+                });
+                self.emit(Op::Not { dst, src: v });
+                let lend = self.here();
+                self.patch(jend, lend);
+                self.free_to(mark);
                 dst
             }
             other => {
@@ -2230,6 +2532,18 @@ impl FnCompiler<'_> {
                 let name = self.member_name_ref(name);
                 self.emit(Op::SendRefProp { pos, obj, name });
             }
+            // No `SendRefStaticProp` op — but a static property *is* a shared
+            // cell, so binding a register to it and sending that register
+            // covers both directions: `SendVar` passes the cell itself to a
+            // by-reference parameter and a dereferenced copy otherwise.
+            Expr::StaticProp { class, name, span } => {
+                let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
+                    return;
+                };
+                let var = self.alloc_temp();
+                self.emit(Op::RefStaticProp { dst: var, class, name });
+                self.emit(Op::SendVar { pos, var });
+            }
             Expr::Index {
                 index: Some(_), ..
             }
@@ -2260,6 +2574,16 @@ impl FnCompiler<'_> {
     /// with php's two-step lookup for an unqualified name in a namespace.
     fn compile_call(&mut self, name: &Name, args: &[Arg], span: Span) -> Reg {
         let _ = span;
+        self.emit_init_fcall(name);
+        self.compile_sends(args);
+        let dst = self.alloc_temp();
+        self.emit(Op::DoCall { dst });
+        dst
+    }
+
+    /// Begin a call to a written function name, with php's two-step lookup
+    /// for an unqualified name inside a namespace.
+    fn emit_init_fcall(&mut self, name: &Name) {
         let (k, ns_fallback) = match name.resolved {
             Some(Resolved::Func { ns_key, global_key }) => self.two_step_consts(ns_key, global_key),
             // Not visited by the resolver: as spelled.
@@ -2271,10 +2595,6 @@ impl FnCompiler<'_> {
             ns_fallback,
             ic,
         });
-        self.compile_sends(args);
-        let dst = self.alloc_temp();
-        self.emit(Op::DoCall { dst });
-        dst
     }
 
     /// `callee(args...)` where the callee is a runtime value.

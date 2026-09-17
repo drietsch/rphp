@@ -112,6 +112,22 @@ pub(crate) fn count(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     match &args[0] {
         Value::Array(a) if recursive => Ok(Value::Int(count_recursive(ctx, a, &mut Vec::new())?)),
         Value::Array(a) => Ok(Value::Int(a.len() as i64)),
+        // E6: an object implementing `Countable` answers with its `count()`.
+        // `COUNT_RECURSIVE` does not recurse into it — php calls the method
+        // either way.
+        Value::Object(o) => {
+            let o = o.clone();
+            let countable = ctx.class_by_name(b"Countable");
+            match countable {
+                Some(c) if ctx.object_instanceof(&o, c) => {
+                    Ok(Value::Int(ctx.call_method(&o, b"count", &[])?.to_int()))
+                }
+                _ => Err(Unwind::type_error(format!(
+                    "count(): Argument #1 ($value) must be of type Countable|array, {} given",
+                    ctx.class_name_of(&o)
+                ))),
+            }
+        }
         other => Err(Unwind::type_error(format!(
             "count(): Argument #1 ($value) must be of type Countable|array, {} given",
             other.type_name()

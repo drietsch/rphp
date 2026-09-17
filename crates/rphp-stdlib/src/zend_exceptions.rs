@@ -275,9 +275,14 @@ mod tests {
         let rphp_runtime::Unwind::Throw(o) = &u else { panic!("expected an object") };
         assert_eq!(it.class_name_of(o), "DivisionByZeroError");
         assert_eq!(it.throwable_str(o, b"message"), "Division by zero");
+        // `call_function` enters the native directly, without the call frame
+        // the VM would push, so the trace holds only `{main}`. The *rendering*
+        // of a native frame is covered end to end by
+        // `examples/tier-a/lang/faults.php`, where the same fault through the
+        // interpreter prints php's `#0 Command line code(1): intdiv(1, 0)`.
         assert_eq!(
             it.throwable_to_string(o),
-            "DivisionByZeroError: Division by zero in Command line code:0\nStack trace:\n#0 [internal function]: intdiv(1, 0)\n#1 {main}"
+            "DivisionByZeroError: Division by zero in Command line code:0\nStack trace:\n#0 {main}"
         );
     }
 }

@@ -685,8 +685,16 @@ fn private_is_accessible_within_its_class() {
 
 #[test]
 fn private_of_parent_is_not_accessible_in_child() {
-    // A private property is not visible to a subclass's method.
-    assert!(eval_to_string(b"<?php class A { private $s = 1; } class B extends A { function get() { return $this->s; } } $b = new B(); echo $b->get();").is_err());
+    // A private property of an *ancestor* is not merely inaccessible to a
+    // subclass's method — php treats it as if it did not exist: the read is an
+    // undefined-property warning yielding null, not an `Error`. (Contrast a
+    // private property of the object's *own* class, which is
+    // `Cannot access private property`.) Verified against php 8.5.
+    // (The warning text itself rides the diagnostics channel, which this
+    // helper does not capture; `examples/tier-a/lang/magic-props.php` pins it.)
+    let out = eval_to_string(b"<?php class A { private $s = 1; } class B extends A { function get() { return $this->s; } } $b = new B(); var_dump($b->get());")
+        .expect("reading an ancestor's private property warns, it does not throw");
+    assert_eq!(out.trim(), "NULL", "{out}");
 }
 
 #[test]

@@ -9,10 +9,8 @@ lists it under `exclude`), so it never affects `cargo build --workspace`.
 | `parse_bytes`    | lexer + parser never panic and always terminate on arbitrary bytes; every diagnostic renders     |
 | `tokenize_bytes` | `rphp_tokenizer::tokenize` is lossless in both `short_open_tag` modes (tokens tile the input)    |
 
-`tokenize_bytes` runs against the finished `rphp-tokenizer` crate
-the `tokenize(src, Options) -> Vec<RawToken { id, lo, hi, line }>` API; once it
-exists, make the dependency unconditional in `Cargo.toml` and drop the
-`required-features` line.
+`tokenize_bytes` exercises the `tokenize(src, Options) -> Vec<RawToken { id, lo, hi, line }>`
+API of `rphp-tokenizer` and asserts that the tokens tile the input exactly.
 
 ## Setup
 

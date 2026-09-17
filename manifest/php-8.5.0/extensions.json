@@ -1,0 +1,593 @@
+{
+    "Core": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 62,
+        "classes": 40,
+        "constants": 89,
+        "ini": 97
+    },
+    "FFI": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 0,
+        "classes": 5,
+        "constants": 0,
+        "ini": 2
+    },
+    "PDO": {
+        "version": "8.5.0",
+        "dependencies": {
+            "spl": "Required"
+        },
+        "functions": 1,
+        "classes": 4,
+        "constants": 0,
+        "ini": 0
+    },
+    "PDO_ODBC": {
+        "version": "8.5.0",
+        "dependencies": {
+            "pdo": "Required"
+        },
+        "functions": 0,
+        "classes": 1,
+        "constants": 1,
+        "ini": 0
+    },
+    "Phar": {
+        "version": "8.5.0",
+        "dependencies": {
+            "apc": "Optional",
+            "bz2": "Optional",
+            "hash": "Required",
+            "openssl": "Optional",
+            "spl": "Required",
+            "standard": "Optional",
+            "zlib": "Optional"
+        },
+        "functions": 0,
+        "classes": 4,
+        "constants": 0,
+        "ini": 3
+    },
+    "Reflection": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 0,
+        "classes": 26,
+        "constants": 0,
+        "ini": 0
+    },
+    "SPL": {
+        "version": "8.5.0",
+        "dependencies": {
+            "json": "Required"
+        },
+        "functions": 15,
+        "classes": 55,
+        "constants": 0,
+        "ini": 0
+    },
+    "SimpleXML": {
+        "version": "8.5.0",
+        "dependencies": {
+            "libxml": "Required",
+            "spl": "Required"
+        },
+        "functions": 3,
+        "classes": 2,
+        "constants": 0,
+        "ini": 0
+    },
+    "Zend OPcache": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 8,
+        "classes": 0,
+        "constants": 0,
+        "ini": 54
+    },
+    "bcmath": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 14,
+        "classes": 1,
+        "constants": 0,
+        "ini": 1
+    },
+    "bz2": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 10,
+        "classes": 0,
+        "constants": 0,
+        "ini": 0
+    },
+    "calendar": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 18,
+        "classes": 0,
+        "constants": 21,
+        "ini": 0
+    },
+    "ctype": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 11,
+        "classes": 0,
+        "constants": 0,
+        "ini": 0
+    },
+    "curl": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 35,
+        "classes": 6,
+        "constants": 689,
+        "ini": 1
+    },
+    "date": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 48,
+        "classes": 15,
+        "constants": 17,
+        "ini": 5
+    },
+    "dba": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 15,
+        "classes": 1,
+        "constants": 0,
+        "ini": 1
+    },
+    "dom": {
+        "version": "20031129",
+        "dependencies": {
+            "domxml": "Conflicts",
+            "lexbor": "Required",
+            "libxml": "Required"
+        },
+        "functions": 2,
+        "classes": 51,
+        "constants": 61,
+        "ini": 0
+    },
+    "exif": {
+        "version": "8.5.0",
+        "dependencies": {
+            "mbstring": "Optional",
+            "standard": "Required"
+        },
+        "functions": 4,
+        "classes": 0,
+        "constants": 1,
+        "ini": 6
+    },
+    "fileinfo": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 6,
+        "classes": 1,
+        "constants": 11,
+        "ini": 0
+    },
+    "filter": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 7,
+        "classes": 2,
+        "constants": 56,
+        "ini": 2
+    },
+    "ftp": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 36,
+        "classes": 1,
+        "constants": 11,
+        "ini": 0
+    },
+    "gd": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 105,
+        "classes": 2,
+        "constants": 89,
+        "ini": 1
+    },
+    "gettext": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 10,
+        "classes": 0,
+        "constants": 0,
+        "ini": 0
+    },
+    "gmp": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 51,
+        "classes": 1,
+        "constants": 9,
+        "ini": 0
+    },
+    "hash": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 20,
+        "classes": 1,
+        "constants": 40,
+        "ini": 0
+    },
+    "iconv": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 10,
+        "classes": 0,
+        "constants": 4,
+        "ini": 3
+    },
+    "json": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 5,
+        "classes": 2,
+        "constants": 29,
+        "ini": 0
+    },
+    "ldap": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 55,
+        "classes": 3,
+        "constants": 96,
+        "ini": 1
+    },
+    "lexbor": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 0,
+        "classes": 0,
+        "constants": 0,
+        "ini": 0
+    },
+    "libxml": {
+        "version": "8.5.0",
+        "dependencies": {
+            "standard": "Required"
+        },
+        "functions": 8,
+        "classes": 1,
+        "constants": 28,
+        "ini": 0
+    },
+    "mbstring": {
+        "version": "8.5.0",
+        "dependencies": {
+            "pcre": "Required"
+        },
+        "functions": 65,
+        "classes": 0,
+        "constants": 9,
+        "ini": 11
+    },
+    "mysqli": {
+        "version": "8.5.0",
+        "dependencies": {
+            "mysqlnd": "Required",
+            "spl": "Required"
+        },
+        "functions": 106,
+        "classes": 6,
+        "constants": 110,
+        "ini": 11
+    },
+    "mysqlnd": {
+        "version": "mysqlnd 8.5.0",
+        "dependencies": {
+            "standard": "Required"
+        },
+        "functions": 0,
+        "classes": 0,
+        "constants": 0,
+        "ini": 10
+    },
+    "odbc": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 48,
+        "classes": 2,
+        "constants": 57,
+        "ini": 7
+    },
+    "openssl": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 64,
+        "classes": 3,
+        "constants": 70,
+        "ini": 3
+    },
+    "pcntl": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 25,
+        "classes": 1,
+        "constants": 74,
+        "ini": 0
+    },
+    "pcre": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 11,
+        "classes": 0,
+        "constants": 19,
+        "ini": 3
+    },
+    "pdo_dblib": {
+        "version": "8.5.0",
+        "dependencies": {
+            "pdo": "Required"
+        },
+        "functions": 0,
+        "classes": 1,
+        "constants": 0,
+        "ini": 0
+    },
+    "pdo_mysql": {
+        "version": "8.5.0",
+        "dependencies": {
+            "mysqlnd": "Required",
+            "pdo": "Required"
+        },
+        "functions": 0,
+        "classes": 1,
+        "constants": 0,
+        "ini": 1
+    },
+    "pdo_pgsql": {
+        "version": "8.5.0",
+        "dependencies": {
+            "pdo": "Required"
+        },
+        "functions": 0,
+        "classes": 1,
+        "constants": 0,
+        "ini": 0
+    },
+    "pdo_sqlite": {
+        "version": "8.5.0",
+        "dependencies": {
+            "pdo": "Required"
+        },
+        "functions": 0,
+        "classes": 1,
+        "constants": 0,
+        "ini": 0
+    },
+    "pgsql": {
+        "version": "8.5.0",
+        "dependencies": {
+            "pcre": "Required"
+        },
+        "functions": 123,
+        "classes": 3,
+        "constants": 75,
+        "ini": 6
+    },
+    "posix": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 40,
+        "classes": 0,
+        "constants": 37,
+        "ini": 0
+    },
+    "random": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 9,
+        "classes": 11,
+        "constants": 2,
+        "ini": 0
+    },
+    "readline": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 12,
+        "classes": 0,
+        "constants": 1,
+        "ini": 2
+    },
+    "session": {
+        "version": "8.5.0",
+        "dependencies": {
+            "spl": "Optional"
+        },
+        "functions": 23,
+        "classes": 4,
+        "constants": 3,
+        "ini": 31
+    },
+    "shmop": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 6,
+        "classes": 1,
+        "constants": 0,
+        "ini": 0
+    },
+    "snmp": {
+        "version": "8.5.0",
+        "dependencies": {
+            "spl": "Required"
+        },
+        "functions": 24,
+        "classes": 2,
+        "constants": 21,
+        "ini": 0
+    },
+    "soap": {
+        "version": "8.5.0",
+        "dependencies": {
+            "date": "Required",
+            "libxml": "Required",
+            "session": "Optional"
+        },
+        "functions": 2,
+        "classes": 8,
+        "constants": 81,
+        "ini": 5
+    },
+    "sockets": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 37,
+        "classes": 2,
+        "constants": 159,
+        "ini": 0
+    },
+    "sodium": {
+        "version": "8.5.0",
+        "dependencies": {
+            "standard": "Required"
+        },
+        "functions": 110,
+        "classes": 1,
+        "constants": 102,
+        "ini": 0
+    },
+    "sqlite3": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 0,
+        "classes": 4,
+        "constants": 12,
+        "ini": 2
+    },
+    "standard": {
+        "version": "8.5.0",
+        "dependencies": {
+            "session": "Optional",
+            "uri": "Required"
+        },
+        "functions": 544,
+        "classes": 6,
+        "constants": 381,
+        "ini": 14
+    },
+    "sysvmsg": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 7,
+        "classes": 1,
+        "constants": 5,
+        "ini": 0
+    },
+    "sysvsem": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 4,
+        "classes": 1,
+        "constants": 0,
+        "ini": 0
+    },
+    "sysvshm": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 7,
+        "classes": 1,
+        "constants": 0,
+        "ini": 0
+    },
+    "tidy": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 24,
+        "classes": 2,
+        "constants": 161,
+        "ini": 2
+    },
+    "tokenizer": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 2,
+        "classes": 1,
+        "constants": 154,
+        "ini": 0
+    },
+    "uri": {
+        "version": "8.5.0",
+        "dependencies": {
+            "lexbor": "Required"
+        },
+        "functions": 0,
+        "classes": 9,
+        "constants": 0,
+        "ini": 0
+    },
+    "xml": {
+        "version": "8.5.0",
+        "dependencies": {
+            "libxml": "Required"
+        },
+        "functions": 22,
+        "classes": 1,
+        "constants": 28,
+        "ini": 0
+    },
+    "xmlreader": {
+        "version": "8.5.0",
+        "dependencies": {
+            "dom": "Required",
+            "libxml": "Required"
+        },
+        "functions": 0,
+        "classes": 1,
+        "constants": 0,
+        "ini": 0
+    },
+    "xmlwriter": {
+        "version": "8.5.0",
+        "dependencies": {
+            "libxml": "Required"
+        },
+        "functions": 42,
+        "classes": 1,
+        "constants": 0,
+        "ini": 0
+    },
+    "xsl": {
+        "version": "8.5.0",
+        "dependencies": {
+            "dom": "Required",
+            "libxml": "Required"
+        },
+        "functions": 0,
+        "classes": 1,
+        "constants": 14,
+        "ini": 0
+    },
+    "zip": {
+        "version": "1.22.7",
+        "dependencies": {
+            "pcre": "Required"
+        },
+        "functions": 10,
+        "classes": 1,
+        "constants": 0,
+        "ini": 0
+    },
+    "zlib": {
+        "version": "8.5.0",
+        "dependencies": {},
+        "functions": 30,
+        "classes": 2,
+        "constants": 27,
+        "ini": 3
+    }
+}

@@ -1,0 +1,1730 @@
+{
+    "SMTP": {
+        "global_value": "localhost",
+        "local_value": "localhost",
+        "access": 7,
+        "extension": "Core"
+    },
+    "allow_url_fopen": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "Core"
+    },
+    "allow_url_include": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Core"
+    },
+    "arg_separator.input": {
+        "global_value": "&",
+        "local_value": "&",
+        "access": 6,
+        "extension": "Core"
+    },
+    "arg_separator.output": {
+        "global_value": "&",
+        "local_value": "&",
+        "access": 7,
+        "extension": "Core"
+    },
+    "assert.active": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "standard"
+    },
+    "assert.bail": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "standard"
+    },
+    "assert.callback": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "standard"
+    },
+    "assert.exception": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "standard"
+    },
+    "assert.warning": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "standard"
+    },
+    "auto_append_file": {
+        "global_value": null,
+        "local_value": null,
+        "access": 6,
+        "extension": "Core"
+    },
+    "auto_detect_line_endings": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "standard"
+    },
+    "auto_globals_jit": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 6,
+        "extension": "Core"
+    },
+    "auto_prepend_file": {
+        "global_value": null,
+        "local_value": null,
+        "access": 6,
+        "extension": "Core"
+    },
+    "bcmath.scale": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "bcmath"
+    },
+    "browscap": {
+        "global_value": null,
+        "local_value": null,
+        "access": 4,
+        "extension": "Core"
+    },
+    "cli.pager": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "readline"
+    },
+    "cli.prompt": {
+        "global_value": "\\b \\> ",
+        "local_value": "\\b \\> ",
+        "access": 7,
+        "extension": "readline"
+    },
+    "curl.cainfo": {
+        "global_value": "",
+        "local_value": "",
+        "access": 4,
+        "extension": "curl"
+    },
+    "date.default_latitude": {
+        "global_value": "31.7667",
+        "local_value": "31.7667",
+        "access": 7,
+        "extension": "date"
+    },
+    "date.default_longitude": {
+        "global_value": "35.2333",
+        "local_value": "35.2333",
+        "access": 7,
+        "extension": "date"
+    },
+    "date.sunrise_zenith": {
+        "global_value": "90.833333",
+        "local_value": "90.833333",
+        "access": 7,
+        "extension": "date"
+    },
+    "date.sunset_zenith": {
+        "global_value": "90.833333",
+        "local_value": "90.833333",
+        "access": 7,
+        "extension": "date"
+    },
+    "date.timezone": {
+        "global_value": "UTC",
+        "local_value": "UTC",
+        "access": 7,
+        "extension": "date"
+    },
+    "dba.default_handler": {
+        "global_value": "flatfile",
+        "local_value": "flatfile",
+        "access": 7,
+        "extension": "dba"
+    },
+    "default_charset": {
+        "global_value": "UTF-8",
+        "local_value": "UTF-8",
+        "access": 7,
+        "extension": "Core"
+    },
+    "default_mimetype": {
+        "global_value": "text/html",
+        "local_value": "text/html",
+        "access": 7,
+        "extension": "Core"
+    },
+    "default_socket_timeout": {
+        "global_value": "60",
+        "local_value": "60",
+        "access": 7,
+        "extension": "standard"
+    },
+    "disable_functions": {
+        "global_value": "",
+        "local_value": "",
+        "access": 4,
+        "extension": "Core"
+    },
+    "display_errors": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Core"
+    },
+    "display_startup_errors": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Core"
+    },
+    "doc_root": {
+        "global_value": null,
+        "local_value": null,
+        "access": 4,
+        "extension": "Core"
+    },
+    "docref_ext": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "Core"
+    },
+    "docref_root": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "Core"
+    },
+    "enable_dl": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "Core"
+    },
+    "enable_post_data_reading": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 6,
+        "extension": "Core"
+    },
+    "error_append_string": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "Core"
+    },
+    "error_log": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "Core"
+    },
+    "error_log_mode": {
+        "global_value": "0644",
+        "local_value": "0644",
+        "access": 7,
+        "extension": "Core"
+    },
+    "error_prepend_string": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "Core"
+    },
+    "error_reporting": {
+        "global_value": "22527",
+        "local_value": "22527",
+        "access": 7,
+        "extension": "Core"
+    },
+    "exif.decode_jis_intel": {
+        "global_value": "JIS",
+        "local_value": "JIS",
+        "access": 7,
+        "extension": "exif"
+    },
+    "exif.decode_jis_motorola": {
+        "global_value": "JIS",
+        "local_value": "JIS",
+        "access": 7,
+        "extension": "exif"
+    },
+    "exif.decode_unicode_intel": {
+        "global_value": "UCS-2LE",
+        "local_value": "UCS-2LE",
+        "access": 7,
+        "extension": "exif"
+    },
+    "exif.decode_unicode_motorola": {
+        "global_value": "UCS-2BE",
+        "local_value": "UCS-2BE",
+        "access": 7,
+        "extension": "exif"
+    },
+    "exif.encode_jis": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "exif"
+    },
+    "exif.encode_unicode": {
+        "global_value": "ISO-8859-15",
+        "local_value": "ISO-8859-15",
+        "access": 7,
+        "extension": "exif"
+    },
+    "expose_php": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "Core"
+    },
+    "extension_dir": {
+        "global_value": "/opt/homebrew/Cellar/php/8.5.0/lib/php/20250925",
+        "local_value": "/opt/homebrew/Cellar/php/8.5.0/lib/php/20250925",
+        "access": 4,
+        "extension": "Core"
+    },
+    "fatal_error_backtraces": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Core"
+    },
+    "ffi.enable": {
+        "global_value": "preload",
+        "local_value": "preload",
+        "access": 4,
+        "extension": "FFI"
+    },
+    "ffi.preload": {
+        "global_value": null,
+        "local_value": null,
+        "access": 4,
+        "extension": "FFI"
+    },
+    "fiber.stack_size": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "Core"
+    },
+    "file_uploads": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "Core"
+    },
+    "filter.default": {
+        "global_value": "unsafe_raw",
+        "local_value": "unsafe_raw",
+        "access": 6,
+        "extension": "filter"
+    },
+    "filter.default_flags": {
+        "global_value": null,
+        "local_value": null,
+        "access": 6,
+        "extension": "filter"
+    },
+    "from": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "standard"
+    },
+    "gd.jpeg_ignore_warning": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "gd"
+    },
+    "hard_timeout": {
+        "global_value": "2",
+        "local_value": "2",
+        "access": 4,
+        "extension": "Core"
+    },
+    "highlight.comment": {
+        "global_value": "#FF8000",
+        "local_value": "#FF8000",
+        "access": 7,
+        "extension": "Core"
+    },
+    "highlight.default": {
+        "global_value": "#0000BB",
+        "local_value": "#0000BB",
+        "access": 7,
+        "extension": "Core"
+    },
+    "highlight.html": {
+        "global_value": "#000000",
+        "local_value": "#000000",
+        "access": 7,
+        "extension": "Core"
+    },
+    "highlight.keyword": {
+        "global_value": "#007700",
+        "local_value": "#007700",
+        "access": 7,
+        "extension": "Core"
+    },
+    "highlight.string": {
+        "global_value": "#DD0000",
+        "local_value": "#DD0000",
+        "access": 7,
+        "extension": "Core"
+    },
+    "html_errors": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Core"
+    },
+    "iconv.input_encoding": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "iconv"
+    },
+    "iconv.internal_encoding": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "iconv"
+    },
+    "iconv.output_encoding": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "iconv"
+    },
+    "ignore_repeated_errors": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Core"
+    },
+    "ignore_repeated_source": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Core"
+    },
+    "ignore_user_abort": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Core"
+    },
+    "implicit_flush": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Core"
+    },
+    "include_path": {
+        "global_value": ".:/opt/homebrew/Cellar/php/8.5.0/share/php/pear",
+        "local_value": ".:/opt/homebrew/Cellar/php/8.5.0/share/php/pear",
+        "access": 7,
+        "extension": "Core"
+    },
+    "input_encoding": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "Core"
+    },
+    "internal_encoding": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "Core"
+    },
+    "ldap.max_links": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 4,
+        "extension": "ldap"
+    },
+    "log_errors": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Core"
+    },
+    "mail.add_x_header": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 6,
+        "extension": "Core"
+    },
+    "mail.cr_lf_mode": {
+        "global_value": "crlf",
+        "local_value": "crlf",
+        "access": 6,
+        "extension": "Core"
+    },
+    "mail.force_extra_parameters": {
+        "global_value": null,
+        "local_value": null,
+        "access": 6,
+        "extension": "Core"
+    },
+    "mail.log": {
+        "global_value": null,
+        "local_value": null,
+        "access": 6,
+        "extension": "Core"
+    },
+    "mail.mixed_lf_and_crlf": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 6,
+        "extension": "Core"
+    },
+    "max_execution_time": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Core"
+    },
+    "max_file_uploads": {
+        "global_value": "20",
+        "local_value": "20",
+        "access": 6,
+        "extension": "Core"
+    },
+    "max_input_nesting_level": {
+        "global_value": "64",
+        "local_value": "64",
+        "access": 6,
+        "extension": "Core"
+    },
+    "max_input_time": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 6,
+        "extension": "Core"
+    },
+    "max_input_vars": {
+        "global_value": "1000",
+        "local_value": "1000",
+        "access": 6,
+        "extension": "Core"
+    },
+    "max_memory_limit": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 4,
+        "extension": "Core"
+    },
+    "max_multipart_body_parts": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 6,
+        "extension": "Core"
+    },
+    "mbstring.detect_order": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "mbstring"
+    },
+    "mbstring.encoding_translation": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 6,
+        "extension": "mbstring"
+    },
+    "mbstring.http_input": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "mbstring"
+    },
+    "mbstring.http_output": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "mbstring"
+    },
+    "mbstring.http_output_conv_mimetypes": {
+        "global_value": "^(text/|application/xhtml\\+xml)",
+        "local_value": "^(text/|application/xhtml\\+xml)",
+        "access": 7,
+        "extension": "mbstring"
+    },
+    "mbstring.internal_encoding": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "mbstring"
+    },
+    "mbstring.language": {
+        "global_value": "neutral",
+        "local_value": "neutral",
+        "access": 7,
+        "extension": "mbstring"
+    },
+    "mbstring.regex_retry_limit": {
+        "global_value": "1000000",
+        "local_value": "1000000",
+        "access": 7,
+        "extension": "mbstring"
+    },
+    "mbstring.regex_stack_limit": {
+        "global_value": "100000",
+        "local_value": "100000",
+        "access": 7,
+        "extension": "mbstring"
+    },
+    "mbstring.strict_detection": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "mbstring"
+    },
+    "mbstring.substitute_character": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "mbstring"
+    },
+    "memory_limit": {
+        "global_value": "128M",
+        "local_value": "128M",
+        "access": 7,
+        "extension": "Core"
+    },
+    "mysqli.allow_local_infile": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "mysqli"
+    },
+    "mysqli.allow_persistent": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "mysqli"
+    },
+    "mysqli.default_host": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "mysqli"
+    },
+    "mysqli.default_port": {
+        "global_value": "3306",
+        "local_value": "3306",
+        "access": 7,
+        "extension": "mysqli"
+    },
+    "mysqli.default_pw": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "mysqli"
+    },
+    "mysqli.default_socket": {
+        "global_value": "/tmp/mysql.sock",
+        "local_value": "/tmp/mysql.sock",
+        "access": 7,
+        "extension": "mysqli"
+    },
+    "mysqli.default_user": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "mysqli"
+    },
+    "mysqli.local_infile_directory": {
+        "global_value": null,
+        "local_value": null,
+        "access": 4,
+        "extension": "mysqli"
+    },
+    "mysqli.max_links": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 4,
+        "extension": "mysqli"
+    },
+    "mysqli.max_persistent": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 4,
+        "extension": "mysqli"
+    },
+    "mysqli.rollback_on_cached_plink": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "mysqli"
+    },
+    "mysqlnd.collect_memory_statistics": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "mysqlnd"
+    },
+    "mysqlnd.collect_statistics": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "mysqlnd"
+    },
+    "mysqlnd.debug": {
+        "global_value": null,
+        "local_value": null,
+        "access": 4,
+        "extension": "mysqlnd"
+    },
+    "mysqlnd.log_mask": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "mysqlnd"
+    },
+    "mysqlnd.mempool_default_size": {
+        "global_value": "16000",
+        "local_value": "16000",
+        "access": 7,
+        "extension": "mysqlnd"
+    },
+    "mysqlnd.net_cmd_buffer_size": {
+        "global_value": "4096",
+        "local_value": "4096",
+        "access": 7,
+        "extension": "mysqlnd"
+    },
+    "mysqlnd.net_read_buffer_size": {
+        "global_value": "32768",
+        "local_value": "32768",
+        "access": 7,
+        "extension": "mysqlnd"
+    },
+    "mysqlnd.net_read_timeout": {
+        "global_value": "86400",
+        "local_value": "86400",
+        "access": 7,
+        "extension": "mysqlnd"
+    },
+    "mysqlnd.sha256_server_public_key": {
+        "global_value": null,
+        "local_value": null,
+        "access": 2,
+        "extension": "mysqlnd"
+    },
+    "mysqlnd.trace_alloc": {
+        "global_value": null,
+        "local_value": null,
+        "access": 4,
+        "extension": "mysqlnd"
+    },
+    "odbc.allow_persistent": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "odbc"
+    },
+    "odbc.check_persistent": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "odbc"
+    },
+    "odbc.default_cursortype": {
+        "global_value": "3",
+        "local_value": "3",
+        "access": 7,
+        "extension": "odbc"
+    },
+    "odbc.defaultbinmode": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "odbc"
+    },
+    "odbc.defaultlrl": {
+        "global_value": "4096",
+        "local_value": "4096",
+        "access": 7,
+        "extension": "odbc"
+    },
+    "odbc.max_links": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 4,
+        "extension": "odbc"
+    },
+    "odbc.max_persistent": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 4,
+        "extension": "odbc"
+    },
+    "opcache.blacklist_filename": {
+        "global_value": "",
+        "local_value": "",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.dups_fix": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.enable": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.enable_cli": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.enable_file_override": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.error_log": {
+        "global_value": "",
+        "local_value": "",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.file_cache": {
+        "global_value": null,
+        "local_value": null,
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.file_cache_consistency_checks": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.file_cache_only": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.file_cache_read_only": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.file_update_protection": {
+        "global_value": "2",
+        "local_value": "2",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.force_restart_timeout": {
+        "global_value": "180",
+        "local_value": "180",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.huge_code_pages": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.interned_strings_buffer": {
+        "global_value": "8",
+        "local_value": "8",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit": {
+        "global_value": "disable",
+        "local_value": "disable",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_bisect_limit": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_blacklist_root_trace": {
+        "global_value": "16",
+        "local_value": "16",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_blacklist_side_trace": {
+        "global_value": "8",
+        "local_value": "8",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_buffer_size": {
+        "global_value": "64M",
+        "local_value": "64M",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_debug": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_hot_func": {
+        "global_value": "127",
+        "local_value": "127",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_hot_loop": {
+        "global_value": "61",
+        "local_value": "61",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_hot_return": {
+        "global_value": "8",
+        "local_value": "8",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_hot_side_exit": {
+        "global_value": "8",
+        "local_value": "8",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_max_exit_counters": {
+        "global_value": "8192",
+        "local_value": "8192",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_max_loop_unrolls": {
+        "global_value": "8",
+        "local_value": "8",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_max_polymorphic_calls": {
+        "global_value": "2",
+        "local_value": "2",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_max_recursive_calls": {
+        "global_value": "2",
+        "local_value": "2",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_max_recursive_returns": {
+        "global_value": "2",
+        "local_value": "2",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_max_root_traces": {
+        "global_value": "1024",
+        "local_value": "1024",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_max_side_traces": {
+        "global_value": "128",
+        "local_value": "128",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_max_trace_length": {
+        "global_value": "1024",
+        "local_value": "1024",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.jit_prof_threshold": {
+        "global_value": "0.005",
+        "local_value": "0.005",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.lockfile_path": {
+        "global_value": "/tmp",
+        "local_value": "/tmp",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.log_verbosity_level": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.max_accelerated_files": {
+        "global_value": "10000",
+        "local_value": "10000",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.max_file_size": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.max_wasted_percentage": {
+        "global_value": "5",
+        "local_value": "5",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.memory_consumption": {
+        "global_value": "128",
+        "local_value": "128",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.opt_debug_level": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.optimization_level": {
+        "global_value": "0x7FFEBFFF",
+        "local_value": "0x7FFEBFFF",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.preferred_memory_model": {
+        "global_value": "",
+        "local_value": "",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.preload": {
+        "global_value": "",
+        "local_value": "",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.preload_user": {
+        "global_value": "",
+        "local_value": "",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.protect_memory": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.record_warnings": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.restrict_api": {
+        "global_value": "",
+        "local_value": "",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.revalidate_freq": {
+        "global_value": "2",
+        "local_value": "2",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.revalidate_path": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "opcache.save_comments": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.use_cwd": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.validate_permission": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.validate_root": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Zend OPcache"
+    },
+    "opcache.validate_timestamps": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Zend OPcache"
+    },
+    "open_basedir": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "Core"
+    },
+    "openssl.cafile": {
+        "global_value": null,
+        "local_value": null,
+        "access": 2,
+        "extension": "openssl"
+    },
+    "openssl.capath": {
+        "global_value": null,
+        "local_value": null,
+        "access": 2,
+        "extension": "openssl"
+    },
+    "openssl.libctx": {
+        "global_value": "custom",
+        "local_value": "custom",
+        "access": 2,
+        "extension": "openssl"
+    },
+    "output_buffering": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 6,
+        "extension": "Core"
+    },
+    "output_encoding": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "Core"
+    },
+    "output_handler": {
+        "global_value": null,
+        "local_value": null,
+        "access": 6,
+        "extension": "Core"
+    },
+    "pcre.backtrack_limit": {
+        "global_value": "1000000",
+        "local_value": "1000000",
+        "access": 7,
+        "extension": "pcre"
+    },
+    "pcre.jit": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "pcre"
+    },
+    "pcre.recursion_limit": {
+        "global_value": "100000",
+        "local_value": "100000",
+        "access": 7,
+        "extension": "pcre"
+    },
+    "pdo_mysql.default_socket": {
+        "global_value": "/tmp/mysql.sock",
+        "local_value": "/tmp/mysql.sock",
+        "access": 4,
+        "extension": "pdo_mysql"
+    },
+    "pgsql.allow_persistent": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 4,
+        "extension": "pgsql"
+    },
+    "pgsql.auto_reset_persistent": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "pgsql"
+    },
+    "pgsql.ignore_notice": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "pgsql"
+    },
+    "pgsql.log_notice": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "pgsql"
+    },
+    "pgsql.max_links": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 4,
+        "extension": "pgsql"
+    },
+    "pgsql.max_persistent": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 4,
+        "extension": "pgsql"
+    },
+    "phar.cache_list": {
+        "global_value": "",
+        "local_value": "",
+        "access": 4,
+        "extension": "Phar"
+    },
+    "phar.readonly": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Phar"
+    },
+    "phar.require_hash": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Phar"
+    },
+    "post_max_size": {
+        "global_value": "8M",
+        "local_value": "8M",
+        "access": 6,
+        "extension": "Core"
+    },
+    "precision": {
+        "global_value": "14",
+        "local_value": "14",
+        "access": 7,
+        "extension": "Core"
+    },
+    "realpath_cache_size": {
+        "global_value": "4096K",
+        "local_value": "4096K",
+        "access": 4,
+        "extension": "Core"
+    },
+    "realpath_cache_ttl": {
+        "global_value": "120",
+        "local_value": "120",
+        "access": 4,
+        "extension": "Core"
+    },
+    "register_argc_argv": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 6,
+        "extension": "Core"
+    },
+    "report_memleaks": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Core"
+    },
+    "report_zend_debug": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Core"
+    },
+    "request_order": {
+        "global_value": null,
+        "local_value": null,
+        "access": 6,
+        "extension": "Core"
+    },
+    "sendmail_from": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "Core"
+    },
+    "sendmail_path": {
+        "global_value": "/usr/sbin/sendmail -t -i",
+        "local_value": "/usr/sbin/sendmail -t -i",
+        "access": 4,
+        "extension": "Core"
+    },
+    "serialize_precision": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 7,
+        "extension": "Core"
+    },
+    "session.auto_start": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 2,
+        "extension": "session"
+    },
+    "session.cache_expire": {
+        "global_value": "180",
+        "local_value": "180",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.cache_limiter": {
+        "global_value": "nocache",
+        "local_value": "nocache",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.cookie_domain": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.cookie_httponly": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.cookie_lifetime": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.cookie_partitioned": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.cookie_path": {
+        "global_value": "/",
+        "local_value": "/",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.cookie_samesite": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.cookie_secure": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.gc_divisor": {
+        "global_value": "100",
+        "local_value": "100",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.gc_maxlifetime": {
+        "global_value": "1440",
+        "local_value": "1440",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.gc_probability": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.lazy_write": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.name": {
+        "global_value": "PHPSESSID",
+        "local_value": "PHPSESSID",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.referer_check": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.save_handler": {
+        "global_value": "files",
+        "local_value": "files",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.save_path": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.serialize_handler": {
+        "global_value": "php",
+        "local_value": "php",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.sid_bits_per_character": {
+        "global_value": "4",
+        "local_value": "4",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.sid_length": {
+        "global_value": "32",
+        "local_value": "32",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.trans_sid_hosts": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "standard"
+    },
+    "session.trans_sid_tags": {
+        "global_value": "a=href,area=href,frame=src,form=",
+        "local_value": "a=href,area=href,frame=src,form=",
+        "access": 7,
+        "extension": "standard"
+    },
+    "session.upload_progress.cleanup": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 2,
+        "extension": "session"
+    },
+    "session.upload_progress.enabled": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 2,
+        "extension": "session"
+    },
+    "session.upload_progress.freq": {
+        "global_value": "1%",
+        "local_value": "1%",
+        "access": 2,
+        "extension": "session"
+    },
+    "session.upload_progress.min_freq": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 2,
+        "extension": "session"
+    },
+    "session.upload_progress.name": {
+        "global_value": "PHP_SESSION_UPLOAD_PROGRESS",
+        "local_value": "PHP_SESSION_UPLOAD_PROGRESS",
+        "access": 2,
+        "extension": "session"
+    },
+    "session.upload_progress.prefix": {
+        "global_value": "upload_progress_",
+        "local_value": "upload_progress_",
+        "access": 2,
+        "extension": "session"
+    },
+    "session.use_cookies": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.use_only_cookies": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.use_strict_mode": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "session"
+    },
+    "session.use_trans_sid": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "session"
+    },
+    "short_open_tag": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 6,
+        "extension": "Core"
+    },
+    "smtp_port": {
+        "global_value": "25",
+        "local_value": "25",
+        "access": 7,
+        "extension": "Core"
+    },
+    "soap.wsdl_cache": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "soap"
+    },
+    "soap.wsdl_cache_dir": {
+        "global_value": "/tmp",
+        "local_value": "/tmp",
+        "access": 7,
+        "extension": "soap"
+    },
+    "soap.wsdl_cache_enabled": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "soap"
+    },
+    "soap.wsdl_cache_limit": {
+        "global_value": "5",
+        "local_value": "5",
+        "access": 7,
+        "extension": "soap"
+    },
+    "soap.wsdl_cache_ttl": {
+        "global_value": "86400",
+        "local_value": "86400",
+        "access": 7,
+        "extension": "soap"
+    },
+    "sqlite3.defensive": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 1,
+        "extension": "sqlite3"
+    },
+    "sqlite3.extension_dir": {
+        "global_value": null,
+        "local_value": null,
+        "access": 4,
+        "extension": "sqlite3"
+    },
+    "sys_temp_dir": {
+        "global_value": null,
+        "local_value": null,
+        "access": 4,
+        "extension": "Core"
+    },
+    "syslog.facility": {
+        "global_value": "LOG_USER",
+        "local_value": "LOG_USER",
+        "access": 4,
+        "extension": "Core"
+    },
+    "syslog.filter": {
+        "global_value": "no-ctrl",
+        "local_value": "no-ctrl",
+        "access": 7,
+        "extension": "Core"
+    },
+    "syslog.ident": {
+        "global_value": "php",
+        "local_value": "php",
+        "access": 4,
+        "extension": "Core"
+    },
+    "tidy.clean_output": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 1,
+        "extension": "tidy"
+    },
+    "tidy.default_config": {
+        "global_value": "",
+        "local_value": "",
+        "access": 4,
+        "extension": "tidy"
+    },
+    "unserialize_callback_func": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "Core"
+    },
+    "unserialize_max_depth": {
+        "global_value": "4096",
+        "local_value": "4096",
+        "access": 7,
+        "extension": "standard"
+    },
+    "upload_max_filesize": {
+        "global_value": "2M",
+        "local_value": "2M",
+        "access": 6,
+        "extension": "Core"
+    },
+    "upload_tmp_dir": {
+        "global_value": null,
+        "local_value": null,
+        "access": 4,
+        "extension": "Core"
+    },
+    "url_rewriter.hosts": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "standard"
+    },
+    "url_rewriter.tags": {
+        "global_value": "form=",
+        "local_value": "form=",
+        "access": 7,
+        "extension": "standard"
+    },
+    "user_agent": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "standard"
+    },
+    "user_dir": {
+        "global_value": null,
+        "local_value": null,
+        "access": 4,
+        "extension": "Core"
+    },
+    "user_ini.cache_ttl": {
+        "global_value": "300",
+        "local_value": "300",
+        "access": 4,
+        "extension": "Core"
+    },
+    "user_ini.filename": {
+        "global_value": ".user.ini",
+        "local_value": ".user.ini",
+        "access": 4,
+        "extension": "Core"
+    },
+    "variables_order": {
+        "global_value": "EGPCS",
+        "local_value": "EGPCS",
+        "access": 6,
+        "extension": "Core"
+    },
+    "xmlrpc_error_number": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Core"
+    },
+    "xmlrpc_errors": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Core"
+    },
+    "zend.assertions": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Core"
+    },
+    "zend.detect_unicode": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Core"
+    },
+    "zend.enable_gc": {
+        "global_value": "1",
+        "local_value": "1",
+        "access": 7,
+        "extension": "Core"
+    },
+    "zend.exception_ignore_args": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "Core"
+    },
+    "zend.exception_string_param_max_len": {
+        "global_value": "15",
+        "local_value": "15",
+        "access": 7,
+        "extension": "Core"
+    },
+    "zend.max_allowed_stack_size": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Core"
+    },
+    "zend.multibyte": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 2,
+        "extension": "Core"
+    },
+    "zend.reserved_stack_size": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Core"
+    },
+    "zend.script_encoding": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "Core"
+    },
+    "zend.signal_check": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 4,
+        "extension": "Core"
+    },
+    "zlib.output_compression": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "zlib"
+    },
+    "zlib.output_compression_level": {
+        "global_value": "-1",
+        "local_value": "-1",
+        "access": 7,
+        "extension": "zlib"
+    },
+    "zlib.output_handler": {
+        "global_value": "",
+        "local_value": "",
+        "access": 7,
+        "extension": "zlib"
+    }
+}

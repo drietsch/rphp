@@ -17,16 +17,22 @@ mod arrays;
 mod base64;
 mod basic_functions;
 mod ctype;
+mod dir;
 mod errorfunc;
+mod file;
+mod filestat;
 mod formatted_print;
 mod funcs;
 mod hash;
 mod html;
+mod iconv;
 mod info;
 mod json;
 mod math;
+mod mbstring;
 mod output;
 mod output_buffering;
+mod pack;
 mod pcre;
 mod random;
 mod string2;
@@ -63,6 +69,12 @@ const MODULES: &[&[NativeFn]] = &[
     base64::FUNCTIONS,
     uniqid::FUNCTIONS,
     random::FUNCTIONS,
+    mbstring::FUNCTIONS,
+    iconv::FUNCTIONS,
+    pack::FUNCTIONS,
+    file::FUNCTIONS,
+    filestat::FUNCTIONS,
+    dir::FUNCTIONS,
 ];
 
 /// Register every module's functions and constants into an interpreter.
@@ -78,6 +90,12 @@ pub fn register(r: &mut Registry) {
     random::register_constants(r);
     url::register_constants(r);
     info::register_constants(r);
+    mbstring::register_constants(r);
+    iconv::register_constants(r);
+    pack::register_constants(r);
+    file::register_constants(r);
+    filestat::register_constants(r);
+    dir::register_constants(r);
 }
 
 /// Every native this crate provides (for tooling: coverage, `xtask missing`).

@@ -1,0 +1,281 @@
+(program file=0
+  (class-like kind=class name=Point
+    (prop mods=public
+      (item $x
+        (int 0)))
+    (prop mods=public
+      (item $y
+        (int 0)))
+    (method __construct mods=public
+      (params
+        (param $x)
+        (param $y))
+      (body
+        (expr-stmt
+          (assign
+            (prop name=x
+              (var $this))
+            (var $x)))
+        (expr-stmt
+          (assign
+            (prop name=y
+              (var $this))
+            (var $y)))))
+    (method move mods=public
+      (params
+        (param $dx)
+        (param $dy))
+      (body
+        (expr-stmt
+          (assign
+            (prop name=x
+              (var $this))
+            (binary add
+              (prop name=x
+                (var $this))
+              (var $dx))))
+        (expr-stmt
+          (assign
+            (prop name=y
+              (var $this))
+            (binary add
+              (prop name=y
+                (var $this))
+              (var $dy))))
+        (return
+          (var $this))))
+    (method lenSq mods=public
+      (params)
+      (body
+        (return
+          (binary add
+            (binary mul
+              (prop name=x
+                (var $this))
+              (prop name=x
+                (var $this)))
+            (binary mul
+              (prop name=y
+                (var $this))
+              (prop name=y
+                (var $this)))))))
+    (method label mods=public
+      (params)
+      (body
+        (return
+          (binary concat
+            (binary concat
+              (binary concat
+                (binary concat
+                  (str "(")
+                  (prop name=x
+                    (var $this)))
+                (str ", "))
+              (prop name=y
+                (var $this)))
+            (str ")"))))))
+  (expr-stmt
+    (assign
+      (var $p)
+      (new
+        (name Point kind=u)
+        (arg
+          (int 3))
+        (arg
+          (int 4)))))
+  (echo
+    (method-call name=label
+      (var $p))
+    (str "\n"))
+  (echo
+    (method-call name=lenSq
+      (var $p))
+    (str "\n"))
+  (expr-stmt
+    (method-call name=move
+      (method-call name=move
+        (var $p)
+        (arg
+          (int 1))
+        (arg
+          (int 1)))
+      (arg
+        (unary neg
+          (int 2)))
+      (arg
+        (int 0))))
+  (echo
+    (method-call name=label
+      (var $p))
+    (str "\n"))
+  (class-like kind=class name=Bag
+    (prop mods=public
+      (item $items
+        (int 0)))
+    (prop mods=public
+      (item $name
+        (str "bag")))
+    (prop mods=public
+      (item $open
+        (bool true)))
+    (prop mods=public
+      (item $ratio
+        (float 0.5)))
+    (prop mods=public
+      (item $empty
+        (null))))
+  (expr-stmt
+    (assign
+      (var $b)
+      (new
+        (name Bag kind=u))))
+  (echo
+    (prop name=items
+      (var $b))
+    (str " ")
+    (prop name=name
+      (var $b))
+    (str " ")
+    (prop name=ratio
+      (var $b))
+    (str "\n"))
+  (if
+    (prop name=open
+      (var $b))
+    (then
+      (echo
+        (str "open\n")))
+    (else
+      (echo
+        (str "shut\n"))))
+  (if
+    (binary identical
+      (prop name=empty
+        (var $b))
+      (null))
+    (then
+      (echo
+        (str "null\n")))
+    (else
+      (echo
+        (str "set\n"))))
+  (expr-stmt
+    (assign
+      (var $q)
+      (var $p)))
+  (expr-stmt
+    (method-call name=move
+      (var $q)
+      (arg
+        (int 10))
+      (arg
+        (int 10))))
+  (echo
+    (method-call name=label
+      (var $p))
+    (str "\n"))
+  (if
+    (binary identical
+      (var $p)
+      (var $q))
+    (then
+      (echo
+        (str "same\n")))
+    (else
+      (echo
+        (str "diff\n"))))
+  (expr-stmt
+    (assign
+      (var $r)
+      (new
+        (name Point kind=u)
+        (arg
+          (int 12))
+        (arg
+          (int 15)))))
+  (if
+    (binary identical
+      (var $p)
+      (var $r))
+    (then
+      (echo
+        (str "same\n")))
+    (else
+      (echo
+        (str "diff\n"))))
+  (func shift
+    (params
+      (param $pt))
+    (body
+      (return
+        (method-call name=move
+          (var $pt)
+          (arg
+            (int 100))
+          (arg
+            (int 0))))))
+  (echo
+    (method-call name=label
+      (call
+        (name shift kind=u)
+        (arg
+          (var $p))))
+    (str "\n"))
+  (echo
+    (prop name=x
+      (var $p))
+    (str "\n"))
+  (echo
+    (call
+      (name json_encode kind=u)
+      (arg
+        (new
+          (name Point kind=u)
+          (arg
+            (int 1))
+          (arg
+            (int 2)))))
+    (str "\n"))
+  (echo
+    (call
+      (name json_encode kind=u)
+      (arg
+        (var $b)))
+    (str "\n"))
+  (expr-stmt
+    (assign
+      (var $g)
+      (new
+        (name Greeter kind=u)
+        (arg
+          (str "hi")))))
+  (echo
+    (method-call name=greet
+      (var $g)
+      (arg
+        (str "world")))
+    (str "\n"))
+  (class-like kind=class name=Greeter
+    (prop mods=public
+      (item $prefix
+        (str "")))
+    (method __construct mods=public
+      (params
+        (param $prefix))
+      (body
+        (expr-stmt
+          (assign
+            (prop name=prefix
+              (var $this))
+            (var $prefix)))))
+    (method greet mods=public
+      (params
+        (param $who))
+      (body
+        (return
+          (binary concat
+            (binary concat
+              (prop name=prefix
+                (var $this))
+              (str ", "))
+            (var $who)))))))

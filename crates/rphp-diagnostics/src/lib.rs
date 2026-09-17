@@ -85,11 +85,45 @@ impl Diagnostic {
 
 /// Stable diagnostic codes (`RPHP_E####`). Add as the corpus surfaces shapes.
 pub mod codes {
+    /// Lexer-level: an unexpected or unrecognised byte.
     pub const UNEXPECTED_CHAR: &str = "RPHP_E0001";
+    /// Parser-level: an unexpected token (message carries the expected set).
     pub const UNEXPECTED_TOKEN: &str = "RPHP_E0002";
+    /// An unterminated string literal.
     pub const UNTERMINATED: &str = "RPHP_E0003";
+    /// Unexpected end of file (message carries the expected set).
+    pub const UNEXPECTED_EOF: &str = "RPHP_E0004";
+    /// The parser's nesting limit was exceeded.
+    pub const RECURSION_LIMIT: &str = "RPHP_E0005";
+    /// A literal the lexer accepted but PHP rejects at parse time (invalid
+    /// numeric literal, invalid `\u{}` escape, heredoc indentation).
+    pub const INVALID_LITERAL: &str = "RPHP_E0006";
+    /// A syntax node kind the adapter does not map (`unsupported syntax node: <Kind>`).
+    pub const UNSUPPORTED_NODE: &str = "RPHP_E0010";
+    /// Syntax mago accepts but PHP 8.5 rejects (the conformance pass), with
+    /// PHP's own message.
+    pub const SUPERSET_REJECTED: &str = "RPHP_E0011";
+    /// Write context: the target's shape cannot be written through.
+    pub const LVALUE_NOT_WRITABLE: &str = "RPHP_E0020";
+    /// Write context: a nullsafe fetch inside a write or reference chain.
+    pub const LVALUE_NULLSAFE: &str = "RPHP_E0021";
+    /// Write context: `$this` rebound, unset or imported.
+    pub const LVALUE_THIS: &str = "RPHP_E0022";
+    /// Write context: `$GLOBALS` written as a whole or appended to.
+    pub const LVALUE_GLOBALS: &str = "RPHP_E0023";
+    /// Write context: `[]` (append) where the chain is read or unset.
+    pub const LVALUE_APPEND: &str = "RPHP_E0024";
+    /// An ill-formed destructuring pattern.
+    pub const LVALUE_DESTRUCTURING: &str = "RPHP_E0025";
+    /// `declare(strict_types=...)` placement or value. Shares the code of the
+    /// destructuring validation: the roadmap allocates `E0020–E0025` to the
+    /// lvalue / strict_types validation group as a whole.
+    pub const STRICT_TYPES: &str = "RPHP_E0025";
     pub const UNDEFINED_FUNCTION: &str = "RPHP_E0100";
     pub const WRONG_ARG_COUNT: &str = "RPHP_E0101";
+    /// A syntactically valid construct the compiler does not lower yet
+    /// (`unsupported construct: <what> (not lowered yet)`).
+    pub const UNSUPPORTED_CONSTRUCT: &str = "RPHP_E0300";
 }
 
 #[cfg(test)]

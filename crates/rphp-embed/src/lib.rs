@@ -1,5 +1,5 @@
 //! The embedding API every SAPI sits on (spec 09, ADR-014/033): wires the
-//! front end (`rphp-lexer`/`rphp-parser`/`rphp-compiler`), the engine
+//! front end (`rphp-parser`'s mago adapter / `rphp-compiler`), the engine
 //! (`rphp-runtime`) and the extension bundle (`rphp-stdlib`) into an
 //! [`Engine`] (per process: configuration, ini defaults) that produces
 //! [`Interp`]s (per request/script) and runs them with php's request
@@ -18,13 +18,50 @@ use rphp_bytecode::Module;
 use rphp_compiler::{compile, CompileOptions, KnownFunctions, NativeSig};
 use rphp_diagnostics::Diagnostic;
 use rphp_intern::Interner;
-use rphp_parser::parse;
+use rphp_parser::{parse_v2, ParseOptions};
+use rphp_runtime::DisplayMode;
 use rphp_source::SourceMap;
 use rphp_value::{Array, ArrayKey, Value};
 
 pub use constants::{php_os, php_os_family};
 pub use rphp_runtime::{Interp, OutputSink, Registry, SapiKind, Unwind};
 pub use sink::{BufferSink, StdoutSink};
+
+/// Why [`Engine::compile`] failed.
+#[derive(Clone, Debug)]
+pub enum CompileError {
+    /// The front end rejected the source. php reports the first error as a
+    /// fatal `Parse error` (exit 255) through the error display channel;
+    /// `rendered` holds every diagnostic in the tool form.
+    Parse {
+        /// The first error's message (`syntax error, unexpected token ";"`).
+        message: String,
+        /// The 1-based line of the first error.
+        line: u32,
+        /// Every diagnostic, rendered one per element.
+        rendered: Vec<String>,
+    },
+    /// The program parsed but the compiler rejected it (unsupported
+    /// construct, undefined function, wrong arity, ...): the rendered
+    /// diagnostics, one per element.
+    Compile(Vec<String>),
+}
+
+impl CompileError {
+    /// The rendered diagnostics, whichever stage failed.
+    pub fn rendered(&self) -> &[String] {
+        match self {
+            CompileError::Parse { rendered, .. } | CompileError::Compile(rendered) => rendered,
+        }
+    }
+
+    /// The rendered diagnostics, whichever stage failed.
+    pub fn into_rendered(self) -> Vec<String> {
+        match self {
+            CompileError::Parse { rendered, .. } | CompileError::Compile(rendered) => rendered,
+        }
+    }
+}
 
 /// How an [`Engine`] is set up.
 #[derive(Clone, Debug)]
@@ -170,34 +207,80 @@ impl Engine {
     }
 
     /// Parse and compile `src` (named `name` in diagnostics) against
-    /// `interp`'s registry, with line tables. On failure the rendered
-    /// diagnostics, one per element. A parse error aborts before compilation.
-    pub fn compile(&self, interp: &Interp, src: &[u8], name: &str) -> Result<Module, Vec<String>> {
+    /// `interp`'s registry, with line tables. The front end honours the
+    /// interpreter's `short_open_tag`; a parse error aborts before
+    /// compilation ([`CompileError::Parse`]).
+    pub fn compile(&self, interp: &Interp, src: &[u8], name: &str) -> Result<Module, CompileError> {
         let mut sources = SourceMap::new();
         let id = sources.add(name.to_string(), src.to_vec());
         let mut interner = Interner::new();
-        let (program, diags) = parse(src, id, &mut interner);
+        let opts = ParseOptions {
+            file: id,
+            path: Some(Path::new(name)),
+            short_open_tag: interp
+                .ini_get("short_open_tag")
+                .is_some_and(rphp_runtime::parse_bool),
+        };
+        let parsed = parse_v2(src, opts, &mut interner);
         let render =
             |diags: &[Diagnostic]| diags.iter().map(|d| d.render(&sources)).collect::<Vec<_>>();
-        if diags.iter().any(Diagnostic::is_error) {
-            return Err(render(&diags));
-        }
         let file = sources.get(id);
+        if let Some(first) = parsed.diagnostics.iter().find(|d| d.is_error()) {
+            let line = first
+                .primary
+                .as_ref()
+                .map_or(1, |l| file.line_col(l.span.lo).0);
+            return Err(CompileError::Parse {
+                message: first.message.clone(),
+                line,
+                rendered: render(&parsed.diagnostics),
+            });
+        }
         let line_of = |offset: u32| file.line_col(offset).0;
         let natives = InterpNatives(interp);
         let opts = CompileOptions {
             natives: &natives,
             line_of: Some(&line_of),
         };
-        compile(&program, &interner, &opts).map_err(|d| render(&d))
+        compile(&parsed.program, &interner, &opts).map_err(|d| CompileError::Compile(render(&d)))
     }
 
     /// Compile `src` and install it as `interp`'s program.
-    pub fn load(&self, interp: &mut Interp, src: &[u8], name: &str) -> Result<(), Vec<String>> {
+    pub fn load(&self, interp: &mut Interp, src: &[u8], name: &str) -> Result<(), CompileError> {
         let module = self.compile(interp, src, name)?;
         interp.script_name = name.to_string();
         interp.load_module(module);
         Ok(())
+    }
+
+    /// Report a failed [`Engine::load`] the way php-cli does and return the
+    /// exit code (255): a parse error is displayed as
+    /// `Parse error: <message> in <file> on line <N>` through the error
+    /// display channel (`display_errors`, `log_errors`), like a fatal error
+    /// but without a backtrace; a compile rejection prints its rendered
+    /// diagnostics on stderr (php has no equivalent: these are constructs
+    /// the engine does not lower yet).
+    fn report_load_error(&self, interp: &mut Interp, name: &str, err: CompileError) -> i32 {
+        match err {
+            CompileError::Parse { message, line, .. } => {
+                if interp.ini.bool("log_errors") {
+                    eprintln!("PHP Parse error:  {message} in {name} on line {line}");
+                }
+                let text = format!("\nParse error: {message} in {name} on line {line}\n");
+                match DisplayMode::parse(interp.ini_get("display_errors").unwrap_or("")) {
+                    DisplayMode::Stdout => interp.echo(text.as_bytes()),
+                    DisplayMode::Stderr => eprint!("{text}"),
+                    DisplayMode::Off => {}
+                }
+                interp.finish_output();
+            }
+            CompileError::Compile(lines) => {
+                for line in lines {
+                    eprintln!("{line}");
+                }
+            }
+        }
+        255
     }
 
     /// Run the loaded program with php's request lifecycle: `{main}`, the
@@ -216,15 +299,13 @@ impl Engine {
     }
 
     /// Compile and run `src` as the unit named `name` (`Command line code`
-    /// for `-r`), writing to `sink`. Compile errors go to stderr (exit 255,
-    /// php's code for a fatal compile error).
+    /// for `-r`), writing to `sink`. A parse error is displayed like php's
+    /// and a compile rejection goes to stderr; both exit 255 (php's code for
+    /// a fatal compile error).
     pub fn run_code(&self, src: &[u8], name: &str, sink: Box<dyn OutputSink>) -> i32 {
         let mut interp = self.new_interp(sink);
-        if let Err(lines) = self.load(&mut interp, src, name) {
-            for line in lines {
-                eprintln!("{line}");
-            }
-            return 255;
+        if let Err(err) = self.load(&mut interp, src, name) {
+            return self.report_load_error(&mut interp, name, err);
         }
         self.execute(&mut interp)
     }
@@ -241,13 +322,11 @@ impl Engine {
             }
         };
         let name = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let name = name.to_string_lossy().into_owned();
         let mut interp = self.new_interp(sink);
-        interp.script_path = Some(name.clone());
-        if let Err(lines) = self.load(&mut interp, &bytes, &name.to_string_lossy()) {
-            for line in lines {
-                eprintln!("{line}");
-            }
-            return 255;
+        interp.script_path = Some(PathBuf::from(&name));
+        if let Err(err) = self.load(&mut interp, &bytes, &name) {
+            return self.report_load_error(&mut interp, &name, err);
         }
         self.execute(&mut interp)
     }
@@ -270,7 +349,7 @@ pub fn eval_to_bytes(src: &[u8]) -> Result<Vec<u8>, String> {
     let mut interp = engine.new_interp(Box::new(buffer.clone()));
     engine
         .load(&mut interp, src, "Command line code")
-        .map_err(|lines| lines.join("\n"))?;
+        .map_err(|e| e.into_rendered().join("\n"))?;
     match interp.run_main() {
         Ok(_) | Err(Unwind::Exit(_)) => {}
         Err(u) => return Err(u.describe()),
@@ -304,6 +383,61 @@ mod tests {
         assert!(err.contains("RPHP_E"), "{err}");
         let err = eval_to_string(b"<?php nope();").unwrap_err();
         assert!(err.contains("undefined function"), "{err}");
+    }
+
+    #[test]
+    fn parse_error_renders_like_php_cli() {
+        // php: nothing runs, `Parse error: ... in <file> on line N` on stdout
+        // (display_errors=1), exit 255.
+        let (code, out) = run(b"<?php\necho \"a\";\necho 1 +;\n");
+        assert_eq!(code, 255);
+        assert!(
+            out.starts_with("\nParse error: ")
+                && out.ends_with(" in Command line code on line 3\n"),
+            "{out:?}"
+        );
+        assert!(!out.contains("Stack trace"), "{out:?}");
+        // display_errors=0 hides it; the exit code stays.
+        let mut cfg = EngineConfig::cli();
+        cfg.ini.push(("display_errors".into(), "0".into()));
+        let engine = Engine::new(cfg);
+        let buffer = BufferSink::new();
+        let code = engine.run_code(
+            b"<?php echo 1 +;",
+            "Command line code",
+            Box::new(buffer.clone()),
+        );
+        assert_eq!(code, 255);
+        assert_eq!(buffer.take(), b"");
+        // The structured error carries the line and the rendered diagnostics.
+        let engine = Engine::new(EngineConfig::cli());
+        let interp = engine.new_interp(Box::new(BufferSink::new()));
+        match engine.compile(&interp, b"<?php\n\n$x = ;", "t.php") {
+            Err(CompileError::Parse { line, rendered, .. }) => {
+                assert_eq!(line, 3);
+                assert!(rendered[0].contains("RPHP_E"), "{rendered:?}");
+            }
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+        // An unsupported construct is a compile rejection, not a parse error.
+        match engine.compile(&interp, b"<?php $a ??= 1;", "t.php") {
+            Err(CompileError::Compile(lines)) => {
+                assert!(lines[0].contains("RPHP_E0300"), "{lines:?}")
+            }
+            other => panic!("expected a compile error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn short_open_tag_follows_ini() {
+        assert_eq!(eval_to_string(b"<? echo 1;").unwrap(), "1");
+        let mut cfg = EngineConfig::cli();
+        cfg.ini.push(("short_open_tag".into(), "0".into()));
+        let engine = Engine::new(cfg);
+        let buffer = BufferSink::new();
+        let code = engine.run_code(b"<? echo 1;", "Command line code", Box::new(buffer.clone()));
+        assert_eq!(code, 0);
+        assert_eq!(buffer.take(), b"<? echo 1;");
     }
 
     #[test]

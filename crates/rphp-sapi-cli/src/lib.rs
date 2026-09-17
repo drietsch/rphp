@@ -16,9 +16,9 @@ use std::path::{Path, PathBuf};
 
 use rphp_embed::{Engine, EngineConfig, StdoutSink};
 use rphp_intern::Interner;
-use rphp_lexer::lex;
-use rphp_parser::parse;
+use rphp_parser::{parse_v2, ParseOptions, Parsed};
 use rphp_source::SourceMap;
+use rphp_span::FileId;
 
 const USAGE: &str = "\
 rphp — a clean-room PHP 8.5 engine
@@ -34,8 +34,8 @@ OPTIONS:
     -r <code>                        run <code> without the opening `<?php` tag
     -n                               accepted for php compatibility (no php.ini is read anyway)
     -l | --lint <file.php>           syntax check only; exit 0 or 255 like `php -l`
-    --emit=tokens <file.php>         dump the token stream
-    --emit=ast <file.php>            dump the parsed AST
+    --emit=tokens <file.php>         dump the token stream (`T_NAME(\"text\") Lline` per token)
+    --emit=ast <file.php>            dump the parsed AST (S-expressions)
     --emit=bytecode <file.php>       dump the compiled bytecode module
     --                               end of options; the rest is the script's $argv
     --help | -h                      show this help
@@ -201,7 +201,7 @@ pub fn run(args: Vec<String>) -> i32 {
             return lint_file(&file, &bytes);
         }
         return match cli.emit {
-            Some(EmitKind::Tokens) => emit_tokens(&file, &bytes),
+            Some(EmitKind::Tokens) => emit_tokens(&bytes),
             Some(EmitKind::Ast) => emit_ast(&file, &bytes),
             Some(EmitKind::Bytecode) => emit_bytecode(&file, &bytes),
             None => unreachable!(),
@@ -219,18 +219,31 @@ pub fn run(args: Vec<String>) -> i32 {
     engine.run_file(Path::new(&file), Box::new(StdoutSink::new()))
 }
 
+/// Parse `bytes` (named `name`) through the front end with php's default
+/// `short_open_tag=1`, returning the tree, the diagnostics and the source map
+/// the diagnostics render against.
+fn front_end(name: &str, bytes: &[u8]) -> (Parsed, Interner, SourceMap) {
+    let mut sources = SourceMap::new();
+    let id: FileId = sources.add(name.to_string(), bytes.to_vec());
+    let mut interner = Interner::new();
+    let opts = ParseOptions {
+        file: id,
+        path: Some(Path::new(name)),
+        short_open_tag: true,
+    };
+    let parsed = parse_v2(bytes, opts, &mut interner);
+    (parsed, interner, sources)
+}
+
 /// Parse `bytes` (named `name` in diagnostics) without compiling or running.
 ///
 /// `Ok(())` when the front end reports no error-severity diagnostic, else the
 /// rendered diagnostics in order. This is what `rphp -l` prints; embedders and
 /// tests can call it directly.
 pub fn lint(name: &str, bytes: &[u8]) -> Result<(), Vec<String>> {
-    let mut sources = SourceMap::new();
-    let id = sources.add(name.to_string(), bytes.to_vec());
-    let mut interner = Interner::new();
-
-    let (_program, diags) = parse(bytes, id, &mut interner);
-    let errors: Vec<String> = diags
+    let (parsed, _interner, sources) = front_end(name, bytes);
+    let errors: Vec<String> = parsed
+        .diagnostics
         .iter()
         .filter(|d| d.is_error())
         .map(|d| d.render(&sources))
@@ -262,32 +275,52 @@ fn lint_file(name: &str, bytes: &[u8]) -> i32 {
     }
 }
 
-/// `--emit=tokens`: one `TokenKind` (debug form) per line on stdout.
-fn emit_tokens(name: &str, bytes: &[u8]) -> i32 {
-    let mut sources = SourceMap::new();
-    let id = sources.add(name.to_string(), bytes.to_vec());
-    let mut interner = Interner::new();
+/// The `--emit=tokens` dump of `bytes`: one token per line as
+/// `T_NAME("text") Lline` (a single-character token, which has no name,
+/// prints as `"c" Lline`), exactly the tokens `token_get_all()` would return
+/// with php's default `short_open_tag=1`. Texts are quoted and escaped like
+/// the AST printer's strings, so the dump is ASCII and byte-lossless.
+pub fn emit_tokens_to_string(bytes: &[u8]) -> String {
+    let opts = rphp_tokenizer::Options {
+        short_open_tag: true,
+    };
+    let mut out = String::new();
+    for tok in rphp_tokenizer::tokenize(bytes, opts) {
+        let text = rphp_ast::v2::pretty::escape_bytes(tok.text(bytes));
+        match tok.name() {
+            Some(name) => out.push_str(&format!("{name}({text}) L{}\n", tok.line)),
+            None => out.push_str(&format!("{text} L{}\n", tok.line)),
+        }
+    }
+    out
+}
 
-    let result = lex(bytes, id, &mut interner);
-    for tok in &result.tokens {
-        println!("{:?}", tok.kind);
-    }
-    for d in &result.diagnostics {
-        eprintln!("{}", d.render(&sources));
-    }
+/// `--emit=tokens`: the token stream on stdout, see [`emit_tokens_to_string`].
+fn emit_tokens(bytes: &[u8]) -> i32 {
+    print!("{}", emit_tokens_to_string(bytes));
     0
 }
 
-/// `--emit=ast`: pretty-debug dump of the parsed `Program` on stdout.
-fn emit_ast(name: &str, bytes: &[u8]) -> i32 {
-    let mut sources = SourceMap::new();
-    let id = sources.add(name.to_string(), bytes.to_vec());
-    let mut interner = Interner::new();
+/// The `--emit=ast` dump of `bytes` (named `name` in diagnostics): the v2
+/// tree as S-expressions (`rphp_ast::v2::pretty`), plus the rendered
+/// diagnostics. The tree is printed even when it is partial.
+pub fn emit_ast_to_string(name: &str, bytes: &[u8]) -> (String, Vec<String>) {
+    let (parsed, interner, sources) = front_end(name, bytes);
+    let tree = rphp_ast::v2::pretty::print(&parsed.program, &interner);
+    let diags = parsed
+        .diagnostics
+        .iter()
+        .map(|d| d.render(&sources))
+        .collect();
+    (tree, diags)
+}
 
-    let (program, diags) = parse(bytes, id, &mut interner);
-    println!("{program:#?}");
+/// `--emit=ast`: the S-expression tree on stdout, diagnostics on stderr.
+fn emit_ast(name: &str, bytes: &[u8]) -> i32 {
+    let (tree, diags) = emit_ast_to_string(name, bytes);
+    print!("{tree}");
     for d in &diags {
-        eprintln!("{}", d.render(&sources));
+        eprintln!("{d}");
     }
     0
 }
@@ -303,8 +336,8 @@ fn emit_bytecode(name: &str, bytes: &[u8]) -> i32 {
             println!("{module:#?}");
             0
         }
-        Err(lines) => {
-            for line in lines {
+        Err(err) => {
+            for line in err.rendered() {
                 eprintln!("{line}");
             }
             1

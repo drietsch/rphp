@@ -12,3 +12,7 @@ rphp-diagnostics.workspace = true
 rphp-ast.workspace = true
 rphp-bytecode.workspace = true
 rphp-value.workspace = true
+
+[dev-dependencies]
+# Tests parse PHP snippets through the front end instead of building trees by hand.
+rphp-parser.workspace = true

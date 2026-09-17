@@ -800,6 +800,7 @@ dependencies = [
  "rphp-bytecode",
  "rphp-diagnostics",
  "rphp-intern",
+ "rphp-parser",
  "rphp-span",
  "rphp-value",
 ]
@@ -816,12 +817,10 @@ dependencies = [
 name = "rphp-embed"
 version = "0.0.0"
 dependencies = [
- "rphp-ast",
  "rphp-bytecode",
  "rphp-compiler",
  "rphp-diagnostics",
  "rphp-intern",
- "rphp-lexer",
  "rphp-parser",
  "rphp-runtime",
  "rphp-source",
@@ -880,11 +879,13 @@ dependencies = [
 name = "rphp-sapi-cli"
 version = "0.0.0"
 dependencies = [
+ "rphp-ast",
  "rphp-embed",
  "rphp-intern",
- "rphp-lexer",
  "rphp-parser",
  "rphp-source",
+ "rphp-span",
+ "rphp-tokenizer",
 ]
 
 [[package]]

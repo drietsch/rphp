@@ -1,0 +1,211 @@
+(program file=0
+  (expr-stmt
+    (assign
+      (var $factor)
+      (int 3)))
+  (expr-stmt
+    (assign
+      (var $triple)
+      (arrow-fn
+        (params
+          (param $x))
+        (body
+          (binary mul
+            (var $x)
+            (var $factor))))))
+  (echo
+    (binary concat
+      (call
+        (name call_user_func kind=u)
+        (arg
+          (var $triple))
+        (arg
+          (int 5)))
+      (str "\n")))
+  (expr-stmt
+    (call
+      (name print_r kind=u)
+      (arg
+        (call
+          (name array_map kind=u)
+          (arg
+            (arrow-fn
+              (params
+                (param $x))
+              (body
+                (binary mul
+                  (var $x)
+                  (var $factor)))))
+          (arg
+            (array syntax=short
+              (item
+                (int 1))
+              (item
+                (int 2))
+              (item
+                (int 3))))))))
+  (expr-stmt
+    (assign
+      (var $base)
+      (int 10)))
+  (expr-stmt
+    (assign
+      (var $adder)
+      (closure
+        (params
+          (param $x))
+        (uses
+          (use $base))
+        (body
+          (return
+            (binary add
+              (var $x)
+              (var $base)))))))
+  (echo
+    (binary concat
+      (call
+        (name call_user_func kind=u)
+        (arg
+          (var $adder))
+        (arg
+          (int 5)))
+      (str "\n")))
+  (expr-stmt
+    (assign
+      (var $a)
+      (int 1)))
+  (expr-stmt
+    (assign
+      (var $b)
+      (int 2)))
+  (expr-stmt
+    (assign
+      (var $sum)
+      (closure
+        (params)
+        (uses
+          (use $a)
+          (use $b))
+        (body
+          (return
+            (binary add
+              (var $a)
+              (var $b)))))))
+  (echo
+    (binary concat
+      (call
+        (name call_user_func kind=u)
+        (arg
+          (var $sum)))
+      (str "\n")))
+  (expr-stmt
+    (call
+      (name print_r kind=u)
+      (arg
+        (call
+          (name array_filter kind=u)
+          (arg
+            (array syntax=short
+              (item
+                (int 1))
+              (item
+                (int 2))
+              (item
+                (int 3))
+              (item
+                (int 4))
+              (item
+                (int 5))
+              (item
+                (int 6))))
+          (arg
+            (arrow-fn
+              (params
+                (param $n))
+              (body
+                (binary eq
+                  (binary mod
+                    (var $n)
+                    (int 2))
+                  (int 0)))))))))
+  (expr-stmt
+    (assign
+      (var $nums)
+      (array syntax=short
+        (item
+          (int 3))
+        (item
+          (int 1))
+        (item
+          (int 2)))))
+  (expr-stmt
+    (call
+      (name usort kind=u)
+      (arg
+        (var $nums))
+      (arg
+        (arrow-fn
+          (params
+            (param $x)
+            (param $y))
+          (body
+            (binary sub
+              (var $x)
+              (var $y)))))))
+  (echo
+    (binary concat
+      (call
+        (name implode kind=u)
+        (arg
+          (str ","))
+        (arg
+          (var $nums)))
+      (str "\n")))
+  (echo
+    (binary concat
+      (call
+        (name array_reduce kind=u)
+        (arg
+          (array syntax=short
+            (item
+              (int 1))
+            (item
+              (int 2))
+            (item
+              (int 3))
+            (item
+              (int 4))))
+        (arg
+          (arrow-fn
+            (params
+              (param $c)
+              (param $v))
+            (body
+              (binary add
+                (var $c)
+                (var $v)))))
+        (arg
+          (int 0)))
+      (str "\n")))
+  (expr-stmt
+    (assign
+      (var $n)
+      (int 5)))
+  (expr-stmt
+    (assign
+      (var $snap)
+      (arrow-fn
+        (params)
+        (body
+          (var $n)))))
+  (expr-stmt
+    (assign
+      (var $n)
+      (int 99)))
+  (echo
+    (binary concat
+      (call
+        (name call_user_func kind=u)
+        (arg
+          (var $snap)))
+      (str "\n"))))

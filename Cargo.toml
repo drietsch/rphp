@@ -57,6 +57,7 @@ rphp-embed = { path = "crates/rphp-embed" }
 mago-syntax = "=1.49.0"
 mago-allocator = "=1.49.0"
 mago-database = "=1.49.0"
+mago-span = "=1.49.0"
 # Tooling / tests.
 rayon = "1.12"
 regex = "1.13"

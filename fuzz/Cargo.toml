@@ -1,0 +1,51 @@
+# cargo-fuzz workspace for the rphp front end. Standalone on purpose: the root
+# workspace lists `fuzz` under `exclude`, and the empty `[workspace]` table
+# below stops cargo from looking further up. Build with `cargo fuzz build`
+# from this directory (needs `cargo install cargo-fuzz`; the repo's pinned
+# nightly is picked up through rust-toolchain.toml).
+[package]
+name = "rphp-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rphp-span = { path = "../crates/rphp-span" }
+rphp-source = { path = "../crates/rphp-source" }
+rphp-diagnostics = { path = "../crates/rphp-diagnostics" }
+rphp-intern = { path = "../crates/rphp-intern" }
+rphp-lexer = { path = "../crates/rphp-lexer" }
+rphp-parser = { path = "../crates/rphp-parser" }
+# `rphp_tokenizer::tokenize` is being written by F5; the `tokenize_bytes`
+# target is gated behind this feature until the API exists. Once F5 lands:
+# make the dependency unconditional, drop the feature and the
+# `required-features` line below.
+rphp-tokenizer = { path = "../crates/rphp-tokenizer", optional = true }
+
+[features]
+tokenizer = ["dep:rphp-tokenizer"]
+
+[[bin]]
+name = "parse_bytes"
+path = "fuzz_targets/parse_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tokenize_bytes"
+path = "fuzz_targets/tokenize_bytes.rs"
+test = false
+doc = false
+bench = false
+required-features = ["tokenizer"]
+
+[profile.release]
+debug = 1
+
+[workspace]

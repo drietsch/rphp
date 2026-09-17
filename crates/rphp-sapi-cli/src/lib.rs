@@ -8,6 +8,7 @@
 //!   rphp --emit=tokens <file.php>    dump the token stream
 //!   rphp --emit=ast <file.php>       dump the AST
 //!   rphp --emit=bytecode <file.php>  dump the bytecode module
+//!   rphp -l <file.php>               syntax check only (php's `-l`)
 #![forbid(unsafe_code)]
 
 use rphp_bytecode::Module;
@@ -27,6 +28,7 @@ USAGE:
     rphp --emit=tokens <file.php>    dump the token stream
     rphp --emit=ast <file.php>       dump the parsed AST
     rphp --emit=bytecode <file.php>  dump the compiled bytecode module
+    rphp -l | --lint <file.php>      syntax check only; exit 0 or 255 like `php -l`
     rphp --help | -h                 show this help
 ";
 
@@ -52,6 +54,7 @@ pub fn run(args: Vec<String>) -> i32 {
     }
 
     let mut emit: Option<EmitKind> = None;
+    let mut lint_only = false;
     let mut file: Option<String> = None;
 
     for a in &args {
@@ -59,7 +62,9 @@ pub fn run(args: Vec<String>) -> i32 {
         if a == "run" && file.is_none() {
             continue;
         }
-        if let Some(rest) = a.strip_prefix("--emit=") {
+        if a == "-l" || a == "--lint" {
+            lint_only = true;
+        } else if let Some(rest) = a.strip_prefix("--emit=") {
             match rest {
                 "tokens" => emit = Some(EmitKind::Tokens),
                 "ast" => emit = Some(EmitKind::Ast),
@@ -88,6 +93,11 @@ pub fn run(args: Vec<String>) -> i32 {
         eprint!("{USAGE}");
         return 1;
     };
+    if lint_only && emit.is_some() {
+        eprintln!("rphp: `-l` cannot be combined with `--emit`\n");
+        eprint!("{USAGE}");
+        return 2;
+    }
 
     let bytes = match std::fs::read(&file) {
         Ok(b) => b,
@@ -96,6 +106,10 @@ pub fn run(args: Vec<String>) -> i32 {
             return 1;
         }
     };
+
+    if lint_only {
+        return lint_file(&file, &bytes);
+    }
 
     match emit {
         Some(EmitKind::Tokens) => emit_tokens(&file, &bytes),
@@ -152,6 +166,49 @@ fn run_file(name: &str, bytes: &[u8]) -> i32 {
         Err(err) => {
             // PHP surfaces uncaught runtime faults as a fatal error and exits 255.
             eprintln!("PHP Fatal error:  Uncaught Error: {}", err.message);
+            255
+        }
+    }
+}
+
+/// Parse `bytes` (named `name` in diagnostics) without compiling or running.
+///
+/// `Ok(())` when the front end reports no error-severity diagnostic, else the
+/// rendered diagnostics in order. This is what `rphp -l` prints; embedders and
+/// tests can call it directly.
+pub fn lint(name: &str, bytes: &[u8]) -> Result<(), Vec<String>> {
+    let mut sources = SourceMap::new();
+    let id = sources.add(name.to_string(), bytes.to_vec());
+    let mut interner = Interner::new();
+
+    let (_program, diags) = parse(bytes, id, &mut interner);
+    let errors: Vec<String> = diags
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.render(&sources))
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+/// `rphp -l <file>`: syntax check only, mirroring `php -l`. Prints
+/// `No syntax errors detected in <file>` and returns 0, or the diagnostics on
+/// stderr followed by `Errors parsing <file>` on stdout and returns 255 (php's
+/// exit code for a parse failure).
+fn lint_file(name: &str, bytes: &[u8]) -> i32 {
+    match lint(name, bytes) {
+        Ok(()) => {
+            println!("No syntax errors detected in {name}");
+            0
+        }
+        Err(lines) => {
+            for line in lines {
+                eprintln!("{line}");
+            }
+            println!("Errors parsing {name}");
             255
         }
     }

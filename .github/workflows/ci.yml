@@ -1,0 +1,194 @@
+# rphp CI — build + tests, the differential oracle against stock PHP 8.5, the
+# parse-parity corpus job, the php-src .phpt slice, and a nightly fuzz smoke.
+#
+# The toolchain is whatever rust-toolchain.toml pins (dtolnay/rust-toolchain
+# needs it as an explicit input, so a tiny step reads the channel out of the
+# file). Every job is independent so a red corpus never blocks build-test.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Nightly fuzz smoke (see `fuzz-smoke`); the other jobs run too, which
+    # doubles as a canary for setup-php / composer drift.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  build-test:
+    name: build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read toolchain channel
+        id: toolchain
+        run: echo "channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace
+      - name: Test
+        run: cargo test --workspace
+      # Non-blocking until the tree is clippy/fmt clean; flip to blocking by
+      # deleting the two `continue-on-error` lines.
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+        continue-on-error: true
+      - name: Format
+        run: cargo fmt --all -- --check
+        continue-on-error: true
+
+  differential:
+    name: differential vs php 8.5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read toolchain channel
+        id: toolchain
+        run: echo "channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          ini-values: short_open_tag=0
+      - name: php version
+        run: php -n -v
+      # The harness lives in tools/rphp/tests/differential.rs (package `rphp`).
+      - name: Differential oracle
+        run: cargo test -p rphp --test differential
+
+  corpus:
+    name: corpus parse parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read toolchain channel
+        id: toolchain
+        run: echo "channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+          tools: composer
+      - name: Cache key (workflow file + month)
+        id: month
+        run: echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - name: Cache symfony/skeleton corpus
+        id: corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: corpus-app
+          key: corpus-app-${{ hashFiles('.github/workflows/ci.yml') }}-${{ steps.month.outputs.month }}
+      - name: Create symfony/skeleton corpus
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        run: composer create-project symfony/skeleton corpus-app --no-interaction --no-progress
+      - name: Cache php -l verdicts
+        uses: actions/cache@v4
+        with:
+          path: target/corpus-cache
+          key: corpus-php-verdicts-${{ hashFiles('.github/workflows/ci.yml') }}-${{ steps.month.outputs.month }}
+      # --allow-failures: this job is the F2 gate and reports, it does not block.
+      - name: Corpus parity
+        run: cargo xtask corpus --dir corpus-app/vendor --allow-failures
+      - name: Upload corpus report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-report
+          path: target/corpus-report.json
+          if-no-files-found: warn
+
+  phpt:
+    name: php-src phpt + parse sweep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read toolchain channel
+        id: toolchain
+        run: echo "channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.5"
+      - name: Cache php-src sparse checkout
+        uses: actions/cache@v4
+        with:
+          path: vendor-php-src
+          key: php-src-${{ hashFiles('tools/php-src/PIN') }}
+      - name: Fetch php-src test corpus
+        run: tools/php-src/checkout.sh
+      # The phpt runner is being written concurrently; report only for now.
+      - name: phpt (ctype slice)
+        run: cargo xtask phpt --ext ctype --engine rphp --report json
+        continue-on-error: true
+      - name: Parse sweep (Zend/tests + tests/lang)
+        run: cargo xtask parse-sweep --allow-failures
+      - name: Upload sweep report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parse-sweep-report
+          path: target/parse-sweep-report.json
+          if-no-files-found: warn
+
+  fuzz-smoke:
+    name: fuzz smoke (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read toolchain channel
+        id: toolchain
+        run: echo "channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            fuzz -> fuzz/target
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Seed corpus
+        run: fuzz/seed-corpus.sh
+      - name: Build fuzz targets
+        working-directory: fuzz
+        run: cargo fuzz build
+      - name: Fuzz parse_bytes for 5 minutes
+        working-directory: fuzz
+        run: cargo fuzz run parse_bytes -- -max_total_time=300 -timeout=10 -max_len=4096
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore

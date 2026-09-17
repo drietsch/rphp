@@ -38,6 +38,7 @@ mod pack;
 mod pcre;
 mod random;
 mod spl_containers;
+mod spl_autoload;
 mod spl_exceptions;
 mod spl_interfaces;
 mod string2;
@@ -52,6 +53,7 @@ mod zend_exceptions;
 
 /// Every module's `FUNCTIONS` slice, in registration order.
 const MODULES: &[&[NativeFn]] = &[
+    spl_autoload::FUNCTIONS,
     output::FUNCTIONS,
     types::FUNCTIONS,
     strings::FUNCTIONS,

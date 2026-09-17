@@ -509,9 +509,9 @@ fn misc_expressions_lower() {
 
 #[test]
 fn unsupported_constructs_report_e0300_with_a_description() {
-    let msgs = unsupported_messages("<?php function g() { yield 1; } eval('1'); $x |> strlen(...);");
+    // `eval` lowers as of E7; `yield` waits for E8.
+    let msgs = unsupported_messages("<?php function g() { yield 1; } $x |> strlen(...);");
     assert!(msgs.iter().any(|m| m.contains("yield")), "{msgs:?}");
-    assert!(msgs.iter().any(|m| m.contains("eval")), "{msgs:?}");
     assert!(msgs
         .iter()
         .all(|m| m.starts_with("unsupported construct: ") && m.ends_with(" (not lowered yet)")));

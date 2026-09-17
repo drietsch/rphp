@@ -337,8 +337,13 @@ impl Interp {
         }
     }
 
-    /// Emit a parse error for a unit compiled on demand (`include`):
-    /// `Parse error: <msg> in <file> on line <N>`, no backtrace.
+    /// A parse error in a unit compiled on demand (`include`, `eval`).
+    ///
+    /// php throws a **catchable** `ParseError` here — `try { include $f; }
+    /// catch (ParseError $e)` works, and so does the `eval` form — so this
+    /// records the error for `error_get_last()` and then throws, rather than
+    /// rendering `Parse error:` and exiting. An uncaught one renders through
+    /// the ordinary uncaught-throwable path.
     pub fn parse_error(&mut self, message: &str, file: &str, line: u32) -> Unwind {
         self.last_error = Some(LastError {
             kind: E_PARSE,
@@ -346,19 +351,9 @@ impl Interp {
             file: file.to_string(),
             line,
         });
-        if self.effective_error_reporting() & E_PARSE != 0 {
-            if self.ini.bool("log_errors") {
-                eprintln!("PHP Parse error:  {message} in {file} on line {line}");
-            }
-            let text = format!("\nParse error: {message} in {file} on line {line}\n");
-            match DisplayMode::parse(self.ini.get("display_errors").unwrap_or("")) {
-                DisplayMode::Stdout => self.echo(text.as_bytes()),
-                DisplayMode::Stderr => eprint!("{text}"),
-                DisplayMode::Off => {}
-            }
-        }
-        Unwind::Exit(255)
+        self.throw_at(crate::registry::ErrorKind::Exception("ParseError"), message, file, line)
     }
+
 
     /// Render an uncaught fault exactly like php-cli:
     /// `Fatal error: Uncaught <Class>: <msg> in <file>:<line>\nStack trace:\n

@@ -154,10 +154,9 @@ impl Interp {
         let fi = self.frames.len() - 1;
         match class.kind() {
             ClassRefKind::Named(k) => {
+                // `new A`, `A::m()`, `A::$p`, `A::C` all autoload (E7).
                 let name = self.name_bytes(func, k);
-                self.class_by_name(&name).ok_or_else(|| {
-                    Unwind::error(format!("Class \"{}\" not found", String::from_utf8_lossy(&name)))
-                })
+                self.lookup_class_or_error(&name)
             }
             ClassRefKind::SelfKw => self.frames[fi]
                 .scope
@@ -996,8 +995,8 @@ impl Interp {
                 }
 
                 // --- calls ---
-                Op::InitFCall { name, ic, .. } => {
-                    let target = self.resolve_fcall(&func, name, ic)?;
+                Op::InitFCall { name, ns_fallback, ic } => {
+                    let target = self.resolve_fcall(&func, name, ns_fallback, ic)?;
                     let name = self.name_bytes(&func, name);
                     let args_base = self.stack.len();
                     self.frames[fi].pending.push(PendingCall {
@@ -1469,14 +1468,27 @@ impl Interp {
                 }
 
                 // --- names ---
-                Op::FetchConst { dst, name, .. } => {
+                Op::FetchConst { dst, name, ns_fallback } => {
                     let n = self.name_bytes(&func, name);
-                    let v = self.constants.get(&n).cloned().ok_or_else(|| {
-                        Unwind::error(format!(
-                            "Undefined constant \"{}\"",
-                            String::from_utf8_lossy(&n)
-                        ))
-                    })?;
+                    // Like an unqualified call, an unqualified *constant*
+                    // inside a namespace falls back to the global one, which
+                    // is how `DIRECTORY_SEPARATOR` resolves inside
+                    // `namespace Composer\Autoload`.
+                    let v = match self.constants.get(&n).cloned() {
+                        Some(v) => v,
+                        None => {
+                            let g = ns_fallback.map(|k| self.name_bytes(&func, k));
+                            match g.as_ref().and_then(|g| self.constants.get(g).cloned()) {
+                                Some(v) => v,
+                                None => {
+                                    return Err(Unwind::error(format!(
+                                        "Undefined constant \"{}\"",
+                                        String::from_utf8_lossy(&n)
+                                    )))
+                                }
+                            }
+                        }
+                    };
                     self.set(base, dst, v);
                 }
                 Op::DeclareConst { name, src } => {
@@ -1568,9 +1580,7 @@ impl Interp {
                 }
                 Op::FetchClass { dst, name, .. } => {
                     let n = self.name_bytes(&func, name);
-                    let cid = self.class_by_name(&n).ok_or_else(|| {
-                        Unwind::error(format!("Class \"{}\" not found", String::from_utf8_lossy(&n)))
-                    })?;
+                    let cid = self.lookup_class_or_error(&n)?;
                     let v = Value::string(&self.classes[cid as usize].name);
                     self.set(base, dst, v);
                 }
@@ -1637,8 +1647,13 @@ impl Interp {
                         return Ok(Switch::Continue);
                     }
                 }
-                Op::Eval { .. } => {
-                    return Err(Unwind::error("eval() is not supported yet"));
+                Op::Eval { dst, src } => {
+                    let code = self.rd(base, src).to_php_bytes();
+                    // `eval.rs` compiles the string and pushes its frame.
+                    self.stack[base + dst as usize] = Value::Null;
+                    if self.eval_code(&code, base + dst as usize)? {
+                        return Ok(Switch::Continue);
+                    }
                 }
                 Op::Yield { .. } | Op::YieldFrom { .. } | Op::GenReturn { .. } => {
                     return Err(Unwind::error("generators are not supported yet"));
@@ -1825,7 +1840,13 @@ impl Interp {
     }
 
     /// Resolve the target of an `InitFCall` through the inline cache.
-    fn resolve_fcall(&mut self, func: &crate::unit::FuncRt, name: u32, ic: u16) -> Result<CallTarget, Unwind> {
+    fn resolve_fcall(
+        &mut self,
+        func: &crate::unit::FuncRt,
+        name: u32,
+        ns_fallback: Option<u32>,
+        ic: u16,
+    ) -> Result<CallTarget, Unwind> {
         use crate::unit::IcSlot;
         let gen = self.func_gen;
         if let Some(slot) = func.ics.borrow().get(ic as usize) {
@@ -1857,6 +1878,35 @@ impl Interp {
                 *slot = IcSlot::Native { gen, id };
             }
             CallTarget::Native(id)
+        } else if let Some(fb) = ns_fallback {
+            // Inside a namespace an unqualified call falls back to the global
+            // function when the namespaced one does not exist — and that
+            // fallback reaches **natives** too, which is how `strlen()` works
+            // inside `namespace Composer\Autoload`.
+            let g = match &func.f.consts[fb as usize] {
+                Const::Name(g) => g,
+                _ => return Err(Unwind::error("internal error: InitFCall fallback without a name")),
+            };
+            if let Some(&id) = self.func_index.get(&g.lower) {
+                if let Some(slot) = func.ics.borrow_mut().get_mut(ic as usize) {
+                    *slot = IcSlot::Func { gen, id };
+                }
+                CallTarget::User {
+                    func: self.funcs[id as usize].clone(),
+                    closure: None,
+                }
+            } else if let Some(&id) = self.native_index.get(&g.lower) {
+                if let Some(slot) = func.ics.borrow_mut().get_mut(ic as usize) {
+                    *slot = IcSlot::Native { gen, id };
+                }
+                CallTarget::Native(id)
+            } else {
+                // php names the *unqualified* candidate in the error.
+                return Err(Unwind::error(format!(
+                    "Call to undefined function {}()",
+                    String::from_utf8_lossy(&n.orig)
+                )));
+            }
         } else {
             return Err(Unwind::error(format!(
                 "Call to undefined function {}()",

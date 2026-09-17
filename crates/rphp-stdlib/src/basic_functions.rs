@@ -159,12 +159,22 @@ pub(crate) fn set_time_limit(_: &mut Ctx, _: &mut [Value]) -> NativeResult {
 
 /// Whether a declared class-like of `kind` exists under the name in
 /// `args[0]` (autoloading arrives with plan E7).
-fn class_like_exists(ctx: &Ctx, args: &[Value], want: fn(&rphp_runtime::ClassDef) -> bool) -> NativeResult {
+fn class_like_exists(
+    ctx: &mut Ctx,
+    args: &[Value],
+    want: fn(&rphp_runtime::ClassDef) -> bool,
+) -> NativeResult {
     let name = args[0].to_php_bytes();
-    Ok(Value::Bool(
+    // `$autoload` defaults to true: an unknown name goes to the autoloader
+    // stack before the answer is `false` (E7).
+    let autoload = args.get(1).map_or(true, Value::to_bool);
+    let id = if autoload {
+        ctx.lookup_class(&name)?
+    } else {
         ctx.class_by_name(&name)
-            .map(|id| ctx.class(id))
-            .is_some_and(|c| c.linked && want(c)),
+    };
+    Ok(Value::Bool(
+        id.map(|id| ctx.class(id)).is_some_and(|c| c.linked && want(c)),
     ))
 }
 

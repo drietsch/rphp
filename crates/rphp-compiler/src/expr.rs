@@ -401,7 +401,18 @@ impl FnCompiler<'_> {
             // ----- everything else is not lowered yet ---------------------------
             Expr::ShellExec { span, .. } => self.unsupported_expr(*span, "shell execution"),
             Expr::Callable { span, target } => self.compile_callable(target, *span),
-            Expr::Eval { span, .. } => self.unsupported_expr(*span, "eval"),
+            // `eval($code)` compiles and runs in the runtime (`eval.rs`); like
+            // `include`, the unit is not known here. `regs.rs` already marks
+            // the enclosing function `NEEDS_SYMTAB`, because eval'd code
+            // shares the caller's variables.
+            Expr::Eval { code, .. } => {
+                let mark = self.temp_top;
+                let src = self.compile_expr(code);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.emit(Op::Eval { dst, src });
+                dst
+            }
             Expr::Yield { span, .. } => self.unsupported_expr(*span, "yield"),
             Expr::YieldFrom { span, .. } => self.unsupported_expr(*span, "yield from"),
             Expr::Let {

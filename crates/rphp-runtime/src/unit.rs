@@ -309,7 +309,9 @@ impl Interp {
             return Err(self.fatal_at(&msg, &here_file, here_line));
         }
         let parent = match &decl.parent_name {
-            Some(name) => match self.class_by_name(name) {
+            // `extends` autoloads (E7): this is how Composer's PSR-4 loader
+            // pulls in a base class declared in another file.
+            Some(name) => match self.lookup_class(name)? {
                 Some(pid) => Some(pid),
                 None => match decl.parent.map(|p| unit.class_base + p) {
                     Some(pid) if self.classes[pid as usize].linked => Some(pid),
@@ -343,7 +345,8 @@ impl Interp {
         }
         let mut interfaces = Vec::new();
         for iname in &decl.interfaces {
-            match self.class_by_name(iname) {
+            // `implements` autoloads too.
+            match self.lookup_class(iname)? {
                 Some(iid) => interfaces.push(iid),
                 None => {
                     let msg = format!("Interface \"{}\" not found", String::from_utf8_lossy(iname));

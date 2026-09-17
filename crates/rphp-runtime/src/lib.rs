@@ -17,10 +17,12 @@
 #![forbid(unsafe_code)]
 
 mod api;
+mod autoload;
 mod call;
 mod class;
 mod enums;
 mod errors;
+mod eval;
 mod exec;
 mod frame;
 mod ini;

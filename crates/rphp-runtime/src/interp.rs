@@ -122,6 +122,11 @@ pub struct Interp {
     pub(crate) reentry_depth: usize,
     /// Canonical paths of files included with `_once`.
     pub(crate) included: HashSet<PathBuf>,
+    /// The `spl_autoload_register` stack, in call order (E7).
+    pub(crate) autoloaders: Vec<rphp_value::Value>,
+    /// Class names an autoloader is running for right now, so a loader that
+    /// touches its own class cannot recurse forever.
+    pub(crate) autoloading: Vec<Box<[u8]>>,
     /// The compile hook for `include`/`require`.
     pub compile_hook: Option<CompileHook>,
     /// The output stack (`echo`, `ob_*`) over the SAPI's sink.
@@ -193,6 +198,8 @@ impl Interp {
             stack: Vec::new(),
             reentry_depth: 0,
             included: HashSet::new(),
+            autoloaders: Vec::new(),
+            autoloading: Vec::new(),
             compile_hook: None,
             out: OutputStack::new(sink),
             ini: IniTable::with_core_defaults(),

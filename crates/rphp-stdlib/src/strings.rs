@@ -4,7 +4,7 @@
 //! (ICU-backed) and are a separate extension.
 use rphp_value::{Array, ArrayKey, Str, Value};
 
-use crate::{nf, Ctx, NativeError, NativeFn, NativeResult};
+use rphp_runtime::{Ctx, NativeFn, NativeResult, nf, Unwind};
 
 /// This extension's registry contribution (see `lib.rs`). New byte-string
 /// functions are added here alongside their handler below.
@@ -70,23 +70,23 @@ fn str_value(bytes: Vec<u8>) -> Value {
     Value::Str(Str::from_vec(bytes))
 }
 
-pub(crate) fn strlen(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strlen(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Int(bytes(&args[0]).len() as i64))
 }
 
-pub(crate) fn strtoupper(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strtoupper(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut b = bytes(&args[0]);
     b.make_ascii_uppercase();
     Ok(str_value(b))
 }
 
-pub(crate) fn strtolower(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strtolower(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut b = bytes(&args[0]);
     b.make_ascii_lowercase();
     Ok(str_value(b))
 }
 
-pub(crate) fn ucfirst(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ucfirst(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut b = bytes(&args[0]);
     if let Some(first) = b.first_mut() {
         first.make_ascii_uppercase();
@@ -94,7 +94,7 @@ pub(crate) fn ucfirst(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(b))
 }
 
-pub(crate) fn lcfirst(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn lcfirst(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut b = bytes(&args[0]);
     if let Some(first) = b.first_mut() {
         first.make_ascii_lowercase();
@@ -102,18 +102,18 @@ pub(crate) fn lcfirst(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(b))
 }
 
-pub(crate) fn str_repeat(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn str_repeat(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let times = args[1].to_int();
     if times < 0 {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "str_repeat(): Argument #2 ($times) must be greater than or equal to 0",
         ));
     }
     Ok(str_value(s.repeat(times as usize)))
 }
 
-pub(crate) fn substr(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn substr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let n = s.len() as i64;
     let mut start = args[1].to_int();
@@ -141,7 +141,7 @@ pub(crate) fn substr(_: &mut Ctx, args: &[Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn strpos(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strpos(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let needle = bytes(&args[1]);
     let n = haystack.len() as i64;
@@ -158,26 +158,26 @@ pub(crate) fn strpos(_: &mut Ctx, args: &[Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn str_replace(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn str_replace(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let search = bytes(&args[0]);
     let replace = bytes(&args[1]);
     let subject = bytes(&args[2]);
     Ok(str_value(replace_all(&subject, &search, &replace)))
 }
 
-pub(crate) fn trim(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn trim(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     trim_impl(args, true, true)
 }
 
-pub(crate) fn ltrim(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ltrim(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     trim_impl(args, true, false)
 }
 
-pub(crate) fn rtrim(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn rtrim(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     trim_impl(args, false, true)
 }
 
-pub(crate) fn implode(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn implode(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // `implode($array)` (glue ""), `implode($glue, $array)`, and the legacy
     // reversed `implode($array, $glue)` order are all accepted.
     let (glue, array) = match args {
@@ -185,7 +185,7 @@ pub(crate) fn implode(_: &mut Ctx, args: &[Value]) -> NativeResult {
         [glue, Value::Array(a)] => (bytes(glue), a),
         [Value::Array(a), glue] => (bytes(glue), a),
         _ => {
-            return Err(NativeError::new(
+            return Err(Unwind::type_error(
                 "implode(): Argument must be of type array",
             ))
         }
@@ -200,11 +200,11 @@ pub(crate) fn implode(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn explode(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn explode(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let sep = bytes(&args[0]);
     let subject = bytes(&args[1]);
     if sep.is_empty() {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "explode(): Argument #1 ($separator) cannot be empty",
         ));
     }
@@ -242,30 +242,30 @@ pub(crate) fn explode(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn ord(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ord(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let b = bytes(&args[0]);
     Ok(Value::Int(b.first().copied().unwrap_or(0) as i64))
 }
 
-pub(crate) fn chr(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn chr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // PHP reduces the codepoint modulo 256.
     let byte = args[0].to_int().rem_euclid(256) as u8;
     Ok(str_value(vec![byte]))
 }
 
-pub(crate) fn str_contains(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn str_contains(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let needle = bytes(&args[1]);
     Ok(Value::Bool(find(&haystack, &needle).is_some()))
 }
 
-pub(crate) fn str_starts_with(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn str_starts_with(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let needle = bytes(&args[1]);
     Ok(Value::Bool(haystack.starts_with(&needle)))
 }
 
-pub(crate) fn str_ends_with(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn str_ends_with(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let needle = bytes(&args[1]);
     Ok(Value::Bool(haystack.ends_with(&needle)))
@@ -334,13 +334,13 @@ fn ascii_lower(b: &[u8]) -> Vec<u8> {
     b.iter().map(u8::to_ascii_lowercase).collect()
 }
 
-pub(crate) fn strrev(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strrev(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut b = bytes(&args[0]);
     b.reverse();
     Ok(str_value(b))
 }
 
-pub(crate) fn ucwords(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ucwords(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut b = bytes(&args[0]);
     // Default word delimiters match php-src: " \t\r\n\f\v".
     let delims: Vec<u8> = match args.get(1) {
@@ -359,7 +359,7 @@ pub(crate) fn ucwords(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(b))
 }
 
-pub(crate) fn str_pad(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn str_pad(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let target = args[1].to_int();
     let pad = match args.get(2) {
@@ -369,12 +369,12 @@ pub(crate) fn str_pad(_: &mut Ctx, args: &[Value]) -> NativeResult {
     // 0 = STR_PAD_LEFT, 1 = STR_PAD_RIGHT (default), 2 = STR_PAD_BOTH.
     let ptype = args.get(3).map_or(1, Value::to_int);
     if pad.is_empty() {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "str_pad(): Argument #3 ($pad_string) must not be empty",
         ));
     }
     if !(0..=2).contains(&ptype) {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "str_pad(): Argument #4 ($pad_type) must be STR_PAD_LEFT, STR_PAD_RIGHT, or STR_PAD_BOTH",
         ));
     }
@@ -415,11 +415,11 @@ pub(crate) fn str_pad(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn str_split(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn str_split(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let size = args.get(1).map_or(1, Value::to_int);
     if size < 1 {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "str_split(): Argument #2 ($length) must be greater than 0",
         ));
     }
@@ -438,11 +438,11 @@ pub(crate) fn str_split(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn substr_count(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn substr_count(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let needle = bytes(&args[1]);
     if needle.is_empty() {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "substr_count(): Argument #2 ($needle) must not be empty",
         ));
     }
@@ -454,7 +454,7 @@ pub(crate) fn substr_count(_: &mut Ctx, args: &[Value]) -> NativeResult {
         offset += n;
     }
     if offset < 0 || offset > n {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "substr_count(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
         ));
     }
@@ -464,7 +464,7 @@ pub(crate) fn substr_count(_: &mut Ctx, args: &[Value]) -> NativeResult {
             let l = l.to_int();
             let e = if l < 0 { n + l } else { offset + l };
             if e < offset || e > n {
-                return Err(NativeError::new(
+                return Err(Unwind::value_error(
                     "substr_count(): Argument #4 ($length) must be contained in argument #1 ($haystack)",
                 ));
             }
@@ -492,14 +492,14 @@ fn rpos_impl(args: &[Value], ci: bool, name: &str) -> NativeResult {
     // `hi` is the greatest start position considered; `lo` the least.
     let (lo, mut hi) = if offset >= 0 {
         if offset > n {
-            return Err(NativeError::new(format!(
+            return Err(Unwind::value_error(format!(
                 "{name}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"
             )));
         }
         (offset, n - nl)
     } else {
         if -offset > n {
-            return Err(NativeError::new(format!(
+            return Err(Unwind::value_error(format!(
                 "{name}(): Argument #3 ($offset) must be contained in argument #1 ($haystack)"
             )));
         }
@@ -529,15 +529,15 @@ fn rpos_impl(args: &[Value], ci: bool, name: &str) -> NativeResult {
     Ok(Value::Bool(false))
 }
 
-pub(crate) fn strrpos(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strrpos(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     rpos_impl(args, false, "strrpos")
 }
 
-pub(crate) fn strripos(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strripos(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     rpos_impl(args, true, "strripos")
 }
 
-pub(crate) fn stripos(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn stripos(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let needle = bytes(&args[1]);
     let n = haystack.len() as i64;
@@ -546,7 +546,7 @@ pub(crate) fn stripos(_: &mut Ctx, args: &[Value]) -> NativeResult {
         start += n;
     }
     if start < 0 || start > n {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "stripos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
         ));
     }
@@ -558,7 +558,7 @@ pub(crate) fn stripos(_: &mut Ctx, args: &[Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn strstr(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strstr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let needle = bytes(&args[1]);
     let before = args.get(2).is_some_and(Value::to_bool);
@@ -569,7 +569,7 @@ pub(crate) fn strstr(_: &mut Ctx, args: &[Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn stristr(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn stristr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let needle = bytes(&args[1]);
     let before = args.get(2).is_some_and(Value::to_bool);
@@ -583,7 +583,7 @@ pub(crate) fn stristr(_: &mut Ctx, args: &[Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn strrchr(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strrchr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let needle = bytes(&args[1]);
     // Only the first byte of the needle is significant; an empty needle fails.
@@ -596,7 +596,7 @@ pub(crate) fn strrchr(_: &mut Ctx, args: &[Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn strpbrk(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strpbrk(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let charlist = bytes(&args[1]);
     match haystack.iter().position(|c| charlist.contains(c)) {
@@ -624,11 +624,11 @@ fn cmp_bytes(a: &[u8], b: &[u8], ci: bool) -> i64 {
     (a.len() as i64 - b.len() as i64).signum()
 }
 
-pub(crate) fn strcmp(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strcmp(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Int(cmp_bytes(&bytes(&args[0]), &bytes(&args[1]), false)))
 }
 
-pub(crate) fn strcasecmp(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strcasecmp(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Int(cmp_bytes(&bytes(&args[0]), &bytes(&args[1]), true)))
 }
 
@@ -637,7 +637,7 @@ fn ncmp_impl(args: &[Value], ci: bool, name: &str) -> NativeResult {
     let b = bytes(&args[1]);
     let len = args[2].to_int();
     if len < 0 {
-        return Err(NativeError::new(format!(
+        return Err(Unwind::value_error(format!(
             "{name}(): Argument #3 ($length) must be greater than or equal to 0"
         )));
     }
@@ -648,11 +648,11 @@ fn ncmp_impl(args: &[Value], ci: bool, name: &str) -> NativeResult {
     Ok(Value::Int(cmp_bytes(a2, b2, ci)))
 }
 
-pub(crate) fn strncmp(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strncmp(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     ncmp_impl(args, false, "strncmp")
 }
 
-pub(crate) fn strncasecmp(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strncasecmp(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     ncmp_impl(args, true, "strncasecmp")
 }
 
@@ -673,7 +673,7 @@ fn hex_val(c: u8) -> Option<u8> {
     }
 }
 
-pub(crate) fn bin2hex(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn bin2hex(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let b = bytes(&args[0]);
     let mut out = Vec::with_capacity(b.len() * 2);
     for &byte in &b {
@@ -683,7 +683,7 @@ pub(crate) fn bin2hex(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn hex2bin(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn hex2bin(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let b = bytes(&args[0]);
     // PHP warns and returns false on odd length or a non-hex byte; we mirror the
     // (stdout-visible) `false` result without the warning.
@@ -702,7 +702,7 @@ pub(crate) fn hex2bin(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn nl2br(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn nl2br(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let xhtml = args.get(1).is_none_or(Value::to_bool);
     let br: &[u8] = if xhtml { b"<br />" } else { b"<br>" };
@@ -729,12 +729,12 @@ pub(crate) fn nl2br(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn strtr(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strtr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     if args.len() == 2 {
         // Array form: replace whole substrings, longest key first, one
         // left-to-right pass (replaced regions are never re-scanned).
         let Value::Array(map) = &args[1] else {
-            return Err(NativeError::new(format!(
+            return Err(Unwind::type_error(format!(
                 "strtr(): Argument #2 ($from) must be of type array, {} given",
                 args[1].type_name()
             )));
@@ -781,7 +781,7 @@ pub(crate) fn strtr(_: &mut Ctx, args: &[Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn substr_replace(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn substr_replace(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let replace = bytes(&args[1]);
     let n = s.len() as i64;
@@ -810,7 +810,7 @@ pub(crate) fn substr_replace(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn quotemeta(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn quotemeta(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let mut out = Vec::with_capacity(s.len());
     for &c in &s {
@@ -825,7 +825,7 @@ pub(crate) fn quotemeta(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn addslashes(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn addslashes(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let mut out = Vec::with_capacity(s.len());
     for &c in &s {
@@ -845,7 +845,7 @@ pub(crate) fn addslashes(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn stripslashes(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn stripslashes(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
@@ -937,7 +937,7 @@ fn format_decimal(num: f64, dec: usize) -> (bool, Vec<u8>, Vec<u8>) {
     (neg && !all_zero, intpart, fracpart)
 }
 
-pub(crate) fn number_format(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn number_format(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let num = args[0].to_float();
     // PHP prints non-finite values as a bare "nan"/"inf" (no sign, no grouping).
     if num.is_nan() {
@@ -974,7 +974,7 @@ pub(crate) fn number_format(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn str_word_count(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn str_word_count(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let format = args.get(1).map_or(0, Value::to_int);
     let extra = match args.get(2) {
@@ -1019,7 +1019,7 @@ pub(crate) fn str_word_count(_: &mut Ctx, args: &[Value]) -> NativeResult {
             }
             Ok(Value::Array(out))
         }
-        _ => Err(NativeError::new(
+        _ => Err(Unwind::value_error(
             "str_word_count(): Argument #2 ($format) must be a valid format value",
         )),
     }
@@ -1125,7 +1125,7 @@ fn php_gcvt(value: f64, ndigit: usize, upper: bool) -> Vec<u8> {
 
 /// The shared engine behind `sprintf`/`printf`/`vsprintf`. Operates entirely on
 /// bytes so binary strings round-trip; `args` are the values after the format.
-fn do_sprintf(format: &[u8], args: &[Value]) -> Result<Vec<u8>, NativeError> {
+fn do_sprintf(format: &[u8], args: &[Value]) -> Result<Vec<u8>, Unwind> {
     let mut out = Vec::new();
     let mut argi = 0usize;
     let n = format.len();
@@ -1204,7 +1204,7 @@ fn do_sprintf(format: &[u8], args: &[Value]) -> Result<Vec<u8>, NativeError> {
         let arg: Value = match explicit {
             Some(num) => {
                 if num == 0 || num > args.len() {
-                    return Err(NativeError::new(format!(
+                    return Err(Unwind::argument_count_error(format!(
                         "{num} arguments are required, {} given",
                         args.len()
                     )));
@@ -1213,7 +1213,7 @@ fn do_sprintf(format: &[u8], args: &[Value]) -> Result<Vec<u8>, NativeError> {
             }
             None => {
                 let Some(a) = args.get(argi) else {
-                    return Err(NativeError::new(format!(
+                    return Err(Unwind::argument_count_error(format!(
                         "{} arguments are required, {} given",
                         argi + 1,
                         args.len()
@@ -1271,7 +1271,7 @@ fn do_sprintf(format: &[u8], args: &[Value]) -> Result<Vec<u8>, NativeError> {
                 (signed(f < 0.0), php_gcvt(f.abs(), nd, conv == b'G'))
             }
             other => {
-                return Err(NativeError::new(format!(
+                return Err(Unwind::value_error(format!(
                     "Unknown format specifier \"{}\"",
                     other as char
                 )));
@@ -1310,12 +1310,12 @@ fn do_sprintf(format: &[u8], args: &[Value]) -> Result<Vec<u8>, NativeError> {
     Ok(out)
 }
 
-pub(crate) fn sprintf(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn sprintf(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let format = bytes(&args[0]);
     Ok(str_value(do_sprintf(&format, &args[1..])?))
 }
 
-pub(crate) fn printf(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn printf(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let format = bytes(&args[0]);
     let rendered = do_sprintf(&format, &args[1..])?;
     let len = rendered.len() as i64;
@@ -1323,10 +1323,10 @@ pub(crate) fn printf(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Int(len))
 }
 
-pub(crate) fn vsprintf(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn vsprintf(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let format = bytes(&args[0]);
     let Value::Array(arr) = &args[1] else {
-        return Err(NativeError::new(format!(
+        return Err(Unwind::type_error(format!(
             "vsprintf(): Argument #2 ($values) must be of type array, {} given",
             args[1].type_name()
         )));

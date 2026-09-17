@@ -6,13 +6,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rphp-span.workspace = true
+# Running goes through rphp-embed only (ADR-014); the front-end crates are
+# used directly by the `--emit=tokens|ast` dumps and `-l`.
+rphp-embed.workspace = true
 rphp-source.workspace = true
 rphp-intern.workspace = true
-rphp-diagnostics.workspace = true
 rphp-lexer.workspace = true
-rphp-ast.workspace = true
-rphp-bytecode.workspace = true
 rphp-parser.workspace = true
-rphp-compiler.workspace = true
-rphp-runtime.workspace = true

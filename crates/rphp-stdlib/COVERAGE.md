@@ -6,8 +6,9 @@ The oracle is differential testing against stock **PHP 8.5**: each extension shi
 and `php` by `crates/rphp-sapi-cli/tests/differential.rs` and required to match
 byte-for-byte (must-not-regress).
 
-**Registry size: 180 rows** (wave 1: ~103 distinct functions; wave 2: +11 by-reference
-builtins; wave 3: +9 higher-order/callable builtins). Plus aliases and the initial slice.
+**Registry size: 218 rows** (wave 1: ~103 distinct functions; wave 2: +11 by-reference
+builtins; wave 3: +9 higher-order/callable builtins; E1: +36 engine-facing builtins —
+`ob_*`, ini/constants, error handling). Plus aliases and the initial slice.
 
 ## Engine gaps that bound the burn-down
 
@@ -15,12 +16,13 @@ Functions needing a missing language feature are **cataloged, not faked** (decis
 & catalog). They unblock as the language slice grows:
 
 - **by-reference parameters** — ✅ *native* by-ref done (the ABI copies a builtin's
-  mutated arg slots back into the caller's variable; `lib.rs` `Handler::ByRef` +
+  mutated arg slots back into the caller's variable; `rphp_runtime::nf_ref!` +
   `NativeFn::by_ref`). User-defined `function f(&$x)` is still pending (needs parser/AST).
 - **callables** — ✅ function-name strings **and closures/arrow functions**: native
-  functions re-enter the engine via `Host::call` (`lib.rs` `Host`, implemented by
-  `rphp-runtime`'s `VmHost`), which dispatches a `Value::Closure` to `exec_closure` or
-  resolves a callable string to a user function (`Module::func_by_name`) / builtin.
+  functions re-enter the engine via `ctx.call_value` (`rphp_runtime::Interp::call_value`,
+  ADR-014: natives receive `Ctx(&mut Interp)`), which dispatches a `Value::Closure` to
+  `exec_closure` or resolves a callable string to a user function
+  (`Module::func_by_name`) / builtin.
   Closures capture by value (`use (...)` / arrow auto-capture). **Still pending:**
   `[$obj, 'method']` arrays, first-class `strlen(...)`, by-reference `use (&$x)`.
 - **objects** — ✅ *core* objects/classes landed: class declarations, properties with
@@ -37,6 +39,9 @@ Functions needing a missing language feature are **cataloged, not faked** (decis
 
 | Extension | Implemented | Notes |
 |-----------|-------------|-------|
+| output (ob_*) | 14 | E1: `ob_start` (callback + php phase flags), `ob_get_clean/contents/flush`, `ob_end_clean/flush`, `ob_get_level/length/status`, `ob_flush/clean`, `flush`, `ob_implicit_flush`, `ob_list_handlers`; streaming sink, php's no-buffer notices |
+| errorfunc | 10 | E1: `set/restore_error_handler`, `set/restore_exception_handler` (stored; invoked in E5), `error_reporting`, `trigger_error`/`user_error` (incl. the 8.4 E_USER_ERROR deprecation + fatal), `error_get_last`, `error_clear_last`, `error_log` (stderr / file) |
+| basic_functions | 12 | E1: `ini_get/ini_set/ini_alter/ini_restore`, `define/defined/constant`, `register_shutdown_function`, `php_sapi_name`, `phpversion`, `function_exists`, `set_time_limit` (no-op) |
 | ctype     | 11 | all `ctype_*`; ASCII (C-locale) classification; integer special-case matched |
 | math      | 33 | trig/exp/log, `pow`, `hypot`, `fmod`, `fdiv`, `is_nan/finite/infinite`, base conversions (`dechex`…`octdec`) |
 | string    | 29 | `sprintf`/`printf`/`vsprintf`, `number_format`, `str_pad`, `str_split`, `strtr`, `strcmp` family, `bin2hex`/`hex2bin`, … |

@@ -27,15 +27,3 @@
 #   category  = "object-id"
 #   reason    = "var_dump prints the object handle; handles depend on allocation order"
 #   normalize = ""
-
-[[allow]]
-snippet   = "**/fatal-*.php"
-category  = "error-wording"
-reason    = """
-Uncaught-error rendering is not yet PHP-shaped: stock php (display_errors=1) \
-prints `Fatal error: Uncaught <Class>: <msg> in <file>:<line>` plus a stack \
-trace on STDOUT, while rphp's M0 CLI prints `PHP Fatal error:  Uncaught Error: \
-<msg>` on STDERR without class/file/line/trace (SAPI-2 and E5 close this). The \
-whole error block is dropped on both channels; the exit code (255) is still \
-compared exactly, which is the "being thrown" part of the contract."""
-normalize = "regex:(?s)\\n?(PHP )?Fatal error: .* => "

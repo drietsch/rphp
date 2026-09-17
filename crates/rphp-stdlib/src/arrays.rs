@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use rphp_value::{array_key, Array, ArrayKey, Str, Value};
 
-use crate::{nf, nf_mut, Ctx, NativeError, NativeFn, NativeResult};
+use rphp_runtime::{Ctx, NativeFn, NativeResult, nf, nf_ref, Unwind};
 
 /// This extension's registry contribution (see `lib.rs`). Value-returning array
 /// functions live here; in-place mutators (sort, array_push, …) wait on
@@ -39,48 +39,48 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("array_intersect", 2, None, array_intersect),
     nf!("array_replace", 1, None, array_replace),
     // --- by-reference mutators: write the result back through $array (#0) ---
-    nf_mut!("sort", 1, Some(2), 0b1, sort),
-    nf_mut!("rsort", 1, Some(2), 0b1, rsort),
-    nf_mut!("asort", 1, Some(2), 0b1, asort),
-    nf_mut!("arsort", 1, Some(2), 0b1, arsort),
-    nf_mut!("ksort", 1, Some(2), 0b1, ksort),
-    nf_mut!("krsort", 1, Some(2), 0b1, krsort),
-    nf_mut!("array_push", 1, None, 0b1, array_push),
-    nf_mut!("array_pop", 1, Some(1), 0b1, array_pop),
-    nf_mut!("array_shift", 1, Some(1), 0b1, array_shift),
-    nf_mut!("array_unshift", 1, None, 0b1, array_unshift),
-    nf_mut!("array_splice", 2, Some(4), 0b1, array_splice),
-    // --- higher-order: invoke a callable through the host ---
+    nf_ref!("sort", 1, Some(2), 0b1, sort),
+    nf_ref!("rsort", 1, Some(2), 0b1, rsort),
+    nf_ref!("asort", 1, Some(2), 0b1, asort),
+    nf_ref!("arsort", 1, Some(2), 0b1, arsort),
+    nf_ref!("ksort", 1, Some(2), 0b1, ksort),
+    nf_ref!("krsort", 1, Some(2), 0b1, krsort),
+    nf_ref!("array_push", 1, None, 0b1, array_push),
+    nf_ref!("array_pop", 1, Some(1), 0b1, array_pop),
+    nf_ref!("array_shift", 1, Some(1), 0b1, array_shift),
+    nf_ref!("array_unshift", 1, None, 0b1, array_unshift),
+    nf_ref!("array_splice", 2, Some(4), 0b1, array_splice),
+    // --- higher-order: invoke a callable through the interpreter ---
     nf!("array_map", 2, Some(2), array_map),
     nf!("array_filter", 1, Some(2), array_filter),
     nf!("array_reduce", 2, Some(3), array_reduce),
-    nf_mut!("usort", 2, Some(2), 0b1, usort),
-    nf_mut!("uasort", 2, Some(2), 0b1, uasort),
-    nf_mut!("uksort", 2, Some(2), 0b1, uksort),
+    nf_ref!("usort", 2, Some(2), 0b1, usort),
+    nf_ref!("uasort", 2, Some(2), 0b1, uasort),
+    nf_ref!("uksort", 2, Some(2), 0b1, uksort),
 ];
 
 /// Borrow an argument as an array, or produce PHP's TypeError message.
-fn want_array<'a>(func: &str, v: &'a Value) -> Result<&'a Array, NativeError> {
+fn want_array<'a>(func: &str, v: &'a Value) -> Result<&'a Array, Unwind> {
     match v {
         Value::Array(a) => Ok(a),
-        other => Err(NativeError::new(format!(
+        other => Err(Unwind::type_error(format!(
             "{func}(): Argument #1 ($array) must be of type array, {} given",
             other.type_name()
         ))),
     }
 }
 
-pub(crate) fn count(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn count(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     match &args[0] {
         Value::Array(a) => Ok(Value::Int(a.len() as i64)),
-        other => Err(NativeError::new(format!(
+        other => Err(Unwind::type_error(format!(
             "count(): Argument #1 ($value) must be of type Countable|array, {} given",
             other.type_name()
         ))),
     }
 }
 
-pub(crate) fn in_array(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn in_array(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let needle = &args[0];
     let haystack = want_array("in_array", &args[1])?;
     let strict = args.get(2).is_some_and(Value::to_bool);
@@ -93,7 +93,7 @@ pub(crate) fn in_array(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Bool(false))
 }
 
-pub(crate) fn array_key_exists(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_key_exists(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_key_exists", &args[1])?;
     Ok(Value::Bool(match array_key(&args[0]) {
         Some(k) => arr.get(&k).is_some(),
@@ -101,7 +101,7 @@ pub(crate) fn array_key_exists(_: &mut Ctx, args: &[Value]) -> NativeResult {
     }))
 }
 
-pub(crate) fn array_keys(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_keys(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_keys", &args[0])?;
     let mut out = Array::new();
     for (k, _) in arr.iter() {
@@ -110,7 +110,7 @@ pub(crate) fn array_keys(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_values(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_values(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_values", &args[0])?;
     let mut out = Array::new();
     for (_, v) in arr.iter() {
@@ -119,7 +119,7 @@ pub(crate) fn array_values(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_merge(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_merge(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut out = Array::new();
     for arg in args {
         let arr = want_array("array_merge", arg)?;
@@ -135,7 +135,7 @@ pub(crate) fn array_merge(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_reverse(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_reverse(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_reverse", &args[0])?;
     let preserve = args.get(1).is_some_and(Value::to_bool);
     let mut out = Array::new();
@@ -152,7 +152,7 @@ pub(crate) fn array_reverse(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_sum(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_sum(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_sum", &args[0])?;
     let mut acc = Value::Int(0);
     for (_, v) in arr.iter() {
@@ -164,7 +164,7 @@ pub(crate) fn array_sum(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(acc)
 }
 
-pub(crate) fn range(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn range(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let start = &args[0];
     let end = &args[1];
     let step_arg = args.get(2);
@@ -202,7 +202,7 @@ pub(crate) fn range(_: &mut Ctx, args: &[Value]) -> NativeResult {
     if float_mode {
         let (s, e, st) = (s.to_float(), e.to_float(), step_v.to_float().abs());
         if st == 0.0 {
-            return Err(NativeError::new("range(): Argument #3 ($step) must not be 0"));
+            return Err(Unwind::value_error("range(): Argument #3 ($step) must not be 0"));
         }
         let count = ((e - s).abs() / st).floor() as i64;
         for i in 0..=count {
@@ -213,7 +213,7 @@ pub(crate) fn range(_: &mut Ctx, args: &[Value]) -> NativeResult {
         let (s, e) = (s.to_int(), e.to_int());
         let st = step_v.to_int().abs();
         if st == 0 {
-            return Err(NativeError::new("range(): Argument #3 ($step) must not be 0"));
+            return Err(Unwind::value_error("range(): Argument #3 ($step) must not be 0"));
         }
         let mut c = s;
         if s <= e {
@@ -251,10 +251,10 @@ fn char_value(b: u8) -> Value {
 /// Borrow the `n`-th (0-based) argument as an array, with PHP's *positional*
 /// TypeError used by the variadic set operators — those omit the parameter name
 /// for every argument after the first (`array_diff(): Argument #2 must be …`).
-fn want_array_n<'a>(func: &str, n: usize, v: &'a Value) -> Result<&'a Array, NativeError> {
+fn want_array_n<'a>(func: &str, n: usize, v: &'a Value) -> Result<&'a Array, Unwind> {
     match v {
         Value::Array(a) => Ok(a),
-        other => Err(NativeError::new(format!(
+        other => Err(Unwind::type_error(format!(
             "{func}(): Argument #{} must be of type array, {} given",
             n + 1,
             other.type_name()
@@ -274,7 +274,7 @@ fn append_reindexed(out: &mut Array, src: &Array) {
     }
 }
 
-pub(crate) fn array_slice(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_slice(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_slice", &args[0])?;
     let n = arr.len() as i64;
     // Snapshot once; `Array::iter()` is single-pass and we index it by position.
@@ -317,7 +317,7 @@ pub(crate) fn array_slice(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_flip(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_flip(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_flip", &args[0])?;
     let mut out = Array::new();
     for (k, v) in arr.iter() {
@@ -332,7 +332,7 @@ pub(crate) fn array_flip(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_unique(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_unique(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_unique", &args[0])?;
     // Default SORT_STRING: two values are duplicates iff their `(string)` casts
     // are byte-equal. The first occurrence wins and its key is preserved.
@@ -346,12 +346,12 @@ pub(crate) fn array_unique(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_search(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_search(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let needle = &args[0];
     let haystack = match &args[1] {
         Value::Array(a) => a,
         other => {
-            return Err(NativeError::new(format!(
+            return Err(Unwind::type_error(format!(
                 "array_search(): Argument #2 ($haystack) must be of type array, {} given",
                 other.type_name()
             )))
@@ -367,11 +367,11 @@ pub(crate) fn array_search(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Bool(false))
 }
 
-pub(crate) fn array_fill(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_fill(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let start = args[0].to_int();
     let count = args[1].to_int();
     if count < 0 {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "array_fill(): Argument #2 ($count) must be greater than or equal to 0",
         ));
     }
@@ -385,7 +385,7 @@ pub(crate) fn array_fill(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_fill_keys(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_fill_keys(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let keys = want_array("array_fill_keys", &args[0])?;
     let value = &args[1];
     let mut out = Array::new();
@@ -398,11 +398,11 @@ pub(crate) fn array_fill_keys(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_combine(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_combine(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let keys = match &args[0] {
         Value::Array(a) => a,
         other => {
-            return Err(NativeError::new(format!(
+            return Err(Unwind::type_error(format!(
                 "array_combine(): Argument #1 ($keys) must be of type array, {} given",
                 other.type_name()
             )))
@@ -411,14 +411,14 @@ pub(crate) fn array_combine(_: &mut Ctx, args: &[Value]) -> NativeResult {
     let values = match &args[1] {
         Value::Array(a) => a,
         other => {
-            return Err(NativeError::new(format!(
+            return Err(Unwind::type_error(format!(
                 "array_combine(): Argument #2 ($values) must be of type array, {} given",
                 other.type_name()
             )))
         }
     };
     if keys.len() != values.len() {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "array_combine(): Argument #1 ($keys) and argument #2 ($values) must have the same number of elements",
         ));
     }
@@ -431,7 +431,7 @@ pub(crate) fn array_combine(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_pad(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_pad(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_pad", &args[0])?;
     let size = args[1].to_int();
     let value = &args[2];
@@ -458,7 +458,7 @@ pub(crate) fn array_pad(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_column(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_column(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_column", &args[0])?;
     // A null column key selects the whole row; otherwise normalize it once.
     let whole_row = matches!(&args[1], Value::Null);
@@ -498,11 +498,11 @@ pub(crate) fn array_column(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_chunk(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_chunk(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_chunk", &args[0])?;
     let size = args[1].to_int();
     if size < 1 {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "array_chunk(): Argument #2 ($length) must be greater than 0",
         ));
     }
@@ -529,7 +529,7 @@ pub(crate) fn array_chunk(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_product(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_product(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_product", &args[0])?;
     // The empty-array product is the int 1, per PHP.
     let mut acc = Value::Int(1);
@@ -542,7 +542,7 @@ pub(crate) fn array_product(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(acc)
 }
 
-pub(crate) fn array_count_values(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_count_values(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_count_values", &args[0])?;
     let mut out = Array::new();
     for (_, v) in arr.iter() {
@@ -558,17 +558,17 @@ pub(crate) fn array_count_values(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_key_first(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_key_first(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_key_first", &args[0])?;
     Ok(arr.iter().next().map_or(Value::Null, |(k, _)| k.to_value()))
 }
 
-pub(crate) fn array_key_last(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_key_last(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_key_last", &args[0])?;
     Ok(arr.iter().last().map_or(Value::Null, |(k, _)| k.to_value()))
 }
 
-pub(crate) fn array_is_list(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_is_list(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_is_list", &args[0])?;
     // A list has consecutive int keys 0,1,2,… in order (the empty array counts).
     let mut expected = 0i64;
@@ -581,7 +581,7 @@ pub(crate) fn array_is_list(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Bool(true))
 }
 
-pub(crate) fn array_diff(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_diff(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let base = want_array("array_diff", &args[0])?;
     // Two elements are equal iff `(string)$a === (string)$b`; gather the string
     // form of every value across the remaining arrays.
@@ -601,7 +601,7 @@ pub(crate) fn array_diff(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_intersect(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_intersect(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let base = want_array("array_intersect", &args[0])?;
     // Keep a base value iff its string form appears in *every* other array.
     let mut sets: Vec<HashSet<Vec<u8>>> = Vec::new();
@@ -619,7 +619,7 @@ pub(crate) fn array_intersect(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_replace(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_replace(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // Start from a copy of the first array, then overwrite matching keys from
     // each later array in place (new keys are appended; no integer renumbering).
     let mut out = want_array("array_replace", &args[0])?.clone();
@@ -639,10 +639,10 @@ pub(crate) fn array_replace(_: &mut Ctx, args: &[Value]) -> NativeResult {
 // ABI). `Array` exposes no in-place remove, so they rebuild from owned entries.
 
 /// Owned `(key, value)` entries of an array argument, or PHP's TypeError.
-fn take_entries(func: &str, v: &Value) -> Result<Vec<(ArrayKey, Value)>, NativeError> {
+fn take_entries(func: &str, v: &Value) -> Result<Vec<(ArrayKey, Value)>, Unwind> {
     match v {
         Value::Array(a) => Ok(a.iter().map(|(k, val)| (k.clone(), val.clone())).collect()),
-        other => Err(NativeError::new(format!(
+        other => Err(Unwind::type_error(format!(
             "{func}(): Argument #1 ($array) must be of type array, {} given",
             other.type_name()
         ))),
@@ -723,7 +723,7 @@ pub(crate) fn array_push(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut a = match &args[0] {
         Value::Array(a) => a.clone(),
         other => {
-            return Err(NativeError::new(format!(
+            return Err(Unwind::type_error(format!(
                 "array_push(): Argument #1 ($array) must be of type array, {} given",
                 other.type_name()
             )))
@@ -822,23 +822,23 @@ pub(crate) fn array_splice(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 // ---- higher-order (callback) functions --------------------------------------
 //
-// These invoke a PHP callable through `ctx.call` (the host re-entry point). The
+// These invoke a PHP callable through `ctx.call_value` (the interpreter re-entry point). The
 // callable is a function-name string for now; closures arrive with the closure
 // value type. Multi-array `array_map`, `array_filter` modes, and `array_walk`
 // (by-ref callback) are cataloged in COVERAGE.md.
 
-pub(crate) fn array_map(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_map(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let entries = take_entries("array_map", &args[1])?;
     let mut out = Array::new();
     for (k, v) in entries {
         // Single-array form preserves keys; the result is the callback's return.
-        let mapped = ctx.call(&args[0], &[v])?;
+        let mapped = ctx.call_value(&args[0], &[v])?;
         out.set(k, mapped);
     }
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_filter(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_filter(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let entries = take_entries("array_filter", &args[0])?;
     // Without a callback, keep the truthy elements; with one, keep where it
     // returns true. Keys are preserved either way.
@@ -846,7 +846,7 @@ pub(crate) fn array_filter(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
     let mut out = Array::new();
     for (k, v) in entries {
         let keep = match callback {
-            Some(cb) => ctx.call(cb, std::slice::from_ref(&v))?.to_bool(),
+            Some(cb) => ctx.call_value(cb, std::slice::from_ref(&v))?.to_bool(),
             None => v.to_bool(),
         };
         if keep {
@@ -856,11 +856,11 @@ pub(crate) fn array_filter(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_reduce(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn array_reduce(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let entries = take_entries("array_reduce", &args[0])?;
     let mut acc = args.get(2).cloned().unwrap_or(Value::Null);
     for (_, v) in entries {
-        acc = ctx.call(&args[1], &[acc, v])?;
+        acc = ctx.call_value(&args[1], &[acc, v])?;
     }
     Ok(acc)
 }
@@ -878,7 +878,7 @@ fn user_sort(
 ) -> NativeResult {
     let mut entries = take_entries(func, &args[0])?;
     let cb = args[1].clone();
-    let mut err: Option<NativeError> = None;
+    let mut err: Option<Unwind> = None;
     entries.sort_by(|a, b| {
         if err.is_some() {
             return std::cmp::Ordering::Equal;
@@ -888,7 +888,7 @@ fn user_sort(
         } else {
             (a.1.clone(), b.1.clone())
         };
-        match ctx.call(&cb, &[x, y]) {
+        match ctx.call_value(&cb, &[x, y]) {
             Ok(r) => r.to_int().cmp(&0),
             Err(e) => {
                 err = Some(e);

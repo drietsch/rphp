@@ -10,7 +10,7 @@
 //! (PHP's default would return a `stdClass`); see the crate notes.
 use rphp_value::{array_key, Array, ArrayKey, ObjectData, Str, Value, Vis};
 
-use crate::{nf, Ctx, NativeError, NativeFn, NativeResult};
+use rphp_runtime::{Ctx, NativeFn, NativeResult, nf, Unwind};
 
 /// `json_encode` flag bits (a subset of PHP's `JSON_*` constants). Passed as a
 /// plain integer; only the three the encoder honours are named here.
@@ -29,7 +29,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
 /// PHP `json_encode($value, $flags = 0)`. Returns the JSON string, or `false`
 /// when a value cannot be encoded (a non-finite float, or a byte string that is
 /// not valid UTF-8) — matching PHP, which fails the whole call in that case.
-pub(crate) fn json_encode(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn json_encode(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let flags = args.get(1).map_or(0, Value::to_int);
     let mut out = Vec::new();
     match encode(&mut out, &args[0], flags, 0) {
@@ -288,11 +288,11 @@ fn format_double(f: f64) -> String {
 /// Returns the decoded value, or `null` on any syntax error. A JSON object
 /// always decodes to a string-keyed array (the engine has no object type yet),
 /// so `$associative` and `$flags` are ignored. `$depth` must be positive.
-pub(crate) fn json_decode(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn json_decode(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let bytes = args[0].to_php_bytes();
     let depth = args.get(2).map_or(512, Value::to_int);
     if depth <= 0 {
-        return Err(NativeError::new(
+        return Err(Unwind::value_error(
             "json_decode(): Argument #3 ($depth) must be greater than 0",
         ));
     }

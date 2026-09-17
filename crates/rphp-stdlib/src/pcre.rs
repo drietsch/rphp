@@ -10,13 +10,13 @@
 use pcre2::bytes::{Captures, Regex, RegexBuilder};
 use rphp_value::{Array, Str, Value};
 
-use crate::{nf, nf_mut, Ctx, NativeError, NativeFn, NativeResult};
+use rphp_runtime::{Ctx, NativeFn, NativeResult, nf, nf_ref, Unwind};
 
 /// This extension's registry contribution (see `lib.rs`).
 pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("preg_quote", 1, Some(2), preg_quote),
     // The optional `$matches` (#2) is by-reference; the 2-arg form also works.
-    nf_mut!("preg_match", 2, Some(3), 0b100, preg_match),
+    nf_ref!("preg_match", 2, Some(3), 0b100, preg_match),
     nf!("preg_replace", 3, Some(3), preg_replace),
     nf!("preg_replace_callback", 3, Some(3), preg_replace_callback),
     nf!("preg_split", 2, Some(4), preg_split),
@@ -34,8 +34,8 @@ fn str_value(bytes: Vec<u8>) -> Value {
 }
 
 /// The single error every malformed pattern / compile failure surfaces as.
-fn bad_pattern() -> NativeError {
-    NativeError::new("preg: invalid pattern")
+fn bad_pattern() -> Unwind {
+    Unwind::error("preg: invalid pattern")
 }
 
 // ---- pattern parsing & compilation -----------------------------------------
@@ -100,7 +100,7 @@ fn parse_pattern(pat: &[u8]) -> Option<(Vec<u8>, &[u8])> {
 /// `u`=utf (+ucp). PHP's other valid letters (`A D S U X J n`) are accepted but
 /// not all expressible through this builder; whitespace between modifiers is
 /// ignored; any other modifier is an error, as in PHP.
-fn compile(pattern: &[u8]) -> Result<Regex, NativeError> {
+fn compile(pattern: &[u8]) -> Result<Regex, Unwind> {
     let (body, mods) = parse_pattern(pattern).ok_or_else(bad_pattern)?;
     // PCRE2's builder takes a `&str`; PHP patterns are almost always UTF-8/ASCII.
     let body = std::str::from_utf8(&body).map_err(|_| bad_pattern())?;
@@ -134,7 +134,7 @@ fn compile(pattern: &[u8]) -> Result<Regex, NativeError> {
 
 /// `preg_quote($str, $delimiter = null)`: backslash-escape every PCRE
 /// metacharacter (and, if given, the delimiter); a NUL byte becomes `\000`.
-pub(crate) fn preg_quote(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn preg_quote(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     // The delimiter's first byte is escaped too (PHP ignores any rest / null).
     let delim_arg = args.get(1).filter(|v| !matches!(v, Value::Null)).map(bytes);
@@ -189,7 +189,7 @@ pub(crate) fn preg_match(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `preg_replace($pattern, $replacement, $subject)`: replace every match.
 /// Backreferences are written `$1`/`${1}`/`\1`; `$0` (or `\0`) is the whole
 /// match. (String operands only this wave; array forms are deferred.)
-pub(crate) fn preg_replace(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn preg_replace(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let re = compile(&bytes(&args[0]))?;
     let replacement = bytes(&args[1]);
     let subject = bytes(&args[2]);
@@ -217,7 +217,7 @@ pub(crate) fn preg_replace(_: &mut Ctx, args: &[Value]) -> NativeResult {
 /// `$callback` with the numbered-capture array (group 0 = whole match) and splice
 /// in its return value. (String subject only this wave; `$limit`/`$count` are
 /// deferred.)
-pub(crate) fn preg_replace_callback(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn preg_replace_callback(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let re = compile(&bytes(&args[0]))?;
     let subject = bytes(&args[2]);
     let mut out = Vec::with_capacity(subject.len());
@@ -239,7 +239,7 @@ pub(crate) fn preg_replace_callback(ctx: &mut Ctx, args: &[Value]) -> NativeResu
             matches.push(Value::Str(Str::from_vec(g)));
         }
         out.extend_from_slice(&subject[last..whole.start()]);
-        let replacement = ctx.call(&args[1], &[Value::Array(matches)])?;
+        let replacement = ctx.call_value(&args[1], &[Value::Array(matches)])?;
         out.extend_from_slice(&replacement.to_php_bytes());
         last = whole.end();
     }
@@ -251,7 +251,7 @@ pub(crate) fn preg_replace_callback(ctx: &mut Ctx, args: &[Value]) -> NativeResu
 /// `$limit <= 0` means unlimited; a positive limit caps the pieces (the last
 /// holds the remainder). `PREG_SPLIT_NO_EMPTY` (flag `1`) drops empty pieces;
 /// empties never count against the limit, matching PHP.
-pub(crate) fn preg_split(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn preg_split(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let re = compile(&bytes(&args[0]))?;
     let subject = bytes(&args[1]);
     let limit = args.get(2).map_or(-1, Value::to_int);
@@ -289,12 +289,12 @@ pub(crate) fn preg_split(_: &mut Ctx, args: &[Value]) -> NativeResult {
 
 /// `preg_grep($pattern, $array, $flags = 0)`: keep entries whose value matches
 /// (or, with `PREG_GREP_INVERT` = flag `1`, those that do not). Keys preserved.
-pub(crate) fn preg_grep(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn preg_grep(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let re = compile(&bytes(&args[0]))?;
     let arr = match &args[1] {
         Value::Array(a) => a,
         other => {
-            return Err(NativeError::new(format!(
+            return Err(Unwind::type_error(format!(
                 "preg_grep(): Argument #2 ($array) must be of type array, {} given",
                 other.type_name()
             )))

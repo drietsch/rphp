@@ -1,651 +1,53 @@
-//! Tier-0 register-bytecode interpreter.
+//! The engine crate (ADR-014): [`Interp`] owns all per-request state, natives
+//! are registered through [`Registry`] and receive [`Ctx`], and every runtime
+//! path returns `Result<_, Unwind>` (ADR-022). The stdlib and extension crates
+//! sit *above* this crate; the SAPIs reach it through `rphp-embed`.
 //!
-//! A portable `loop { match op { … } }` dispatch over a function's `code`,
-//! with a `usize` program counter. Each frame owns a `Vec<Value>` of registers
-//! (sized to [`Function::num_regs`], all initialized to `Value::Null` so
-//! uninitialized vars read as null). Calls recurse through [`exec_function`],
-//! threading a single `&mut RunOutput` so `echo` output accumulates across
-//! frames.
-//!
-//! The `become`-threaded dispatch path is a later refinement behind a feature
-//! flag (ADR-001); plain `match` is the correct and required core for M0.
-//!
-//! Keep the public signatures of [`run`], [`RunOutput`], and [`RuntimeError`]
-//! stable; the CLI and tests depend on them.
+//! Modules:
+//! * `registry` — the native ABI: [`NativeFn`], [`Ctx`], [`Unwind`], [`Registry`].
+//! * `interp` — [`Interp`] and the request lifecycle (`run_main`, shutdown
+//!   functions, output flush).
+//! * `api` — the helper surface natives call (`out`, `warn`, `call_value`,
+//!   `ini_*`, constants, resources, `ob_*`).
+//! * `errors` — the diagnostics channel (`emit_error`, uncaught rendering).
+//! * `output` — the `ob_*` stack over a streaming [`OutputSink`].
+//! * `ini`, `resources`, `frames` — the ini table, the resource table, and the
+//!   frame-info stack behind line numbers and `Stack trace:`.
+//! * `exec` — the tier-0 interpreter loop (replaced by E3).
 #![forbid(unsafe_code)]
 
-use std::rc::Rc;
+mod api;
+mod errors;
+mod exec;
+mod frames;
+mod ini;
+mod interp;
+mod output;
+mod registry;
+mod resources;
 
-use rphp_bytecode::{ClassId, Function, Module, Op, Visibility};
-use rphp_value::{array_key, Layout, Object, ObjectIdAllocator, PropMeta, Str, Value, ValueError};
-
-/// Captured side effects of a run. `echo` output accumulates into `stdout` as
-/// raw bytes — PHP strings are byte strings, so the buffer is binary-safe rather
-/// than UTF-8.
-#[derive(Default, Debug)]
-pub struct RunOutput {
-    pub stdout: Vec<u8>,
-}
-
-/// A runtime fault (division by zero, undefined function, …) surfaced as a
-/// PHP-level error.
-#[derive(Debug)]
-pub struct RuntimeError {
-    pub message: String,
-}
-
-impl std::fmt::Display for RuntimeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for RuntimeError {}
-
-/// Map a value-level fault to a PHP-flavored runtime error.
-fn runtime_error(err: ValueError) -> RuntimeError {
-    let message = match err {
-        ValueError::DivisionByZero => "Division by zero".to_string(),
-        ValueError::ModuloByZero => "Modulo by zero".to_string(),
-        ValueError::TypeError(msg) => format!("Unsupported operand types: {msg}"),
-    };
-    RuntimeError { message }
-}
-
-/// Whether a member with the given visibility, declared in `decl_class`, is
-/// reachable from code executing in `cur_class`. `protected` is visible anywhere
-/// in the same inheritance hierarchy; `private` only within the declaring class.
-fn access_ok(
-    module: &Module,
-    vis: Visibility,
-    decl_class: ClassId,
-    cur_class: Option<ClassId>,
-) -> bool {
-    match vis {
-        Visibility::Public => true,
-        Visibility::Private => cur_class == Some(decl_class),
-        Visibility::Protected => match cur_class {
-            Some(cc) => {
-                module.is_subclass_or_eq(cc, decl_class) || module.is_subclass_or_eq(decl_class, cc)
-            }
-            None => false,
-        },
-    }
-}
-
-fn vis_word(v: Visibility) -> &'static str {
-    match v {
-        Visibility::Public => "public",
-        Visibility::Protected => "protected",
-        Visibility::Private => "private",
-    }
-}
-
-/// Enforce property visibility. An undeclared (dynamic) property is public, so a
-/// `None` resolution is always allowed.
-fn check_prop_access(
-    module: &Module,
-    class: ClassId,
-    name: &[u8],
-    cur_class: Option<ClassId>,
-) -> Result<(), RuntimeError> {
-    if let Some((vis, decl)) = module.resolve_prop(class, name) {
-        if !access_ok(module, vis, decl, cur_class) {
-            return Err(RuntimeError {
-                message: format!(
-                    "Cannot access {} property {}::${}",
-                    vis_word(vis),
-                    String::from_utf8_lossy(&module.class(decl).name_bytes),
-                    String::from_utf8_lossy(name),
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Per-run interpreter state threaded through every frame: the captured output
-/// plus the object-model bookkeeping the value layer leaves to the runtime —
-/// one instance [`Layout`] (and default slot values) per class, built lazily
-/// and cached, and the object-id allocator. (The full `Interp` with frames,
-/// tables and diagnostics is plan E1/E3; this stays deliberately small.)
-struct Vm {
-    out: RunOutput,
-    layouts: Vec<Option<(Rc<Layout>, Vec<Value>)>>,
-    object_ids: ObjectIdAllocator,
-}
-
-impl Vm {
-    fn new(module: &Module) -> Vm {
-        Vm {
-            out: RunOutput::default(),
-            layouts: vec![None; module.classes.len()],
-            object_ids: ObjectIdAllocator::new(),
-        }
-    }
-
-    /// The instance layout and default slot values of `class`, built on first
-    /// use from the module's parent-first property set.
-    fn instance_layout(&mut self, module: &Module, class: ClassId) -> (Rc<Layout>, Vec<Value>) {
-        let idx = class as usize;
-        if let Some(cached) = &self.layouts[idx] {
-            return cached.clone();
-        }
-        let mut metas = Vec::new();
-        let mut defaults = Vec::new();
-        for (name, default, vis) in module.instance_props(class) {
-            // The declaring class is the nearest in the chain that declares the
-            // name (`instance_props` already applied the subclass override).
-            let decl_class = module.resolve_prop(class, &name).map_or(class, |(_, d)| d);
-            metas.push(PropMeta {
-                name,
-                vis,
-                decl_class,
-                decl_class_name: Rc::from(&module.class(decl_class).name_bytes[..]),
-            });
-            defaults.push(default);
-        }
-        let layout = Rc::new(Layout::new(Rc::from(&module.class(class).name_bytes[..]), metas));
-        self.layouts[idx] = Some((layout.clone(), defaults.clone()));
-        (layout, defaults)
-    }
-}
-
-/// The [`rphp_stdlib::Host`] the interpreter hands to native functions: it
-/// exposes stdout and lets a builtin call back into the engine to invoke a PHP
-/// callable (the re-entrancy `array_map`/`usort`/… need). It is created fresh
-/// per native call, borrowing the module and the VM state.
-struct VmHost<'a> {
-    module: &'a Module,
-    vm: &'a mut Vm,
-}
-
-impl rphp_stdlib::Host for VmHost<'_> {
-    fn out(&mut self) -> &mut Vec<u8> {
-        &mut self.vm.out.stdout
-    }
-
-    fn call(&mut self, callable: &Value, args: &[Value]) -> Result<Value, rphp_stdlib::NativeError> {
-        invoke_value(self.module, callable, args, &mut *self.vm)
-            .map_err(|e| rphp_stdlib::NativeError::new(e.message))
-    }
-}
-
-/// Invoke a callable value with `args`: a closure, or a function-name string
-/// resolving to a user function (declared params only — extra args ignored, as in
-/// PHP) or a builtin. The single path shared by the `CallDynamic` opcode and the
-/// `Host::call` re-entry hook.
-fn invoke_value(
-    module: &Module,
-    callee: &Value,
-    args: &[Value],
-    vm: &mut Vm,
-) -> Result<Value, RuntimeError> {
-    let callee = callee.deref();
-    if let Value::Closure(c) = &*callee {
-        return exec_closure(module, c, args, vm);
-    }
-    let name = callee.to_php_bytes();
-    if let Some(fid) = module.func_by_name(&name) {
-        let f = module.func(fid);
-        let n = (f.num_params as usize).min(args.len());
-        // A callable string resolves to a free function — no class context.
-        return exec_function(module, f, &args[..n], None, vm);
-    }
-    if let Some(nid) = rphp_stdlib::resolve(&name) {
-        let mut args = args.to_vec();
-        let mut host = VmHost { module, vm };
-        let mut ctx = rphp_stdlib::Ctx { host: &mut host };
-        return rphp_stdlib::call(nid, &mut ctx, &mut args)
-            .map_err(|e| RuntimeError { message: e.message });
-    }
-    Err(RuntimeError {
-        message: format!("call to undefined function {}()", String::from_utf8_lossy(&name)),
-    })
-}
-
-/// Execute `module` starting at its `main` function, returning captured output.
-///
-/// `main` takes no parameters, so it is entered with an empty argument list and
-/// an all-null register frame.
-pub fn run(module: &Module) -> Result<RunOutput, RuntimeError> {
-    let mut vm = Vm::new(module);
-    let main = module.func(module.main);
-    exec_function(module, main, &[], None, &mut vm)?;
-    Ok(vm.out)
-}
-
-/// Execute a single function frame to completion, returning its result value.
-///
-/// `args` holds the values staged by the caller (the callee's registers
-/// `0 .. args.len()` are initialized from them, per the calling convention).
-///
-/// Calls recurse here. Very deep PHP recursion can therefore overflow the host
-/// stack; an explicit frame stack is the later (post-M0) design.
-fn exec_function(
-    module: &Module,
-    function: &Function,
-    args: &[Value],
-    cur_class: Option<ClassId>,
-    vm: &mut Vm,
-) -> Result<Value, RuntimeError> {
-    // The frame: every register starts as null (uninitialized vars read null).
-    let mut regs = vec![Value::Null; function.num_regs as usize];
-    // Initialize parameter registers `0 .. argc` from the staged arguments.
-    for (i, arg) in args.iter().enumerate() {
-        regs[i] = arg.clone();
-    }
-    run_frame(module, function, regs, cur_class, vm)
-}
-
-/// Execute a closure: seed the captured environment into the function's
-/// `capture_regs`, then bind the parameters (capped to the declared count, so an
-/// extra callback argument is ignored as in PHP), then run.
-fn exec_closure(
-    module: &Module,
-    closure: &rphp_value::Closure,
-    args: &[Value],
-    vm: &mut Vm,
-) -> Result<Value, RuntimeError> {
-    let function = module.func(closure.func());
-    let mut regs = vec![Value::Null; function.num_regs as usize];
-    for (i, &reg) in function.capture_regs.iter().enumerate() {
-        regs[reg as usize] = closure.captures()[i].clone();
-    }
-    let np = function.num_params as usize;
-    for (i, arg) in args.iter().enumerate().take(np) {
-        regs[i] = arg.clone();
-    }
-    // A closure carries no class context (its `$this`/visibility binding is a
-    // later refinement).
-    run_frame(module, function, regs, None, vm)
-}
-
-/// Run a prepared frame (registers already seeded) to completion. `cur_class` is
-/// the class whose method is executing (the lexical context for visibility
-/// checks), or `None` for free functions, closures, and `{main}`.
-fn run_frame(
-    module: &Module,
-    function: &Function,
-    mut regs: Vec<Value>,
-    cur_class: Option<ClassId>,
-    vm: &mut Vm,
-) -> Result<Value, RuntimeError> {
-    let mut pc: usize = 0;
-    loop {
-        // Falling off the end of the code is an implicit `return null`.
-        let Some(&op) = function.code.get(pc) else {
-            return Ok(Value::Null);
-        };
-
-        match op {
-            // --- moves / constants ---
-            Op::LoadConst { dst, k } => {
-                regs[dst as usize] = function.consts[k as usize].to_value();
-            }
-            Op::LoadNull { dst } => {
-                regs[dst as usize] = Value::Null;
-            }
-            Op::LoadBool { dst, val } => {
-                regs[dst as usize] = Value::Bool(val);
-            }
-            Op::Move { dst, src } => {
-                regs[dst as usize] = regs[src as usize].clone();
-            }
-
-            // --- arithmetic (dst = a OP b) ---
-            Op::Add { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .add(&regs[b as usize])
-                    .map_err(runtime_error)?;
-            }
-            Op::Sub { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .sub(&regs[b as usize])
-                    .map_err(runtime_error)?;
-            }
-            Op::Mul { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .mul(&regs[b as usize])
-                    .map_err(runtime_error)?;
-            }
-            Op::Div { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .div(&regs[b as usize])
-                    .map_err(runtime_error)?;
-            }
-            Op::Mod { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .rem(&regs[b as usize])
-                    .map_err(runtime_error)?;
-            }
-            Op::Pow { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize]
-                    .pow(&regs[b as usize])
-                    .map_err(runtime_error)?;
-            }
-            Op::Neg { dst, src } => {
-                regs[dst as usize] = regs[src as usize].neg().map_err(runtime_error)?;
-            }
-
-            // --- strings ---
-            Op::Concat { dst, a, b } => {
-                regs[dst as usize] = regs[a as usize].concat(&regs[b as usize]);
-            }
-
-            // --- arrays ---
-            Op::NewArray { dst } => {
-                regs[dst as usize] = Value::empty_array();
-            }
-            Op::ArrayGet { dst, base, key } => {
-                regs[dst as usize] = array_get(&regs[base as usize], &regs[key as usize]);
-            }
-            Op::ArraySet { arr, key, value } => {
-                let key = regs[key as usize].clone();
-                let value = regs[value as usize].clone();
-                array_set(&mut regs[arr as usize], &key, value);
-            }
-            Op::ArrayPush { arr, value } => {
-                let value = regs[value as usize].clone();
-                let slot = &mut regs[arr as usize];
-                if matches!(slot, Value::Null) {
-                    *slot = Value::empty_array();
-                }
-                if let Value::Array(a) = slot {
-                    a.push(value);
-                }
-            }
-            Op::ForeachNext { arr, cursor, key_dst, val_dst, target } => {
-                // The cursor is a *raw* entry position (tombstones included);
-                // `next_live_from` skips holes left by `unset`, and the value is
-                // dereferenced (a by-value `foreach` sees plain values).
-                let pos = regs[cursor as usize].to_int().max(0) as usize;
-                let entry = match &*regs[arr as usize].deref() {
-                    Value::Array(a) => a
-                        .next_live_from(pos)
-                        .map(|(raw, k, v)| (raw, k.to_value(), v.deref().into_owned())),
-                    _ => None,
-                };
-                match entry {
-                    Some((raw, k, v)) => {
-                        regs[key_dst as usize] = k;
-                        regs[val_dst as usize] = v;
-                        regs[cursor as usize] = Value::Int(raw as i64 + 1);
-                    }
-                    None => {
-                        pc = target as usize;
-                        continue;
-                    }
-                }
-            }
-
-            // --- comparison (dst = bool) ---
-            Op::CmpEq { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].loose_eq(&regs[b as usize]));
-            }
-            Op::CmpNe { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(!regs[a as usize].loose_eq(&regs[b as usize]));
-            }
-            Op::CmpIdentical { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].identical(&regs[b as usize]));
-            }
-            Op::CmpNotIdentical { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(!regs[a as usize].identical(&regs[b as usize]));
-            }
-            Op::CmpLt { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].lt(&regs[b as usize]));
-            }
-            Op::CmpLe { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].le(&regs[b as usize]));
-            }
-            Op::CmpGt { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].gt(&regs[b as usize]));
-            }
-            Op::CmpGe { dst, a, b } => {
-                regs[dst as usize] = Value::Bool(regs[a as usize].ge(&regs[b as usize]));
-            }
-            Op::Spaceship { dst, a, b } => {
-                regs[dst as usize] = Value::Int(regs[a as usize].spaceship(&regs[b as usize]));
-            }
-            Op::Not { dst, src } => {
-                regs[dst as usize] = regs[src as usize].not();
-            }
-
-            // --- control flow ---
-            Op::Jmp { target } => {
-                pc = target as usize;
-                continue;
-            }
-            Op::JmpIfTrue { cond, target } => {
-                if regs[cond as usize].to_bool() {
-                    pc = target as usize;
-                    continue;
-                }
-            }
-            Op::JmpIfFalse { cond, target } => {
-                if !regs[cond as usize].to_bool() {
-                    pc = target as usize;
-                    continue;
-                }
-            }
-
-            // --- calls ---
-            Op::Call { dst, func, base, argc } => {
-                // Stage `argc` args from the caller window `base ..= base+argc-1`.
-                let base = base as usize;
-                let mut call_args = Vec::with_capacity(argc as usize);
-                for i in 0..argc as usize {
-                    call_args.push(regs[base + i].clone());
-                }
-                let callee = module.func(func);
-                let ret = exec_function(module, callee, &call_args, None, vm)?;
-                regs[dst as usize] = ret;
-            }
-            Op::CallNative { dst, native, base, argc } => {
-                // Same `base ..= base+argc-1` staging as a user call; the args
-                // are handed to the builtin and its result lands in `dst`.
-                let base = base as usize;
-                let argc = argc as usize;
-                let id = rphp_stdlib::NativeId(native);
-                let mut call_args: Vec<Value> =
-                    (0..argc).map(|i| regs[base + i].clone()).collect();
-                let ret = {
-                    let mut host = VmHost { module, vm: &mut *vm };
-                    let mut ctx = rphp_stdlib::Ctx { host: &mut host };
-                    rphp_stdlib::call(id, &mut ctx, &mut call_args)
-                        .map_err(|e| RuntimeError { message: e.message })?
-                };
-                // A by-reference builtin mutates its argument slots in place; copy
-                // the window back so the compiler's write-back `Move`s (into the
-                // caller's variables) observe the changes. For such calls `dst` is
-                // allocated above the window, so it cannot alias a by-ref slot.
-                if rphp_stdlib::descriptor(id).by_ref != 0 {
-                    for (i, v) in call_args.into_iter().enumerate() {
-                        regs[base + i] = v;
-                    }
-                }
-                regs[dst as usize] = ret;
-            }
-            Op::MakeClosure { dst, proto } => {
-                // Snapshot the captured registers and bind them to the closure's
-                // compiled function (the template lives in this function).
-                let proto = &function.closures[proto as usize];
-                let captures: Vec<Value> =
-                    proto.src_regs.iter().map(|&r| regs[r as usize].clone()).collect();
-                regs[dst as usize] = Value::Closure(rphp_value::Closure::new(proto.func, captures));
-            }
-            Op::CallDynamic { dst, callee, base, argc } => {
-                let base = base as usize;
-                let call_args: Vec<Value> =
-                    (0..argc as usize).map(|i| regs[base + i].clone()).collect();
-                let callee_val = regs[callee as usize].clone();
-                regs[dst as usize] = invoke_value(module, &callee_val, &call_args, vm)?;
-            }
-
-            // --- objects ---
-            Op::New { dst, class } => {
-                // Seed the instance from the class's cached layout (its full
-                // inherited + own property set) and give it the next handle id.
-                let (layout, defaults) = vm.instance_layout(module, class);
-                let id = vm.object_ids.alloc();
-                regs[dst as usize] = Value::Object(Object::new(class, id, layout, defaults));
-            }
-            Op::PropGet { dst, obj, name } => {
-                let key = function.consts[name as usize].to_value().to_php_bytes();
-                let val = match &regs[obj as usize] {
-                    Value::Object(o) => {
-                        check_prop_access(module, o.class_id(), &key, cur_class)?;
-                        o.get_deref(&key).unwrap_or(Value::Null)
-                    }
-                    // Reading a property of a non-object yields null (warning deferred).
-                    _ => Value::Null,
-                };
-                regs[dst as usize] = val;
-            }
-            Op::PropSet { obj, name, value } => {
-                let key = function.consts[name as usize].to_value().to_php_bytes();
-                let v = regs[value as usize].clone();
-                // Writing through a non-object is a no-op (warning deferred).
-                if let Value::Object(o) = &regs[obj as usize] {
-                    check_prop_access(module, o.class_id(), &key, cur_class)?;
-                    o.set(&key, v);
-                }
-            }
-            Op::MethodCall { dst, obj, method, base, argc } => {
-                let mname = function.consts[method as usize].to_value().to_php_bytes();
-                let obj_val = regs[obj as usize].clone();
-                let class_id = match &obj_val {
-                    Value::Object(o) => o.class_id(),
-                    other => {
-                        return Err(RuntimeError {
-                            message: format!(
-                                "Call to a member function {}() on {}",
-                                String::from_utf8_lossy(&mname),
-                                other.type_name(),
-                            ),
-                        })
-                    }
-                };
-                // Virtual dispatch: resolve up the chain from the runtime class.
-                let (fid, vis, decl_class) =
-                    module.resolve_method(class_id, &mname).ok_or_else(|| RuntimeError {
-                        message: format!(
-                            "Call to undefined method {}::{}()",
-                            String::from_utf8_lossy(&module.class(class_id).name_bytes),
-                            String::from_utf8_lossy(&mname),
-                        ),
-                    })?;
-                if !access_ok(module, vis, decl_class, cur_class) {
-                    return Err(RuntimeError {
-                        message: format!(
-                            "Call to {} method {}::{}()",
-                            vis_word(vis),
-                            String::from_utf8_lossy(&module.class(decl_class).name_bytes),
-                            String::from_utf8_lossy(&mname),
-                        ),
-                    });
-                }
-                let callee = module.func(fid);
-                // The method frame takes `$this` in register 0, then its declared
-                // parameters; cap the staged args to that count (extra args are
-                // ignored, missing ones default to null) so the frame never reads
-                // out of bounds.
-                let np = callee.num_params as usize;
-                let base = base as usize;
-                let mut call_args = Vec::with_capacity(np);
-                call_args.push(obj_val);
-                for i in 0..(argc as usize).min(np.saturating_sub(1)) {
-                    call_args.push(regs[base + i].clone());
-                }
-                // The callee runs in the lexical context of its *declaring* class.
-                regs[dst as usize] = exec_function(module, callee, &call_args, Some(decl_class), vm)?;
-            }
-            Op::StaticCall { dst, this, func, base, argc } => {
-                // Non-virtual scoped call (`self::`/`parent::`/`Class::`); the
-                // current `$this` is forwarded explicitly.
-                let this_val = regs[this as usize].clone();
-                let callee = module.func(func);
-                let np = callee.num_params as usize;
-                let base = base as usize;
-                let mut call_args = Vec::with_capacity(np);
-                call_args.push(this_val);
-                for i in 0..(argc as usize).min(np.saturating_sub(1)) {
-                    call_args.push(regs[base + i].clone());
-                }
-                let callee_class = module.method_owner(func);
-                regs[dst as usize] = exec_function(module, callee, &call_args, callee_class, vm)?;
-            }
-            Op::InstanceOf { dst, obj, class } => {
-                let result = match &regs[obj as usize] {
-                    Value::Object(o) => module.is_subclass_or_eq(o.class_id(), class),
-                    _ => false,
-                };
-                regs[dst as usize] = Value::Bool(result);
-            }
-
-            Op::Ret { src } => {
-                return Ok(src.map_or(Value::Null, |r| regs[r as usize].clone()));
-            }
-
-            // --- io ---
-            Op::Echo { src } => {
-                regs[src as usize].append_php_bytes(&mut vm.out.stdout);
-            }
-
-            // The v2 contract ops (plan Track E) are not executed by the tier-0
-            // interpreter yet; the compiler never emits them either.
-            _ => {
-                return Err(RuntimeError {
-                    message: format!("internal error: opcode not implemented by the tier-0 interpreter: {op:?}"),
-                });
-            }
-        }
-
-        pc += 1;
-    }
-}
-
-/// `base[key]` read. Arrays index by normalized key (absent ⇒ null); strings
-/// index by byte offset (negative allowed; out of range ⇒ "") — both
-/// warning-on-miss cases defer the warning. Indexing any other type is null.
-fn array_get(base: &Value, key: &Value) -> Value {
-    match &*base.deref() {
-        Value::Array(a) => match array_key(key) {
-            // The element is dereferenced: a read never yields a `Ref`.
-            Some(k) => a.get_deref(&k).unwrap_or(Value::Null),
-            None => Value::Null,
-        },
-        Value::Str(s) => string_offset(s, key),
-        _ => Value::Null,
-    }
-}
-
-fn string_offset(s: &Str, key: &Value) -> Value {
-    let len = s.len() as i64;
-    let mut i = key.to_int();
-    if i < 0 {
-        i += len; // PHP allows negative string offsets
-    }
-    if i >= 0 && i < len {
-        Value::string(&s.as_bytes()[i as usize..i as usize + 1])
-    } else {
-        Value::string(b"") // out of range -> "" (warning deferred)
-    }
-}
-
-/// `slot[key] = value`, mutating in place. Null auto-vivifies to a fresh array;
-/// an illegal offset type or a scalar base is a no-op (warning deferred). The
-/// COW separation happens inside [`rphp_value::Array::set`].
-fn array_set(slot: &mut Value, key: &Value, value: Value) {
-    if matches!(slot, Value::Null) {
-        *slot = Value::empty_array();
-    }
-    if let Value::Array(a) = slot {
-        if let Some(k) = array_key(key) {
-            a.set(k, value);
-        }
-    }
-}
+pub use api::parse_error_reporting;
+pub use errors::{
+    DisplayMode, ErrLevel, LastError, E_ALL, E_COMPILE_ERROR, E_COMPILE_WARNING, E_CORE_ERROR,
+    E_CORE_WARNING, E_DEPRECATED, E_ERROR, E_NOTICE, E_PARSE, E_RECOVERABLE_ERROR, E_STRICT,
+    E_USER_DEPRECATED, E_USER_ERROR, E_USER_NOTICE, E_USER_WARNING, E_WARNING, SILENCE_MASK,
+};
+pub use exec::value_name;
+pub use frames::{frame_name, render_trace, trace_arg, FrameInfo, FrameKind};
+pub use ini::{parse_bool, IniEntry, IniTable, CORE_DEFAULTS};
+pub use interp::{ExtState, Interp, SapiKind};
+pub use output::{
+    NullSink, ObLevel, OutputSink, OutputStack, SharedBuffer, PHP_OUTPUT_HANDLER_CLEAN,
+    PHP_OUTPUT_HANDLER_CLEANABLE, PHP_OUTPUT_HANDLER_DISABLED, PHP_OUTPUT_HANDLER_FINAL,
+    PHP_OUTPUT_HANDLER_FLUSH, PHP_OUTPUT_HANDLER_FLUSHABLE, PHP_OUTPUT_HANDLER_PROCESSED,
+    PHP_OUTPUT_HANDLER_REMOVABLE, PHP_OUTPUT_HANDLER_START, PHP_OUTPUT_HANDLER_STARTED,
+    PHP_OUTPUT_HANDLER_STDFLAGS, PHP_OUTPUT_HANDLER_USER,
+};
+pub use registry::{
+    Ctx, ErrorKind, FaultSite, FnFlags, NativeFn, NativeHandler, NativeId, NativeResult,
+    PendingThrow, Registry, Unwind,
+};
+pub use resources::ResourceTable;
 
 #[cfg(test)]
 mod tests {
@@ -653,6 +55,7 @@ mod tests {
     use rphp_bytecode::{Const, Function, Module, Op};
     use rphp_intern::IdentId;
     use rphp_span::Span;
+    use rphp_value::Value;
 
     /// Build a `Function` by hand. `name` only matters for diagnostics, which
     /// the interpreter never inspects, so a fixed id is fine.
@@ -673,12 +76,28 @@ mod tests {
 
     /// A single-function module whose lone function is `main`.
     fn module(main: Function) -> Module {
-        Module { funcs: vec![main], classes: Vec::new(), main: 0 }
+        Module {
+            funcs: vec![main],
+            classes: Vec::new(),
+            main: 0,
+        }
+    }
+
+    /// Run a module on a fresh test interpreter: the result of `{main}` and
+    /// everything that reached the sink.
+    fn run(m: &Module) -> (Result<Value, Unwind>, Vec<u8>) {
+        let mut it = Interp::new_for_tests();
+        it.load_module(m.clone());
+        let r = it.run_main();
+        it.finish_output();
+        (r, it.test_output())
     }
 
     /// Run a module and decode its (binary-safe) stdout as UTF-8 for assertions.
     fn out_str(m: &Module) -> String {
-        String::from_utf8(run(m).unwrap().stdout).unwrap()
+        let (r, out) = run(m);
+        r.unwrap();
+        String::from_utf8(out).unwrap()
     }
 
     #[test]
@@ -716,18 +135,17 @@ mod tests {
 
     #[test]
     fn jmp_if_false_skips_echo() {
-        // cond = false; if (cond) echo "yes"; echo "no"  =>  "no"
         let m = module(func(
             0,
             2,
             vec![
-                Op::LoadBool { dst: 0, val: false }, // 0: cond = false
-                Op::JmpIfFalse { cond: 0, target: 4 }, // 1: skip the "yes" echo
-                Op::LoadConst { dst: 1, k: 0 },      // 2: (skipped)
-                Op::Echo { src: 1 },                 // 3: (skipped)
-                Op::LoadConst { dst: 1, k: 1 },      // 4: load "no"
-                Op::Echo { src: 1 },                 // 5: echo "no"
-                Op::Ret { src: None },               // 6
+                Op::LoadBool { dst: 0, val: false },
+                Op::JmpIfFalse { cond: 0, target: 4 },
+                Op::LoadConst { dst: 1, k: 0 },
+                Op::Echo { src: 1 },
+                Op::LoadConst { dst: 1, k: 1 },
+                Op::Echo { src: 1 },
+                Op::Ret { src: None },
             ],
             vec![Const::Int(111), Const::Int(222)],
         ));
@@ -735,90 +153,87 @@ mod tests {
     }
 
     #[test]
-    fn jmp_if_true_taken() {
-        // cond = true; if (cond) echo a; echo b  => "a" only (jump past b's echo)
-        let m = module(func(
-            0,
-            2,
-            vec![
-                Op::LoadBool { dst: 0, val: true }, // 0
-                Op::JmpIfTrue { cond: 0, target: 3 }, // 1 -> echo a
-                Op::Jmp { target: 5 },              // 2 -> end (skipped)
-                Op::LoadConst { dst: 1, k: 0 },     // 3: a
-                Op::Echo { src: 1 },                // 4
-                Op::Ret { src: None },              // 5
-            ],
-            vec![Const::Int(7)],
-        ));
-        assert_eq!(out_str(&m), "7");
-    }
-
-    #[test]
     fn call_returns_value() {
         // main: x = add2(20, 22); echo x   => "42"
-        // add2(a, b): return a + b
         let main = func(
             0,
             3,
             vec![
-                Op::LoadConst { dst: 0, k: 0 },                       // 0: 20 (arg base)
-                Op::LoadConst { dst: 1, k: 1 },                       // 1: 22
-                Op::Call { dst: 2, func: 1, base: 0, argc: 2 },       // 2: x = add2(20, 22)
-                Op::Echo { src: 2 },                                  // 3
-                Op::Ret { src: None },                                // 4
+                Op::LoadConst { dst: 0, k: 0 },
+                Op::LoadConst { dst: 1, k: 1 },
+                Op::Call {
+                    dst: 2,
+                    func: 1,
+                    base: 0,
+                    argc: 2,
+                },
+                Op::Echo { src: 2 },
+                Op::Ret { src: None },
             ],
             vec![Const::Int(20), Const::Int(22)],
         );
         let add2 = func(
             2,
             3,
-            vec![
-                Op::Add { dst: 2, a: 0, b: 1 }, // 0: a + b
-                Op::Ret { src: Some(2) },       // 1: return
-            ],
+            vec![Op::Add { dst: 2, a: 0, b: 1 }, Op::Ret { src: Some(2) }],
             vec![],
         );
-        let m = Module { funcs: vec![main, add2], classes: Vec::new(), main: 0 };
+        let m = Module {
+            funcs: vec![main, add2],
+            classes: Vec::new(),
+            main: 0,
+        };
         assert_eq!(out_str(&m), "42");
     }
 
     #[test]
     fn recursive_call_factorial() {
-        // fact(n): if (n <= 1) return 1; return n * fact(n - 1)
-        // main: echo fact(5)  => "120"
         let main = func(
             0,
             2,
             vec![
-                Op::LoadConst { dst: 0, k: 0 },                 // 0: 5
-                Op::Call { dst: 1, func: 1, base: 0, argc: 1 }, // 1: fact(5)
-                Op::Echo { src: 1 },                            // 2
-                Op::Ret { src: None },                          // 3
+                Op::LoadConst { dst: 0, k: 0 },
+                Op::Call {
+                    dst: 1,
+                    func: 1,
+                    base: 0,
+                    argc: 1,
+                },
+                Op::Echo { src: 1 },
+                Op::Ret { src: None },
             ],
             vec![Const::Int(5)],
         );
-        // regs: 0 = n (param), 1 = one, 2 = cond, 3 = n-1, 4 = recurse result, 5 = product
         let fact = func(
             1,
             6,
             vec![
-                Op::LoadConst { dst: 1, k: 0 },                 // 0: one = 1
-                Op::CmpLe { dst: 2, a: 0, b: 1 },               // 1: cond = n <= 1
-                Op::JmpIfFalse { cond: 2, target: 4 },          // 2: if !cond -> recurse
-                Op::Ret { src: Some(1) },                       // 3: return 1
-                Op::Sub { dst: 3, a: 0, b: 1 },                 // 4: n - 1
-                Op::Call { dst: 4, func: 1, base: 3, argc: 1 }, // 5: fact(n-1)
-                Op::Mul { dst: 5, a: 0, b: 4 },                 // 6: n * result
-                Op::Ret { src: Some(5) },                       // 7
+                Op::LoadConst { dst: 1, k: 0 },
+                Op::CmpLe { dst: 2, a: 0, b: 1 },
+                Op::JmpIfFalse { cond: 2, target: 4 },
+                Op::Ret { src: Some(1) },
+                Op::Sub { dst: 3, a: 0, b: 1 },
+                Op::Call {
+                    dst: 4,
+                    func: 1,
+                    base: 3,
+                    argc: 1,
+                },
+                Op::Mul { dst: 5, a: 0, b: 4 },
+                Op::Ret { src: Some(5) },
             ],
             vec![Const::Int(1)],
         );
-        let m = Module { funcs: vec![main, fact], classes: Vec::new(), main: 0 };
+        let m = Module {
+            funcs: vec![main, fact],
+            classes: Vec::new(),
+            main: 0,
+        };
         assert_eq!(out_str(&m), "120");
     }
 
     #[test]
-    fn division_by_zero_errors() {
+    fn division_by_zero_is_a_division_by_zero_error() {
         let m = module(func(
             0,
             3,
@@ -831,8 +246,13 @@ mod tests {
             ],
             vec![Const::Int(1), Const::Int(0)],
         ));
-        let err = run(&m).unwrap_err();
-        assert_eq!(err.message, "Division by zero");
+        let (r, _) = run(&m);
+        let err = r.unwrap_err();
+        assert_eq!(err.kind(), Some(ErrorKind::DivisionByZeroError));
+        assert_eq!(err.message(), Some("Division by zero"));
+        // The site was captured at the frame boundary: `{main}` only.
+        let Unwind::Pending(p) = err else { panic!() };
+        assert_eq!(p.site.unwrap().trace, "#0 {main}");
     }
 
     #[test]
@@ -848,12 +268,11 @@ mod tests {
             ],
             vec![Const::Int(7), Const::Int(0)],
         ));
-        assert_eq!(run(&m).unwrap_err().message, "Modulo by zero");
+        assert_eq!(run(&m).0.unwrap_err().message(), Some("Modulo by zero"));
     }
 
     #[test]
     fn uninitialized_register_reads_null() {
-        // Echo a never-written register => null prints as the empty string.
         let m = module(func(
             0,
             1,
@@ -864,45 +283,22 @@ mod tests {
     }
 
     #[test]
-    fn comparison_and_float_div() {
-        // echo (7 / 2)  => "3.5"  ; then echo (3 <=> 5) => "-1"
-        let m = module(func(
-            0,
-            3,
-            vec![
-                Op::LoadConst { dst: 0, k: 0 },        // 7
-                Op::LoadConst { dst: 1, k: 1 },        // 2
-                Op::Div { dst: 2, a: 0, b: 1 },        // 3.5
-                Op::Echo { src: 2 },
-                Op::LoadConst { dst: 0, k: 2 },        // 3
-                Op::LoadConst { dst: 1, k: 3 },        // 5
-                Op::Spaceship { dst: 2, a: 0, b: 1 },  // -1
-                Op::Echo { src: 2 },
-                Op::Ret { src: None },
-            ],
-            vec![Const::Int(7), Const::Int(2), Const::Int(3), Const::Int(5)],
-        ));
-        assert_eq!(out_str(&m), "3.5-1");
-    }
-
-    #[test]
     fn loop_with_backward_jump() {
-        // sum = 0; i = 3; while (i > 0) { sum += i; i -= 1; } echo sum  => "6"
         let m = module(func(
             0,
             5,
             vec![
-                Op::LoadConst { dst: 0, k: 0 },        // 0: sum = 0
-                Op::LoadConst { dst: 1, k: 1 },        // 1: i = 3
-                Op::LoadConst { dst: 2, k: 0 },        // 2: zero = 0
-                Op::LoadConst { dst: 3, k: 2 },        // 3: one = 1
-                Op::CmpGt { dst: 4, a: 1, b: 2 },      // 4: head: cond = i > 0
-                Op::JmpIfFalse { cond: 4, target: 9 }, // 5: exit -> pc 9
-                Op::Add { dst: 0, a: 0, b: 1 },        // 6: sum += i
-                Op::Sub { dst: 1, a: 1, b: 3 },        // 7: i -= 1
-                Op::Jmp { target: 4 },                 // 8: back to head
-                Op::Echo { src: 0 },                   // 9: echo sum
-                Op::Ret { src: None },                 // 10
+                Op::LoadConst { dst: 0, k: 0 },
+                Op::LoadConst { dst: 1, k: 1 },
+                Op::LoadConst { dst: 2, k: 0 },
+                Op::LoadConst { dst: 3, k: 2 },
+                Op::CmpGt { dst: 4, a: 1, b: 2 },
+                Op::JmpIfFalse { cond: 4, target: 9 },
+                Op::Add { dst: 0, a: 0, b: 1 },
+                Op::Sub { dst: 1, a: 1, b: 3 },
+                Op::Jmp { target: 4 },
+                Op::Echo { src: 0 },
+                Op::Ret { src: None },
             ],
             vec![Const::Int(0), Const::Int(3), Const::Int(1)],
         ));
@@ -912,15 +308,14 @@ mod tests {
     #[test]
     fn concat_and_echo_string() {
         use rphp_value::Str;
-        // echo "Hi, " . "PHP" . "!\n";  =>  "Hi, PHP!\n"
         let m = module(func(
             0,
             3,
             vec![
-                Op::LoadConst { dst: 0, k: 0 },   // "Hi, "
-                Op::LoadConst { dst: 1, k: 1 },   // "PHP"
+                Op::LoadConst { dst: 0, k: 0 },
+                Op::LoadConst { dst: 1, k: 1 },
                 Op::Concat { dst: 0, a: 0, b: 1 },
-                Op::LoadConst { dst: 1, k: 2 },   // "!\n"
+                Op::LoadConst { dst: 1, k: 2 },
                 Op::Concat { dst: 0, a: 0, b: 1 },
                 Op::Echo { src: 0 },
                 Op::Ret { src: None },
@@ -936,18 +331,21 @@ mod tests {
 
     #[test]
     fn array_build_index_and_get() {
-        // $a = []; $a[] = 10; $a[] = 20; echo $a[1];  => "20"
         let m = module(func(
             0,
             3,
             vec![
-                Op::NewArray { dst: 0 },                       // $a
-                Op::LoadConst { dst: 1, k: 0 },                // 10
+                Op::NewArray { dst: 0 },
+                Op::LoadConst { dst: 1, k: 0 },
                 Op::ArrayPush { arr: 0, value: 1 },
-                Op::LoadConst { dst: 1, k: 1 },                // 20
+                Op::LoadConst { dst: 1, k: 1 },
                 Op::ArrayPush { arr: 0, value: 1 },
-                Op::LoadConst { dst: 1, k: 2 },                // index 1
-                Op::ArrayGet { dst: 2, base: 0, key: 1 },
+                Op::LoadConst { dst: 1, k: 2 },
+                Op::ArrayGet {
+                    dst: 2,
+                    base: 0,
+                    key: 1,
+                },
                 Op::Echo { src: 2 },
                 Op::Ret { src: None },
             ],
@@ -958,27 +356,31 @@ mod tests {
 
     #[test]
     fn foreach_sums_values() {
-        // $a = [3, 4, 5]; foreach ($a as $v) { $s = $s + $v; } echo $s;  => "12"
-        // regs: 0=$a, 1=$s, 2=$v, 3=arr-snapshot, 4=cursor, 5=tmp
         let m = module(func(
             0,
             6,
             vec![
-                Op::NewArray { dst: 0 },                 // 0: $a = []
-                Op::LoadConst { dst: 5, k: 0 },          // 1: 3
-                Op::ArrayPush { arr: 0, value: 5 },      // 2
-                Op::LoadConst { dst: 5, k: 1 },          // 3: 4
-                Op::ArrayPush { arr: 0, value: 5 },      // 4
-                Op::LoadConst { dst: 5, k: 2 },          // 5: 5
-                Op::ArrayPush { arr: 0, value: 5 },      // 6
-                Op::LoadConst { dst: 1, k: 3 },          // 7: $s = 0
-                Op::Move { dst: 3, src: 0 },             // 8: snapshot
-                Op::LoadConst { dst: 4, k: 3 },          // 9: cursor = 0
-                Op::ForeachNext { arr: 3, cursor: 4, key_dst: 5, val_dst: 2, target: 13 }, // 10
-                Op::Add { dst: 1, a: 1, b: 2 },          // 11: $s += $v
-                Op::Jmp { target: 10 },                  // 12
-                Op::Echo { src: 1 },                     // 13
-                Op::Ret { src: None },                   // 14
+                Op::NewArray { dst: 0 },
+                Op::LoadConst { dst: 5, k: 0 },
+                Op::ArrayPush { arr: 0, value: 5 },
+                Op::LoadConst { dst: 5, k: 1 },
+                Op::ArrayPush { arr: 0, value: 5 },
+                Op::LoadConst { dst: 5, k: 2 },
+                Op::ArrayPush { arr: 0, value: 5 },
+                Op::LoadConst { dst: 1, k: 3 },
+                Op::Move { dst: 3, src: 0 },
+                Op::LoadConst { dst: 4, k: 3 },
+                Op::ForeachNext {
+                    arr: 3,
+                    cursor: 4,
+                    key_dst: 5,
+                    val_dst: 2,
+                    target: 13,
+                },
+                Op::Add { dst: 1, a: 1, b: 2 },
+                Op::Jmp { target: 10 },
+                Op::Echo { src: 1 },
+                Op::Ret { src: None },
             ],
             vec![Const::Int(3), Const::Int(4), Const::Int(5), Const::Int(0)],
         ));
@@ -988,13 +390,380 @@ mod tests {
     #[test]
     fn echo_preserves_raw_bytes() {
         use rphp_value::Str;
-        // A non-UTF-8 byte (0xFF) must survive echo unchanged.
         let m = module(func(
             0,
             1,
-            vec![Op::LoadConst { dst: 0, k: 0 }, Op::Echo { src: 0 }, Op::Ret { src: None }],
+            vec![
+                Op::LoadConst { dst: 0, k: 0 },
+                Op::Echo { src: 0 },
+                Op::Ret { src: None },
+            ],
             vec![Const::Str(Str::new(&[0xFF, 0x00, 0x41]))],
         ));
-        assert_eq!(run(&m).unwrap().stdout, vec![0xFF, 0x00, 0x41]);
+        assert_eq!(run(&m).1, vec![0xFF, 0x00, 0x41]);
+    }
+
+    // ---- diagnostics channel ------------------------------------------------
+
+    #[test]
+    fn undefined_array_key_warns_like_php() {
+        use rphp_value::Str;
+        // $a = []; echo $a["k"]; echo $a[5];  with a line table.
+        let mut f = func(
+            0,
+            3,
+            vec![
+                Op::NewArray { dst: 0 },
+                Op::LoadConst { dst: 1, k: 0 },
+                Op::ArrayGet {
+                    dst: 2,
+                    base: 0,
+                    key: 1,
+                },
+                Op::LoadConst { dst: 1, k: 1 },
+                Op::ArrayGet {
+                    dst: 2,
+                    base: 0,
+                    key: 1,
+                },
+                Op::LoadNull { dst: 0 },
+                Op::ArrayGet {
+                    dst: 2,
+                    base: 0,
+                    key: 1,
+                },
+                Op::Ret { src: None },
+            ],
+            vec![Const::Str(Str::new(b"k")), Const::Int(5)],
+        );
+        f.lines = vec![1, 2, 2, 3, 3, 4, 4, 4];
+        let m = module(f);
+        let mut it = Interp::new_for_tests();
+        it.script_name = "/tmp/t.php".into();
+        it.load_module(m);
+        it.run_main().unwrap();
+        assert_eq!(
+            String::from_utf8(it.test_output()).unwrap(),
+            "\nWarning: Undefined array key \"k\" in /tmp/t.php on line 2\n\
+             \nWarning: Undefined array key 5 in /tmp/t.php on line 3\n\
+             \nWarning: Trying to access array offset on null in /tmp/t.php on line 4\n"
+        );
+        let last = it.last_error.clone().unwrap();
+        assert_eq!(last.kind, E_WARNING);
+        assert_eq!(last.line, 4);
+    }
+
+    fn h_false(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+        let line = format!(
+            "H[{}] {} @{}:{} er={}\n",
+            args[0].to_int(),
+            args[1].to_php_string(),
+            args[2].to_php_string(),
+            args[3].to_int(),
+            ctx.effective_error_reporting()
+        );
+        ctx.echo(line.as_bytes());
+        Ok(Value::Bool(false))
+    }
+
+    fn h_true(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+        let line = format!("handled: {}\n", args[1].to_php_string());
+        ctx.echo(line.as_bytes());
+        Ok(Value::Bool(true))
+    }
+
+    fn h_throw(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+        Err(Unwind::exception("ErrorException", args[1].to_php_string()))
+    }
+
+    fn interp_with_handlers() -> Interp {
+        let mut it = Interp::new_for_tests();
+        Registry(&mut it).functions(&[
+            nf!("h_false", 4, Some(4), h_false),
+            nf!("h_true", 4, Some(4), h_true),
+            nf!("h_throw", 4, Some(4), h_throw),
+        ]);
+        it
+    }
+
+    #[test]
+    fn emit_error_display_silence_and_mask() {
+        let mut it = Interp::new_for_tests();
+        it.warn("w1").unwrap();
+        it.silence += 1;
+        it.warn("silenced").unwrap();
+        it.silence -= 1;
+        assert_eq!(
+            it.last_error.as_ref().unwrap().message,
+            "silenced",
+            "recorded even when silenced"
+        );
+        it.error_reporting = E_ALL & !E_NOTICE;
+        it.notice("masked").unwrap();
+        it.deprecated("d").unwrap();
+        assert_eq!(
+            String::from_utf8(it.take_test_output()).unwrap(),
+            "\nWarning: w1 in Command line code on line 0\n\nDeprecated: d in Command line code on line 0\n"
+        );
+        it.ini_set("display_errors", "0");
+        it.warn("hidden").unwrap();
+        assert_eq!(it.take_test_output(), b"");
+    }
+
+    #[test]
+    fn emit_error_user_handler_false_falls_through_true_swallows_throw_propagates() {
+        let mut it = interp_with_handlers();
+        it.error_handler.push((Value::string(b"h_false"), E_ALL));
+        it.silence += 1;
+        it.warn("u").unwrap();
+        it.silence -= 1;
+        // Under `@` the handler still runs and sees the masked mask; the
+        // fall-through display is then suppressed by that same mask.
+        assert_eq!(
+            String::from_utf8(it.take_test_output()).unwrap(),
+            format!("H[2] u @Command line code:0 er={SILENCE_MASK}\n")
+        );
+        it.warn("v").unwrap();
+        assert_eq!(
+            String::from_utf8(it.take_test_output()).unwrap(),
+            "H[2] v @Command line code:0 er=30719\n\nWarning: v in Command line code on line 0\n"
+        );
+        it.error_handler.push((Value::string(b"h_true"), E_ALL));
+        it.last_error = None;
+        it.warn("w").unwrap();
+        assert_eq!(
+            String::from_utf8(it.take_test_output()).unwrap(),
+            "handled: w\n"
+        );
+        assert!(it.last_error.is_none(), "a handled error is not recorded");
+        // A handler mask that excludes the level skips the handler.
+        it.error_handler.push((Value::string(b"h_true"), E_NOTICE));
+        it.warn("x").unwrap();
+        assert_eq!(
+            String::from_utf8(it.take_test_output()).unwrap(),
+            "\nWarning: x in Command line code on line 0\n"
+        );
+        it.error_handler.push((Value::string(b"h_throw"), E_ALL));
+        let err = it.warn("boom").unwrap_err();
+        assert_eq!(err.kind(), Some(ErrorKind::Exception("ErrorException")));
+        assert_eq!(err.message(), Some("boom"));
+        // set_error_handler(null) disables; restore pops back.
+        it.error_handler.push((Value::Null, E_ALL));
+        it.warn("plain").unwrap();
+        assert_eq!(
+            String::from_utf8(it.take_test_output()).unwrap(),
+            "\nWarning: plain in Command line code on line 0\n"
+        );
+    }
+
+    #[test]
+    fn fatal_level_exits_255_after_display() {
+        let mut it = Interp::new_for_tests();
+        let err = it.emit_error(ErrLevel::UserError, "fatal!").unwrap_err();
+        assert!(matches!(err, Unwind::Exit(255)));
+        assert_eq!(
+            String::from_utf8(it.test_output()).unwrap(),
+            "\nFatal error: fatal! in Command line code on line 0\nStack trace:\n#0 {main}\n"
+        );
+    }
+
+    #[test]
+    fn render_uncaught_matches_php_cli_shape() {
+        let mut it = Interp::new_for_tests();
+        it.script_name = "/abs/file.php".into();
+        let p = PendingThrow {
+            kind: ErrorKind::Error,
+            message: "Call to undefined function foo()".into(),
+            site: Some(Box::new(FaultSite {
+                file: "/abs/file.php".into(),
+                line: 3,
+                trace: "#0 {main}".into(),
+            })),
+        };
+        it.render_uncaught(&p);
+        assert_eq!(
+            String::from_utf8(it.test_output()).unwrap(),
+            "\nFatal error: Uncaught Error: Call to undefined function foo() in /abs/file.php:3\n\
+             Stack trace:\n#0 {main}\n  thrown in /abs/file.php on line 3\n"
+        );
+        let last = it.last_error.unwrap();
+        assert_eq!(last.kind, E_ERROR);
+        assert_eq!(last.line, 3);
+        assert!(last.message.ends_with("  thrown"));
+    }
+
+    #[test]
+    fn output_before_a_fault_reaches_the_sink_and_shutdown_runs() {
+        // echo "before"; 1/0;
+        let m = module(func(
+            0,
+            3,
+            vec![
+                Op::LoadConst { dst: 0, k: 0 },
+                Op::Echo { src: 0 },
+                Op::LoadConst { dst: 0, k: 1 },
+                Op::LoadConst { dst: 1, k: 2 },
+                Op::Div { dst: 2, a: 0, b: 1 },
+                Op::Ret { src: None },
+            ],
+            vec![
+                Const::Str(rphp_value::Str::new(b"before\n")),
+                Const::Int(1),
+                Const::Int(0),
+            ],
+        ));
+        let mut it = interp_with_handlers();
+        it.load_module(m);
+        it.ob_start(None, 0, PHP_OUTPUT_HANDLER_STDFLAGS); // even buffered output survives
+        let code = match it.run_main() {
+            Ok(_) => 0,
+            Err(u) => it.handle_top_level_unwind(u),
+        };
+        assert_eq!(code, 255);
+        it.finish_output();
+        assert_eq!(
+            String::from_utf8(it.test_output()).unwrap(),
+            "before\n\nFatal error: Uncaught DivisionByZeroError: Division by zero in Command line code:0\n\
+             Stack trace:\n#0 {main}\n  thrown in Command line code on line 0\n"
+        );
+    }
+
+    #[test]
+    fn shutdown_functions_run_in_order_and_a_fault_stops_the_rest() {
+        let mut it = interp_with_handlers();
+        it.load_module(module(func(0, 0, vec![Op::Ret { src: None }], vec![])));
+        it.run_main().unwrap();
+        it.shutdown.push((
+            Value::string(b"h_true"),
+            vec![
+                Value::Int(0),
+                Value::string(b"s1"),
+                Value::Null,
+                Value::Int(0),
+            ],
+        ));
+        it.shutdown.push((
+            Value::string(b"h_throw"),
+            vec![
+                Value::Int(0),
+                Value::string(b"s2"),
+                Value::Null,
+                Value::Int(0),
+            ],
+        ));
+        it.shutdown.push((
+            Value::string(b"h_true"),
+            vec![
+                Value::Int(0),
+                Value::string(b"s3"),
+                Value::Null,
+                Value::Int(0),
+            ],
+        ));
+        let code = it.run_shutdown_functions(0);
+        assert_eq!(code, 255);
+        let out = String::from_utf8(it.test_output()).unwrap();
+        assert!(out.starts_with("handled: s1\n\nFatal error: Uncaught ErrorException: s2 in Command line code:0\nStack trace:\n#0 [internal function]: h_throw(0, 's2', NULL, 0)\n#1 {main}\n  thrown"), "{out}");
+        assert!(!out.contains("s3"));
+        assert!(it.frames().is_empty());
+    }
+
+    // ---- output stack through the interpreter --------------------------------
+
+    fn upper(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+        let phase = args[1].to_int();
+        Ok(Value::string(
+            format!("{}|{phase}", args[0].to_php_string().to_uppercase()).as_bytes(),
+        ))
+    }
+
+    #[test]
+    fn ob_levels_with_handlers() {
+        let mut it = Interp::new_for_tests();
+        Registry(&mut it).function(nf!("upper", 2, Some(2), upper));
+        it.echo(b"x");
+        it.ob_start(
+            Some(Value::string(b"upper")),
+            0,
+            PHP_OUTPUT_HANDLER_STDFLAGS,
+        );
+        it.echo(b"abc");
+        assert_eq!(it.out.level(), 1);
+        assert_eq!(it.ob_flush_top(true).unwrap().unwrap(), b"abc");
+        assert_eq!(it.out.level(), 0);
+        // START|FINAL = 9, as php reports on ob_end_flush().
+        assert_eq!(it.take_test_output(), b"xABC|9");
+        it.ob_start(None, 0, PHP_OUTPUT_HANDLER_STDFLAGS);
+        it.echo(b"in");
+        it.out().extend_from_slice(b"+native");
+        assert_eq!(it.out.top_contents().unwrap(), b"in+native");
+        assert_eq!(it.ob_discard_top().unwrap().unwrap(), b"in+native");
+        assert!(it.ob_discard_top().unwrap().is_none());
+        assert_eq!(it.take_test_output(), b"");
+        // ob_flush keeps the level; the handler is not restarted.
+        it.ob_start(
+            Some(Value::string(b"upper")),
+            0,
+            PHP_OUTPUT_HANDLER_STDFLAGS,
+        );
+        it.echo(b"a");
+        it.ob_flush_top(false).unwrap();
+        it.echo(b"b");
+        it.ob_flush_top(true).unwrap();
+        assert_eq!(it.take_test_output(), b"A|5B|8");
+    }
+
+    // ---- registry, constants, ini ----------------------------------------------
+
+    fn strlen(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+        Ok(Value::Int(args[0].to_php_bytes().len() as i64))
+    }
+
+    #[test]
+    fn natives_resolve_case_insensitively_and_check_arity() {
+        let mut it = Interp::new_for_tests();
+        let id = Registry(&mut it).function(nf!("strlen", 1, Some(1), strlen));
+        assert_eq!(it.native_by_name(b"STRLEN"), Some(id));
+        assert_eq!(
+            it.call_function(b"StrLen", &[Value::string(b"abcd")])
+                .unwrap(),
+            Value::Int(4)
+        );
+        let err = it.call_function(b"strlen", &[]).unwrap_err();
+        assert_eq!(err.kind(), Some(ErrorKind::ArgumentCountError));
+        assert_eq!(
+            err.message(),
+            Some("strlen() expects exactly 1 argument, 0 given")
+        );
+        let err = it.call_function(b"nope", &[]).unwrap_err();
+        assert_eq!(err.message(), Some("Call to undefined function nope()"));
+        // Re-registering keeps the id.
+        assert_eq!(
+            Registry(&mut it).function(nf!("STRLEN", 1, Some(1), strlen)),
+            id
+        );
+        assert_eq!(it.natives().len(), 1);
+    }
+
+    #[test]
+    fn constants_and_ini() {
+        let mut it = Interp::new_for_tests();
+        Registry(&mut it).constant("PHP_EOL", Value::string(b"\n"));
+        assert_eq!(it.constant(b"PHP_EOL"), Some(Value::string(b"\n")));
+        assert!(it.defined(b"PHP_EOL"));
+        assert!(!it.defined(b"php_eol"), "constants are case-sensitive");
+        assert!(it.define(b"X", Value::Int(1)));
+        assert!(!it.define(b"X", Value::Int(2)));
+        assert_eq!(it.constant(b"X"), Some(Value::Int(1)));
+        assert_eq!(it.ini_get("precision"), Some("14"));
+        assert_eq!(it.ini_set("precision", "10"), Some("14".into()));
+        assert_eq!(it.ini_set("nope.x", "1"), None);
+        assert_eq!(
+            it.ini_set("error_reporting", "E_ALL & ~E_WARNING"),
+            Some(String::new())
+        );
+        assert_eq!(it.error_reporting, E_ALL & !E_WARNING);
+        assert_eq!(it.set_error_reporting(E_ALL), E_ALL & !E_WARNING);
+        assert_eq!(it.ini_get("error_reporting"), Some("30719"));
     }
 }

@@ -45,10 +45,63 @@ const UNDEFINED_METHOD: &str = "RPHP_E0109";
 /// `self::`/`parent::` used outside a class, or `parent::` with no parent.
 const INVALID_SCOPE: &str = "RPHP_E0110";
 
+/// The arity/by-ref shape of a native the runtime provides, as the compiler
+/// needs it: `id` is the runtime's process-local `NativeId` (baked into
+/// `Op::CallNative` — valid only for the interpreter it was resolved against,
+/// ADR-014), the rest drives the call-site range check and the by-reference
+/// write-back lowering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeSig {
+    pub id: u32,
+    pub min_args: usize,
+    /// `None` = variadic.
+    pub max_args: Option<usize>,
+    /// Bitmask of by-reference parameter positions.
+    pub by_ref: u32,
+}
+
+/// The set of native functions a call site may bind to — supplied by the
+/// embedder (rphp-embed builds it from the interpreter's registry) so the
+/// compiler has no dependency on any extension crate.
+pub trait KnownFunctions {
+    /// Look a (case-insensitive) function name up.
+    fn native(&self, name: &[u8]) -> Option<NativeSig>;
+}
+
+/// A [`KnownFunctions`] that knows no natives (every builtin call is
+/// "undefined function").
+pub struct NoNatives;
+
+impl KnownFunctions for NoNatives {
+    fn native(&self, _name: &[u8]) -> Option<NativeSig> {
+        None
+    }
+}
+
+/// What [`compile`] needs besides the program.
+pub struct CompileOptions<'a> {
+    /// The natives call sites may bind to.
+    pub natives: &'a dyn KnownFunctions,
+    /// Maps a byte offset in the source to its 1-based line, for
+    /// `Function::lines`; `None` leaves the line tables empty.
+    pub line_of: Option<&'a dyn Fn(u32) -> u32>,
+}
+
+impl<'a> CompileOptions<'a> {
+    /// Options binding natives through `natives`, without line tables.
+    pub fn new(natives: &'a dyn KnownFunctions) -> CompileOptions<'a> {
+        CompileOptions { natives, line_of: None }
+    }
+}
+
 /// Compile a parsed program into a bytecode module. Function `0` is the
 /// synthetic `{main}` entry containing the top-level statements; each top-level
 /// `Stmt::Func` becomes its own [`Function`] appended afterwards.
-pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Diagnostic>> {
+pub fn compile(
+    program: &Program,
+    interner: &Interner,
+    opts: &CompileOptions<'_>,
+) -> Result<Module, Vec<Diagnostic>> {
     let mut diags: Vec<Diagnostic> = Vec::new();
 
     // ---- pre-pass A: function ids (main = 0, user funcs 1..=U) ----
@@ -219,11 +272,13 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
     funcs.push(compile_function(
         interner, &func_map, &class_ctx, &arities, &mut diags, &mut closure_sink,
         top_level_count, IdentId(0), Box::from(&b""[..]), &[], &program.items, Span::dummy(), None,
+        opts,
     ));
     for f in &user_funcs {
         funcs.push(compile_function(
             interner, &func_map, &class_ctx, &arities, &mut diags, &mut closure_sink,
             top_level_count, f.name, interner.resolve(f.name).into(), &f.params, &f.body, f.span, None,
+            opts,
         ));
     }
     // Methods, in the same class-then-declaration order as pre-pass B so each
@@ -234,7 +289,7 @@ pub fn compile(program: &Program, interner: &Interner) -> Result<Module, Vec<Dia
             funcs.push(compile_function(
                 interner, &func_map, &class_ctx, &arities, &mut diags, &mut closure_sink,
                 top_level_count, m.name, interner.resolve(m.name).into(), &m.params, &m.body, m.span,
-                Some(ci as ClassId),
+                Some(ci as ClassId), opts,
             ));
         }
     }
@@ -368,6 +423,7 @@ fn compile_function(
     body: &[Stmt],
     span: Span,
     cur_class: Option<ClassId>,
+    opts: &CompileOptions<'_>,
 ) -> Function {
     let mut fc = FnCompiler::new(
         interner,
@@ -381,6 +437,8 @@ fn compile_function(
         &[],
         body,
         cur_class,
+        opts.natives,
+        opts.line_of,
     );
     fc.compile_stmts(body);
     // Always terminate with a fall-through return so every code path (and every
@@ -398,6 +456,7 @@ fn compile_function(
         capture_regs: fc.capture_regs,
         closures: fc.closures,
         span,
+        lines: fc.lines,
         ..Function::default()
     }
 }
@@ -433,6 +492,14 @@ struct FnCompiler<'a> {
 
     code: Vec<Op>,
     consts: Vec<Const>,
+    /// Source line per op, parallel to `code` (empty without `line_of`).
+    lines: Vec<u32>,
+    /// The line the ops being emitted belong to.
+    cur_line: u32,
+    /// The natives call sites may bind to.
+    natives: &'a dyn KnownFunctions,
+    /// Byte offset → 1-based line, when line tables are wanted.
+    line_of: Option<&'a dyn Fn(u32) -> u32>,
 }
 
 impl<'a> FnCompiler<'a> {
@@ -449,6 +516,8 @@ impl<'a> FnCompiler<'a> {
         captures: &[IdentId],
         body: &[Stmt],
         cur_class: Option<ClassId>,
+        natives: &'a dyn KnownFunctions,
+        line_of: Option<&'a dyn Fn(u32) -> u32>,
     ) -> Self {
         // A method reserves register 0 for the implicit `$this`; parameters then
         // start at register 1. (If the body names `$this`, the lexer has interned
@@ -499,6 +568,10 @@ impl<'a> FnCompiler<'a> {
             closures: Vec::new(),
             code: Vec::new(),
             consts: Vec::new(),
+            lines: Vec::new(),
+            cur_line: 0,
+            natives,
+            line_of,
         }
     }
 
@@ -506,7 +579,17 @@ impl<'a> FnCompiler<'a> {
 
     fn emit(&mut self, op: Op) -> usize {
         self.code.push(op);
+        if self.line_of.is_some() {
+            self.lines.push(self.cur_line);
+        }
         self.code.len() - 1
+    }
+
+    /// Record the source line the following ops belong to.
+    fn mark_line(&mut self, span: Span) {
+        if let Some(line_of) = self.line_of {
+            self.cur_line = line_of(span.lo);
+        }
     }
 
     fn here(&self) -> CodeAddr {
@@ -564,6 +647,7 @@ impl<'a> FnCompiler<'a> {
     }
 
     fn compile_stmt(&mut self, s: &Stmt) {
+        self.mark_line(stmt_span(s));
         match s {
             Stmt::Echo { args, .. } => {
                 for a in args {
@@ -666,6 +750,7 @@ impl<'a> FnCompiler<'a> {
     /// the call leaves exactly one extra live temporary (the result) when the
     /// result is a fresh temp, or zero when it is an existing variable register.
     fn compile_expr(&mut self, e: &Expr) -> Reg {
+        self.mark_line(e.span());
         match e {
             Expr::Null(_) => {
                 let dst = self.alloc_temp();
@@ -891,9 +976,9 @@ impl<'a> FnCompiler<'a> {
         let target = if let Some(&id) = self.func_map.get(&name) {
             self.check_user_arity(name, id, argc, span);
             Some(CallTarget::User(id))
-        } else if let Some(nid) = rphp_stdlib::resolve(self.interner.resolve(name)) {
-            self.check_native_arity(name, nid, argc, span);
-            Some(CallTarget::Native(nid.0))
+        } else if let Some(sig) = self.natives.native(self.interner.resolve(name)) {
+            self.check_native_arity(name, &sig, argc, span);
+            Some(CallTarget::Native { id: sig.id, by_ref: sig.by_ref })
         } else {
             self.diags.push(
                 Diagnostic::error(
@@ -917,13 +1002,13 @@ impl<'a> FnCompiler<'a> {
         // modelled yet). A call that actually passes an argument into a by-ref
         // slot needs a write-back, handled on a separate path.
         let by_ref = match &target {
-            CallTarget::Native(n) => rphp_stdlib::descriptor(rphp_stdlib::NativeId(*n)).by_ref,
+            CallTarget::Native { by_ref, .. } => *by_ref,
             CallTarget::User(_) => 0,
         };
-        if let (true, CallTarget::Native(native)) =
+        if let (true, CallTarget::Native { id, .. }) =
             ((0..argc).any(|i| by_ref & (1 << i) != 0), &target)
         {
-            return self.compile_native_by_ref(name, *native, by_ref, args, argc);
+            return self.compile_native_by_ref(name, *id, by_ref, args, argc);
         }
 
         // Stage args into the contiguous window `base ..= base+argc-1`.
@@ -945,7 +1030,7 @@ impl<'a> FnCompiler<'a> {
         debug_assert_eq!(dst, base);
         let op = match target {
             CallTarget::User(func) => Op::Call { dst, func, base, argc },
-            CallTarget::Native(native) => Op::CallNative { dst, native, base, argc },
+            CallTarget::Native { id, .. } => Op::CallNative { dst, native: id, base, argc },
         };
         self.emit(op);
         dst
@@ -1033,8 +1118,7 @@ impl<'a> FnCompiler<'a> {
 
     /// A builtin declares an arity range (`min_args ..= max_args`, `None` upper
     /// bound meaning variadic); range-check the call site against it.
-    fn check_native_arity(&mut self, name: IdentId, nid: rphp_stdlib::NativeId, argc: u16, span: Span) {
-        let desc = rphp_stdlib::descriptor(nid);
+    fn check_native_arity(&mut self, name: IdentId, desc: &NativeSig, argc: u16, span: Span) {
         let argc = argc as usize;
         let too_few = argc < desc.min_args;
         let too_many = desc.max_args.is_some_and(|max| argc > max);
@@ -1350,6 +1434,8 @@ impl FnCompiler<'_> {
             uses,
             body,
             None,
+            self.natives,
+            self.line_of,
         );
         fc.compile_stmts(body);
         fc.emit(Op::Ret { src: None });
@@ -1363,8 +1449,24 @@ impl FnCompiler<'_> {
             capture_regs: fc.capture_regs,
             closures: fc.closures,
             span,
+            lines: fc.lines,
             ..Function::default()
         }
+    }
+}
+
+/// The source span of a statement (an expression statement's is its
+/// expression's).
+fn stmt_span(s: &Stmt) -> Span {
+    match s {
+        Stmt::Echo { span, .. }
+        | Stmt::If { span, .. }
+        | Stmt::While { span, .. }
+        | Stmt::Foreach { span, .. }
+        | Stmt::Return { span, .. } => *span,
+        Stmt::Expr(e) => e.span(),
+        Stmt::Func(f) => f.span,
+        Stmt::Class(c) => c.span,
     }
 }
 
@@ -1372,8 +1474,8 @@ impl FnCompiler<'_> {
 enum CallTarget {
     /// A user-defined function, by [`FuncId`].
     User(FuncId),
-    /// A builtin, by its `rphp-stdlib` registry index.
-    Native(u32),
+    /// A native, by the runtime's id (see [`NativeSig`]) with its by-ref mask.
+    Native { id: u32, by_ref: u32 },
 }
 
 fn binary_op(op: BinOp, dst: Reg, a: Reg, b: Reg) -> Op {
@@ -1569,12 +1671,47 @@ mod tests {
         Stmt::Expr(e)
     }
 
+    /// The natives the tests bind to: `strlen`, `count`, `sort` (by-ref).
+    struct TestNatives;
+
+    impl KnownFunctions for TestNatives {
+        fn native(&self, name: &[u8]) -> Option<NativeSig> {
+            Some(match name.to_ascii_lowercase().as_slice() {
+                b"strlen" => NativeSig { id: 0, min_args: 1, max_args: Some(1), by_ref: 0 },
+                b"count" => NativeSig { id: 1, min_args: 1, max_args: Some(2), by_ref: 0 },
+                b"sort" => NativeSig { id: 2, min_args: 1, max_args: Some(2), by_ref: 0b1 },
+                _ => return None,
+            })
+        }
+    }
+
     fn compile_ok(items: Vec<Stmt>, interner: &Interner) -> Module {
-        compile(&Program { items }, interner).expect("expected successful compile")
+        compile(&Program { items }, interner, &CompileOptions::new(&TestNatives))
+            .expect("expected successful compile")
     }
 
     fn compile_err(items: Vec<Stmt>, interner: &Interner) -> Vec<Diagnostic> {
-        compile(&Program { items }, interner).expect_err("expected a diagnostic")
+        compile(&Program { items }, interner, &CompileOptions::new(&TestNatives))
+            .expect_err("expected a diagnostic")
+    }
+
+    #[test]
+    fn line_tables_follow_statements_and_calls() {
+        // Two statements on lines 1 and 3 (offsets mapped by a fake source map).
+        let interner = Interner::new();
+        let items = vec![
+            Stmt::Echo { args: vec![Expr::Int(1, Span::new(rphp_span::FileId(0), 0, 1))], span: Span::new(rphp_span::FileId(0), 0, 8) },
+            Stmt::Echo { args: vec![Expr::Int(2, Span::new(rphp_span::FileId(0), 20, 21))], span: Span::new(rphp_span::FileId(0), 20, 28) },
+        ];
+        let line_of = |off: u32| if off >= 20 { 3 } else { 1 };
+        let opts = CompileOptions { natives: &TestNatives, line_of: Some(&line_of) };
+        let m = compile(&Program { items }, &interner, &opts).unwrap();
+        let main = m.func(0);
+        assert_eq!(main.lines.len(), main.code.len());
+        assert_eq!(main.lines, vec![1, 1, 3, 3, 3]);
+        // Without `line_of` the table stays empty (contract: "or empty").
+        let m = compile(&Program { items: vec![] }, &interner, &CompileOptions::new(&TestNatives)).unwrap();
+        assert!(m.func(0).lines.is_empty());
     }
 
     #[test]

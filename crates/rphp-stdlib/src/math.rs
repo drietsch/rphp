@@ -3,7 +3,44 @@
 //! `min`) reuse the engine's spaceship ordering.
 use rphp_value::Value;
 
-use crate::{nf, Ctx, NativeError, NativeFn, NativeResult};
+use rphp_runtime::{Ctx, NativeFn, NativeResult, nf, Registry, Unwind};
+
+/// The math constants (php-src `ext/standard/math.c` / `basic_functions.c`):
+/// `M_*`, `INF`, `NAN`, `PHP_ROUND_*` with the manifest's exact values.
+#[allow(clippy::approx_constant)] // M_EULER: `f64::consts::EULER_GAMMA` is unstable
+pub(crate) fn register_constants(r: &mut Registry) {
+    for (name, v) in [
+        ("M_E", std::f64::consts::E),
+        ("M_LOG2E", std::f64::consts::LOG2_E),
+        ("M_LOG10E", std::f64::consts::LOG10_E),
+        ("M_LN2", std::f64::consts::LN_2),
+        ("M_LN10", std::f64::consts::LN_10),
+        ("M_PI", std::f64::consts::PI),
+        ("M_PI_2", std::f64::consts::FRAC_PI_2),
+        ("M_PI_4", std::f64::consts::FRAC_PI_4),
+        ("M_1_PI", std::f64::consts::FRAC_1_PI),
+        ("M_2_PI", std::f64::consts::FRAC_2_PI),
+        ("M_SQRTPI", 1.772_453_850_905_516),
+        ("M_2_SQRTPI", std::f64::consts::FRAC_2_SQRT_PI),
+        ("M_LNPI", 1.144_729_885_849_400_2),
+        ("M_EULER", 0.577_215_664_901_532_9),
+        ("M_SQRT2", std::f64::consts::SQRT_2),
+        ("M_SQRT3", 1.732_050_807_568_877_2),
+        ("M_SQRT1_2", std::f64::consts::FRAC_1_SQRT_2),
+        ("INF", f64::INFINITY),
+        ("NAN", f64::NAN),
+    ] {
+        r.constant(name, Value::Float(v));
+    }
+    for (name, v) in [
+        ("PHP_ROUND_HALF_UP", 1),
+        ("PHP_ROUND_HALF_DOWN", 2),
+        ("PHP_ROUND_HALF_EVEN", 3),
+        ("PHP_ROUND_HALF_ODD", 4),
+    ] {
+        r.constant(name, Value::Int(v));
+    }
+}
 
 /// This extension's registry contribution (see `lib.rs`).
 pub(crate) static FUNCTIONS: &[NativeFn] = &[
@@ -53,7 +90,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("octdec", 1, Some(1), octdec),
 ];
 
-pub(crate) fn abs(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn abs(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     match args[0].to_number() {
         // i64::MIN has no positive counterpart; promote to float as PHP does.
         Value::Int(i) => Ok(i
@@ -66,7 +103,7 @@ pub(crate) fn abs(_: &mut Ctx, args: &[Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn max(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn max(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let values = operands("max", args)?;
     let mut best = values[0].clone();
     for v in &values[1..] {
@@ -77,7 +114,7 @@ pub(crate) fn max(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(best)
 }
 
-pub(crate) fn min(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn min(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let values = operands("min", args)?;
     let mut best = values[0].clone();
     for v in &values[1..] {
@@ -88,15 +125,15 @@ pub(crate) fn min(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(best)
 }
 
-pub(crate) fn floor(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn floor(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Float(args[0].to_float().floor()))
 }
 
-pub(crate) fn ceil(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ceil(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Float(args[0].to_float().ceil()))
 }
 
-pub(crate) fn round(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn round(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let x = args[0].to_float();
     let precision = args.get(1).map_or(0, Value::to_int);
     let factor = 10f64.powi(precision as i32);
@@ -104,21 +141,21 @@ pub(crate) fn round(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Float((x * factor).round() / factor))
 }
 
-pub(crate) fn sqrt(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn sqrt(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // A negative operand yields NAN, as PHP does (no exception).
     Ok(Value::Float(args[0].to_float().sqrt()))
 }
 
-pub(crate) fn intdiv(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn intdiv(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let a = args[0].to_int();
     let b = args[1].to_int();
     if b == 0 {
-        return Err(NativeError::new("Division by zero"));
+        return Err(Unwind::division_by_zero("Division by zero"));
     }
     match a.checked_div(b) {
         Some(q) => Ok(Value::Int(q)),
         // i64::MIN / -1 overflows; PHP raises an ArithmeticError here.
-        None => Err(NativeError::new(
+        None => Err(Unwind::arithmetic_error(
             "Division of PHP_INT_MIN by -1 is not an integer",
         )),
     }
@@ -129,20 +166,20 @@ pub(crate) fn intdiv(_: &mut Ctx, args: &[Value]) -> NativeResult {
 /// The operand list for `max`/`min`: the elements of a lone array argument, or
 /// the argument list itself. A single non-array argument is an error, and an
 /// empty array has no extreme — both match PHP's messages.
-fn operands(func: &str, args: &[Value]) -> Result<Vec<Value>, NativeError> {
+fn operands(func: &str, args: &[Value]) -> Result<Vec<Value>, Unwind> {
     if args.len() == 1 {
         return match &args[0] {
             Value::Array(a) => {
                 let values: Vec<Value> = a.iter().map(|(_, v)| v.clone()).collect();
                 if values.is_empty() {
-                    Err(NativeError::new(format!(
+                    Err(Unwind::value_error(format!(
                         "{func}(): Argument #1 ($value) must contain at least one element"
                     )))
                 } else {
                     Ok(values)
                 }
             }
-            _ => Err(NativeError::new(format!(
+            _ => Err(Unwind::type_error(format!(
                 "{func}(): When only one argument is passed, it must be of type array"
             ))),
         };
@@ -164,11 +201,11 @@ fn binary(args: &[Value], f: fn(f64, f64) -> f64) -> NativeResult {
 
 // ---- powers, logs, trigonometry --------------------------------------------
 
-pub(crate) fn pi(_: &mut Ctx, _args: &[Value]) -> NativeResult {
+pub(crate) fn pi(_: &mut Ctx, _args: &mut [Value]) -> NativeResult {
     Ok(Value::Float(std::f64::consts::PI))
 }
 
-pub(crate) fn pow(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn pow(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // Reuse the engine's `**` semantics: an int base with a non-negative int
     // exponent whose result fits i64 stays Int (pow(2,3) => 8); anything else
     // (negative/float exponent, float operand, overflow) is Float. `to_number`
@@ -179,11 +216,11 @@ pub(crate) fn pow(_: &mut Ctx, args: &[Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn exp(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn exp(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::exp)
 }
 
-pub(crate) fn log(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn log(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let num = args[0].to_float();
     match args.get(1) {
         // One argument: natural logarithm.
@@ -199,7 +236,7 @@ pub(crate) fn log(_: &mut Ctx, args: &[Value]) -> NativeResult {
             } else if base == 1.0 {
                 Ok(Value::Float(f64::NAN))
             } else if base <= 0.0 {
-                Err(NativeError::new(
+                Err(Unwind::value_error(
                     "log(): Argument #2 ($base) must be greater than 0",
                 ))
             } else {
@@ -209,135 +246,135 @@ pub(crate) fn log(_: &mut Ctx, args: &[Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn log10(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn log10(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::log10)
 }
 
-pub(crate) fn sin(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn sin(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::sin)
 }
 
-pub(crate) fn cos(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn cos(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::cos)
 }
 
-pub(crate) fn tan(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn tan(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::tan)
 }
 
-pub(crate) fn asin(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn asin(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::asin)
 }
 
-pub(crate) fn acos(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn acos(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::acos)
 }
 
-pub(crate) fn atan(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn atan(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::atan)
 }
 
-pub(crate) fn atan2(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn atan2(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // PHP's argument order is atan2($y, $x); f64::atan2 is self.atan2(other) =
     // y.atan2(x), so args[0] is y and args[1] is x — same order.
     binary(args, f64::atan2)
 }
 
-pub(crate) fn sinh(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn sinh(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::sinh)
 }
 
-pub(crate) fn cosh(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn cosh(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::cosh)
 }
 
-pub(crate) fn tanh(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn tanh(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::tanh)
 }
 
-pub(crate) fn asinh(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn asinh(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::asinh)
 }
 
-pub(crate) fn acosh(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn acosh(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::acosh)
 }
 
-pub(crate) fn atanh(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn atanh(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::atanh)
 }
 
-pub(crate) fn deg2rad(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn deg2rad(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // Matches php-src layout `(num / 180) * M_PI` for bit-identical rounding.
     unary(args, |d| (d / 180.0) * std::f64::consts::PI)
 }
 
-pub(crate) fn rad2deg(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn rad2deg(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, |r| (r * 180.0) / std::f64::consts::PI)
 }
 
-pub(crate) fn hypot(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn hypot(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     binary(args, f64::hypot)
 }
 
-pub(crate) fn fmod(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn fmod(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // C `fmod`: remainder takes the sign of the dividend (Rust's `%` on f64).
     binary(args, |a, b| a % b)
 }
 
-pub(crate) fn fdiv(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn fdiv(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // IEEE division: divide-by-zero yields ±INF (or NAN for 0/0), never an error.
     binary(args, |a, b| a / b)
 }
 
-pub(crate) fn expm1(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn expm1(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::exp_m1)
 }
 
 // ---- float predicates -------------------------------------------------------
 
-pub(crate) fn is_nan(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_nan(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(args[0].to_float().is_nan()))
 }
 
-pub(crate) fn is_finite(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_finite(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(args[0].to_float().is_finite()))
 }
 
-pub(crate) fn is_infinite(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_infinite(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(args[0].to_float().is_infinite()))
 }
 
 // ---- base conversion --------------------------------------------------------
 
-pub(crate) fn dechex(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn dechex(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // PHP prints the unsigned 64-bit pattern, so dechex(-1) == "ffffffffffffffff".
     Ok(Value::string(
         format!("{:x}", args[0].to_int() as u64).as_bytes(),
     ))
 }
 
-pub(crate) fn decbin(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn decbin(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::string(
         format!("{:b}", args[0].to_int() as u64).as_bytes(),
     ))
 }
 
-pub(crate) fn decoct(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn decoct(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::string(
         format!("{:o}", args[0].to_int() as u64).as_bytes(),
     ))
 }
 
-pub(crate) fn hexdec(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn hexdec(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(base_to_number(&args[0].to_php_bytes(), 16))
 }
 
-pub(crate) fn bindec(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn bindec(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(base_to_number(&args[0].to_php_bytes(), 2))
 }
 
-pub(crate) fn octdec(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn octdec(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(base_to_number(&args[0].to_php_bytes(), 8))
 }
 

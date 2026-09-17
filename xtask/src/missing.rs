@@ -97,15 +97,12 @@ The JSON report is always written to target/missing-report.json.
 /// live `rphp-stdlib` registry implements, out of `candidates`.
 ///
 /// This is the **only** place the tool touches the registry. Today
-/// `rphp_stdlib::table()` is private, so the registry is probed one manifest
-/// name at a time through `rphp_stdlib::resolve` (case-insensitive, exactly
-/// what the compiler does). When `rphp_stdlib::all_functions()` lands, this
-/// body becomes a one-liner over that iterator and `candidates` is ignored.
-fn implemented_functions<'a>(candidates: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
-    candidates
-        .into_iter()
-        .filter(|name| rphp_stdlib::resolve(name.as_bytes()).is_some())
-        .map(str::to_owned)
+/// The live registry: every native the stdlib bundle registers, lower-cased
+/// to match the manifest lookups. `candidates` is accepted for API stability
+/// but ignored — the registry itself is the source of truth.
+fn implemented_functions<'a>(_candidates: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
+    rphp_stdlib::all_functions()
+        .map(|f| f.name.to_ascii_lowercase())
         .collect()
 }
 

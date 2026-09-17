@@ -801,7 +801,6 @@ dependencies = [
  "rphp-diagnostics",
  "rphp-intern",
  "rphp-span",
- "rphp-stdlib",
  "rphp-value",
 ]
 
@@ -857,6 +856,7 @@ version = "0.0.0"
 dependencies = [
  "mago-allocator",
  "mago-database",
+ "mago-span",
  "mago-syntax",
  "rphp-ast",
  "rphp-diagnostics",
@@ -870,9 +870,9 @@ name = "rphp-runtime"
 version = "0.0.0"
 dependencies = [
  "rphp-bytecode",
+ "rphp-ext-api",
  "rphp-intern",
  "rphp-span",
- "rphp-stdlib",
  "rphp-value",
 ]
 
@@ -880,16 +880,11 @@ dependencies = [
 name = "rphp-sapi-cli"
 version = "0.0.0"
 dependencies = [
- "rphp-ast",
- "rphp-bytecode",
- "rphp-compiler",
- "rphp-diagnostics",
+ "rphp-embed",
  "rphp-intern",
  "rphp-lexer",
  "rphp-parser",
- "rphp-runtime",
  "rphp-source",
- "rphp-span",
 ]
 
 [[package]]
@@ -910,6 +905,7 @@ dependencies = [
  "crc32fast",
  "md-5",
  "pcre2",
+ "rphp-runtime",
  "rphp-value",
  "sha1",
  "sha2",

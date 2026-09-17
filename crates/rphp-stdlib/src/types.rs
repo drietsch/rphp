@@ -1,7 +1,7 @@
 //! Type-inspection and scalar-cast builtins.
 use rphp_value::Value;
 
-use crate::{nf, Ctx, NativeFn, NativeResult};
+use rphp_runtime::{Ctx, NativeFn, NativeResult, nf};
 
 /// This extension's registry contribution (see `lib.rs`).
 pub(crate) static FUNCTIONS: &[NativeFn] = &[
@@ -26,7 +26,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("boolval", 1, Some(1), boolval),
 ];
 
-pub(crate) fn gettype(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn gettype(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let name: &[u8] = match &*args[0].deref() {
         // An uninitialized typed property never reaches a call (the runtime
         // errors first); as a value it is null.
@@ -45,52 +45,52 @@ pub(crate) fn gettype(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::string(name))
 }
 
-pub(crate) fn is_int(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_int(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(matches!(*args[0].deref(), Value::Int(_))))
 }
 
-pub(crate) fn is_string(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_string(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(matches!(*args[0].deref(), Value::Str(_))))
 }
 
-pub(crate) fn is_bool(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_bool(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(matches!(*args[0].deref(), Value::Bool(_))))
 }
 
-pub(crate) fn is_float(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_float(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(matches!(*args[0].deref(), Value::Float(_))))
 }
 
-pub(crate) fn is_array(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_array(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(matches!(*args[0].deref(), Value::Array(_))))
 }
 
-pub(crate) fn is_null(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_null(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(matches!(*args[0].deref(), Value::Null | Value::Uninit)))
 }
 
-pub(crate) fn is_numeric(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_numeric(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(args[0].is_numeric()))
 }
 
-pub(crate) fn is_scalar(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_scalar(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(matches!(
         *args[0].deref(),
         Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_)
     )))
 }
 
-pub(crate) fn is_object(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_object(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(matches!(*args[0].deref(), Value::Object(_) | Value::Closure(_))))
 }
 
 /// PHP `is_resource`: an **open** resource (a closed one is not a resource
 /// any more, though `gettype` still says `resource (closed)`).
-pub(crate) fn is_resource(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn is_resource(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(matches!(&*args[0].deref(), Value::Resource(r) if !r.is_closed())))
 }
 
-pub(crate) fn intval(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn intval(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // `intval($s, $base)` parses a *string* in the given base (base 0 auto-detects
     // from a `0x`/`0b`/`0` prefix); for non-strings, or base 10, it is the plain
     // integer cast.
@@ -167,14 +167,14 @@ fn parse_in_base(s: &[u8], mut base: i64) -> i64 {
     }
 }
 
-pub(crate) fn floatval(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn floatval(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Float(args[0].to_float()))
 }
 
-pub(crate) fn strval(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn strval(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Str(rphp_value::Str::from_vec(args[0].to_php_bytes())))
 }
 
-pub(crate) fn boolval(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn boolval(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(args[0].to_bool()))
 }

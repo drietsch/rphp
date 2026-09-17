@@ -10,7 +10,7 @@ use sha2::{Sha256, Sha384, Sha512};
 
 use rphp_value::{Array, Str, Value};
 
-use crate::{nf, Ctx, NativeError, NativeFn, NativeResult};
+use rphp_runtime::{Ctx, NativeFn, NativeResult, nf, Unwind};
 
 /// This extension's registry contribution (see `lib.rs`). Keyed-hash and
 /// incremental-state APIs (`hash_hmac`, `hash_init`/`hash_update`/`hash_final`)
@@ -30,24 +30,24 @@ fn bytes(v: &Value) -> Vec<u8> {
     v.to_php_bytes()
 }
 
-pub(crate) fn md5(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn md5(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let binary = args.get(1).is_some_and(Value::to_bool);
     Ok(digest_value(&one_shot(Md5::new(), &bytes(&args[0])), binary))
 }
 
-pub(crate) fn sha1(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn sha1(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let binary = args.get(1).is_some_and(Value::to_bool);
     Ok(digest_value(&one_shot(Sha1::new(), &bytes(&args[0])), binary))
 }
 
-pub(crate) fn crc32(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn crc32(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // The standard reflected CRC-32 (IEEE 802.3), returned as a plain int. PHP
     // hands back the unsigned 32-bit value, which on a 64-bit build is just the
     // u32 widened (never negative).
     Ok(Value::Int(crc32_of(&bytes(&args[0])) as i64))
 }
 
-pub(crate) fn hash(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn hash(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let data = bytes(&args[1]);
     let binary = args.get(2).is_some_and(Value::to_bool);
     // PHP resolves the algorithm name case-insensitively (`hash("MD5", …)` works
@@ -63,7 +63,7 @@ pub(crate) fn hash(_: &mut Ctx, args: &[Value]) -> NativeResult {
         // different, non-reflected variant — see the module caveats.)
         b"crc32b" => crc32_of(&data).to_be_bytes().to_vec(),
         _ => {
-            return Err(NativeError::new(
+            return Err(Unwind::value_error(
                 "hash(): Argument #1 ($algo) must be a valid hashing algorithm",
             ))
         }
@@ -71,7 +71,7 @@ pub(crate) fn hash(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(digest_value(&raw, binary))
 }
 
-pub(crate) fn hash_algos(_: &mut Ctx, _args: &[Value]) -> NativeResult {
+pub(crate) fn hash_algos(_: &mut Ctx, _args: &mut [Value]) -> NativeResult {
     let mut out = Array::new();
     for name in SUPPORTED_ALGOS {
         out.push(Value::string(name.as_bytes()));

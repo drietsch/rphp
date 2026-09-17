@@ -11,7 +11,7 @@
 //! become `Closure` objects (plan E6).
 use rphp_value::{ArrayKey, ObjectData, PropEntry, Str, Value, Vis};
 
-use crate::{nf, Ctx, NativeFn, NativeResult};
+use rphp_runtime::{Ctx, NativeFn, NativeResult, nf};
 
 /// This extension's registry contribution (see `lib.rs`).
 pub(crate) static FUNCTIONS: &[NativeFn] = &[
@@ -23,7 +23,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
 type Seen = Vec<u32>;
 
 /// PHP `var_dump(...$values)`: dump each argument's type and value. Returns null.
-pub(crate) fn var_dump(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn var_dump(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut seen = Seen::new();
     for v in args {
         dump(ctx.out(), v, 0, &mut seen);
@@ -33,7 +33,7 @@ pub(crate) fn var_dump(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
 
 /// PHP `print_r($value, $return = false)`: human-readable form. With `$return`
 /// truthy, returns the string; otherwise writes it to stdout and returns `true`.
-pub(crate) fn print_r(ctx: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn print_r(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let return_mode = args.get(1).is_some_and(Value::to_bool);
     let mut buf = Vec::new();
     print_r_buf(&mut buf, &args[0], 0, &mut Seen::new());

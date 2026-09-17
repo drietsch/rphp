@@ -14,7 +14,7 @@
 //! `ctype_digit(256)` is `true` via the string `"256"`).
 use rphp_value::Value;
 
-use crate::{nf, Ctx, NativeFn, NativeResult};
+use rphp_runtime::{Ctx, NativeFn, NativeResult, nf};
 
 /// This extension's registry contribution (see `lib.rs`). Every predicate has
 /// the same shape: one `mixed` argument, returns `bool`.
@@ -32,51 +32,51 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("ctype_xdigit", 1, Some(1), ctype_xdigit),
 ];
 
-pub(crate) fn ctype_alnum(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ctype_alnum(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     predicate(&args[0], |b| b.is_ascii_alphanumeric())
 }
 
-pub(crate) fn ctype_alpha(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ctype_alpha(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     predicate(&args[0], |b| b.is_ascii_alphabetic())
 }
 
-pub(crate) fn ctype_cntrl(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ctype_cntrl(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     predicate(&args[0], |b| b.is_ascii_control())
 }
 
-pub(crate) fn ctype_digit(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ctype_digit(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     predicate(&args[0], |b| b.is_ascii_digit())
 }
 
-pub(crate) fn ctype_graph(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ctype_graph(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     predicate(&args[0], |b| b.is_ascii_graphic())
 }
 
-pub(crate) fn ctype_lower(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ctype_lower(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     predicate(&args[0], |b| b.is_ascii_lowercase())
 }
 
-pub(crate) fn ctype_print(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ctype_print(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // Printable = graphic plus the space; unlike `is_ascii_graphic`, `0x20` counts.
     predicate(&args[0], |b| (0x20..=0x7e).contains(&b))
 }
 
-pub(crate) fn ctype_punct(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ctype_punct(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     predicate(&args[0], |b| b.is_ascii_punctuation())
 }
 
-pub(crate) fn ctype_space(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ctype_space(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // php-src's whitespace set: space, \t, \n, \v (0x0b), \f (0x0c), \r.
     predicate(&args[0], |b| {
         matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
     })
 }
 
-pub(crate) fn ctype_upper(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ctype_upper(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     predicate(&args[0], |b| b.is_ascii_uppercase())
 }
 
-pub(crate) fn ctype_xdigit(_: &mut Ctx, args: &[Value]) -> NativeResult {
+pub(crate) fn ctype_xdigit(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     predicate(&args[0], |b| b.is_ascii_hexdigit())
 }
 

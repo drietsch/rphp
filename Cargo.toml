@@ -14,8 +14,13 @@ members = [
     "crates/rphp-stdlib",
     "crates/rphp-runtime",
     "crates/rphp-sapi-cli",
+    "crates/rphp-ext-api",
+    "crates/rphp-test",
+    "crates/rphp-tokenizer",
     "tools/rphp",
+    "xtask",
 ]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.0"
@@ -23,7 +28,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/drietsch/rphp"
 authors = ["Dietmar Rietsch <dietmar.rietsch@andthenext.at>"]
-rust-version = "1.95"
+rust-version = "1.97"
 
 # Internal crates, referenced by path so the whole graph builds from source.
 [workspace.dependencies]
@@ -40,6 +45,28 @@ rphp-compiler = { path = "crates/rphp-compiler" }
 rphp-stdlib = { path = "crates/rphp-stdlib" }
 rphp-runtime = { path = "crates/rphp-runtime" }
 rphp-sapi-cli = { path = "crates/rphp-sapi-cli" }
+rphp-ext-api = { path = "crates/rphp-ext-api" }
+rphp-test = { path = "crates/rphp-test" }
+rphp-tokenizer = { path = "crates/rphp-tokenizer" }
+
+# External crates. Versions are pinned here once; member crates use
+# `{ workspace = true }` so the whole workspace agrees on one version.
+# Front end (ADR-025): the mago crates are pinned exactly and bumped deliberately.
+mago-syntax = "=1.49.0"
+mago-allocator = "=1.49.0"
+mago-database = "=1.49.0"
+# Tooling / tests.
+rayon = "1.12"
+regex = "1.13"
+tempfile = "3.27"
+walkdir = "2.5"
+toml = "1.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+insta = "1.48"
+pico-args = "0.5"
+memchr = "2.8"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

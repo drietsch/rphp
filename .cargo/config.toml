@@ -1,0 +1,3 @@
+[alias]
+# `cargo xtask <subcommand>` — repo automation (codegen, coverage, phpt, ladder, corpus…).
+xtask = "run -p xtask --"

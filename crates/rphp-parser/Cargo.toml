@@ -11,3 +11,8 @@ rphp-intern.workspace = true
 rphp-diagnostics.workspace = true
 rphp-lexer.workspace = true
 rphp-ast.workspace = true
+
+# ADR-025: the production parser is mago-syntax behind an adapter (F2).
+mago-syntax.workspace = true
+mago-allocator.workspace = true
+mago-database.workspace = true

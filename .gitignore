@@ -2,3 +2,12 @@
 **/*.rs.bk
 *.pdb
 .DS_Store
+# generated / fetched test corpora and fixtures
+/vendor-php-src/
+/fixtures/**/vendor/
+/fixtures/**/var/
+/fixtures/**/node_modules/
+/target/
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/

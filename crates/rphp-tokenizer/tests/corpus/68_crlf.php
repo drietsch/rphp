@@ -1,0 +1,38 @@
+<?php
+// comment
+# comment
+/* block
+comment */
+/**
+ * doc
+ */
+$a = 1;
+$b = "dq
+$x
+";
+$c = 'sq
+';
+$d = <<<EOT
+heredoc
+  {$x}
+EOT;
+$e = <<<'EOT'
+nowdoc
+EOT;
+function f(&$x, & $y) {
+    yield
+    from $z;
+    return $a->
+        b;
+}
+?>
+html
+<?php $f = 1 ?>
+<?php
+$g = `cmd
+$h`;
+enum
+Foo {}
+$i = & $j;
+$k = "$a[0]
+";

@@ -7,3 +7,4 @@ repository.workspace = true
 
 [dependencies]
 rphp-span.workspace = true
+memchr.workspace = true

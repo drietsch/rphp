@@ -1,0 +1,19 @@
+<html>
+<?xml version="1.0"?>
+<? not php with short tags off
+<?phpX not a tag either
+<?php echo 1; ?>
+after close
+<?php ?>
+<?php
+?>
+<?php echo "x" ?>
+<?php ?>x
+<?php ?>
+
+<?php ?>
+<
+<?
+<?p
+<?ph
+<?php

@@ -1,0 +1,3 @@
+<?php
+$a = <<<EOT
+EOT

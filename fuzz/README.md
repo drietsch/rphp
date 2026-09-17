@@ -9,7 +9,7 @@ lists it under `exclude`), so it never affects `cargo build --workspace`.
 | `parse_bytes`    | lexer + parser never panic and always terminate on arbitrary bytes; every diagnostic renders     |
 | `tokenize_bytes` | `rphp_tokenizer::tokenize` is lossless in both `short_open_tag` modes (tokens tile the input)    |
 
-`tokenize_bytes` is gated behind the `tokenizer` cargo feature until F5 lands
+`tokenize_bytes` runs against the finished `rphp-tokenizer` crate
 the `tokenize(src, Options) -> Vec<RawToken { id, lo, hi, line }>` API; once it
 exists, make the dependency unconditional in `Cargo.toml` and drop the
 `required-features` line.
@@ -30,8 +30,8 @@ cargo fuzz build                                   # compile every target (sanit
 cargo fuzz run parse_bytes -- -timeout=10          # fuzz until Ctrl-C; -timeout catches hangs
 cargo fuzz run parse_bytes -- -max_total_time=300  # bounded run (CI's nightly smoke)
 cargo fuzz run parse_bytes -j 8 -- -timeout=10     # parallel jobs
-cargo fuzz build --features tokenizer              # once F5 lands
-cargo fuzz run tokenize_bytes --features tokenizer -- -timeout=10
+cargo fuzz build
+cargo fuzz run tokenize_bytes -- -timeout=10
 ```
 
 Crashes and timeouts land in `artifacts/<target>/`; reproduce and minimise with

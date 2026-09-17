@@ -1,0 +1,5 @@
+# php-src slice scored by `cargo xtask phpt --ext pcre`; schema in tests/phpt/README.md
+dir = "ext/pcre/tests"
+enabled = true
+baseline = 0
+notes = "preg_* family; JIT/backtrack-limit tests depend on pcre.* ini and may skip"

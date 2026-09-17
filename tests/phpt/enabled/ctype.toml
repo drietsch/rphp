@@ -1,0 +1,5 @@
+# php-src slice scored by `cargo xtask phpt --ext ctype`; schema in tests/phpt/README.md
+dir = "ext/ctype/tests"
+enabled = true
+baseline = 0
+notes = "ctype_* on ints/strings; a couple of tests need de_DE locales and skip"

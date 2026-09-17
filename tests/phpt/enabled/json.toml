@@ -1,0 +1,5 @@
+# php-src slice scored by `cargo xtask phpt --ext json`; schema in tests/phpt/README.md
+dir = "ext/json/tests"
+enabled = true
+baseline = 0
+notes = "json_encode/json_decode/JsonSerializable/JsonException; flags and depth handling"

@@ -11,3 +11,6 @@ path = "src/main.rs"
 
 [dependencies]
 rphp-sapi-cli.workspace = true
+
+[dev-dependencies]
+rphp-test.workspace = true

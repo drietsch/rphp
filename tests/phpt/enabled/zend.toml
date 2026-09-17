@@ -1,0 +1,5 @@
+# php-src slice scored by `cargo xtask phpt --ext zend`; schema in tests/phpt/README.md
+dir = "Zend/tests"
+enabled = true
+baseline = 0
+notes = "language core: ~5k tests over syntax, classes, generators, closures, errors; the long tail of the burn-down"

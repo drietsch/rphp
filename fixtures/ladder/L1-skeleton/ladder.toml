@@ -1,0 +1,50 @@
+# Ladder rungs served by this fixture (symfony/skeleton v8.1.99 → Symfony 8.1.7).
+# Executed by `cargo xtask ladder --rung <id>`: each command runs under stock
+# `php` and under `rphp` in a fresh copy of the fixture (with a warmed vendor/),
+# and stdout / normalized stderr / exit code must match per ADR-034.
+
+[fixture]
+name = "L1-skeleton"
+setup = "composer install --no-interaction --no-progress --prefer-dist"
+php_min = "8.4.1"
+
+[[rung]]
+id = "L1"
+title = "Composer autoloader + platform check"
+commands = [
+  "vendor/composer/platform_check.php",
+  "ladder/l1-autoload.php",
+]
+
+[[rung]]
+id = "L3"
+title = "symfony/console via bin/console"
+commands = [
+  "bin/console list --no-ansi",
+  "bin/console list --format=json",
+  "bin/console help cache:clear --no-ansi",
+]
+
+[[rung]]
+id = "L6a"
+title = "FrameworkBundle micro kernel (no twig/translator)"
+commands = [
+  "bin/console about --no-ansi",
+  "bin/console cache:clear --no-ansi",
+  "bin/console debug:container --no-ansi",
+  "bin/console debug:router --no-ansi",
+  "bin/console debug:autowiring --no-ansi",
+  "bin/console lint:container --no-ansi",
+]
+# `var/cache/dev/*Container.php` produced by cache:clear must be byte-identical.
+artifacts = ["var/cache/dev/App_KernelDevDebugContainer.php"]
+
+[[rung]]
+id = "L7"
+title = "public/index.php over HTTP (rphp -S vs php -S)"
+http = true
+docroot = "public"
+requests = [
+  "GET /",
+  "GET /nonexistent",
+]

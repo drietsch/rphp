@@ -1,0 +1,38 @@
+# Divergence allowlist for the L1-skeleton fixture (ADR-034: closed set of
+# categories, loaded by rphp-test's `Allowlist` — strict: unknown keys or
+# categories, empty reasons and defaultless categories without a `normalize`
+# rule are rejected).
+#
+# Entry names are `<rung id>/<command line>` exactly as written in ladder.toml;
+# globs work (`*` within a `/`-segment, `**` across). Every normalizer runs over
+# BOTH sides, so everything a rule does not touch is still compared byte-exact.
+# Nothing here is needed for L1 or L3: their output is fully deterministic.
+
+# `bin/console about` (L6a) — the lines that depend on the host rather than on
+# the engine. Only the volatile span is replaced; the labels, Symfony's own
+# version line, the kernel section, `PHP > Version` (rphp must report 8.5.0)
+# and `Architecture` stay under comparison.
+
+[[allow]]
+snippet   = "L6a/bin/console about*"
+category  = "platform-value"
+reason    = "End of maintenance / End of life print `(in +N days)` relative to today's date"
+normalize = 'regex:(?m)^(\s{2}End of (?:maintenance|life)\s+\S+ )\([^)]*\)\s*$ => $1(%WHEN%)'
+
+[[allow]]
+snippet   = "L6a/bin/console about*"
+category  = "platform-value"
+reason    = "Cache/Build/Share/Log directory lines print the directory size, which counts .meta/log files that are not artifacts of the rung"
+normalize = 'regex:(?m)^(\s{2}(?:Cache|Build|Share|Log) directory\s+\S+ )\([^)]*\)\s*$ => $1(%SIZE%)'
+
+[[allow]]
+snippet   = "L6a/bin/console about*"
+category  = "platform-value"
+reason    = "Timezone prints the current timestamp next to the zone name"
+normalize = 'regex:(?m)^(\s{2}Timezone\s+\S+ )\([^)]*\)\s*$ => $1(%NOW%)'
+
+[[allow]]
+snippet   = "L6a/bin/console about*"
+category  = "platform-value"
+reason    = "OPcache/APCu/Xdebug/Intl locale describe the host php build's extensions, not engine behaviour"
+normalize = 'drop-lines:^\s{2}(?:OPcache|APCu|Xdebug|Intl locale)\s'

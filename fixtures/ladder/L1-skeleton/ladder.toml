@@ -1,24 +1,33 @@
 # Ladder rungs served by this fixture (symfony/skeleton v8.1.99 → Symfony 8.1.7).
 # Executed by `cargo xtask ladder --rung <id>`: each command runs under stock
-# `php` and under `rphp` in a fresh copy of the fixture (with a warmed vendor/),
-# and stdout / normalized stderr / exit code must match per ADR-034.
+# `php` and under `rphp` in a fresh working copy of the fixture (vendor/
+# hard-linked, var/ empty), and stdout / normalized stderr / exit code must
+# match per ADR-034. Schema: fixtures/ladder/README.md.
 
 [fixture]
 name = "L1-skeleton"
 setup = "composer install --no-interaction --no-progress --prefer-dist"
 php_min = "8.4.1"
+# Closed-category allowlist applied to every rung (rphp-test format).
+allowlist = "ladder/divergences.toml"
 
 [[rung]]
 id = "L1"
 title = "Composer autoloader + platform check"
 commands = [
+  # Silent and exit 0 on a php >= 8.4 — the platform check Composer generated.
   "vendor/composer/platform_check.php",
+  # require vendor/autoload.php, class_exists(Application), InstalledVersions.
   "ladder/l1-autoload.php",
+  # spl_autoload_register ordering, cross-package class_exists, package count.
+  "ladder/l1-autoload-order.php",
 ]
 
 [[rung]]
 id = "L3"
 title = "symfony/console via bin/console"
+# Pin the terminal size symfony/console would otherwise probe via `stty`.
+env = { COLUMNS = "120", LINES = "50" }
 commands = [
   "bin/console list --no-ansi",
   "bin/console list --format=json",
@@ -28,7 +37,9 @@ commands = [
 [[rung]]
 id = "L6a"
 title = "FrameworkBundle micro kernel (no twig/translator)"
+env = { COLUMNS = "120", LINES = "50" }
 commands = [
+  # Environment-dependent lines of `about` are normalized by ladder/divergences.toml.
   "bin/console about --no-ansi",
   "bin/console cache:clear --no-ansi",
   "bin/console debug:container --no-ansi",
@@ -36,8 +47,14 @@ commands = [
   "bin/console debug:autowiring --no-ansi",
   "bin/console lint:container --no-ansi",
 ]
-# `var/cache/dev/*Container.php` produced by cache:clear must be byte-identical.
-artifacts = ["var/cache/dev/App_KernelDevDebugContainer.php"]
+# The container dumped by cache:clear must be byte-identical (paths normalized):
+# the content-hashed Container<hash>/ directory (class + one file per service)
+# and the preload file. The wrapper var/cache/dev/App_KernelDevDebugContainer.php
+# is not comparable: it embeds container.build_time and a build_id derived from it.
+artifacts = [
+  "var/cache/dev/Container*/*.php",
+  "var/cache/dev/App_KernelDevDebugContainer.preload.php",
+]
 
 [[rung]]
 id = "L7"

@@ -541,7 +541,14 @@ impl Interp {
         line: u32,
     ) -> Result<(), Unwind> {
         let mut sigs: HashMap<Box<[u8]>, PropSig> = HashMap::new();
-        for (name, vis, ty, readonly, default) in &spec.props {
+        for ps in &spec.props {
+            let (name, vis, ty, readonly, default) = (
+                &ps.name,
+                &ps.vis,
+                &ps.ty,
+                &ps.readonly,
+                &ps.default,
+            );
             sigs.insert(
                 name.clone(),
                 PropSig {
@@ -588,13 +595,15 @@ impl Interp {
                     }
                     continue;
                 }
-                spec.props.push((
-                    p.name.clone(),
-                    p.vis,
-                    p.ty.clone(),
-                    p.readonly,
-                    p.default.clone(),
-                ));
+                spec.props.push(crate::class::PropSpec {
+                    name: p.name.clone(),
+                    vis: p.vis,
+                    set_vis: p.set_vis,
+                    ty: p.ty.clone(),
+                    readonly: p.readonly,
+                    hooks: p.hooks,
+                    default: p.default.clone(),
+                });
                 sigs.insert(p.name.clone(), sig);
             }
             for s in &t.static_props {

@@ -166,8 +166,57 @@ pub struct PropInfo {
     pub ty: Option<TypeDecl>,
     /// `readonly`.
     pub readonly: bool,
+    /// The **write** visibility of an asymmetric declaration
+    /// (`public private(set) int $n`), when it is narrower than `vis`.
+    /// `readonly` implies `protected(set)` and is handled by `readonly`.
+    pub set_vis: Option<Visibility>,
+    /// php 8.4 property hooks, as process-wide function ids.
+    pub hooks: Option<PropHooks>,
     /// The default value.
     pub default: PropDefault,
+}
+
+/// A property's `get`/`set` hooks, as **process-wide** function ids (the
+/// compiled declaration carries unit-local ones; `unit.rs` rebases them).
+#[derive(Clone, Copy, Debug)]
+pub struct PropHooks {
+    /// `get` hook.
+    pub get: Option<u32>,
+    /// `set` hook.
+    pub set: Option<u32>,
+}
+
+/// One own property of a [`ClassSpec`].
+pub struct PropSpec {
+    /// Name without the `$`.
+    pub name: Box<[u8]>,
+    /// Read visibility.
+    pub vis: Visibility,
+    /// Write visibility, when narrower.
+    pub set_vis: Option<Visibility>,
+    /// Declared type.
+    pub ty: Option<TypeDecl>,
+    /// `readonly`.
+    pub readonly: bool,
+    /// Property hooks (process-wide function ids).
+    pub hooks: Option<PropHooks>,
+    /// The initializer.
+    pub default: PropDefault,
+}
+
+impl PropSpec {
+    /// A plain property: no type, not readonly, no hooks.
+    pub fn new(name: Box<[u8]>, vis: Visibility, default: PropDefault) -> PropSpec {
+        PropSpec {
+            name,
+            vis,
+            set_vis: None,
+            ty: None,
+            readonly: false,
+            hooks: None,
+            default,
+        }
+    }
 }
 
 /// Which magic methods a class defines (own or inherited), so the hot
@@ -507,9 +556,8 @@ pub struct ClassSpec {
     pub parent: Option<u32>,
     /// `implements` (already resolved).
     pub interfaces: Vec<u32>,
-    /// Own instance properties in declaration order: name, visibility,
-    /// type, readonly, default.
-    pub props: Vec<(Box<[u8]>, Visibility, Option<TypeDecl>, bool, PropDefault)>,
+    /// Own instance properties in declaration order.
+    pub props: Vec<PropSpec>,
     /// Own methods in declaration order.
     pub methods: Vec<MethodSpec>,
     /// The native init hook (own).
@@ -663,27 +711,31 @@ impl Interp {
                 }
             }
         }
-        for (pname, vis, ty, readonly, default) in props {
-            match def.prop_index.get(&pname).copied() {
+        for ps in props {
+            match def.prop_index.get(&ps.name).copied() {
                 Some(i) => {
                     let p = &mut def.props[i as usize];
-                    p.vis = vis;
+                    p.vis = ps.vis;
                     p.decl = id;
-                    p.ty = ty;
-                    p.readonly = readonly;
-                    p.default = default;
+                    p.ty = ps.ty;
+                    p.readonly = ps.readonly;
+                    p.set_vis = ps.set_vis;
+                    p.hooks = ps.hooks;
+                    p.default = ps.default;
                 }
                 None => {
                     let slot = def.props.len() as u16;
-                    def.prop_index.insert(pname.clone(), slot);
+                    def.prop_index.insert(ps.name.clone(), slot);
                     def.props.push(PropInfo {
-                        name: pname,
+                        name: ps.name,
                         slot,
-                        vis,
+                        vis: ps.vis,
                         decl: id,
-                        ty,
-                        readonly,
-                        default,
+                        ty: ps.ty,
+                        readonly: ps.readonly,
+                        set_vis: ps.set_vis,
+                        hooks: ps.hooks,
+                        default: ps.default,
                     });
                 }
             }

@@ -229,21 +229,25 @@ impl Interp {
             EnumBacking::String => Some(TypeDecl::Builtin(BuiltinType::String)),
             EnumBacking::None => None,
         };
-        let mut props = vec![(
-            Box::from(&b"name"[..]),
-            Visibility::Public,
-            Some(TypeDecl::Builtin(BuiltinType::String)),
-            true,
-            PropDefault::Value(Value::Uninit),
-        )];
+        let mut props = vec![crate::class::PropSpec {
+            name: Box::from(&b"name"[..]),
+            vis: Visibility::Public,
+            set_vis: None,
+            ty: Some(TypeDecl::Builtin(BuiltinType::String)),
+            readonly: true,
+            hooks: None,
+            default: PropDefault::Value(Value::Uninit),
+        }];
         if let Some(ty) = value_ty {
-            props.push((
-                Box::from(&b"value"[..]),
-                Visibility::Public,
-                Some(ty),
-                true,
-                PropDefault::Value(Value::Uninit),
-            ));
+            props.push(crate::class::PropSpec {
+                name: Box::from(&b"value"[..]),
+                vis: Visibility::Public,
+                set_vis: None,
+                ty: Some(ty),
+                readonly: true,
+                hooks: None,
+                default: PropDefault::Value(Value::Uninit),
+            });
         }
         props.extend(std::mem::take(&mut spec.props));
         spec.props = props;

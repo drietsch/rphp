@@ -358,18 +358,24 @@ impl Interp {
             Some(t) => PropDefault::Thunk(unit.func_base + t),
             None => PropDefault::Value(p.default.clone()),
         };
+        // Hook function ids are unit-local in the declaration and
+        // process-wide in the class model.
+        let rebase = |h: &rphp_bytecode::Hooks| crate::class::PropHooks {
+            get: h.get.map(|f| unit.func_base + f),
+            set: h.set.map(|f| unit.func_base + f),
+        };
         let props = decl
             .props
             .iter()
             .filter(|p| !p.is_static)
-            .map(|p| {
-                (
-                    p.name.clone(),
-                    p.visibility,
-                    p.ty.clone(),
-                    p.readonly,
-                    prop_default(p),
-                )
+            .map(|p| crate::class::PropSpec {
+                name: p.name.clone(),
+                vis: p.visibility,
+                set_vis: p.set_vis,
+                ty: p.ty.clone(),
+                readonly: p.readonly,
+                hooks: p.hooks.as_ref().map(rebase),
+                default: prop_default(p),
             })
             .collect();
         let static_props = decl

@@ -93,6 +93,19 @@ thread_local! {
     static GUARDS: RefCell<Vec<(u32, Box<[u8]>, Magic)>> = const { RefCell::new(Vec::new()) };
 }
 
+thread_local! {
+    /// The `(object, property)` pairs whose **hook** is running right now.
+    /// php lets a hook body reach the backing store (`$this->p` inside
+    /// `$p`'s own hook is a plain slot access) — without that bypass every
+    /// hook would recurse forever.
+    static HOOKS: RefCell<Vec<(u32, Box<[u8]>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether a hook for this object / property is on the stack.
+fn hook_held(id: u32, name: &[u8]) -> bool {
+    HOOKS.with(|g| g.borrow().iter().any(|(i, n)| *i == id && n.as_ref() == name))
+}
+
 /// Whether the guard for this object / property / accessor is held.
 fn guard_held(id: u32, name: &[u8], kind: Magic) -> bool {
     GUARDS.with(|g| {
@@ -268,6 +281,22 @@ impl Interp {
         match class.prop(name) {
             Some(p) => match self.access_of(&class, p, scope) {
                 Access::Visible => {
+                    // php 8.4 hooks: a `get` hook replaces the store read; a
+                    // property with only a `set` hook is write-only.
+                    if let Some(h) = p.hooks {
+                        let (decl, has_set) = (p.decl, h.set.is_some());
+                        if let Some(g) = h.get {
+                            if let Some(v) = self.call_hook(o, decl, name, g, None)? {
+                                return Ok(v);
+                            }
+                        } else if has_set && !hook_held(o.id(), name) {
+                            return Err(Unwind::error(format!(
+                                "Property {}::${} is write-only",
+                                self.classes[decl as usize].name_str(),
+                                String::from_utf8_lossy(name)
+                            )));
+                        }
+                    }
                     if let Some(v) = o.get(name).map(|v| v.deref().into_owned()) {
                         if !v.is_uninit() {
                             return Ok(v);
@@ -350,6 +379,23 @@ impl Interp {
                 return Err(self.prop_access_error(o, p.vis, name));
             }
             Access::Visible => {}
+        }
+        // php 8.4 hooks: a `set` hook replaces the store write; a property
+        // with only a `get` hook is read-only. Inside the hook body the
+        // bypass (`hook_held`) lets `$this->p = …` reach the slot.
+        if let Some(h) = p.hooks {
+            let (decl, has_get) = (p.decl, h.get.is_some());
+            if let Some(setter) = h.set {
+                if self.call_hook(o, decl, name, setter, Some(v.clone()))?.is_some() {
+                    return Ok(());
+                }
+            } else if has_get && !hook_held(o.id(), name) {
+                return Err(Unwind::error(format!(
+                    "Cannot modify readonly property {}::${}",
+                    self.classes[decl as usize].name_str(),
+                    String::from_utf8_lossy(name)
+                )));
+            }
         }
         let initialized = self.slot_initialized(o, name);
         // php 8.3: a `__clone` body (and php 8.5's `clone(..., [...])`
@@ -505,10 +551,13 @@ impl Interp {
     /// the `ClassSpec::props` tuple that builds it). With the field this
     /// becomes `p.set_vis.unwrap_or(implicit)`.
     fn set_visibility(p: &PropInfo) -> Visibility {
-        if p.readonly {
-            Visibility::Protected
-        } else {
-            p.vis
+        // An explicit `private(set)`/`protected(set)` wins; otherwise
+        // `readonly` implies `protected(set)`, which is why a subclass may
+        // initialize an inherited readonly property but global code may not.
+        match p.set_vis {
+            Some(v) => v,
+            None if p.readonly => Visibility::Protected,
+            None => p.vis,
         }
     }
 
@@ -564,6 +613,38 @@ impl Interp {
     /// `Ok(None)` means the class does not define it, or the guard for this
     /// object + property + accessor is already held — in both cases the caller
     /// falls through to the plain behaviour.
+    /// Run a property hook (`get` or `set`) with `$this` bound and the
+    /// declaring class as the scope. Returns `None` when the hook is already
+    /// on the stack for this object+property, which is php's bypass: the
+    /// caller then falls through to the backing store.
+    fn call_hook(
+        &mut self,
+        o: &Object,
+        p_decl: u32,
+        name: &[u8],
+        func_id: u32,
+        arg: Option<Value>,
+    ) -> Result<Option<Value>, Unwind> {
+        if hook_held(o.id(), name) {
+            return Ok(None);
+        }
+        let func = self.funcs[func_id as usize].clone();
+        let args: Vec<Value> = arg.into_iter().collect();
+        HOOKS.with(|g| g.borrow_mut().push((o.id(), Box::from(name))));
+        let r = self.call_user_func(
+            func,
+            Some(o.clone()),
+            Some(p_decl),
+            Some(o.class_id()),
+            None,
+            &args,
+        );
+        HOOKS.with(|g| {
+            g.borrow_mut().pop();
+        });
+        r.map(Some)
+    }
+
     fn call_magic(
         &mut self,
         o: &Object,

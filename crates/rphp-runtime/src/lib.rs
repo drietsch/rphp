@@ -62,7 +62,7 @@ pub use unit::{FuncRt, IcSlot, UnitRt};
 pub use class::{
     ClassConst, ClassDef, ClassSpec, ConstSpec, ConstState, EnumBacking, EnumCaseInfo, MagicFlags,
     MethodBody, MethodDef, MethodSpec, NativeInit, NativeMethod, NativeMethodHandler, PropDefault,
-    PropInfo, StaticPropInfo, WellKnown,
+    PropHooks, PropInfo, PropSpec, StaticPropInfo, WellKnown,
 };
 pub use output::{
     NullSink, ObLevel, OutputSink, OutputStack, SharedBuffer, PHP_OUTPUT_HANDLER_CLEAN,

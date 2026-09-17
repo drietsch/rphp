@@ -479,7 +479,9 @@ impl ClassBuilder<'_> {
             interfaces,
             props: props
                 .into_iter()
-                .map(|(n, vis, v)| (Box::from(n.as_bytes()), vis, None, false, PropDefault::Value(v)))
+                .map(|(n, vis, v)| {
+                    crate::class::PropSpec::new(Box::from(n.as_bytes()), vis, PropDefault::Value(v))
+                })
                 .collect(),
             methods,
             native_init,

@@ -1,0 +1,6 @@
+dir = "ext/standard/tests/url"
+enabled = true
+baseline = 26
+total = 32
+updated = "2026-09-17"
+notes = "parse_url corpus, urlencode/rawurlencode/base64, get_headers (network, skips)"

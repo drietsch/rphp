@@ -1,0 +1,6 @@
+dir = "ext/standard/tests/general_functions"
+enabled = true
+baseline = 74
+total = 322
+updated = "2026-09-17"
+notes = "var_export/var_dump/print_r/debug_zval_dump, getenv/putenv, php_uname, uniqid, is_callable, intval/floatval, gettype/settype; many tests need exec/proc_open or the object model"

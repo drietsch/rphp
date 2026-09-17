@@ -1,0 +1,6 @@
+dir = "ext/random/tests"
+enabled = true
+baseline = 10
+total = 68
+updated = "2026-09-17"
+notes = 'rand/mt_rand/random_int/random_bytes and the Random\Randomizer / engine classes (the class API needs E6)'

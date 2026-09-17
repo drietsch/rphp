@@ -28,6 +28,7 @@ mod math;
 mod output;
 mod output_buffering;
 mod pcre;
+mod random;
 mod string2;
 mod strings;
 mod types;
@@ -61,6 +62,7 @@ const MODULES: &[&[NativeFn]] = &[
     html::FUNCTIONS,
     base64::FUNCTIONS,
     uniqid::FUNCTIONS,
+    random::FUNCTIONS,
 ];
 
 /// Register every module's functions and constants into an interpreter.
@@ -70,6 +72,10 @@ pub fn register(r: &mut Registry) {
     }
     math::register_constants(r);
     output_buffering::register_constants(r);
+    var::register_constants(r);
+    random::register_constants(r);
+    url::register_constants(r);
+    info::register_constants(r);
 }
 
 /// Every native this crate provides (for tooling: coverage, `xtask missing`).

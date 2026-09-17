@@ -27,3 +27,9 @@
 #   category  = "object-id"
 #   reason    = "var_dump prints the object handle; handles depend on allocation order"
 #   normalize = ""
+
+[[allow]]
+snippet   = "var/unserialize.php"
+category  = "object-id"
+reason    = "unserialize creates objects that are dropped after each var_dump; php reuses the freed handle (#1 every time) while the engine's ObjectIdAllocator is monotonic (documented in rphp-value)"
+normalize = ""

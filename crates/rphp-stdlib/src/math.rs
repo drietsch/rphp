@@ -49,7 +49,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("min", 1, None, min),
     nf!("floor", 1, Some(1), floor),
     nf!("ceil", 1, Some(1), ceil),
-    nf!("round", 1, Some(2), round),
+    nf!("round", 1, Some(3), round),
     nf!("sqrt", 1, Some(1), sqrt),
     nf!("intdiv", 2, Some(2), intdiv),
     // --- float-returning: powers, logs, trigonometry ---
@@ -77,6 +77,8 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("fmod", 2, Some(2), fmod),
     nf!("fdiv", 2, Some(2), fdiv),
     nf!("expm1", 1, Some(1), expm1),
+    nf!("log1p", 1, Some(1), log1p),
+    nf!("fpow", 2, Some(2), fpow),
     // --- float predicates ---
     nf!("is_nan", 1, Some(1), is_nan),
     nf!("is_finite", 1, Some(1), is_finite),
@@ -88,6 +90,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("hexdec", 1, Some(1), hexdec),
     nf!("bindec", 1, Some(1), bindec),
     nf!("octdec", 1, Some(1), octdec),
+    nf!("base_convert", 3, Some(3), base_convert),
 ];
 
 pub(crate) fn abs(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
@@ -133,12 +136,93 @@ pub(crate) fn ceil(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Float(args[0].to_float().ceil()))
 }
 
+/// `round(int|float $num, int $precision = 0, int|RoundingMode $mode = RoundingMode::HalfAwayFromZero): float`
+/// — php-src `_php_math_round`: the value is scaled by `10^precision`,
+/// truncated towards zero, and the rounding decision is taken by comparing
+/// the *original* value against the candidate edge in its own scale (so
+/// `round(0.285, 2)` is `0.29`, `round(2.675, 2)` is `2.68`). The eight
+/// modes are the `PHP_ROUND_*` / `RoundingMode` values 1–8 (the enum
+/// object itself lands with plan E6). An int with a non-negative precision
+/// is returned as-is.
 pub(crate) fn round(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let x = args[0].to_float();
-    let precision = args.get(1).map_or(0, Value::to_int);
-    let factor = 10f64.powi(precision as i32);
-    // f64::round is round-half-away-from-zero, matching PHP's default mode.
-    Ok(Value::Float((x * factor).round() / factor))
+    let places = args.get(1).map_or(0, Value::to_int);
+    let mode = args.get(2).map_or(ROUND_HALF_UP, Value::to_int);
+    if !(ROUND_HALF_UP..=ROUND_AWAY_FROM_ZERO).contains(&mode) {
+        return Err(Unwind::value_error(
+            "round(): Argument #3 ($mode) must be a valid rounding mode (RoundingMode::*)",
+        ));
+    }
+    let value = match args[0].to_number() {
+        Value::Int(i) if places >= 0 => return Ok(Value::Float(i as f64)),
+        Value::Int(i) => i as f64,
+        Value::Float(f) => f,
+        other => other.to_float(),
+    };
+    let places = places.clamp(i32::MIN as i64 + 1, i32::MAX as i64) as i32;
+    Ok(Value::Float(php_math_round(value, places, mode)))
+}
+
+const ROUND_HALF_UP: i64 = 1;
+const ROUND_HALF_DOWN: i64 = 2;
+const ROUND_HALF_EVEN: i64 = 3;
+const ROUND_HALF_ODD: i64 = 4;
+const ROUND_CEILING: i64 = 5;
+const ROUND_FLOOR: i64 = 6;
+const ROUND_TOWARD_ZERO: i64 = 7;
+const ROUND_AWAY_FROM_ZERO: i64 = 8;
+
+/// `php_intpow10`: exact powers of ten up to 1e22, `pow` beyond.
+fn intpow10(power: i32) -> f64 {
+    const POWERS: [f64; 23] = [
+        1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+        1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
+    ];
+    if !(0..=22).contains(&power) {
+        return 10f64.powi(power);
+    }
+    POWERS[power as usize]
+}
+
+/// php-src `_php_math_round(value, places, mode)`.
+fn php_math_round(value: f64, places: i32, mode: i64) -> f64 {
+    if !value.is_finite() || value == 0.0 {
+        return value;
+    }
+    let exponent = intpow10(places.abs());
+    let scaled = if places > 0 { value * exponent } else { value / exponent };
+    // The integer part in the scaled space, truncated towards zero.
+    let integral = if value >= 0.0 { scaled.floor() } else { scaled.ceil() };
+    if !integral.is_finite() {
+        return value;
+    }
+    // Candidates measured in the value's own scale, where `value` is exact.
+    let unscale = |x: f64| if places > 0 { x / exponent } else { x * exponent };
+    let value_abs = value.abs();
+    let integral_abs = integral.abs();
+    let edge_half = unscale(integral_abs + 0.5);
+    let edge_int = unscale(integral_abs);
+    let away = match mode {
+        ROUND_HALF_UP => value_abs >= edge_half,
+        ROUND_HALF_DOWN => value_abs > edge_half,
+        ROUND_HALF_EVEN => value_abs > edge_half || (value_abs == edge_half && integral_abs % 2.0 != 0.0),
+        ROUND_HALF_ODD => value_abs > edge_half || (value_abs == edge_half && integral_abs % 2.0 == 0.0),
+        ROUND_CEILING => value > 0.0 && value_abs > edge_int,
+        ROUND_FLOOR => value < 0.0 && value_abs > edge_int,
+        ROUND_TOWARD_ZERO => false,
+        _ => value_abs > edge_int, // ROUND_AWAY_FROM_ZERO
+    };
+    let rounded = if away { integral + 1.0f64.copysign(value) } else { integral };
+    if places.abs() < 23 {
+        unscale(rounded)
+    } else {
+        // Beyond the exact power-of-ten table php round-trips through the
+        // decimal text (`"%15fe%d"` + `strtod`).
+        let text = format!("{rounded:.6}e{}", -places);
+        match text.parse::<f64>() {
+            Ok(f) if f.is_finite() => f,
+            _ => value,
+        }
+    }
 }
 
 pub(crate) fn sqrt(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
@@ -205,15 +289,25 @@ pub(crate) fn pi(_: &mut Ctx, _args: &mut [Value]) -> NativeResult {
     Ok(Value::Float(std::f64::consts::PI))
 }
 
-pub(crate) fn pow(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn pow(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // Reuse the engine's `**` semantics: an int base with a non-negative int
     // exponent whose result fits i64 stays Int (pow(2,3) => 8); anything else
     // (negative/float exponent, float operand, overflow) is Float. `to_number`
     // guarantees numeric operands, so `pow` cannot raise a TypeError here.
-    match args[0].to_number().pow(&args[1].to_number()) {
+    let (base, exp) = (args[0].to_number(), args[1].to_number());
+    if base.to_float() == 0.0 && exp.to_float() < 0.0 {
+        ctx.deprecated("Power of base 0 and negative exponent is deprecated")?;
+    }
+    match base.pow(&exp) {
         Ok(v) => Ok(v),
         Err(_) => Ok(Value::Float(f64::NAN)),
     }
+}
+
+/// `fpow(float $num, float $exponent): float` (8.4) — always the IEEE float
+/// power, with no int fast path and no zero-base deprecation.
+pub(crate) fn fpow(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    binary(args, f64::powf)
 }
 
 pub(crate) fn exp(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
@@ -331,6 +425,10 @@ pub(crate) fn expm1(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     unary(args, f64::exp_m1)
 }
 
+pub(crate) fn log1p(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    unary(args, f64::ln_1p)
+}
+
 // ---- float predicates -------------------------------------------------------
 
 pub(crate) fn is_nan(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
@@ -366,38 +464,75 @@ pub(crate) fn decoct(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     ))
 }
 
-pub(crate) fn hexdec(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    Ok(base_to_number(&args[0].to_php_bytes(), 16))
+pub(crate) fn hexdec(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    base_to_number(ctx, &args[0].to_php_bytes(), 16)
 }
 
-pub(crate) fn bindec(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    Ok(base_to_number(&args[0].to_php_bytes(), 2))
+pub(crate) fn bindec(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    base_to_number(ctx, &args[0].to_php_bytes(), 2)
 }
 
-pub(crate) fn octdec(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    Ok(base_to_number(&args[0].to_php_bytes(), 8))
+pub(crate) fn octdec(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    base_to_number(ctx, &args[0].to_php_bytes(), 8)
 }
 
-/// Parse `s` as a number in `base` (2/8/16), mirroring php-src's
-/// `_php_math_basetozval`: characters outside the base are silently skipped, the
-/// running total accumulates in an `i64` until it would exceed `i64::MAX`, then
-/// switches to `f64` (so values past the signed-64-bit range come back as
-/// floats, e.g. hexdec("ffffffffffffffff")). PHP additionally emits an
-/// E_DEPRECATED on invalid characters; we skip them quietly (see caveats).
-fn base_to_number(s: &[u8], base: i64) -> Value {
+/// `base_convert(string $num, int $from_base, int $to_base): string`
+pub(crate) fn base_convert(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let from = args[1].to_int();
+    let to = args[2].to_int();
+    if !(2..=36).contains(&from) {
+        return Err(Unwind::value_error(
+            "base_convert(): Argument #2 ($from_base) must be between 2 and 36 (inclusive)",
+        ));
+    }
+    if !(2..=36).contains(&to) {
+        return Err(Unwind::value_error(
+            "base_convert(): Argument #3 ($to_base) must be between 2 and 36 (inclusive)",
+        ));
+    }
+    let n = base_to_number(ctx, &args[0].to_php_bytes(), from)?;
+    Ok(Value::string(number_to_base(&n, to).as_bytes()))
+}
+
+/// Parse `s` as a number in `base` (2..=36), mirroring php-src's
+/// `_php_math_basetozval`: surrounding whitespace and the matching `0x` /
+/// `0o` / `0b` prefix are stripped; characters outside the base are skipped
+/// with php's E_DEPRECATED; the running total accumulates in an `i64` until
+/// it would exceed `i64::MAX`, then switches to `f64` (so values past the
+/// signed-64-bit range come back as floats, e.g. hexdec("ffffffffffffffff")).
+fn base_to_number(ctx: &mut Ctx, s: &[u8], base: i64) -> NativeResult {
+    let mut start = 0;
+    let mut end = s.len();
+    while start < end && is_c_space(s[start]) {
+        start += 1;
+    }
+    while end > start && is_c_space(s[end - 1]) {
+        end -= 1;
+    }
+    if end - start >= 2 && s[start] == b'0' {
+        let prefix = s[start + 1] | 0x20;
+        if (base == 16 && prefix == b'x') || (base == 8 && prefix == b'o') || (base == 2 && prefix == b'b') {
+            start += 2;
+        }
+    }
     let mut num: i64 = 0;
     let mut fnum: f64 = 0.0;
     let mut overflowed = false;
+    let mut invalid = false;
     let cutoff = i64::MAX / base;
     let cutlim = i64::MAX % base;
-    for &ch in s {
+    for &ch in &s[start..end] {
         let digit = match ch {
             b'0'..=b'9' => (ch - b'0') as i64,
             b'A'..=b'Z' => (ch - b'A' + 10) as i64,
             b'a'..=b'z' => (ch - b'a' + 10) as i64,
-            _ => continue,
+            _ => {
+                invalid = true;
+                continue;
+            }
         };
         if digit >= base {
+            invalid = true;
             continue;
         }
         if overflowed {
@@ -410,9 +545,118 @@ fn base_to_number(s: &[u8], base: i64) -> Value {
             fnum = num as f64 * base as f64 + digit as f64;
         }
     }
-    if overflowed {
-        Value::Float(fnum)
-    } else {
-        Value::Int(num)
+    if invalid {
+        ctx.deprecated("Invalid characters passed for attempted conversion, these have been ignored")?;
+    }
+    Ok(if overflowed { Value::Float(fnum) } else { Value::Int(num) })
+}
+
+/// `_php_math_zvaltobase`: an int renders as its unsigned 64-bit pattern; a
+/// float is floored and peeled digit by digit with `fmod`, php's imprecision
+/// included (at most 64 digits).
+fn number_to_base(n: &Value, base: i64) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut buf = Vec::new();
+    match n {
+        Value::Float(f) => {
+            let mut fvalue = f.floor();
+            if fvalue.is_infinite() {
+                return String::new();
+            }
+            loop {
+                let i = (fvalue % base as f64) as usize;
+                buf.push(DIGITS[i.min(35)]);
+                fvalue /= base as f64;
+                if buf.len() >= 64 || fvalue.abs() < 1.0 {
+                    break;
+                }
+            }
+        }
+        other => {
+            let mut value = other.to_int() as u64;
+            loop {
+                buf.push(DIGITS[(value % base as u64) as usize]);
+                value /= base as u64;
+                if value == 0 {
+                    break;
+                }
+            }
+        }
+    }
+    buf.reverse();
+    String::from_utf8(buf).expect("ascii digits")
+}
+
+/// C `isspace` in the C locale: space, `\t`, `\n`, `\v`, `\f`, `\r`
+/// (Rust's `is_ascii_whitespace` leaves out the vertical tab).
+fn is_c_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
+#[cfg(test)]
+mod tests {
+    use rphp_runtime::ErrorKind;
+    use rphp_value::Value;
+
+    use crate::tests::{call_err, call_named};
+
+    fn s(b: &str) -> Value {
+        Value::string(b.as_bytes())
+    }
+
+    fn round(v: f64, places: i64, mode: i64) -> f64 {
+        match call_named(b"round", &[Value::Float(v), Value::Int(places), Value::Int(mode)]) {
+            Value::Float(f) => f,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_matches_php_pre_rounding_and_modes() {
+        assert_eq!(round(0.285, 2, 1), 0.29);
+        assert_eq!(round(2.675, 2, 1), 2.68);
+        assert_eq!(round(1.005, 2, 1), 1.01);
+        assert_eq!(round(5.055, 2, 1), 5.06);
+        assert_eq!(round(1234.5678, -2, 1), 1200.0);
+        assert_eq!(round(-2.5, 0, 1), -3.0);
+        assert_eq!(round(2.5, 0, 2), 2.0);
+        assert_eq!(round(2.5, 0, 3), 2.0);
+        assert_eq!(round(3.5, 0, 3), 4.0);
+        assert_eq!(round(2.5, 0, 4), 3.0);
+        assert_eq!(round(-2.5, 0, 3), -2.0);
+        assert_eq!(round(5.5, 0, 5), 6.0);
+        assert_eq!(round(-5.5, 0, 5), -5.0);
+        assert_eq!(round(5.5, 0, 6), 5.0);
+        assert_eq!(round(-5.5, 0, 6), -6.0);
+        assert_eq!(round(5.5, 0, 7), 5.0);
+        assert_eq!(round(1.231, 2, 8), 1.24);
+        assert_eq!(round(1.1, 30, 1), 1.1);
+        assert_eq!(round(1.5, 400, 1), 1.5);
+        assert_eq!(round(1e300, 10, 1), 1e300);
+        assert_eq!(round(4503599627370497.0, 0, 1), 4503599627370497.0);
+        assert!(round(-0.4, 0, 1).is_sign_negative());
+        assert_eq!(round(12345678901234567890.0, -5, 1), 1.23456789012346e19);
+        assert_eq!(call_named(b"round", &[Value::Int(15), Value::Int(-1)]), Value::Float(20.0));
+        assert_eq!(call_named(b"round", &[Value::Int(5), Value::Int(2)]), Value::Float(5.0));
+        assert_eq!(call_err(b"round", &[Value::Float(1.5), Value::Int(0), Value::Int(9)]).kind(), Some(ErrorKind::ValueError));
+    }
+
+    #[test]
+    fn base_conversion_matches_php() {
+        assert_eq!(call_named(b"base_convert", &[s("ff"), Value::Int(16), Value::Int(2)]), s("11111111"));
+        assert_eq!(call_named(b"base_convert", &[s(" 0xff "), Value::Int(16), Value::Int(10)]), s("255"));
+        assert_eq!(
+            call_named(b"base_convert", &[s("ffffffffffffffff"), Value::Int(16), Value::Int(10)]),
+            s("18446744073709552046")
+        );
+        assert_eq!(
+            call_named(b"base_convert", &[s("zzzzzzzzzzzzzzzzzzzz"), Value::Int(36), Value::Int(2)]),
+            s("0001111111101000000000000000000000000000000000000000000000000000")
+        );
+        assert_eq!(call_named(b"hexdec", &[s("0x1A")]), Value::Int(26));
+        assert_eq!(call_named(b"octdec", &[s("0o17")]), Value::Int(15));
+        assert_eq!(call_err(b"base_convert", &[s("1"), Value::Int(1), Value::Int(10)]).kind(), Some(ErrorKind::ValueError));
+        assert_eq!(call_named(b"log1p", &[Value::Int(0)]), Value::Float(0.0));
+        assert_eq!(call_named(b"fpow", &[Value::Int(2), Value::Int(3)]), Value::Float(8.0));
     }
 }

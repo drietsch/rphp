@@ -19,6 +19,21 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("phpversion", 0, Some(1), phpversion),
     nf!("function_exists", 1, Some(1), function_exists),
     nf!("set_time_limit", 1, Some(1), set_time_limit),
+    // --- class introspection over the engine's class table ---
+    nf!("class_exists", 1, Some(2), class_exists),
+    nf!("interface_exists", 1, Some(2), interface_exists),
+    nf!("trait_exists", 1, Some(2), interface_exists),
+    nf!("enum_exists", 1, Some(2), interface_exists),
+    nf!("get_class", 0, Some(1), get_class),
+    nf!("get_parent_class", 0, Some(1), get_parent_class),
+    nf!("get_called_class", 0, Some(0), get_called_class),
+    nf!("method_exists", 2, Some(2), method_exists),
+    nf!("property_exists", 2, Some(2), property_exists),
+    nf!("get_object_vars", 1, Some(1), get_object_vars),
+    nf!("get_class_methods", 1, Some(1), get_class_methods),
+    nf!("is_a", 2, Some(3), is_a),
+    nf!("is_subclass_of", 2, Some(3), is_subclass_of),
+    nf!("spl_object_id", 1, Some(1), spl_object_id),
 ];
 
 fn name_of(v: &Value) -> String {
@@ -108,11 +123,15 @@ pub(crate) fn php_sapi_name(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
     Ok(Value::string(ctx.sapi.name().as_bytes()))
 }
 
-/// `phpversion(?string $extension = null): string|false`
+/// `phpversion(?string $extension = null): string|false` — the engine's
+/// version, or the version of a bundled extension (`false` when it is not
+/// loaded).
 pub(crate) fn phpversion(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     match args.first() {
-        Some(v) if !matches!(*v.deref(), Value::Null) => Ok(Value::Bool(false)),
-        _ => Ok(Value::string(b"8.5.0")),
+        Some(v) if !matches!(*v.deref(), Value::Null) => {
+            Ok(crate::info::extension_version(&v.to_php_string()).map_or(Value::Bool(false), |ver| Value::string(ver.as_bytes())))
+        }
+        _ => Ok(Value::string(crate::info::PHP_VERSION.as_bytes())),
     }
 }
 
@@ -124,14 +143,197 @@ pub(crate) fn function_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult
     if name.is_empty() {
         return Ok(Value::Bool(false));
     }
-    let user = ctx.module().is_some_and(|m| m.func_by_name(name).is_some());
-    Ok(Value::Bool(user || ctx.native_by_name(name).is_some()))
+    Ok(Value::Bool(ctx.function_exists(name)))
 }
 
 /// `set_time_limit(int $seconds): bool` — accepted; the engine has no
 /// execution timer yet.
 pub(crate) fn set_time_limit(_: &mut Ctx, _: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(true))
+}
+
+/// `class_exists(string $class, bool $autoload = true): bool` — declared
+/// classes only (autoloading arrives with plan E7).
+pub(crate) fn class_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    Ok(Value::Bool(ctx.class_exists(&args[0].to_php_bytes())))
+}
+
+/// `interface_exists` / `trait_exists` / `enum_exists`: no interfaces,
+/// traits or enums can be declared yet (plan E6), so always `false`.
+pub(crate) fn interface_exists(_: &mut Ctx, _: &mut [Value]) -> NativeResult {
+    Ok(Value::Bool(false))
+}
+
+/// The class id a `$object_or_class` argument denotes, with php's
+/// `TypeError` text for `func`.
+fn class_arg(ctx: &Ctx, func: &str, pos: usize, v: &Value, allow_string: bool) -> Result<Option<u32>, Unwind> {
+    match &*v.deref() {
+        Value::Object(o) => Ok(Some(o.class_id())),
+        Value::Str(s) if allow_string => Ok(ctx.class_by_name(s.as_bytes())),
+        other => Err(Unwind::type_error(format!(
+            "{func}(): Argument #{pos} ($object_or_class) must be of type {}, {} given",
+            if allow_string { "object|string" } else { "object" },
+            other.type_name()
+        ))),
+    }
+}
+
+/// `get_class(object $object = ?): string`
+pub(crate) fn get_class(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    match args.first() {
+        Some(v) => match &*v.deref() {
+            Value::Object(o) => Ok(Value::string(ctx.class_name_of(o).as_bytes())),
+            Value::Closure(_) => Ok(Value::string(b"Closure")),
+            other => Err(Unwind::type_error(format!(
+                "get_class(): Argument #1 ($object) must be of type object, {} given",
+                other.type_name()
+            ))),
+        },
+        None => {
+            ctx.deprecated("Calling get_class() without arguments is deprecated")?;
+            match ctx.current_user_frame().and_then(|f| f.scope) {
+                Some(c) => Ok(Value::string(&ctx.class(c).name)),
+                None => Err(Unwind::error(
+                    "get_class() without arguments must be called from within a class",
+                )),
+            }
+        }
+    }
+}
+
+/// `get_parent_class(object|string $object_or_class = ?): string|false`
+pub(crate) fn get_parent_class(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let class = match args.first() {
+        Some(v) => class_arg(ctx, "get_parent_class", 1, v, true)?,
+        None => {
+            ctx.deprecated("Calling get_parent_class() without arguments is deprecated")?;
+            ctx.current_user_frame().and_then(|f| f.scope)
+        }
+    };
+    Ok(match class.and_then(|c| ctx.class(c).parent) {
+        Some(p) => Value::string(&ctx.class(p).name),
+        None => Value::Bool(false),
+    })
+}
+
+/// `get_called_class(): string` — the late-static-bound class of the caller.
+pub(crate) fn get_called_class(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
+    match ctx.current_user_frame().and_then(|f| f.static_class.or(f.scope)) {
+        Some(c) => Ok(Value::string(&ctx.class(c).name)),
+        None => Err(Unwind::error("get_called_class() must be called from within a class")),
+    }
+}
+
+/// `method_exists(object|string $object_or_class, string $method): bool`
+pub(crate) fn method_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let class = class_arg(ctx, "method_exists", 1, &args[0], true)?;
+    let name = args[1].to_php_bytes();
+    Ok(Value::Bool(class.is_some_and(|c| ctx.resolve_method(c, &name).is_some())))
+}
+
+/// `property_exists(object|string $object_or_class, string $property): bool`
+/// — declared (any visibility) or, for an object, dynamic properties.
+pub(crate) fn property_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let name = args[1].to_php_bytes();
+    if let Value::Object(o) = &*args[0].deref() {
+        if o.get(&name).is_some() {
+            return Ok(Value::Bool(true));
+        }
+    }
+    let class = class_arg(ctx, "property_exists", 1, &args[0], true)?;
+    Ok(Value::Bool(class.is_some_and(|c| ctx.resolve_prop(c, &name).is_some())))
+}
+
+/// `get_object_vars(object $object): array` — the properties visible from
+/// the calling scope, in declaration order.
+pub(crate) fn get_object_vars(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let Value::Object(o) = &*args[0].deref() else {
+        return Err(Unwind::type_error(format!(
+            "get_object_vars(): Argument #1 ($object) must be of type object, {} given",
+            args[0].type_name()
+        )));
+    };
+    let scope = ctx.current_user_frame().and_then(|f| f.scope);
+    let mut out = rphp_value::Array::new();
+    for (name, value, _) in o.props_snapshot() {
+        if let Some((vis, decl)) = ctx.resolve_prop(o.class_id(), &name) {
+            if !ctx.access_ok_public(vis, decl, scope) {
+                continue;
+            }
+        }
+        out.set(rphp_value::ArrayKey::str(&name), value.deref().into_owned());
+    }
+    Ok(Value::Array(out))
+}
+
+/// `get_class_methods(object|string $object_or_class): array` — the methods
+/// visible from the calling scope, own class first then parents.
+pub(crate) fn get_class_methods(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let Some(mut cur) = class_arg(ctx, "get_class_methods", 1, &args[0], true)? else {
+        return Err(Unwind::type_error(format!(
+            "get_class_methods(): Argument #1 ($object_or_class) must be an object or a valid class name, string given"
+        )));
+    };
+    let scope = ctx.current_user_frame().and_then(|f| f.scope);
+    let mut out = rphp_value::Array::new();
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    loop {
+        let c = ctx.class(cur).clone();
+        for (name, _, vis) in &c.methods {
+            let key = name.to_ascii_lowercase();
+            if seen.contains(&key) || !ctx.access_ok_public(*vis, cur, scope) {
+                continue;
+            }
+            seen.push(key);
+            out.push(Value::string(name));
+        }
+        match c.parent {
+            Some(p) => cur = p,
+            None => break,
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+/// `is_a(mixed $object_or_class, string $class, bool $allow_string = false): bool`
+pub(crate) fn is_a(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let allow_string = args.get(2).is_some_and(Value::to_bool);
+    let class = match &*args[0].deref() {
+        Value::Object(o) => Some(o.class_id()),
+        Value::Str(s) if allow_string => ctx.class_by_name(s.as_bytes()),
+        _ => None,
+    };
+    let target = ctx.class_by_name(&args[1].to_php_bytes());
+    Ok(Value::Bool(match (class, target) {
+        (Some(c), Some(t)) => ctx.is_subclass_or_eq(c, t),
+        _ => false,
+    }))
+}
+
+/// `is_subclass_of(mixed $object_or_class, string $class, bool $allow_string = true): bool`
+pub(crate) fn is_subclass_of(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let allow_string = args.get(2).is_none_or(Value::to_bool);
+    let class = match &*args[0].deref() {
+        Value::Object(o) => Some(o.class_id()),
+        Value::Str(s) if allow_string => ctx.class_by_name(s.as_bytes()),
+        _ => None,
+    };
+    let target = ctx.class_by_name(&args[1].to_php_bytes());
+    Ok(Value::Bool(match (class, target) {
+        (Some(c), Some(t)) => c != t && ctx.is_subclass_or_eq(c, t),
+        _ => false,
+    }))
+}
+
+/// `spl_object_id(object $object): int`
+pub(crate) fn spl_object_id(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    match &*args[0].deref() {
+        Value::Object(o) => Ok(Value::Int(i64::from(o.id()))),
+        other => Err(Unwind::type_error(format!(
+            "spl_object_id(): Argument #1 ($object) must be of type object, {} given",
+            other.type_name()
+        ))),
+    }
 }
 
 #[cfg(test)]

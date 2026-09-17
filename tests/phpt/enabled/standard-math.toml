@@ -1,5 +1,6 @@
-# php-src slice scored by `cargo xtask phpt --ext standard-math`; schema in tests/phpt/README.md
 dir = "ext/standard/tests/math"
 enabled = true
-baseline = 0
+baseline = 117
+total = 171
+updated = "2026-09-17"
 notes = "math functions, base conversion, rounding; 32-bit-only tests skip on 64-bit"

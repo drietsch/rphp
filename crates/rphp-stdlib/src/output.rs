@@ -4,12 +4,11 @@
 //! string (except `print_r($v, true)`, which returns it). The formatting is
 //! byte-exact against stock PHP for scalars, arrays, objects (class name,
 //! handle id, `:protected` / `:"Decl":private` annotations, `*RECURSION*`),
-//! references (`&` on a shared element) and resources. Floats use a
-//! shortest-round-trip form (PHP's `serialize_precision=-1`); the
-//! scientific-notation threshold is a documented divergence axis until the
-//! dedicated serializer lands. Closures keep a placeholder shape until they
-//! become `Closure` objects (plan E6).
-use rphp_value::{ArrayKey, ObjectData, PropEntry, Str, Value, Vis};
+//! references (`&` on a shared element) and resources. Floats use
+//! [`php_gcvt`], the `serialize_precision` form shared with
+//! `var_export`/`serialize` (`var.rs`). Closures keep a placeholder shape
+//! until they become `Closure` objects (plan E6).
+use rphp_value::{ArrayKey, ObjectData, PhpRef, PropEntry, Str, Value, Vis};
 
 use rphp_runtime::{Ctx, NativeFn, NativeResult, nf};
 
@@ -19,14 +18,38 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("print_r", 1, Some(2), print_r),
 ];
 
-/// Object ids currently being printed, to detect `$o->self = $o` cycles.
-type Seen = Vec<u32>;
+/// Containers currently being printed, to detect cycles: object ids
+/// (`$o->self = $o`) and reference cells (`$a[0] = &$a`). php protects the
+/// array itself; a cell shared with an ancestor is the closest the safe heap
+/// can observe, so a self-referential array prints one nesting level before
+/// `*RECURSION*` where php prints none.
+#[derive(Default)]
+struct Seen {
+    objects: Vec<u32>,
+    refs: Vec<PhpRef>,
+}
+
+impl Seen {
+    fn new() -> Seen {
+        Seen::default()
+    }
+
+    /// Whether `r` is on the print path; pushes it otherwise.
+    fn enter_ref(&mut self, r: &PhpRef) -> bool {
+        if self.refs.iter().any(|s| s.ptr_eq(r)) {
+            return false;
+        }
+        self.refs.push(r.clone());
+        true
+    }
+}
 
 /// PHP `var_dump(...$values)`: dump each argument's type and value. Returns null.
 pub(crate) fn var_dump(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut seen = Seen::new();
+    let precision = serialize_precision(ctx);
     for v in args {
-        dump(ctx.out(), v, 0, &mut seen);
+        dump(ctx.out(), v, 0, &mut seen, precision);
     }
     Ok(Value::Null)
 }
@@ -51,23 +74,111 @@ fn indent(out: &mut Vec<u8>, spaces: usize) {
     out.resize(out.len() + spaces, b' ');
 }
 
-fn dump_float(out: &mut Vec<u8>, f: f64) {
-    let s = if f.is_nan() {
-        "NAN".to_string()
-    } else if f.is_infinite() {
-        if f < 0.0 { "-INF" } else { "INF" }.to_string()
+fn dump_float(out: &mut Vec<u8>, f: f64, precision: i64) {
+    out.extend_from_slice(php_gcvt(f, precision, b'E').as_bytes());
+}
+
+/// The `serialize_precision` ini value as `var_dump` / `var_export` /
+/// `serialize` / `json_encode` consume it: `-1` for the shortest round trip,
+/// otherwise the number of significant digits (`0` meaning php's
+/// `FLOAT_DIGITS`, 6).
+pub(crate) fn serialize_precision(ctx: &Ctx) -> i64 {
+    match ctx.ini.int("serialize_precision") {
+        0 => 6,
+        p => p,
+    }
+}
+
+/// php-src `php_gcvt(value, ndigit, '.', exp_char)`: with `precision == -1`
+/// (`zend_dtoa` mode 0) the shortest round-trip digit string, otherwise
+/// (mode 2) the value correctly rounded to `precision` significant digits
+/// with trailing zeros dropped — laid out the way `serialize_precision`
+/// prints it: fixed notation while the decimal point lands within
+/// `-3 ..= ndigit` digits of the first significant one (`ndigit` = 17 for
+/// the shortest form), otherwise `d.dddE+N` with a signed exponent and a
+/// forced `.0` mantissa for a single digit. Shared by `var_dump` (`E`),
+/// `var_export`/`serialize` (`E`) and available to `json_encode` (`e`).
+/// Non-finite values print `NAN`, `INF`, `-INF`; zero keeps its sign
+/// (`-0`).
+pub(crate) fn php_gcvt(f: f64, precision: i64, exp_char: u8) -> String {
+    if f.is_nan() {
+        return "NAN".to_string();
+    }
+    if f.is_infinite() {
+        return if f < 0.0 { "-INF" } else { "INF" }.to_string();
+    }
+    if f == 0.0 {
+        return if f.is_sign_negative() { "-0" } else { "0" }.to_string();
+    }
+    // Rust's `{:e}` (no precision) yields the shortest round-tripping mantissa
+    // and a bare exponent — the same digit string `zend_dtoa(mode 0)`
+    // produces; with a precision it is the correctly rounded `mode 2` string.
+    let ndigit: i32 = if precision < 0 { 17 } else { precision.clamp(1, 500) as i32 };
+    let sci = if precision < 0 {
+        format!("{:e}", f.abs())
     } else {
-        // Shortest round-trip, matching serialize_precision=-1 for the common
-        // (non-scientific) magnitudes.
-        format!("{f}")
+        format!("{:.*e}", (ndigit - 1) as usize, f.abs())
     };
-    out.extend_from_slice(s.as_bytes());
+    let (mant, exp_str) = sci.split_once('e').expect("LowerExp always has 'e'");
+    let exp: i32 = exp_str.parse().expect("valid exponent");
+    let mut digits: Vec<u8> = mant.bytes().filter(|&c| c != b'.').collect();
+    while digits.len() > 1 && digits.last() == Some(&b'0') {
+        digits.pop();
+    }
+    // dtoa's `decpt`: the decimal point sits this many digits from the start.
+    let decpt = exp + 1;
+    let mut out = String::new();
+    if f < 0.0 {
+        out.push('-');
+    }
+    if !(-3..=ndigit).contains(&decpt) {
+        // Exponential: "d.ddd" then exp_char, sign, exponent.
+        let e = decpt - 1;
+        out.push(digits[0] as char);
+        out.push('.');
+        if digits.len() == 1 {
+            out.push('0');
+        } else {
+            out.extend(digits[1..].iter().map(|&b| b as char));
+        }
+        out.push(exp_char as char);
+        out.push(if e < 0 { '-' } else { '+' });
+        out.push_str(&e.unsigned_abs().to_string());
+    } else if decpt < 0 {
+        // Pure fraction: "0.00…digits".
+        out.push_str("0.");
+        for _ in 0..(-decpt) {
+            out.push('0');
+        }
+        out.extend(digits.iter().map(|&b| b as char));
+    } else {
+        // Integer part padded with zeros past the digit string, then any
+        // fractional remainder.
+        let dp = decpt as usize;
+        let mut src = 0usize;
+        for _ in 0..dp {
+            if src < digits.len() {
+                out.push(digits[src] as char);
+                src += 1;
+            } else {
+                out.push('0');
+            }
+        }
+        if src < digits.len() {
+            if src == 0 {
+                out.push('0');
+            }
+            out.push('.');
+            out.extend(digits[src..].iter().map(|&b| b as char));
+        }
+    }
+    out
 }
 
 /// Emit the `var_dump` representation of `v`. `pad` is the indentation (in
 /// spaces) of the *enclosing* container; the caller has already written `pad`
 /// spaces before the value when this is an element.
-fn dump(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
+fn dump(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, precision: i64) {
     match v {
         // An uninitialized typed property never reaches user code (the runtime
         // errors first) and is skipped inside objects; standalone it is null.
@@ -80,7 +191,7 @@ fn dump(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
         }
         Value::Float(f) => {
             out.extend_from_slice(b"float(");
-            dump_float(out, *f);
+            dump_float(out, *f, precision);
             out.extend_from_slice(b")\n");
         }
         Value::Str(s) => {
@@ -94,7 +205,7 @@ fn dump(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
                 indent(out, pad + 2);
                 dump_key(out, k);
                 indent(out, pad + 2);
-                dump(out, val, pad + 2, seen);
+                dump(out, val, pad + 2, seen, precision);
             }
             indent(out, pad);
             out.extend_from_slice(b"}\n");
@@ -102,13 +213,23 @@ fn dump(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
         // A closure is an object; PHP prints `object(Closure)#N (3) { name, file,
         // line }` — the shape arrives with the Closure class (plan E6).
         Value::Closure(_) => out.extend_from_slice(b"object(Closure) {\n}\n"),
-        Value::Object(o) => o.with_data(|d| dump_object(out, d, pad, seen)),
+        Value::Object(o) => o.with_data(|d| dump_object(out, d, pad, seen, precision)),
         // PHP marks a reference `&` only while more than one handle shares it.
         Value::Ref(r) => {
-            if r.strong_count() > 1 {
+            // (Measured before the cycle guard takes its own handle.)
+            let shared = r.strong_count() > 1;
+            if !seen.enter_ref(r) {
+                out.extend_from_slice(b"*RECURSION*\n");
+                return;
+            }
+            let inner = r.get();
+            // php prints the `&` with the type, never before `*RECURSION*`.
+            let recursive = matches!(&inner, Value::Object(o) if seen.objects.contains(&o.id()));
+            if shared && !recursive {
                 out.push(b'&');
             }
-            dump(out, &r.borrow(), pad, seen);
+            dump(out, &inner, pad, seen, precision);
+            seen.refs.pop();
         }
         Value::Resource(r) => {
             out.extend_from_slice(format!("resource({}) of type ({})\n", r.id(), r.kind()).as_bytes());
@@ -117,15 +238,15 @@ fn dump(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
 }
 
 /// `object(Class)#id (count) { ["name"(:protected | :"Decl":private)]=> value … }`
-fn dump_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen) {
-    if seen.contains(&d.id()) {
+fn dump_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen, precision: i64) {
+    if seen.objects.contains(&d.id()) {
         out.extend_from_slice(b"*RECURSION*\n");
         return;
     }
     out.extend_from_slice(b"object(");
     out.extend_from_slice(d.layout().class_name());
     out.extend_from_slice(format!(")#{} ({}) {{\n", d.id(), d.prop_count()).as_bytes());
-    seen.push(d.id());
+    seen.objects.push(d.id());
     for p in d.props_in_order().filter(|p| !p.value.is_uninit()) {
         indent(out, pad + 2);
         out.extend_from_slice(b"[\"");
@@ -142,9 +263,9 @@ fn dump_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen) {
         }
         out.extend_from_slice(b"]=>\n");
         indent(out, pad + 2);
-        dump(out, p.value, pad + 2, seen);
+        dump(out, p.value, pad + 2, seen, precision);
     }
-    seen.pop();
+    seen.objects.pop();
     indent(out, pad);
     out.extend_from_slice(b"}\n");
 }
@@ -191,7 +312,15 @@ fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
             out.extend_from_slice(b")\n");
         }
         Value::Object(o) => o.with_data(|d| print_r_object(out, d, pad, seen)),
-        Value::Ref(r) => print_r_buf(out, &r.borrow(), pad, seen),
+        Value::Ref(r) => {
+            if !seen.enter_ref(r) {
+                out.extend_from_slice(b"Array\n *RECURSION*");
+                return;
+            }
+            let inner = r.get();
+            print_r_buf(out, &inner, pad, seen);
+            seen.refs.pop();
+        }
         // Scalars (and resources: `Resource id #N`) use the same string
         // conversion as `echo`.
         _ => v.append_php_bytes(out),
@@ -202,13 +331,13 @@ fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
 fn print_r_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen) {
     out.extend_from_slice(d.layout().class_name());
     out.extend_from_slice(b" Object\n");
-    if seen.contains(&d.id()) {
+    if seen.objects.contains(&d.id()) {
         out.extend_from_slice(b" *RECURSION*");
         return;
     }
     indent(out, pad);
     out.extend_from_slice(b"(\n");
-    seen.push(d.id());
+    seen.objects.push(d.id());
     for p in d.props_in_order().filter(|p| !p.value.is_uninit()) {
         indent(out, pad + 4);
         out.push(b'[');
@@ -226,7 +355,7 @@ fn print_r_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen
         print_r_buf(out, p.value, pad + 8, seen);
         out.push(b'\n');
     }
-    seen.pop();
+    seen.objects.pop();
     indent(out, pad);
     out.extend_from_slice(b")\n");
 }
@@ -241,7 +370,7 @@ mod tests {
 
     fn dumped(v: &Value) -> String {
         let mut out = Vec::new();
-        dump(&mut out, v, 0, &mut Seen::new());
+        dump(&mut out, v, 0, &mut Seen::new(), -1);
         String::from_utf8(out).unwrap()
     }
 
@@ -312,6 +441,48 @@ mod tests {
         );
         // Break the cycle so the test does not leak.
         o.set(b"self", Value::Null);
+    }
+
+    #[test]
+    fn float_dumps_use_the_serialize_precision_layout() {
+        let d = |f: f64| dumped(&Value::Float(f));
+        assert_eq!(d(1.0), "float(1)\n");
+        assert_eq!(d(-0.0), "float(-0)\n");
+        assert_eq!(d(0.1 + 0.2), "float(0.30000000000000004)\n");
+        assert_eq!(d(1e15), "float(1000000000000000)\n");
+        assert_eq!(d(1e17), "float(1.0E+17)\n");
+        assert_eq!(d(1e25), "float(1.0E+25)\n");
+        assert_eq!(d(1e-7), "float(1.0E-7)\n");
+        assert_eq!(d(0.0001), "float(0.0001)\n");
+        assert_eq!(d(123456789012345678.0), "float(1.2345678901234568E+17)\n");
+        assert_eq!(d(f64::NAN), "float(NAN)\n");
+        assert_eq!(d(f64::NEG_INFINITY), "float(-INF)\n");
+        assert_eq!(php_gcvt(1e25, -1, b'e'), "1.0e+25");
+        // serialize_precision=17 / 14 / 6: correctly rounded, zeros dropped.
+        assert_eq!(php_gcvt(0.1, 17, b'E'), "0.10000000000000001");
+        assert_eq!(php_gcvt(0.1, 14, b'E'), "0.1");
+        assert_eq!(php_gcvt(1e14, 14, b'E'), "1.0E+14");
+        assert_eq!(php_gcvt(4872401723.124452, 10, b'E'), "4872401723");
+        assert_eq!(php_gcvt(1.0 / 3.0, 6, b'E'), "0.333333");
+        assert_eq!(php_gcvt(123456.0, 3, b'E'), "1.23E+5");
+    }
+
+    #[test]
+    fn self_referential_arrays_do_not_recurse_forever() {
+        // $a = []; $a[0] = &$a; $a[1] = 1;
+        let cell = PhpRef::new(Value::empty_array());
+        cell.update(|v| {
+            if let Value::Array(a) = v {
+                a.set_ref(ArrayKey::Int(0), cell.clone());
+                a.push(Value::Int(1));
+            }
+        });
+        let a = cell.get();
+        let out = dumped(&a);
+        assert!(out.contains("*RECURSION*"), "{out}");
+        assert!(printed(&a).contains("*RECURSION*"));
+        // Break the cycle.
+        cell.set(Value::Null);
     }
 
     #[test]

@@ -1,76 +1,49 @@
 //! The runtime value.
 //!
-//! **Scope so far:** scalars (`Null`, `Bool`, `Int` full i64, `Float` f64) plus
-//! the first heap type — `Str`, a refcounted byte string. The target
-//! representation (per `specs/base/02-value-model.md`) is a 16-byte `repr(C)`
-//! tagged cell with a union payload and heap tags (Str/Array/Object/Closure/
-//! Reference); the target string (`specs/base/03-heap-types.md` §11.1) is a
-//! `PhpStr` with a `GcHeader`, small-string optimization, a cached AES/CRC hash,
-//! and interning. This slice uses a safe Rust enum with an `Rc`-backed `Str`,
-//! migrating to `rphp-gc`/`rphp-heap` later behind this same API. The
-//! *operations* here (arithmetic, concatenation, comparison, casts, numeric
-//! string parsing) are the single source of truth that the interpreter and,
-//! later, both JIT tiers and const-folding must agree with.
+//! `Value` is a 16-byte safe-Rust enum: scalars inline (`Null`, `Bool`, `Int`
+//! full i64, `Float` f64) and one thin pointer for every heap type — the byte
+//! string [`Str`], the copy-on-write [`Array`], the reference-semantics
+//! [`Object`], the (interim) [`Closure`], the shared reference cell [`PhpRef`]
+//! and the opaque [`Resource`] handle — plus [`Value::Uninit`] for typed
+//! properties that were never written. The target `repr(C)` tagged cell over
+//! `rphp-gc`/`rphp-heap` (`specs/base/02-value-model.md`) lands later behind
+//! this same API. The *operations* here (arithmetic, concatenation,
+//! comparison, casts, numeric-string parsing) are the single source of truth
+//! that the interpreter and, later, both JIT tiers and const-folding must
+//! agree with.
+//!
+//! **References.** A `Value::Ref` is a handle onto a [`PhpRef`] cell that never
+//! itself contains a `Ref`. Every kernel dereferences its operands first, so
+//! `$a = 1; $b = &$a; $a === $b` is true and `$a + $b` is `2`. Slots are bound
+//! with [`Value::make_ref`] and written with [`Value::assign`] (which writes
+//! *through* a bound slot). Containers store `Ref`s as elements; cloning a
+//! container shares them (PHP semantics for `$b = $a` when `$a[0]` is a
+//! reference).
 #![forbid(unsafe_code)]
 
 mod array;
 mod closure;
 mod object;
+mod refs;
+mod resource;
+mod string;
+
 pub use array::{array_key, Array, ArrayKey};
 pub use closure::Closure;
-pub use object::{Object, Prop, Vis};
+pub use object::{
+    has_pending_destructors, take_pending_destructors, DynProps, Layout, ObjFlags, Object,
+    ObjectData, ObjectIdAllocator, Payload, PropEntry, PropMeta, Vis, WeakObject,
+};
+pub use refs::PhpRef;
+pub use resource::{Resource, ResourceCell, CLOSED_KIND};
+pub use string::Str;
 
+use std::borrow::Cow;
 use std::fmt;
-use std::rc::Rc;
 
-/// A PHP string value: an immutable, refcounted byte buffer.
-///
-/// PHP strings are **byte** strings (never assumed UTF-8). Cloning is a cheap
-/// refcount bump, matching the eventual COW container; mutation-in-place and the
-/// small-string / cached-hash / interning refinements arrive with the real
-/// `PhpStr` in `rphp-heap`.
-#[derive(Clone)]
-pub struct Str(Rc<[u8]>);
-
-impl Str {
-    /// Build a string by copying `bytes`.
-    pub fn new(bytes: &[u8]) -> Self {
-        Str(Rc::from(bytes))
-    }
-
-    /// Build a string from an owned byte vector without re-copying.
-    pub fn from_vec(bytes: Vec<u8>) -> Self {
-        Str(Rc::from(bytes.into_boxed_slice()))
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl PartialEq for Str {
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0 // byte-wise
-    }
-}
-
-impl fmt::Debug for Str {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Readable in `--emit=bytecode` dumps and test failures; lossy for the
-        // (rare) non-UTF-8 byte string.
-        write!(f, "Str({:?})", String::from_utf8_lossy(&self.0))
-    }
-}
-
-#[derive(Clone, PartialEq, Debug)]
+/// A PHP value. See the crate docs for the representation and the reference
+/// rules.
+#[derive(Clone, Debug)]
 pub enum Value {
     Null,
     Bool(bool),
@@ -78,16 +51,33 @@ pub enum Value {
     Float(f64),
     Str(Str),
     Array(Array),
+    /// Interim closure value; closures become objects of class `Closure` in
+    /// plan E6.
     Closure(Closure),
     Object(Object),
+    /// A PHP reference (`&$x`): a handle onto a shared [`PhpRef`] cell. The cell
+    /// never contains a `Ref`.
+    Ref(PhpRef),
+    /// An opaque native handle (`stream`, …).
+    Resource(Resource),
+    /// A typed property that has never been initialized. It never escapes to
+    /// user code: the runtime raises `Error: Typed property X::$p must not be
+    /// accessed before initialization` on read, `json_encode`/`foreach`/`(array)`
+    /// skip such slots, and the kernels here treat it as `null` only as a
+    /// last-resort default.
+    Uninit,
 }
+
+// Every heap variant is a thin `Rc`, so the enum is a tag plus one word. The
+// interpreter's register file and the array entry layout depend on this.
+const _: () = assert!(std::mem::size_of::<Value>() == 16);
 
 /// Recoverable value-level errors that surface as PHP `Error`s at runtime.
 #[derive(Clone, PartialEq, Debug)]
 pub enum ValueError {
     DivisionByZero,
     ModuloByZero,
-    /// Unsupported operand types (the M0 slice is scalar-only).
+    /// Unsupported operand types.
     TypeError(&'static str),
 }
 
@@ -104,15 +94,74 @@ impl Value {
         Value::Array(Array::new())
     }
 
+    // ----- references -----
+
+    /// Whether this slot is bound to a reference cell.
+    pub fn is_ref(&self) -> bool {
+        matches!(self, Value::Ref(_))
+    }
+
+    /// Whether this is the never-initialized typed-property marker.
+    pub fn is_uninit(&self) -> bool {
+        matches!(self, Value::Uninit)
+    }
+
+    /// The value behind a reference (borrowed for a plain value, a clone of the
+    /// cell contents for a `Ref` — an `Rc` bump for heap values).
+    pub fn deref(&self) -> Cow<'_, Value> {
+        match self {
+            Value::Ref(r) => Cow::Owned(r.get()),
+            v => Cow::Borrowed(v),
+        }
+    }
+
+    /// Consume, dereferencing a `Ref` (the value copied out of the cell).
+    pub fn unref(self) -> Value {
+        match self {
+            Value::Ref(r) => r.get(),
+            v => v,
+        }
+    }
+
+    /// Bind `slot` to a reference cell (converting it in place if it is not one
+    /// already) and return the cell, for `$b = &$a`, `&$a[0]`, `&$o->p`,
+    /// by-reference parameters and `use (&$x)`.
+    pub fn make_ref(slot: &mut Value) -> PhpRef {
+        if let Value::Ref(r) = slot {
+            return r.clone();
+        }
+        let inner = std::mem::replace(slot, Value::Null);
+        let r = PhpRef::new(inner);
+        *slot = Value::Ref(r.clone());
+        r
+    }
+
+    /// By-value assignment into `slot`: writes *through* a bound reference,
+    /// otherwise replaces the slot. `v` is dereferenced (assigning from a
+    /// reference copies its value; binding is [`Value::make_ref`]).
+    pub fn assign(slot: &mut Value, v: Value) {
+        let v = v.unref();
+        match slot {
+            Value::Ref(r) => r.set(v),
+            _ => *slot = v,
+        }
+    }
+
+    // ----- type inspection -----
+
+    /// The `get_debug_type`-style short type name (`int`, `string`, `array`,
+    /// `object`, `resource`, `null`).
     pub fn type_name(&self) -> &'static str {
         match self {
-            Value::Null => "null",
+            Value::Null | Value::Uninit => "null",
             Value::Bool(_) => "bool",
             Value::Int(_) => "int",
             Value::Float(_) => "float",
             Value::Str(_) => "string",
             Value::Array(_) => "array",
             Value::Closure(_) | Value::Object(_) => "object",
+            Value::Resource(_) => "resource",
+            Value::Ref(r) => r.borrow().type_name(),
         }
     }
 
@@ -120,7 +169,7 @@ impl Value {
 
     pub fn to_bool(&self) -> bool {
         match self {
-            Value::Null => false,
+            Value::Null | Value::Uninit => false,
             Value::Bool(b) => *b,
             Value::Int(i) => *i != 0,
             Value::Float(f) => *f != 0.0,
@@ -128,14 +177,16 @@ impl Value {
             Value::Str(s) => !(s.is_empty() || s.as_bytes() == b"0"),
             // An array is truthy iff it is non-empty.
             Value::Array(a) => !a.is_empty(),
-            // Any object (a closure or class instance) is always truthy.
-            Value::Closure(_) | Value::Object(_) => true,
+            // Any object (a closure or class instance) and any resource (even a
+            // closed one) is truthy.
+            Value::Closure(_) | Value::Object(_) | Value::Resource(_) => true,
+            Value::Ref(r) => r.borrow().to_bool(),
         }
     }
 
     pub fn to_int(&self) -> i64 {
         match self {
-            Value::Null => 0,
+            Value::Null | Value::Uninit => 0,
             Value::Bool(b) => *b as i64,
             Value::Int(i) => *i,
             // PHP truncates toward zero; NaN/Inf -> 0.
@@ -156,12 +207,15 @@ impl Value {
             Value::Array(a) => i64::from(!a.is_empty()),
             // PHP casts any object to int as 1 (with a notice we do not emit).
             Value::Closure(_) | Value::Object(_) => 1,
+            // A resource casts to its id.
+            Value::Resource(r) => i64::from(r.id()),
+            Value::Ref(r) => r.borrow().to_int(),
         }
     }
 
     pub fn to_float(&self) -> f64 {
         match self {
-            Value::Null => 0.0,
+            Value::Null | Value::Uninit => 0.0,
             Value::Bool(b) => *b as i64 as f64,
             Value::Int(i) => *i as f64,
             Value::Float(f) => *f,
@@ -171,6 +225,8 @@ impl Value {
             },
             Value::Array(a) => f64::from(!a.is_empty()),
             Value::Closure(_) | Value::Object(_) => 1.0,
+            Value::Resource(r) => f64::from(r.id()),
+            Value::Ref(r) => r.borrow().to_float(),
         }
     }
 
@@ -180,7 +236,7 @@ impl Value {
     /// divergence axis, ADR-008).
     pub fn to_php_string(&self) -> String {
         match self {
-            Value::Str(s) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
+            Value::Str(s) => s.to_string_lossy().into_owned(),
             _ => String::from_utf8_lossy(&self.to_php_bytes()).into_owned(),
         }
     }
@@ -189,7 +245,7 @@ impl Value {
     /// binary-safe path the runtime's `echo` and concatenation use.
     pub fn append_php_bytes(&self, out: &mut Vec<u8>) {
         match self {
-            Value::Null => {}
+            Value::Null | Value::Uninit => {}
             Value::Bool(true) => out.push(b'1'),
             Value::Bool(false) => {}
             Value::Int(i) => out.extend_from_slice(i.to_string().as_bytes()),
@@ -202,6 +258,11 @@ impl Value {
             // string; until the engine has that error channel, an object (a
             // closure or class instance) stringifies to nothing.
             Value::Closure(_) | Value::Object(_) => {}
+            Value::Resource(r) => {
+                out.extend_from_slice(b"Resource id #");
+                out.extend_from_slice(r.id().to_string().as_bytes());
+            }
+            Value::Ref(r) => r.borrow().append_php_bytes(out),
         }
     }
 
@@ -217,6 +278,7 @@ impl Value {
         match self {
             Value::Int(_) | Value::Float(_) => true,
             Value::Str(s) => numeric_string(s.as_bytes()).is_some(),
+            Value::Ref(r) => r.borrow().is_numeric(),
             _ => false,
         }
     }
@@ -228,10 +290,12 @@ impl Value {
         match self {
             Value::Int(_) | Value::Float(_) => self.clone(),
             Value::Bool(b) => Value::Int(*b as i64),
-            Value::Null => Value::Int(0),
+            Value::Null | Value::Uninit => Value::Int(0),
             Value::Str(s) => leading_number(s.as_bytes()).unwrap_or(Value::Int(0)),
             Value::Array(a) => Value::Int(i64::from(!a.is_empty())),
             Value::Closure(_) | Value::Object(_) => Value::Int(1),
+            Value::Resource(r) => Value::Int(i64::from(r.id())),
+            Value::Ref(r) => r.borrow().to_number(),
         }
     }
 
@@ -248,7 +312,7 @@ impl Value {
         match self {
             Value::Int(_) | Value::Float(_) => Ok(self.clone()),
             Value::Bool(b) => Ok(Value::Int(*b as i64)),
-            Value::Null => Ok(Value::Int(0)),
+            Value::Null | Value::Uninit => Ok(Value::Int(0)),
             // PHP 8 arithmetic: a leading-numeric string yields its leading
             // number (with an E_WARNING we do not yet emit); a string with no
             // leading number is a TypeError.
@@ -257,19 +321,23 @@ impl Value {
             Value::Array(_) => Err(ValueError::TypeError("array operand in arithmetic")),
             Value::Closure(_) => Err(ValueError::TypeError("closure operand in arithmetic")),
             Value::Object(_) => Err(ValueError::TypeError("object operand in arithmetic")),
+            Value::Resource(_) => Err(ValueError::TypeError("resource operand in arithmetic")),
+            Value::Ref(r) => r.borrow().as_number(),
         }
     }
 
     pub fn add(&self, rhs: &Value) -> VResult {
+        let (a, b) = (self.deref(), rhs.deref());
+        let (a, b) = (&*a, &*b);
         // PHP `+` on arrays is the union operator, not arithmetic.
-        match (self, rhs) {
-            (Value::Array(a), Value::Array(b)) => return Ok(Value::Array(a.union(b))),
+        match (a, b) {
+            (Value::Array(x), Value::Array(y)) => return Ok(Value::Array(x.union(y))),
             (Value::Array(_), _) | (_, Value::Array(_)) => {
                 return Err(ValueError::TypeError("array + non-array"))
             }
             _ => {}
         }
-        numeric_binop(self, rhs, |a, b| a.checked_add(b).map(Value::Int).unwrap_or(Value::Float(a as f64 + b as f64)), |a, b| Value::Float(a + b))
+        numeric_binop(a, b, |a, b| a.checked_add(b).map(Value::Int).unwrap_or(Value::Float(a as f64 + b as f64)), |a, b| Value::Float(a + b))
     }
 
     pub fn sub(&self, rhs: &Value) -> VResult {
@@ -341,13 +409,17 @@ impl Value {
     /// PHP 8 string rules: two numeric strings compare numerically; a number vs
     /// a numeric string compares numerically; a number vs a **non**-numeric
     /// string compares as strings (so `0 == "foo"` is **false**, the 8.0
-    /// change). `bool`/`null` operands always compare as booleans.
+    /// change). `bool`/`null` operands always compare as booleans. A resource
+    /// compares as its id against numbers and strings (`STDIN == 1`), by id
+    /// against another resource.
     pub fn loose_eq(&self, rhs: &Value) -> bool {
         use Value::*;
-        match (self, rhs) {
-            (Null, Null) => true,
-            (Bool(_), _) | (_, Bool(_)) => self.to_bool() == rhs.to_bool(),
-            (Null, _) | (_, Null) => self.to_bool() == rhs.to_bool(),
+        let (a, b) = (self.deref(), rhs.deref());
+        let (lhs, rhs) = (&*a, &*b);
+        match (lhs, rhs) {
+            (Null | Uninit, Null | Uninit) => true,
+            (Bool(_), _) | (_, Bool(_)) => lhs.to_bool() == rhs.to_bool(),
+            (Null | Uninit, _) | (_, Null | Uninit) => lhs.to_bool() == rhs.to_bool(),
             (Array(a), Array(b)) => a.loose_eq(b),
             // An array is never loosely equal to a non-array (bool/null already
             // handled above).
@@ -359,6 +431,9 @@ impl Value {
             // with equal properties is a documented divergence, not yet modelled).
             (Object(a), Object(b)) => a == b,
             (Object(_), _) | (_, Object(_)) => false,
+            (Resource(a), Resource(b)) => a.id() == b.id(),
+            (Resource(r), _) => Int(i64::from(r.id())).loose_eq(&resource_operand(rhs)),
+            (_, Resource(r)) => resource_operand(lhs).loose_eq(&Int(i64::from(r.id()))),
             (Str(a), Str(b)) => {
                 match (numeric_string(a.as_bytes()), numeric_string(b.as_bytes())) {
                     (Some(x), Some(y)) => x.loose_eq(&y),
@@ -370,20 +445,22 @@ impl Value {
                 None => a.as_bytes() == rhs.to_php_bytes().as_slice(),
             },
             (_, Str(b)) => match numeric_string(b.as_bytes()) {
-                Some(y) => self.loose_eq(&y),
-                None => self.to_php_bytes().as_slice() == b.as_bytes(),
+                Some(y) => lhs.loose_eq(&y),
+                None => lhs.to_php_bytes().as_slice() == b.as_bytes(),
             },
             (Int(a), Int(b)) => a == b,
             // any float involved -> compare as floats
-            _ => self.to_float() == rhs.to_float(),
+            _ => lhs.to_float() == rhs.to_float(),
         }
     }
 
-    /// Strict `===` (same type and value).
+    /// Strict `===` (same type and value). References compare their contents;
+    /// objects and resources by identity.
     pub fn identical(&self, rhs: &Value) -> bool {
         use Value::*;
-        match (self, rhs) {
-            (Null, Null) => true,
+        let (a, b) = (self.deref(), rhs.deref());
+        match (&*a, &*b) {
+            (Null | Uninit, Null | Uninit) => true,
             (Bool(a), Bool(b)) => a == b,
             (Int(a), Int(b)) => a == b,
             (Float(a), Float(b)) => a == b,
@@ -391,18 +468,22 @@ impl Value {
             (Array(a), Array(b)) => a.identical(b),
             (Closure(a), Closure(b)) => a == b,
             (Object(a), Object(b)) => a == b,
+            (Resource(a), Resource(b)) => a.ptr_eq(b),
             _ => false,
         }
     }
 
     /// `<=>` spaceship: -1, 0, 1. `bool`/`null` operands compare as booleans;
-    /// strings follow the same numeric-vs-lexical rules as `loose_eq`.
+    /// strings follow the same numeric-vs-lexical rules as `loose_eq`; a
+    /// resource compares as its id.
     pub fn spaceship(&self, rhs: &Value) -> i64 {
         use std::cmp::Ordering;
         use Value::*;
-        match (self, rhs) {
-            (Bool(_), _) | (_, Bool(_)) | (Null, _) | (_, Null) => {
-                bool_cmp(self.to_bool(), rhs.to_bool())
+        let (a, b) = (self.deref(), rhs.deref());
+        let (lhs, rhs) = (&*a, &*b);
+        match (lhs, rhs) {
+            (Bool(_), _) | (_, Bool(_)) | (Null | Uninit, _) | (_, Null | Uninit) => {
+                bool_cmp(lhs.to_bool(), rhs.to_bool())
             }
             (Array(a), Array(b)) => a.spaceship(b),
             // An array is greater than any non-array (bool/null handled above).
@@ -417,6 +498,9 @@ impl Value {
             (Object(a), Object(b)) => i64::from(a != b),
             (Object(_), _) => 1,
             (_, Object(_)) => -1,
+            (Resource(a), Resource(b)) => int_cmp(i64::from(a.id()), i64::from(b.id())),
+            (Resource(r), _) => Int(i64::from(r.id())).spaceship(&resource_operand(rhs)),
+            (_, Resource(r)) => resource_operand(lhs).spaceship(&Int(i64::from(r.id()))),
             (Str(a), Str(b)) => {
                 match (numeric_string(a.as_bytes()), numeric_string(b.as_bytes())) {
                     (Some(x), Some(y)) => x.spaceship(&y),
@@ -428,15 +512,15 @@ impl Value {
                 None => byte_cmp(a.as_bytes(), &rhs.to_php_bytes()),
             },
             (_, Str(b)) => match numeric_string(b.as_bytes()) {
-                Some(y) => self.spaceship(&y),
-                None => byte_cmp(&self.to_php_bytes(), b.as_bytes()),
+                Some(y) => lhs.spaceship(&y),
+                None => byte_cmp(&lhs.to_php_bytes(), b.as_bytes()),
             },
             _ => {
                 // Both numeric (Int/Float).
-                if self.identical(rhs) {
+                if lhs.identical(rhs) {
                     return 0;
                 }
-                let (a, b) = (self.to_float(), rhs.to_float());
+                let (a, b) = (lhs.to_float(), rhs.to_float());
                 match a.partial_cmp(&b) {
                     Some(Ordering::Less) => -1,
                     Some(Ordering::Greater) => 1,
@@ -450,6 +534,37 @@ impl Value {
     pub fn le(&self, rhs: &Value) -> bool { self.spaceship(rhs) <= 0 }
     pub fn gt(&self, rhs: &Value) -> bool { self.spaceship(rhs) > 0 }
     pub fn ge(&self, rhs: &Value) -> bool { self.spaceship(rhs) >= 0 }
+}
+
+impl PartialEq for Value {
+    /// Rust-level structural equality for tests and tables — **not** PHP's `==`
+    /// (that is [`Value::loose_eq`]). References compare their contents;
+    /// arrays order-sensitively; objects, closures and resources by identity.
+    fn eq(&self, other: &Value) -> bool {
+        use Value::*;
+        match (&*self.deref(), &*other.deref()) {
+            (Null, Null) | (Uninit, Uninit) => true,
+            (Bool(a), Bool(b)) => a == b,
+            (Int(a), Int(b)) => a == b,
+            (Float(a), Float(b)) => a == b,
+            (Str(a), Str(b)) => a == b,
+            (Array(a), Array(b)) => a == b,
+            (Closure(a), Closure(b)) => a == b,
+            (Object(a), Object(b)) => a == b,
+            (Resource(a), Resource(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// The scalar a non-resource operand becomes when compared against a resource
+/// (`_zendi_convert_scalar_to_number_silent`): strings yield their leading
+/// number or `0`, everything else its numeric cast.
+fn resource_operand(v: &Value) -> Value {
+    match v {
+        Value::Str(s) => leading_number(s.as_bytes()).unwrap_or(Value::Int(0)),
+        other => other.to_number(),
+    }
 }
 
 fn numeric_binop(
@@ -468,6 +583,15 @@ fn numeric_binop(
 /// `false < true`, returning -1/0/1.
 fn bool_cmp(a: bool, b: bool) -> i64 {
     (a as i64) - (b as i64)
+}
+
+/// Integer order, returning -1/0/1.
+fn int_cmp(a: i64, b: i64) -> i64 {
+    match a.cmp(&b) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    }
 }
 
 /// Lexical byte comparison, returning -1/0/1.
@@ -648,6 +772,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn value_is_sixteen_bytes() {
+        assert_eq!(std::mem::size_of::<Value>(), 16);
+        assert_eq!(std::mem::size_of::<Option<Value>>(), 16);
+    }
+
+    #[test]
+    fn uninit_behaves_as_null_in_kernels() {
+        assert_eq!(Value::Uninit.type_name(), "null");
+        assert!(!Value::Uninit.to_bool());
+        assert_eq!(Value::Uninit.to_int(), 0);
+        assert_eq!(Value::Uninit.to_php_bytes(), b"");
+        assert!(Value::Uninit.loose_eq(&Value::Null));
+        assert!(Value::Uninit.identical(&Value::Null));
+        assert!(Value::Uninit.is_uninit());
+        assert_ne!(Value::Uninit, Value::Null); // distinct at the Rust level
+    }
+
+    #[test]
     fn int_overflow_promotes_to_float() {
         let r = Value::Int(i64::MAX).add(&Value::Int(1)).unwrap();
         assert!(matches!(r, Value::Float(_)));
@@ -816,5 +958,18 @@ mod tests {
         assert_eq!(arr(&[Value::Int(1)]).spaceship(&arr(&[Value::Int(1), Value::Int(2)])), -1);
         assert_eq!(Value::empty_array().spaceship(&Value::Int(5)), 1);
         assert!(!Value::empty_array().loose_eq(&Value::Int(0)));
+    }
+
+    #[test]
+    fn arrays_with_reference_elements_compare_by_contents() {
+        // $d = [1, 2]; $r = &$d[1]; var_dump($d == [1, 2], $d === [1, 2]);  => true, true
+        let mut d = Array::new();
+        d.push(Value::Int(1));
+        d.push(Value::Int(2));
+        let _r = d.get_ref(ArrayKey::Int(1));
+        let plain = arr(&[Value::Int(1), Value::Int(2)]);
+        assert!(Value::Array(d.clone()).loose_eq(&plain));
+        assert!(Value::Array(d.clone()).identical(&plain));
+        assert_eq!(Value::Array(d), plain);
     }
 }

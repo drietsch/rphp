@@ -17,6 +17,8 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("is_null", 1, Some(1), is_null),
     nf!("is_numeric", 1, Some(1), is_numeric),
     nf!("is_scalar", 1, Some(1), is_scalar),
+    nf!("is_object", 1, Some(1), is_object),
+    nf!("is_resource", 1, Some(1), is_resource),
     nf!("intval", 1, Some(2), intval),
     nf!("floatval", 1, Some(1), floatval),
     nf!("doubleval", 1, Some(1), floatval),
@@ -25,40 +27,46 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
 ];
 
 pub(crate) fn gettype(_: &mut Ctx, args: &[Value]) -> NativeResult {
-    let name: &[u8] = match &args[0] {
-        Value::Null => b"NULL",
+    let name: &[u8] = match &*args[0].deref() {
+        // An uninitialized typed property never reaches a call (the runtime
+        // errors first); as a value it is null.
+        Value::Null | Value::Uninit => b"NULL",
         Value::Bool(_) => b"boolean",
         Value::Int(_) => b"integer",
         Value::Float(_) => b"double",
         Value::Str(_) => b"string",
         Value::Array(_) => b"array",
         Value::Closure(_) | Value::Object(_) => b"object",
+        // "resource" or "resource (closed)".
+        Value::Resource(r) => r.type_name().as_bytes(),
+        // Dereferenced above; PHP's own fallback spelling.
+        Value::Ref(_) => b"unknown type",
     };
     Ok(Value::string(name))
 }
 
 pub(crate) fn is_int(_: &mut Ctx, args: &[Value]) -> NativeResult {
-    Ok(Value::Bool(matches!(args[0], Value::Int(_))))
+    Ok(Value::Bool(matches!(*args[0].deref(), Value::Int(_))))
 }
 
 pub(crate) fn is_string(_: &mut Ctx, args: &[Value]) -> NativeResult {
-    Ok(Value::Bool(matches!(args[0], Value::Str(_))))
+    Ok(Value::Bool(matches!(*args[0].deref(), Value::Str(_))))
 }
 
 pub(crate) fn is_bool(_: &mut Ctx, args: &[Value]) -> NativeResult {
-    Ok(Value::Bool(matches!(args[0], Value::Bool(_))))
+    Ok(Value::Bool(matches!(*args[0].deref(), Value::Bool(_))))
 }
 
 pub(crate) fn is_float(_: &mut Ctx, args: &[Value]) -> NativeResult {
-    Ok(Value::Bool(matches!(args[0], Value::Float(_))))
+    Ok(Value::Bool(matches!(*args[0].deref(), Value::Float(_))))
 }
 
 pub(crate) fn is_array(_: &mut Ctx, args: &[Value]) -> NativeResult {
-    Ok(Value::Bool(matches!(args[0], Value::Array(_))))
+    Ok(Value::Bool(matches!(*args[0].deref(), Value::Array(_))))
 }
 
 pub(crate) fn is_null(_: &mut Ctx, args: &[Value]) -> NativeResult {
-    Ok(Value::Bool(matches!(args[0], Value::Null)))
+    Ok(Value::Bool(matches!(*args[0].deref(), Value::Null | Value::Uninit)))
 }
 
 pub(crate) fn is_numeric(_: &mut Ctx, args: &[Value]) -> NativeResult {
@@ -67,9 +75,19 @@ pub(crate) fn is_numeric(_: &mut Ctx, args: &[Value]) -> NativeResult {
 
 pub(crate) fn is_scalar(_: &mut Ctx, args: &[Value]) -> NativeResult {
     Ok(Value::Bool(matches!(
-        args[0],
+        *args[0].deref(),
         Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bool(_)
     )))
+}
+
+pub(crate) fn is_object(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    Ok(Value::Bool(matches!(*args[0].deref(), Value::Object(_) | Value::Closure(_))))
+}
+
+/// PHP `is_resource`: an **open** resource (a closed one is not a resource
+/// any more, though `gettype` still says `resource (closed)`).
+pub(crate) fn is_resource(_: &mut Ctx, args: &[Value]) -> NativeResult {
+    Ok(Value::Bool(matches!(&*args[0].deref(), Value::Resource(r) if !r.is_closed())))
 }
 
 pub(crate) fn intval(_: &mut Ctx, args: &[Value]) -> NativeResult {

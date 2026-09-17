@@ -8,7 +8,7 @@
 //! does. Because the engine has no object value type yet, a JSON **object**
 //! decodes to a string-keyed PHP **array** regardless of the `$assoc` argument
 //! (PHP's default would return a `stdClass`); see the crate notes.
-use rphp_value::{array_key, Array, ArrayKey, Prop, Str, Value, Vis};
+use rphp_value::{array_key, Array, ArrayKey, ObjectData, Str, Value, Vis};
 
 use crate::{nf, Ctx, NativeError, NativeFn, NativeResult};
 
@@ -56,28 +56,23 @@ fn encode(out: &mut Vec<u8>, v: &Value, flags: i64, depth: usize) -> Result<(), 
         Value::Str(s) => encode_string(out, s.as_bytes(), flags)?,
         Value::Array(a) => encode_array(out, a, flags, depth)?,
         // A class instance encodes as a JSON object over its *public* properties.
-        Value::Object(o) => encode_object(out, &o.props(), flags, depth)?,
+        Value::Object(o) => o.with_data(|d| encode_object(out, d, flags, depth))?,
         // A closure has no public properties, so it encodes as `{}`.
         Value::Closure(_) => out.extend_from_slice(b"{}"),
+        Value::Ref(r) => encode(out, &r.borrow(), flags, depth)?,
+        // PHP: "Type is not supported" — the whole encode fails.
+        Value::Resource(_) => return Err(()),
+        // Never reaches a call; inside an object it is skipped (below).
+        Value::Uninit => out.extend_from_slice(b"null"),
     }
     Ok(())
 }
 
-/// A PHP array is a JSON **array** iff it is a list — integer keys `0..n-1` in
-/// order; otherwise it is a JSON **object** keyed by each key's string form.
-fn is_list(a: &Array) -> bool {
-    for (i, (k, _)) in a.iter().enumerate() {
-        match k {
-            ArrayKey::Int(n) if *n == i as i64 => {}
-            _ => return false,
-        }
-    }
-    true
-}
-
 fn encode_array(out: &mut Vec<u8>, a: &Array, flags: i64, depth: usize) -> Result<(), ()> {
     let pretty = flags & JSON_PRETTY_PRINT != 0;
-    let list = is_list(a);
+    // A PHP array is a JSON **array** iff it is a list — integer keys `0..n-1`
+    // in order; otherwise it is a JSON **object** keyed by each key's string form.
+    let list = a.is_list();
     let (open, close) = if list { (b'[', b']') } else { (b'{', b'}') };
     out.push(open);
     // Empty container stays compact even under JSON_PRETTY_PRINT: "[]" / "{}".
@@ -116,10 +111,11 @@ fn encode_array(out: &mut Vec<u8>, a: &Array, flags: i64, depth: usize) -> Resul
 
 /// Encode an object's **public** properties as a JSON object (the same layout as
 /// a non-list array, keyed by the property names in declaration order).
-/// Protected and private properties are omitted, matching PHP.
-fn encode_object(out: &mut Vec<u8>, props: &[Prop], flags: i64, depth: usize) -> Result<(), ()> {
+/// Protected, private and uninitialized properties are omitted, matching PHP.
+fn encode_object(out: &mut Vec<u8>, d: &ObjectData, flags: i64, depth: usize) -> Result<(), ()> {
     let pretty = flags & JSON_PRETTY_PRINT != 0;
-    let public: Vec<&Prop> = props.iter().filter(|p| p.vis == Vis::Public).collect();
+    let public: Vec<_> =
+        d.props_in_order().filter(|p| p.vis == Vis::Public && !p.value.is_uninit()).collect();
     out.push(b'{');
     if public.is_empty() {
         out.push(b'}');
@@ -133,12 +129,12 @@ fn encode_object(out: &mut Vec<u8>, props: &[Prop], flags: i64, depth: usize) ->
             out.push(b'\n');
             indent(out, (depth + 1) * 4);
         }
-        encode_string(out, &p.name, flags)?;
+        encode_string(out, p.name, flags)?;
         out.push(b':');
         if pretty {
             out.push(b' ');
         }
-        encode(out, &p.value, flags, depth + 1)?;
+        encode(out, p.value, flags, depth + 1)?;
     }
     if pretty {
         out.push(b'\n');

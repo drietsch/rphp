@@ -398,6 +398,7 @@ fn compile_function(
         capture_regs: fc.capture_regs,
         closures: fc.closures,
         span,
+        ..Function::default()
     }
 }
 
@@ -1362,6 +1363,7 @@ impl FnCompiler<'_> {
             capture_regs: fc.capture_regs,
             closures: fc.closures,
             span,
+            ..Function::default()
         }
     }
 }

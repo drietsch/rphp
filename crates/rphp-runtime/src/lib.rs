@@ -14,8 +14,10 @@
 //! stable; the CLI and tests depend on them.
 #![forbid(unsafe_code)]
 
+use std::rc::Rc;
+
 use rphp_bytecode::{ClassId, Function, Module, Op, Visibility};
-use rphp_value::{array_key, Object, Str, Value, ValueError};
+use rphp_value::{array_key, Layout, Object, ObjectIdAllocator, PropMeta, Str, Value, ValueError};
 
 /// Captured side effects of a run. `echo` output accumulates into `stdout` as
 /// raw bytes — PHP strings are byte strings, so the buffer is binary-safe rather
@@ -102,22 +104,69 @@ fn check_prop_access(
     Ok(())
 }
 
+/// Per-run interpreter state threaded through every frame: the captured output
+/// plus the object-model bookkeeping the value layer leaves to the runtime —
+/// one instance [`Layout`] (and default slot values) per class, built lazily
+/// and cached, and the object-id allocator. (The full `Interp` with frames,
+/// tables and diagnostics is plan E1/E3; this stays deliberately small.)
+struct Vm {
+    out: RunOutput,
+    layouts: Vec<Option<(Rc<Layout>, Vec<Value>)>>,
+    object_ids: ObjectIdAllocator,
+}
+
+impl Vm {
+    fn new(module: &Module) -> Vm {
+        Vm {
+            out: RunOutput::default(),
+            layouts: vec![None; module.classes.len()],
+            object_ids: ObjectIdAllocator::new(),
+        }
+    }
+
+    /// The instance layout and default slot values of `class`, built on first
+    /// use from the module's parent-first property set.
+    fn instance_layout(&mut self, module: &Module, class: ClassId) -> (Rc<Layout>, Vec<Value>) {
+        let idx = class as usize;
+        if let Some(cached) = &self.layouts[idx] {
+            return cached.clone();
+        }
+        let mut metas = Vec::new();
+        let mut defaults = Vec::new();
+        for (name, default, vis) in module.instance_props(class) {
+            // The declaring class is the nearest in the chain that declares the
+            // name (`instance_props` already applied the subclass override).
+            let decl_class = module.resolve_prop(class, &name).map_or(class, |(_, d)| d);
+            metas.push(PropMeta {
+                name,
+                vis,
+                decl_class,
+                decl_class_name: Rc::from(&module.class(decl_class).name_bytes[..]),
+            });
+            defaults.push(default);
+        }
+        let layout = Rc::new(Layout::new(Rc::from(&module.class(class).name_bytes[..]), metas));
+        self.layouts[idx] = Some((layout.clone(), defaults.clone()));
+        (layout, defaults)
+    }
+}
+
 /// The [`rphp_stdlib::Host`] the interpreter hands to native functions: it
 /// exposes stdout and lets a builtin call back into the engine to invoke a PHP
 /// callable (the re-entrancy `array_map`/`usort`/… need). It is created fresh
-/// per native call, borrowing the module and the output buffer.
+/// per native call, borrowing the module and the VM state.
 struct VmHost<'a> {
     module: &'a Module,
-    out: &'a mut RunOutput,
+    vm: &'a mut Vm,
 }
 
 impl rphp_stdlib::Host for VmHost<'_> {
     fn out(&mut self) -> &mut Vec<u8> {
-        &mut self.out.stdout
+        &mut self.vm.out.stdout
     }
 
     fn call(&mut self, callable: &Value, args: &[Value]) -> Result<Value, rphp_stdlib::NativeError> {
-        invoke_value(self.module, callable, args, &mut *self.out)
+        invoke_value(self.module, callable, args, &mut *self.vm)
             .map_err(|e| rphp_stdlib::NativeError::new(e.message))
     }
 }
@@ -130,21 +179,22 @@ fn invoke_value(
     module: &Module,
     callee: &Value,
     args: &[Value],
-    out: &mut RunOutput,
+    vm: &mut Vm,
 ) -> Result<Value, RuntimeError> {
-    if let Value::Closure(c) = callee {
-        return exec_closure(module, c, args, out);
+    let callee = callee.deref();
+    if let Value::Closure(c) = &*callee {
+        return exec_closure(module, c, args, vm);
     }
     let name = callee.to_php_bytes();
     if let Some(fid) = module.func_by_name(&name) {
         let f = module.func(fid);
         let n = (f.num_params as usize).min(args.len());
         // A callable string resolves to a free function — no class context.
-        return exec_function(module, f, &args[..n], None, out);
+        return exec_function(module, f, &args[..n], None, vm);
     }
     if let Some(nid) = rphp_stdlib::resolve(&name) {
         let mut args = args.to_vec();
-        let mut host = VmHost { module, out };
+        let mut host = VmHost { module, vm };
         let mut ctx = rphp_stdlib::Ctx { host: &mut host };
         return rphp_stdlib::call(nid, &mut ctx, &mut args)
             .map_err(|e| RuntimeError { message: e.message });
@@ -159,10 +209,10 @@ fn invoke_value(
 /// `main` takes no parameters, so it is entered with an empty argument list and
 /// an all-null register frame.
 pub fn run(module: &Module) -> Result<RunOutput, RuntimeError> {
-    let mut out = RunOutput::default();
+    let mut vm = Vm::new(module);
     let main = module.func(module.main);
-    exec_function(module, main, &[], None, &mut out)?;
-    Ok(out)
+    exec_function(module, main, &[], None, &mut vm)?;
+    Ok(vm.out)
 }
 
 /// Execute a single function frame to completion, returning its result value.
@@ -177,7 +227,7 @@ fn exec_function(
     function: &Function,
     args: &[Value],
     cur_class: Option<ClassId>,
-    out: &mut RunOutput,
+    vm: &mut Vm,
 ) -> Result<Value, RuntimeError> {
     // The frame: every register starts as null (uninitialized vars read null).
     let mut regs = vec![Value::Null; function.num_regs as usize];
@@ -185,7 +235,7 @@ fn exec_function(
     for (i, arg) in args.iter().enumerate() {
         regs[i] = arg.clone();
     }
-    run_frame(module, function, regs, cur_class, out)
+    run_frame(module, function, regs, cur_class, vm)
 }
 
 /// Execute a closure: seed the captured environment into the function's
@@ -195,7 +245,7 @@ fn exec_closure(
     module: &Module,
     closure: &rphp_value::Closure,
     args: &[Value],
-    out: &mut RunOutput,
+    vm: &mut Vm,
 ) -> Result<Value, RuntimeError> {
     let function = module.func(closure.func());
     let mut regs = vec![Value::Null; function.num_regs as usize];
@@ -208,7 +258,7 @@ fn exec_closure(
     }
     // A closure carries no class context (its `$this`/visibility binding is a
     // later refinement).
-    run_frame(module, function, regs, None, out)
+    run_frame(module, function, regs, None, vm)
 }
 
 /// Run a prepared frame (registers already seeded) to completion. `cur_class` is
@@ -219,7 +269,7 @@ fn run_frame(
     function: &Function,
     mut regs: Vec<Value>,
     cur_class: Option<ClassId>,
-    out: &mut RunOutput,
+    vm: &mut Vm,
 ) -> Result<Value, RuntimeError> {
     let mut pc: usize = 0;
     loop {
@@ -306,18 +356,21 @@ fn run_frame(
                 }
             }
             Op::ForeachNext { arr, cursor, key_dst, val_dst, target } => {
-                let pos = regs[cursor as usize].to_int();
-                let entry = match &regs[arr as usize] {
-                    Value::Array(a) if pos >= 0 && (pos as usize) < a.len() => {
-                        a.entry_at(pos as usize).map(|(k, v)| (k.to_value(), v.clone()))
-                    }
+                // The cursor is a *raw* entry position (tombstones included);
+                // `next_live_from` skips holes left by `unset`, and the value is
+                // dereferenced (a by-value `foreach` sees plain values).
+                let pos = regs[cursor as usize].to_int().max(0) as usize;
+                let entry = match &*regs[arr as usize].deref() {
+                    Value::Array(a) => a
+                        .next_live_from(pos)
+                        .map(|(raw, k, v)| (raw, k.to_value(), v.deref().into_owned())),
                     _ => None,
                 };
                 match entry {
-                    Some((k, v)) => {
+                    Some((raw, k, v)) => {
                         regs[key_dst as usize] = k;
                         regs[val_dst as usize] = v;
-                        regs[cursor as usize] = Value::Int(pos + 1);
+                        regs[cursor as usize] = Value::Int(raw as i64 + 1);
                     }
                     None => {
                         pc = target as usize;
@@ -385,7 +438,7 @@ fn run_frame(
                     call_args.push(regs[base + i].clone());
                 }
                 let callee = module.func(func);
-                let ret = exec_function(module, callee, &call_args, None, out)?;
+                let ret = exec_function(module, callee, &call_args, None, vm)?;
                 regs[dst as usize] = ret;
             }
             Op::CallNative { dst, native, base, argc } => {
@@ -397,7 +450,7 @@ fn run_frame(
                 let mut call_args: Vec<Value> =
                     (0..argc).map(|i| regs[base + i].clone()).collect();
                 let ret = {
-                    let mut host = VmHost { module, out: &mut *out };
+                    let mut host = VmHost { module, vm: &mut *vm };
                     let mut ctx = rphp_stdlib::Ctx { host: &mut host };
                     rphp_stdlib::call(id, &mut ctx, &mut call_args)
                         .map_err(|e| RuntimeError { message: e.message })?
@@ -426,21 +479,23 @@ fn run_frame(
                 let call_args: Vec<Value> =
                     (0..argc as usize).map(|i| regs[base + i].clone()).collect();
                 let callee_val = regs[callee as usize].clone();
-                regs[dst as usize] = invoke_value(module, &callee_val, &call_args, out)?;
+                regs[dst as usize] = invoke_value(module, &callee_val, &call_args, vm)?;
             }
 
             // --- objects ---
             Op::New { dst, class } => {
-                // Seed the instance with its full (inherited + own) property set.
-                let props = module.instance_props(class);
-                regs[dst as usize] = Value::Object(Object::new(class, props));
+                // Seed the instance from the class's cached layout (its full
+                // inherited + own property set) and give it the next handle id.
+                let (layout, defaults) = vm.instance_layout(module, class);
+                let id = vm.object_ids.alloc();
+                regs[dst as usize] = Value::Object(Object::new(class, id, layout, defaults));
             }
             Op::PropGet { dst, obj, name } => {
                 let key = function.consts[name as usize].to_value().to_php_bytes();
                 let val = match &regs[obj as usize] {
                     Value::Object(o) => {
                         check_prop_access(module, o.class_id(), &key, cur_class)?;
-                        o.get(&key).unwrap_or(Value::Null)
+                        o.get_deref(&key).unwrap_or(Value::Null)
                     }
                     // Reading a property of a non-object yields null (warning deferred).
                     _ => Value::Null,
@@ -503,7 +558,7 @@ fn run_frame(
                     call_args.push(regs[base + i].clone());
                 }
                 // The callee runs in the lexical context of its *declaring* class.
-                regs[dst as usize] = exec_function(module, callee, &call_args, Some(decl_class), out)?;
+                regs[dst as usize] = exec_function(module, callee, &call_args, Some(decl_class), vm)?;
             }
             Op::StaticCall { dst, this, func, base, argc } => {
                 // Non-virtual scoped call (`self::`/`parent::`/`Class::`); the
@@ -518,7 +573,7 @@ fn run_frame(
                     call_args.push(regs[base + i].clone());
                 }
                 let callee_class = module.method_owner(func);
-                regs[dst as usize] = exec_function(module, callee, &call_args, callee_class, out)?;
+                regs[dst as usize] = exec_function(module, callee, &call_args, callee_class, vm)?;
             }
             Op::InstanceOf { dst, obj, class } => {
                 let result = match &regs[obj as usize] {
@@ -534,7 +589,15 @@ fn run_frame(
 
             // --- io ---
             Op::Echo { src } => {
-                regs[src as usize].append_php_bytes(&mut out.stdout);
+                regs[src as usize].append_php_bytes(&mut vm.out.stdout);
+            }
+
+            // The v2 contract ops (plan Track E) are not executed by the tier-0
+            // interpreter yet; the compiler never emits them either.
+            _ => {
+                return Err(RuntimeError {
+                    message: format!("internal error: opcode not implemented by the tier-0 interpreter: {op:?}"),
+                });
             }
         }
 
@@ -546,9 +609,10 @@ fn run_frame(
 /// index by byte offset (negative allowed; out of range ⇒ "") — both
 /// warning-on-miss cases defer the warning. Indexing any other type is null.
 fn array_get(base: &Value, key: &Value) -> Value {
-    match base {
+    match &*base.deref() {
         Value::Array(a) => match array_key(key) {
-            Some(k) => a.get(&k).cloned().unwrap_or(Value::Null),
+            // The element is dereferenced: a read never yields a `Ref`.
+            Some(k) => a.get_deref(&k).unwrap_or(Value::Null),
             None => Value::Null,
         },
         Value::Str(s) => string_offset(s, key),
@@ -603,6 +667,7 @@ mod tests {
             capture_regs: Vec::new(),
             closures: Vec::new(),
             span: Span::dummy(),
+            ..Function::default()
         }
     }
 

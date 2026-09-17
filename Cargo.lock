@@ -772,6 +772,7 @@ name = "rphp"
 version = "0.0.0"
 dependencies = [
  "rphp-sapi-cli",
+ "rphp-test",
 ]
 
 [[package]]
@@ -810,6 +811,24 @@ version = "0.0.0"
 dependencies = [
  "rphp-source",
  "rphp-span",
+]
+
+[[package]]
+name = "rphp-embed"
+version = "0.0.0"
+dependencies = [
+ "rphp-ast",
+ "rphp-bytecode",
+ "rphp-compiler",
+ "rphp-diagnostics",
+ "rphp-intern",
+ "rphp-lexer",
+ "rphp-parser",
+ "rphp-runtime",
+ "rphp-source",
+ "rphp-span",
+ "rphp-stdlib",
+ "rphp-value",
 ]
 
 [[package]]
@@ -904,6 +923,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "toml",
  "walkdir",
@@ -913,6 +933,7 @@ dependencies = [
 name = "rphp-tokenizer"
 version = "0.0.0"
 dependencies = [
+ "memchr",
  "rphp-span",
 ]
 

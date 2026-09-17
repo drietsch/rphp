@@ -1,5 +1,6 @@
-# php-src slice scored by `cargo xtask phpt --ext standard-strings`; schema in tests/phpt/README.md
 dir = "ext/standard/tests/strings"
 enabled = true
-baseline = 0
+baseline = 459
+total = 730
+updated = "2026-09-17"
 notes = "string functions incl. printf family, html entities, locale-dependent tests skip without the locale"

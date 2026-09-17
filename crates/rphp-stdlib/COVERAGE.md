@@ -51,8 +51,11 @@ Functions needing a missing language feature are **cataloged, not faked** (decis
 | versioning | 1 | S2: **`version_compare`** — transcription of `php_canonicalize_version` + `php_version_compare` (special forms, `#N#` recursion, operator arg + `ValueError`). S2 tier-a: `info/version-compare.php` |
 | uniqid / microtime / hrtime | 8 | S2: `uniqid` (spins until the microsecond changes; `more_entropy`), `microtime`, `gettimeofday`, `hrtime` (monotonic, process-relative), `time` (interim home until `date.rs`, S6), `sleep`, `usleep`, `time_nanosleep` |
 | random (random.rs) | 12 | S2: php's exact **Mt19937** (`php_mt_initialize`/`php_mt_reload`, `>> 1`, `rand_range32`/`rand_range64` rejection sampling with php's low-word-first assembly, `MT_RAND_PHP` legacy twist + `RAND_RANGE_BADSCALING` + its deprecation): `mt_srand`/`srand`, `mt_rand`/`rand`, `mt_getrandmax`/`getrandmax`; CSPRNG `random_int`/`random_bytes` (`/dev/urandom`); `lcg_value` (8.4 deprecation); and the engine-backed `shuffle`, `str_shuffle`, `array_rand` (php's Fisher–Yates / bitset walks) — seeded sequences byte-identical (`mt_srand(42); mt_rand()` = 804318771). Constants `MT_RAND_MT19937`/`MT_RAND_PHP`. State is a thread-local until `ExtState` grows a slot. S2 tier-a: `random/mt.php` |
-| string    | 29 | `sprintf`/`printf`/`vsprintf`, `number_format`, `str_pad`, `str_split`, `strtr`, `strcmp` family, `bin2hex`/`hex2bin`, … |
-| array     | 18 + 11 + 6 | value-returning: `array_slice/flip/unique/diff/intersect/combine/chunk/column/fill/pad/search/product/…`, `array_is_list`. **By-ref:** `sort/rsort/asort/arsort/ksort/krsort`, `array_push/pop/shift/unshift`, `array_splice`. **Higher-order:** `array_map`, `array_filter`, `array_reduce`, `usort/uasort/uksort` |
+| string (`strings.rs` + `string2.rs`) | 48 + 27 | S2: the whole of `string.c` except the deferrals below — `str_replace`/`str_ireplace` (`&$count`, array forms), `substr_replace` array forms, `strrchr($before_needle)`, `trim` family with `a..z` ranges and php's range warnings, `str_word_count` char lists, `number_format` negative decimals + exact digits, `addcslashes`/`stripcslashes`, `chunk_split`, `count_chars`, `dirname`/`basename`/`pathinfo`, `levenshtein`, `similar_text(&$percent)`, `soundex`, `metaphone`, `str_getcsv` (8.4 `$escape` deprecation), `strip_tags` (string/array allow lists), `wordwrap`, `sscanf` (full format grammar incl. `%[…]`, `%n`, `%n$`, `&...$vars`, every `ValueError` text), `strtok`, `strnatcmp`/`strnatcasecmp`, `strspn`/`strcspn`, `substr_compare`, `str_rot13`, `strcoll`, `utf8_encode`/`utf8_decode` (8.2 deprecation), `setlocale`/`localeconv` (C-locale model), `chop`, 8.5 `chr`/`ord` deprecations, `hex2bin` warnings, PHP 8 `implode` errors, `strpos` offset `ValueError` |
+| formatted_print | 4 | `sprintf`/`printf`/`vsprintf`/`vprintf`: every conversion `b c d e E f F g G h H o s u x X`, positional `%n$`, `*` width/precision (incl. `-1` shortest `%g`), `'x` padding, php's per-conversion padding rules, `%c`/NaN/Inf unpadded, the 53-digit precision notice, `ArgumentCountError`/`ValueError` texts, the `% %` and `%.4o` quirks |
+| html      | 5 | `htmlspecialchars`/`htmlspecialchars_decode`/`htmlentities`/`html_entity_decode`/`get_html_translation_table`: HTML 4.01/XHTML/XML1/HTML5 tables (2125-name HTML5 decode table, 65 two-code-point entities), all `ENT_*` flags, `$double_encode`, php's numeric-entity validity rules per doctype, malformed-UTF-8 charging, charsets UTF-8/ISO-8859-1/-15/-5/cp1252/cp1251/KOI8-R/cp866/MacRoman (exact) and BIG5/GB2312/SJIS/EUC-JP (structure validation, basic entities only, as php) |
+| base64    | 6 | `base64_encode`/`base64_decode` (strict rules), `quoted_printable_encode`/`decode`, `convert_uuencode`/`convert_uudecode` |
+| array (`arrays.rs` + `array2.rs`) | 45 + 35 | S2: `array.c` except the deferrals — every sort with all `SORT_*` flags on php's own `zend_sort` (element order matches php even for mixed types), `natsort`/`natcasesort`, `usort` family incl. the deprecated `bool` return, `array_multisort` (1–n arrays, orders, flags), `array_unique` flags, `array_keys` search, `array_map` (n arrays, `null` callback), `array_filter` modes, `count(COUNT_RECURSIVE)` with recursion detection, `array_sum`/`array_product` 8.3 warnings, `range()` with the 8.3 rules and texts, the key/assoc/callback set operations (`array_diff_key/assoc/ukey/uassoc`, `array_udiff*`, `array_intersect_*`, `array_uintersect*`), `array_merge_recursive`, `array_replace_recursive`, `array_change_key_case`, `key_exists`, `array_find`/`array_find_key`/`array_any`/`array_all`, `array_first`/`array_last` (8.5), `current`/`key`/`pos`/`next`/`prev`/`reset`/`end`, `array_walk_recursive` (elements as reference cells), reference elements preserved php-style through copies |
 | funcs     | 2  | `call_user_func`, `call_user_func_array` |
 | json      | 2  | `json_encode` (incl. `JSON_PRETTY_PRINT`/`UNESCAPED_SLASHES`/`UNESCAPED_UNICODE`; objects → public-property objects), `json_decode` |
 | hash      | 5  | `md5`, `sha1`, `crc32`, `hash` (md5/sha1/sha256/sha384/sha512/crc32b), `hash_algos` |
@@ -77,6 +80,34 @@ modes), `preg_replace_callback` (`$limit`/`$count`), `preg_replace_callback_arra
 
 **pure, simply not yet done (next wave, no blocker):** `hash_hmac` `hash_pbkdf2`
 `hash_equals`; string `wordwrap`; array `array_replace_recursive` / `array_merge_recursive`.
+
+## Deferred by S2 (string / array half)
+
+**RNG (random extension state):** `shuffle`, `str_shuffle`, `array_rand` — need the
+`mt_rand`/`random_int` generator so seeded sequences match php.
+
+**streams:** `fprintf`, `vfprintf` (need `STDOUT`/`php://` stream resources).
+
+**objects (E6):** `count()` on `Countable`, `iterator_*`, objects in `array_column`,
+`__toString` operands in the string functions, sorting objects by property lists,
+`array_multisort`/`sort` flags on objects.
+
+**engine (prefer-ref):** `array_multisort($a, SORT_DESC, ...)` with literal flags — the
+`NativeFn` ABI has only a by-ref mask, so a literal in a by-ref slot is "could not be
+passed by reference"; the manifest marks these params `prefer_ref` (pass variables for
+now). `strtok` keeps its cursor in a thread-local until `ExtState` gains a slot.
+
+**locale:** `setlocale` accepts only `C`/`POSIX`/`C.UTF-8`/`""`/`"0"` (php also accepts
+whatever the OS has installed); `nl_langinfo` skipped; `strcoll`/`SORT_LOCALE_STRING`
+are byte comparisons (C locale). `hebrev` skipped.
+
+**value crate:** `null == "0"` loose comparison (`in_array`/`array_search`/`array_keys`
+with a null needle) — php compares null against a string as `""`; `Array` has no
+pointer identity, so `count(COUNT_RECURSIVE)` on a direct self-reference counts one
+level deeper than php before warning.
+
+**php-internal ordering:** the `array_intersect`/`array_udiff` family emit "Array to
+string conversion" once per element here, php once per comparison of its sort-merge.
 
 ## Deferred by S2 (var / type / url / info half)
 

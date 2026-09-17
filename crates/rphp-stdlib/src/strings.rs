@@ -4,7 +4,7 @@
 //! (ICU-backed) and are a separate extension.
 use rphp_value::{Array, ArrayKey, Str, Value};
 
-use rphp_runtime::{Ctx, NativeFn, NativeResult, nf, Unwind};
+use rphp_runtime::{Ctx, NativeFn, NativeResult, nf, nf_ref, Unwind};
 
 /// This extension's registry contribution (see `lib.rs`). New byte-string
 /// functions are added here alongside their handler below.
@@ -17,10 +17,12 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("str_repeat", 2, Some(2), str_repeat),
     nf!("substr", 2, Some(3), substr),
     nf!("strpos", 2, Some(3), strpos),
-    nf!("str_replace", 3, Some(3), str_replace),
+    nf_ref!("str_replace", 3, Some(4), 0b1000, str_replace),
+    nf_ref!("str_ireplace", 3, Some(4), 0b1000, str_ireplace),
     nf!("trim", 1, Some(2), trim),
     nf!("ltrim", 1, Some(2), ltrim),
     nf!("rtrim", 1, Some(2), rtrim),
+    nf!("chop", 1, Some(2), rtrim),
     nf!("implode", 1, Some(2), implode),
     nf!("join", 1, Some(2), implode),
     nf!("explode", 2, Some(3), explode),
@@ -39,7 +41,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("strripos", 2, Some(3), strripos),
     nf!("strstr", 2, Some(3), strstr),
     nf!("stristr", 2, Some(3), stristr),
-    nf!("strrchr", 2, Some(2), strrchr),
+    nf!("strrchr", 2, Some(3), strrchr),
     nf!("strpbrk", 2, Some(2), strpbrk),
     nf!("strcmp", 2, Some(2), strcmp),
     nf!("strcasecmp", 2, Some(2), strcasecmp),
@@ -55,9 +57,6 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("stripslashes", 1, Some(1), stripslashes),
     nf!("number_format", 1, Some(4), number_format),
     nf!("str_word_count", 1, Some(3), str_word_count),
-    nf!("sprintf", 1, None, sprintf),
-    nf!("printf", 1, None, printf),
-    nf!("vsprintf", 2, Some(2), vsprintf),
 ];
 
 /// The byte string an argument coerces to (the `(string)` cast). Lets every
@@ -66,8 +65,49 @@ fn bytes(v: &Value) -> Vec<u8> {
     v.to_php_bytes()
 }
 
-fn str_value(bytes: Vec<u8>) -> Value {
+/// Wrap owned bytes as a string value.
+pub(crate) fn str_value(bytes: Vec<u8>) -> Value {
     Value::Str(Str::from_vec(bytes))
+}
+
+/// php's `php_charmask`: expand a character list with `a..z` ranges into a
+/// 256-entry membership table, warning (as `$func`) about malformed ranges
+/// exactly as php does — the malformed pieces still contribute their bytes.
+pub(crate) fn charmask(ctx: &mut Ctx, func: &str, input: &[u8]) -> Result<[bool; 256], Unwind> {
+    let mut mask = [false; 256];
+    let n = input.len();
+    let mut i = 0;
+    while i < n {
+        let c = input[i];
+        if i + 3 < n && input[i + 1] == b'.' && input[i + 2] == b'.' && input[i + 3] >= c {
+            for b in c..=input[i + 3] {
+                mask[b as usize] = true;
+            }
+            i += 4;
+            continue;
+        }
+        if i + 1 < n && input[i] == b'.' && input[i + 1] == b'.' {
+            let what = if i == 0 {
+                "no character to the left of '..'"
+            } else if i + 2 >= n {
+                "no character to the right of '..'"
+            } else if input[i - 1] > input[i + 2] {
+                "'..'-range needs to be incrementing"
+            } else {
+                ""
+            };
+            if what.is_empty() {
+                ctx.warn(&format!("{func}(): Invalid '..'-range"))?;
+            } else {
+                ctx.warn(&format!("{func}(): Invalid '..'-range, {what}"))?;
+            }
+            i += 1;
+            continue;
+        }
+        mask[c as usize] = true;
+        i += 1;
+    }
+    Ok(mask)
 }
 
 pub(crate) fn strlen(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
@@ -118,7 +158,7 @@ pub(crate) fn substr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let n = s.len() as i64;
     let mut start = args[1].to_int();
     if start < 0 {
-        start = (n + start).max(0);
+        start = n.saturating_add(start).max(0);
     } else {
         start = start.min(n);
     }
@@ -128,9 +168,9 @@ pub(crate) fn substr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Some(len) => {
             let l = len.to_int();
             if l < 0 {
-                (n + l).max(start)
+                n.saturating_add(l).max(start)
             } else {
-                (start + l).min(n)
+                start.saturating_add(l).min(n)
             }
         }
     };
@@ -147,10 +187,12 @@ pub(crate) fn strpos(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let n = haystack.len() as i64;
     let mut start = args.get(2).map_or(0, Value::to_int);
     if start < 0 {
-        start = (n + start).max(0);
+        start += n;
     }
-    if start > n {
-        return Ok(Value::Bool(false));
+    if start < 0 || start > n {
+        return Err(Unwind::value_error(
+            "strpos(): Argument #3 ($offset) must be contained in argument #1 ($haystack)",
+        ));
     }
     match find(&haystack[start as usize..], &needle) {
         Some(pos) => Ok(Value::Int(start + pos as i64)),
@@ -158,42 +200,149 @@ pub(crate) fn strpos(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn str_replace(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let search = bytes(&args[0]);
-    let replace = bytes(&args[1]);
-    let subject = bytes(&args[2]);
-    Ok(str_value(replace_all(&subject, &search, &replace)))
+/// Replace every occurrence of `search` in `subject`, counting the hits; the
+/// match is byte-exact, or ASCII case-insensitive when `ci`.
+fn replace_counted(subject: &[u8], search: &[u8], replace: &[u8], ci: bool, count: &mut i64) -> Vec<u8> {
+    if search.is_empty() {
+        return subject.to_vec();
+    }
+    let hay: std::borrow::Cow<[u8]> = if ci { ascii_lower(subject).into() } else { subject.into() };
+    let needle: std::borrow::Cow<[u8]> = if ci { ascii_lower(search).into() } else { search.into() };
+    let mut out = Vec::with_capacity(subject.len());
+    let mut i = 0;
+    while let Some(pos) = find(&hay[i..], &needle) {
+        out.extend_from_slice(&subject[i..i + pos]);
+        out.extend_from_slice(replace);
+        i += pos + search.len();
+        *count += 1;
+    }
+    out.extend_from_slice(&subject[i..]);
+    out
 }
 
-pub(crate) fn trim(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    trim_impl(args, true, true)
+/// Apply one (search, replace) plan to a single subject string.
+fn replace_subject(ctx: &mut Ctx, subject: &[u8], plan: &[(Vec<u8>, Vec<u8>)], ci: bool, count: &mut i64) -> Result<Vec<u8>, Unwind> {
+    let mut cur = subject.to_vec();
+    for (search, replace) in plan {
+        cur = replace_counted(&cur, search, replace, ci, count);
+    }
+    let _ = ctx;
+    Ok(cur)
 }
 
-pub(crate) fn ltrim(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    trim_impl(args, true, false)
+/// Shared body of `str_replace`/`str_ireplace`: array or string search and
+/// replace, array or string subject, `&$count` in position 3.
+fn str_replace_impl(ctx: &mut Ctx, args: &mut [Value], func: &str, ci: bool) -> NativeResult {
+    let search = args[0].deref().into_owned();
+    let replace = args[1].deref().into_owned();
+    // The list of (search, replace) pairs applied in order.
+    let plan: Vec<(Vec<u8>, Vec<u8>)> = match (&search, &replace) {
+        (Value::Array(s), Value::Array(r)) => {
+            let reps: Vec<Vec<u8>> = r.iter().map(|(_, v)| v.to_php_bytes()).collect();
+            s.iter()
+                .enumerate()
+                .map(|(i, (_, sv))| (sv.to_php_bytes(), reps.get(i).cloned().unwrap_or_default()))
+                .collect()
+        }
+        (Value::Array(s), r) => {
+            let rb = r.to_php_bytes();
+            s.iter().map(|(_, sv)| (sv.to_php_bytes(), rb.clone())).collect()
+        }
+        (_, Value::Array(_)) => {
+            return Err(Unwind::type_error(format!(
+                "{func}(): Argument #2 ($replace) must be of type string when argument #1 ($search) is a string"
+            )))
+        }
+        (s, r) => vec![(s.to_php_bytes(), r.to_php_bytes())],
+    };
+    let mut count = 0i64;
+    let result = match args[2].deref().into_owned() {
+        Value::Array(subjects) => {
+            let mut out = Array::new();
+            for (k, v) in subjects.iter() {
+                let v = v.deref().into_owned();
+                if matches!(v, Value::Array(_)) {
+                    ctx.warn("Array to string conversion")?;
+                }
+                let replaced = replace_subject(ctx, &v.to_php_bytes(), &plan, ci, &mut count)?;
+                out.set(k.clone(), str_value(replaced));
+            }
+            Value::Array(out)
+        }
+        v => str_value(replace_subject(ctx, &v.to_php_bytes(), &plan, ci, &mut count)?),
+    };
+    if args.len() > 3 {
+        args[3] = Value::Int(count);
+    }
+    Ok(result)
 }
 
-pub(crate) fn rtrim(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    trim_impl(args, false, true)
+/// `str_replace(array|string $search, array|string $replace, string|array
+/// $subject, &$count = null): string|array`.
+pub(crate) fn str_replace(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    str_replace_impl(ctx, args, "str_replace", false)
 }
 
-pub(crate) fn implode(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+/// `str_ireplace(...)`: the ASCII case-insensitive twin of `str_replace`.
+pub(crate) fn str_ireplace(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    str_replace_impl(ctx, args, "str_ireplace", true)
+}
+
+pub(crate) fn trim(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    trim_impl(ctx, "trim", args, true, true)
+}
+
+pub(crate) fn ltrim(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    trim_impl(ctx, "ltrim", args, true, false)
+}
+
+pub(crate) fn rtrim(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    trim_impl(ctx, "rtrim", args, false, true)
+}
+
+pub(crate) fn implode(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // `implode($array)` (glue ""), `implode($glue, $array)`, and the legacy
     // reversed `implode($array, $glue)` order are all accepted.
-    let (glue, array) = match args {
-        [Value::Array(a)] => (Vec::new(), a),
-        [glue, Value::Array(a)] => (bytes(glue), a),
-        [Value::Array(a), glue] => (bytes(glue), a),
-        _ => {
+    // PHP 8: `implode($array)` or `implode($separator, $array)`; the legacy
+    // reversed order is gone and each shape has its own TypeError text.
+    let a0 = args[0].deref().into_owned();
+    let (glue, array) = if args.len() == 1 {
+        match a0 {
+            Value::Array(a) => (Vec::new(), a),
+            _ => {
+                return Err(Unwind::type_error(
+                    "implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given",
+                ))
+            }
+        }
+    } else {
+        if matches!(a0, Value::Array(_)) {
             return Err(Unwind::type_error(
-                "implode(): Argument must be of type array",
-            ))
+                "implode(): Argument #1 ($separator) must be of type string, array given",
+            ));
+        }
+        match args[1].deref().into_owned() {
+            Value::Array(a) => (bytes(&a0), a),
+            Value::Null => {
+                return Err(Unwind::type_error(
+                    "implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given",
+                ))
+            }
+            other => {
+                return Err(Unwind::type_error(format!(
+                    "implode(): Argument #2 ($array) must be of type ?array, {} given",
+                    other.type_name()
+                )))
+            }
         }
     };
     let mut out = Vec::new();
     for (i, (_, v)) in array.iter().enumerate() {
         if i > 0 {
             out.extend_from_slice(&glue);
+        }
+        if matches!(&*v.deref(), Value::Array(_)) {
+            ctx.warn("Array to string conversion")?;
         }
         v.append_php_bytes(&mut out);
     }
@@ -208,7 +357,10 @@ pub(crate) fn explode(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
             "explode(): Argument #1 ($separator) cannot be empty",
         ));
     }
-    let limit = args.get(2).map_or(i64::MAX, Value::to_int);
+    let mut limit = args.get(2).map_or(i64::MAX, Value::to_int);
+    if limit == 0 {
+        limit = 1;
+    }
     let mut parts: Vec<&[u8]> = Vec::new();
     let mut rest = &subject[..];
     // Split greedily; a positive limit caps the piece count with the remainder
@@ -242,15 +394,24 @@ pub(crate) fn explode(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn ord(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn ord(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let b = bytes(&args[0]);
+    // PHP 8.5 deprecates anything but a one-byte string.
+    if b.is_empty() {
+        ctx.deprecated("ord(): Providing an empty string is deprecated")?;
+    } else if b.len() > 1 {
+        ctx.deprecated("ord(): Providing a string that is not one byte long is deprecated. Use ord($str[0]) instead")?;
+    }
     Ok(Value::Int(b.first().copied().unwrap_or(0) as i64))
 }
 
-pub(crate) fn chr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    // PHP reduces the codepoint modulo 256.
-    let byte = args[0].to_int().rem_euclid(256) as u8;
-    Ok(str_value(vec![byte]))
+pub(crate) fn chr(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // PHP reduces the codepoint modulo 256 (with a deprecation since 8.5).
+    let v = args[0].to_int();
+    if !(0..=255).contains(&v) {
+        ctx.deprecated("chr(): Providing a value not in-between 0 and 255 is deprecated, this is because a byte value must be in the [0, 255] interval. The value used will be constrained using % 256")?;
+    }
+    Ok(str_value(vec![v.rem_euclid(256) as u8]))
 }
 
 pub(crate) fn str_contains(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
@@ -287,31 +448,21 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|w| w == needle)
 }
 
-/// Replace every non-overlapping occurrence of `search` in `subject`. An empty
-/// search leaves the subject unchanged (no infinite loop), as PHP does.
-fn replace_all(subject: &[u8], search: &[u8], replace: &[u8]) -> Vec<u8> {
-    if search.is_empty() {
-        return subject.to_vec();
-    }
-    let mut out = Vec::with_capacity(subject.len());
-    let mut rest = subject;
-    while let Some(pos) = find(rest, search) {
-        out.extend_from_slice(&rest[..pos]);
-        out.extend_from_slice(replace);
-        rest = &rest[pos + search.len()..];
-    }
-    out.extend_from_slice(rest);
-    out
-}
-
-fn trim_impl(args: &[Value], left: bool, right: bool) -> NativeResult {
+fn trim_impl(ctx: &mut Ctx, func: &str, args: &[Value], left: bool, right: bool) -> NativeResult {
     let s = bytes(&args[0]);
-    // Default trim set: " \t\n\r\0\x0B" (matches php-src).
-    let chars: Vec<u8> = match args.get(1) {
-        Some(c) => bytes(c),
-        None => vec![b' ', b'\t', b'\n', b'\r', 0, 0x0b],
+    // Default trim set: " \t\n\r\0\x0B" (matches php-src); an explicit list
+    // may carry `a..z` ranges.
+    let mask = match args.get(1) {
+        Some(c) => charmask(ctx, func, &bytes(c))?,
+        None => {
+            let mut m = [false; 256];
+            for b in [b' ', b'\t', b'\n', b'\r', 0, 0x0b] {
+                m[b as usize] = true;
+            }
+            m
+        }
     };
-    let in_set = |b: u8| chars.contains(&b);
+    let in_set = |b: u8| mask[b as usize];
     let mut start = 0;
     let mut end = s.len();
     if left {
@@ -586,11 +737,12 @@ pub(crate) fn stristr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 pub(crate) fn strrchr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let needle = bytes(&args[1]);
-    // Only the first byte of the needle is significant; an empty needle fails.
-    let Some(&first) = needle.first() else {
-        return Ok(Value::Bool(false));
-    };
+    let before = args.get(2).is_some_and(Value::to_bool);
+    // Only the first byte of the needle is significant; an empty needle
+    // searches for a NUL byte (its C terminator), as php does.
+    let first = needle.first().copied().unwrap_or(0);
     match haystack.iter().rposition(|&c| c == first) {
+        Some(pos) if before => Ok(str_value(haystack[..pos].to_vec())),
         Some(pos) => Ok(str_value(haystack[pos..].to_vec())),
         None => Ok(Value::Bool(false)),
     }
@@ -599,6 +751,11 @@ pub(crate) fn strrchr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 pub(crate) fn strpbrk(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let haystack = bytes(&args[0]);
     let charlist = bytes(&args[1]);
+    if charlist.is_empty() {
+        return Err(Unwind::value_error(
+            "strpbrk(): Argument #2 ($characters) must be a non-empty string",
+        ));
+    }
     match haystack.iter().position(|c| charlist.contains(c)) {
         Some(pos) => Ok(str_value(haystack[pos..].to_vec())),
         None => Ok(Value::Bool(false)),
@@ -683,17 +840,18 @@ pub(crate) fn bin2hex(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn hex2bin(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn hex2bin(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let b = bytes(&args[0]);
-    // PHP warns and returns false on odd length or a non-hex byte; we mirror the
-    // (stdout-visible) `false` result without the warning.
+    // PHP warns and returns false on odd length or a non-hex byte.
     if !b.len().is_multiple_of(2) {
+        ctx.warn("hex2bin(): Hexadecimal input string must have an even length")?;
         return Ok(Value::Bool(false));
     }
     let mut out = Vec::with_capacity(b.len() / 2);
     let mut i = 0;
     while i < b.len() {
         let (Some(hi), Some(lo)) = (hex_val(b[i]), hex_val(b[i + 1])) else {
+            ctx.warn("hex2bin(): Input string must be hexadecimal string")?;
             return Ok(Value::Bool(false));
         };
         out.push((hi << 4) | lo);
@@ -729,7 +887,7 @@ pub(crate) fn nl2br(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn strtr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn strtr(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     if args.len() == 2 {
         // Array form: replace whole substrings, longest key first, one
         // left-to-right pass (replaced regions are never re-scanned).
@@ -744,7 +902,9 @@ pub(crate) fn strtr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
         for (k, v) in map.iter() {
             let kb = k.to_value().to_php_bytes();
             if kb.is_empty() {
-                continue; // PHP ignores an empty-string key.
+                // PHP warns about and ignores an empty-string key.
+                ctx.warn("strtr(): Ignoring replacement of empty string")?;
+                continue;
             }
             pairs.push((kb, v.to_php_bytes()));
         }
@@ -781,33 +941,113 @@ pub(crate) fn strtr(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn substr_replace(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let s = bytes(&args[0]);
-    let replace = bytes(&args[1]);
+/// Splice `replace` into `s` at substr()-style `start`/`length`.
+fn splice_bytes(s: &[u8], replace: &[u8], start: i64, length: Option<i64>) -> Vec<u8> {
     let n = s.len() as i64;
     // `start`/`length` follow substr()'s negative-from-the-end semantics.
-    let mut start = args[2].to_int();
+    let mut start = start;
     if start < 0 {
-        start = (n + start).max(0);
+        start = n.saturating_add(start).max(0);
     } else {
         start = start.min(n);
     }
-    let end = match args.get(3) {
-        None | Some(Value::Null) => n,
+    let end = match length {
+        None => n,
         Some(l) => {
-            let l = l.to_int();
             if l < 0 {
-                (n + l).max(start)
+                n.saturating_add(l).max(start)
             } else {
-                (start + l).min(n)
+                start.saturating_add(l).min(n)
             }
         }
     };
     let mut out = Vec::with_capacity(s.len() + replace.len());
     out.extend_from_slice(&s[..start as usize]);
-    out.extend_from_slice(&replace);
+    out.extend_from_slice(replace);
     out.extend_from_slice(&s[end as usize..]);
-    Ok(str_value(out))
+    out
+}
+
+/// `substr_replace(array|string $string, array|string $replace, array|int
+/// $offset, array|int|null $length = null): string|array`.
+pub(crate) fn substr_replace(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let subject = args[0].deref().into_owned();
+    let replace = args[1].deref().into_owned();
+    let offset = args[2].deref().into_owned();
+    let length = args.get(3).map(|v| v.deref().into_owned()).unwrap_or(Value::Null);
+    if let Some(l) = args.get(3) {
+        if !matches!(&*l.deref(), Value::Null | Value::Int(_) | Value::Array(_) | Value::Bool(_) | Value::Float(_)) {
+            return Err(Unwind::type_error(format!(
+                "substr_replace(): Argument #4 ($length) must be of type array|int|null, {} given",
+                l.type_name()
+            )));
+        }
+    }
+    let Value::Array(subjects) = &subject else {
+        if matches!(offset, Value::Array(_)) {
+            return Err(Unwind::type_error(
+                "substr_replace(): Argument #3 ($offset) cannot be an array when working on a single string",
+            ));
+        }
+        if matches!(length, Value::Array(_)) {
+            return Err(Unwind::type_error(
+                "substr_replace(): Argument #4 ($length) cannot be an array when working on a single string",
+            ));
+        }
+        // A replacement array contributes its first element (or nothing).
+        let rep = match &replace {
+            Value::Array(r) => r.first().map(|(_, v)| v.to_php_bytes()).unwrap_or_default(),
+            v => v.to_php_bytes(),
+        };
+        let len = match &length {
+            Value::Null => None,
+            v => Some(v.to_int()),
+        };
+        return Ok(str_value(splice_bytes(&subject.to_php_bytes(), &rep, offset.to_int(), len)));
+    };
+    // Array subject: each element is spliced with the matching (by position)
+    // replacement / offset / length, which fall back to "" / 0 / whole string
+    // once their array runs out.
+    let reps: Option<Vec<Vec<u8>>> = match &replace {
+        Value::Array(r) => {
+            let mut out = Vec::new();
+            for (_, v) in r.iter() {
+                out.push(crate::array2::sort_string_of(ctx, v)?);
+            }
+            Some(out)
+        }
+        _ => None,
+    };
+    let rep_scalar = replace.to_php_bytes();
+    let offs: Option<Vec<i64>> = match &offset {
+        Value::Array(o) => Some(o.iter().map(|(_, v)| v.to_int()).collect()),
+        _ => None,
+    };
+    let lens: Option<Vec<i64>> = match &length {
+        Value::Array(l) => Some(l.iter().map(|(_, v)| v.to_int()).collect()),
+        _ => None,
+    };
+    let mut out = Array::new();
+    for (i, (k, v)) in subjects.iter().enumerate() {
+        let sb = crate::array2::sort_string_of(ctx, v)?;
+        let rep: Vec<u8> = match &reps {
+            Some(r) => r.get(i).cloned().unwrap_or_default(),
+            None => rep_scalar.clone(),
+        };
+        let off = match &offs {
+            Some(o) => o.get(i).copied().unwrap_or(0),
+            None => offset.to_int(),
+        };
+        let len = match &lens {
+            Some(l) => Some(l.get(i).copied().unwrap_or(sb.len() as i64)),
+            None => match &length {
+                Value::Null => None,
+                v => Some(v.to_int()),
+            },
+        };
+        out.set(k.clone(), str_value(splice_bytes(&sb, &rep, off, len)));
+    }
+    Ok(Value::Array(out))
 }
 
 pub(crate) fn quotemeta(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
@@ -946,7 +1186,8 @@ pub(crate) fn number_format(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     if num.is_infinite() {
         return Ok(str_value(b"inf".to_vec()));
     }
-    let dec = args.get(1).map_or(0, Value::to_int).max(0) as usize;
+    let dec_arg = args.get(1).map_or(0, Value::to_int);
+    let dec = dec_arg.max(0) as usize;
     let dec_point = match args.get(2) {
         Some(v) => bytes(v),
         None => vec![b'.'],
@@ -955,7 +1196,37 @@ pub(crate) fn number_format(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Some(v) => bytes(v),
         None => vec![b','],
     };
-    let (neg, intpart, fracpart) = format_decimal(num, dec);
+    // php rounds first (half away from zero on the decimal the float
+    // denotes), then prints the rounded double's exact digits with `%.NF`.
+    let (neg, intpart, fracpart) = if dec_arg < 0 {
+        // PHP 8.3: a negative precision rounds to that power of ten, e.g.
+        // number_format(1234.5678, -2) is "1,200".
+        let scale = 10f64.powi((-dec_arg).min(400) as i32);
+        let (neg, scaled, _) = format_decimal(num / scale, 0);
+        if scaled == b"0" {
+            (false, vec![b'0'], Vec::new())
+        } else {
+            let mut ip = scaled;
+            ip.extend(std::iter::repeat_n(b'0', (-dec_arg) as usize));
+            (neg, ip, Vec::new())
+        }
+    } else {
+        let (neg, ip, fp) = format_decimal(num, dec);
+        // Re-read the rounded decimal as a double and print it exactly, so
+        // magnitudes beyond 2^53 show their true digits as php does.
+        let mut text = String::from_utf8(ip).unwrap_or_default();
+        if !fp.is_empty() {
+            text.push('.');
+            text.push_str(&String::from_utf8(fp).unwrap_or_default());
+        }
+        let rounded: f64 = text.parse().unwrap_or(num.abs());
+        let exact = format!("{:.*}", dec, rounded);
+        let (ip, fp) = match exact.split_once('.') {
+            Some((a, b)) => (a.as_bytes().to_vec(), b.as_bytes().to_vec()),
+            None => (exact.into_bytes(), Vec::new()),
+        };
+        (neg, ip, fp)
+    };
     let mut out = Vec::new();
     if neg {
         out.push(b'-');
@@ -974,34 +1245,40 @@ pub(crate) fn number_format(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(str_value(out))
 }
 
-pub(crate) fn str_word_count(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn str_word_count(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let format = args.get(1).map_or(0, Value::to_int);
+    if !(0..=2).contains(&format) {
+        return Err(Unwind::value_error(
+            "str_word_count(): Argument #2 ($format) must be a valid format value",
+        ));
+    }
     let extra = match args.get(2) {
-        Some(v) => bytes(v),
-        None => Vec::new(),
+        Some(Value::Null) | None => [false; 256],
+        Some(v) => charmask(ctx, "str_word_count", &bytes(v))?,
     };
-    let is_letter = |c: u8| c.is_ascii_alphabetic() || extra.contains(&c);
-    // "'" and "-" join a word only when surrounded by letters, so a word ends at
-    // its last letter (any trailing connectors are consumed but dropped).
-    let is_inner = |c: u8| c == b'\'' || c == b'-';
+    let is_word = |c: u8| c.is_ascii_alphabetic() || extra[c as usize] || c == b'\'' || c == b'-';
+    // Only the very first byte may not be an apostrophe or dash, and only the
+    // very last byte may not be a dash (unless the char list allows them).
+    let mut start = 0;
+    let mut end = s.len();
+    if !s.is_empty() && ((s[0] == b'\'' && !extra[b'\'' as usize]) || (s[0] == b'-' && !extra[b'-' as usize])) {
+        start = 1;
+    }
+    if end > start && s[end - 1] == b'-' && !extra[b'-' as usize] {
+        end -= 1;
+    }
     let mut words: Vec<(usize, &[u8])> = Vec::new();
-    let mut i = 0;
-    while i < s.len() {
-        if is_letter(s[i]) {
-            let start = i;
-            let mut last = i;
-            i += 1;
-            while i < s.len() && (is_letter(s[i]) || is_inner(s[i])) {
-                if is_letter(s[i]) {
-                    last = i;
-                }
-                i += 1;
-            }
-            words.push((start, &s[start..=last]));
-        } else {
+    let mut i = start;
+    while i < end {
+        let ws = i;
+        while i < end && is_word(s[i]) {
             i += 1;
         }
+        if i > ws {
+            words.push((ws, &s[ws..i]));
+        }
+        i += 1;
     }
     match format {
         0 => Ok(Value::Int(words.len() as i64)),
@@ -1023,314 +1300,4 @@ pub(crate) fn str_word_count(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
             "str_word_count(): Argument #2 ($format) must be a valid format value",
         )),
     }
-}
-
-// ---- printf family ----------------------------------------------------------
-
-/// Lay out `%e`/`%E`: PHP uses a signed exponent with no leading zeros and a
-/// minimum of one digit (e.g. `1.234568e+4`), unlike C's two-digit exponent.
-fn format_exp(value: f64, prec: usize, upper: bool) -> Vec<u8> {
-    let s = format!("{:.*e}", prec, value);
-    let (mant, exp) = s.split_once('e').expect("LowerExp always has 'e'");
-    let e: i32 = exp.parse().expect("valid exponent");
-    let echar = if upper { b'E' } else { b'e' };
-    let mut out = mant.as_bytes().to_vec();
-    out.push(echar);
-    out.push(if e < 0 { b'-' } else { b'+' });
-    out.extend_from_slice(e.unsigned_abs().to_string().as_bytes());
-    out
-}
-
-/// PHP's `%g`/`%G` (modeled on php_gcvt + zend_dtoa mode 2): render with at most
-/// `ndigit` significant digits, switching to exponential form when the decimal
-/// exponent is `< -4` or `>= ndigit`. Trailing zeros are dropped — except that an
-/// exact half-way value rounded down to `ndigit` digits keeps them (so `%.4g` of
-/// 71905 is `"7.190e+4"`), matching zend_dtoa. Exponential mantissas force a `.0`.
-fn php_gcvt(value: f64, ndigit: usize, upper: bool) -> Vec<u8> {
-    if value == 0.0 {
-        return vec![b'0'];
-    }
-    let exp_char = if upper { b'E' } else { b'e' };
-    // Shortest round-tripping significant digits. An exact tie at `ndigit` shows
-    // up here as exactly `ndigit + 1` digits ending in '5'.
-    let short = format!("{:e}", value);
-    let (sm, _) = short.split_once('e').expect("LowerExp always has 'e'");
-    let mut sd: Vec<u8> = sm.bytes().filter(|&b| b != b'.').collect();
-    while sd.len() > 1 && *sd.last().unwrap() == b'0' {
-        sd.pop();
-    }
-    let is_tie = sd.len() == ndigit + 1 && sd[ndigit] == b'5';
-    // Round to exactly `ndigit` significant digits.
-    let sci = format!("{:.*e}", ndigit.saturating_sub(1), value);
-    let (mant, exp) = sci.split_once('e').expect("LowerExp always has 'e'");
-    let e: i32 = exp.parse().expect("valid exponent");
-    let mut digits: Vec<u8> = mant.bytes().filter(|&b| b != b'.').collect();
-    let decpt = e + 1;
-    let nd = ndigit as i32;
-    let e_style = (decpt >= 0 && decpt > nd) || decpt < -3;
-    // Keep the rounding-induced trailing zeros only for an exact tie shown in
-    // exponential form (never for a power-of-ten carry, whose tail is all zeros).
-    let keep = is_tie && e_style && digits[1..].iter().any(|&b| b != b'0');
-    if !keep {
-        while digits.len() > 1 && *digits.last().unwrap() == b'0' {
-            digits.pop();
-        }
-    }
-    let mut out = Vec::new();
-    if e_style {
-        // Exponential: "d.ddde±X".
-        let mut d = decpt - 1;
-        let sign = if d < 0 {
-            d = -d;
-            b'-'
-        } else {
-            b'+'
-        };
-        out.push(digits[0]);
-        out.push(b'.');
-        if digits.len() == 1 {
-            out.push(b'0');
-        } else {
-            out.extend_from_slice(&digits[1..]);
-        }
-        out.push(exp_char);
-        out.push(sign);
-        out.extend_from_slice(d.to_string().as_bytes());
-    } else if decpt < 0 {
-        // "0.00ddd": -decpt leading fractional zeros.
-        out.push(b'0');
-        out.push(b'.');
-        out.resize(out.len() + (-decpt) as usize, b'0');
-        out.extend_from_slice(&digits);
-    } else {
-        // Plain fixed notation.
-        let dp = decpt as usize;
-        let mut idx = 0;
-        for _ in 0..dp {
-            out.push(*digits.get(idx).unwrap_or(&b'0'));
-            if idx < digits.len() {
-                idx += 1;
-            }
-        }
-        if idx < digits.len() {
-            if idx == 0 {
-                out.push(b'0');
-            }
-            out.push(b'.');
-            out.extend_from_slice(&digits[idx..]);
-        }
-    }
-    out
-}
-
-/// The shared engine behind `sprintf`/`printf`/`vsprintf`. Operates entirely on
-/// bytes so binary strings round-trip; `args` are the values after the format.
-fn do_sprintf(format: &[u8], args: &[Value]) -> Result<Vec<u8>, Unwind> {
-    let mut out = Vec::new();
-    let mut argi = 0usize;
-    let n = format.len();
-    let mut i = 0;
-    while i < n {
-        if format[i] != b'%' {
-            out.push(format[i]);
-            i += 1;
-            continue;
-        }
-        i += 1;
-        if i < n && format[i] == b'%' {
-            out.push(b'%');
-            i += 1;
-            continue;
-        }
-        // Optional positional "N$".
-        let mut explicit: Option<usize> = None;
-        {
-            let mut j = i;
-            while j < n && format[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j > i && j < n && format[j] == b'$' {
-                explicit = std::str::from_utf8(&format[i..j]).ok().and_then(|s| s.parse().ok());
-                i = j + 1;
-            }
-        }
-        // Flags.
-        let mut left = false;
-        let mut plus = false;
-        let mut zero = false;
-        let mut pad = b' ';
-        let mut custom_pad = false;
-        loop {
-            match format.get(i) {
-                Some(b'-') => left = true,
-                Some(b'+') => plus = true,
-                Some(b' ') => {} // PHP's space flag means "pad with spaces" (default).
-                Some(b'0') => zero = true,
-                Some(b'\'') => {
-                    if let Some(&p) = format.get(i + 1) {
-                        pad = p;
-                        custom_pad = true;
-                        i += 2;
-                        continue;
-                    }
-                }
-                _ => break,
-            }
-            i += 1;
-        }
-        // Width.
-        let mut width = 0usize;
-        while i < n && format[i].is_ascii_digit() {
-            width = width * 10 + (format[i] - b'0') as usize;
-            i += 1;
-        }
-        // Precision.
-        let mut precision: Option<usize> = None;
-        if i < n && format[i] == b'.' {
-            i += 1;
-            let mut p = 0usize;
-            while i < n && format[i].is_ascii_digit() {
-                p = p * 10 + (format[i] - b'0') as usize;
-                i += 1;
-            }
-            precision = Some(p);
-        }
-        let Some(&conv) = format.get(i) else {
-            break; // a dangling '%' at end of format
-        };
-        i += 1;
-
-        // Resolve the argument for this conversion.
-        let arg: Value = match explicit {
-            Some(num) => {
-                if num == 0 || num > args.len() {
-                    return Err(Unwind::argument_count_error(format!(
-                        "{num} arguments are required, {} given",
-                        args.len()
-                    )));
-                }
-                args[num - 1].clone()
-            }
-            None => {
-                let Some(a) = args.get(argi) else {
-                    return Err(Unwind::argument_count_error(format!(
-                        "{} arguments are required, {} given",
-                        argi + 1,
-                        args.len()
-                    )));
-                };
-                argi += 1;
-                a.clone()
-            }
-        };
-
-        let signed = |neg: bool| -> Vec<u8> {
-            if neg {
-                vec![b'-']
-            } else if plus {
-                vec![b'+']
-            } else {
-                Vec::new()
-            }
-        };
-
-        let (prefix, body): (Vec<u8>, Vec<u8>) = match conv {
-            b's' => {
-                let mut b = arg.to_php_bytes();
-                if let Some(p) = precision {
-                    if b.len() > p {
-                        b.truncate(p);
-                    }
-                }
-                (Vec::new(), b)
-            }
-            b'd' | b'i' => {
-                let v = arg.to_int();
-                let mag = (v as i128).unsigned_abs();
-                (signed(v < 0), mag.to_string().into_bytes())
-            }
-            b'u' => (Vec::new(), (arg.to_int() as u64).to_string().into_bytes()),
-            b'x' => (Vec::new(), format!("{:x}", arg.to_int() as u64).into_bytes()),
-            b'X' => (Vec::new(), format!("{:X}", arg.to_int() as u64).into_bytes()),
-            b'o' => (Vec::new(), format!("{:o}", arg.to_int() as u64).into_bytes()),
-            b'b' => (Vec::new(), format!("{:b}", arg.to_int() as u64).into_bytes()),
-            b'c' => (Vec::new(), vec![(arg.to_int() & 0xff) as u8]),
-            b'f' | b'F' => {
-                let f = arg.to_float();
-                let prec = precision.unwrap_or(6);
-                (signed(f < 0.0), format!("{:.*}", prec, f.abs()).into_bytes())
-            }
-            b'e' | b'E' => {
-                let f = arg.to_float();
-                let prec = precision.unwrap_or(6);
-                (signed(f < 0.0), format_exp(f.abs(), prec, conv == b'E'))
-            }
-            b'g' | b'G' => {
-                let f = arg.to_float();
-                let nd = precision.unwrap_or(6).max(1);
-                (signed(f < 0.0), php_gcvt(f.abs(), nd, conv == b'G'))
-            }
-            other => {
-                return Err(Unwind::value_error(format!(
-                    "Unknown format specifier \"{}\"",
-                    other as char
-                )));
-            }
-        };
-
-        // Apply width with the chosen padding.
-        let content = prefix.len() + body.len();
-        if content >= width {
-            out.extend_from_slice(&prefix);
-            out.extend_from_slice(&body);
-        } else {
-            let padlen = width - content;
-            if left {
-                // Left-justify pads on the right (zero flag reverts to spaces).
-                let pc = if custom_pad { pad } else { b' ' };
-                out.extend_from_slice(&prefix);
-                out.extend_from_slice(&body);
-                out.extend(std::iter::repeat_n(pc, padlen));
-            } else if custom_pad {
-                out.extend(std::iter::repeat_n(pad, padlen));
-                out.extend_from_slice(&prefix);
-                out.extend_from_slice(&body);
-            } else if zero {
-                // Zero padding sits after the sign.
-                out.extend_from_slice(&prefix);
-                out.extend(std::iter::repeat_n(b'0', padlen));
-                out.extend_from_slice(&body);
-            } else {
-                out.extend(std::iter::repeat_n(b' ', padlen));
-                out.extend_from_slice(&prefix);
-                out.extend_from_slice(&body);
-            }
-        }
-    }
-    Ok(out)
-}
-
-pub(crate) fn sprintf(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let format = bytes(&args[0]);
-    Ok(str_value(do_sprintf(&format, &args[1..])?))
-}
-
-pub(crate) fn printf(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let format = bytes(&args[0]);
-    let rendered = do_sprintf(&format, &args[1..])?;
-    let len = rendered.len() as i64;
-    ctx.out().extend_from_slice(&rendered);
-    Ok(Value::Int(len))
-}
-
-pub(crate) fn vsprintf(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let format = bytes(&args[0]);
-    let Value::Array(arr) = &args[1] else {
-        return Err(Unwind::type_error(format!(
-            "vsprintf(): Argument #2 ($values) must be of type array, {} given",
-            args[1].type_name()
-        )));
-    };
-    let vals: Vec<Value> = arr.iter().map(|(_, v)| v.clone()).collect();
-    Ok(str_value(do_sprintf(&format, &vals)?))
 }

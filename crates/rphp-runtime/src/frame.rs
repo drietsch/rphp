@@ -9,8 +9,9 @@
 use std::rc::Rc;
 
 use rphp_bytecode::IncludeKind;
-use rphp_value::{Closure, Object, PhpRef, Value};
+use rphp_value::{Array, ArrayKey, Closure, Object, PhpRef, Value};
 
+use crate::class::MethodDef;
 use crate::registry::NativeId;
 use crate::symtab::Symtab;
 use crate::unit::FuncRt;
@@ -56,9 +57,20 @@ pub enum CallTarget {
     },
     /// A registered native.
     Native(NativeId),
+    /// A native method (`$this` is the pending call's `this`).
+    NativeMethod(Rc<MethodDef>),
     /// `new` of a class without a constructor: the arguments are evaluated
     /// and dropped.
     NoCtor,
+}
+
+/// What a native frame is running.
+#[derive(Clone)]
+pub enum NativeTarget {
+    /// A native function.
+    Func(NativeId),
+    /// A native method.
+    Method(Rc<MethodDef>),
 }
 
 /// A call being set up by `Init*` / `Send*` ops, consumed by `DoCall`.
@@ -125,7 +137,7 @@ pub struct Frame {
     /// `declare(strict_types=1)` unit.
     pub strict: bool,
     /// For native frames: the native and the arguments it was called with.
-    pub native: Option<(NativeId, Vec<Value>)>,
+    pub native: Option<(NativeTarget, Vec<Value>)>,
     /// For `Include` frames: which keyword.
     pub include_kind: Option<IncludeKind>,
     /// Live `foreach` iterators by iterator register.
@@ -151,10 +163,18 @@ impl Frame {
             pending: Vec::new(),
             silence_base,
             strict: false,
-            native: Some((id, args)),
+            native: Some((NativeTarget::Func(id), args)),
             include_kind: None,
             iters: Vec::new(),
         }
+    }
+
+    /// A native method frame.
+    pub fn native_method(m: Rc<MethodDef>, this: Option<Object>, args: Vec<Value>, silence_base: u32) -> Frame {
+        let mut f = Frame::native(NativeId(0), args, silence_base);
+        f.native = f.native.map(|(_, args)| (NativeTarget::Method(m), args));
+        f.this = this;
+        f
     }
 
     /// An internal-caller marker.
@@ -179,7 +199,7 @@ pub fn trace_arg(interp: &Interp, v: &Value) -> String {
         Value::Bool(true) => "true".to_string(),
         Value::Bool(false) => "false".to_string(),
         Value::Int(i) => i.to_string(),
-        Value::Float(_) => v.to_php_string(),
+        Value::Float(_) => interp.float_to_string_precision(v),
         Value::Str(s) => {
             let b = s.as_bytes();
             if b.len() > 15 {
@@ -243,36 +263,52 @@ impl Interp {
     /// The name a frame prints in a trace: `f`, `A->m`, `A::m`,
     /// `{closure:…}`, `intdiv`, `include`.
     pub fn frame_name(&self, frame: &Frame) -> String {
+        match self.frame_parts(frame) {
+            (Some(class), Some(sep), name) => format!("{class}{sep}{name}"),
+            (_, _, name) => name,
+        }
+    }
+
+    /// The `class`, `type` (`->`/`::`) and `function` a frame reports in a
+    /// backtrace entry.
+    pub fn frame_parts(&self, frame: &Frame) -> (Option<String>, Option<&'static str>, String) {
         match frame.kind {
             FrameKind::Native => match &frame.native {
-                Some((id, _)) => self.natives[id.0 as usize].name.to_string(),
-                None => "[internal]".to_string(),
+                Some((NativeTarget::Func(id), _)) => {
+                    (None, None, self.natives[id.0 as usize].name.to_string())
+                }
+                Some((NativeTarget::Method(m), _)) => {
+                    let class = self.classes[m.decl as usize].name_str();
+                    let sep = if frame.this.is_some() { "->" } else { "::" };
+                    (Some(class), Some(sep), String::from_utf8_lossy(&m.name).into_owned())
+                }
+                None => (None, None, "[internal]".to_string()),
             },
-            FrameKind::Internal => "[internal]".to_string(),
-            FrameKind::Include => match frame.include_kind {
-                Some(IncludeKind::Include) => "include".to_string(),
-                Some(IncludeKind::IncludeOnce) => "include_once".to_string(),
-                Some(IncludeKind::Require) => "require".to_string(),
-                Some(IncludeKind::RequireOnce) | None => "require_once".to_string(),
-            },
+            FrameKind::Internal => (None, None, "[internal]".to_string()),
+            FrameKind::Include => (
+                None,
+                None,
+                match frame.include_kind {
+                    Some(IncludeKind::Include) => "include".to_string(),
+                    Some(IncludeKind::IncludeOnce) => "include_once".to_string(),
+                    Some(IncludeKind::Require) => "require".to_string(),
+                    Some(IncludeKind::RequireOnce) | None => "require_once".to_string(),
+                },
+            ),
             FrameKind::Normal | FrameKind::ReentryBoundary => {
                 let Some(func) = &frame.func else {
-                    return "{main}".to_string();
+                    return (None, None, "{main}".to_string());
                 };
                 if func.is_main() {
-                    return "{main}".to_string();
+                    return (None, None, "{main}".to_string());
                 }
-                let name = String::from_utf8_lossy(&func.f.name_bytes);
+                let name = String::from_utf8_lossy(&func.f.name_bytes).into_owned();
                 match func.class {
                     Some(cid) if !func.f.flags.contains(rphp_bytecode::FnFlags::CLOSURE) => {
                         let sep = if frame.this.is_some() { "->" } else { "::" };
-                        format!(
-                            "{}{sep}{}",
-                            String::from_utf8_lossy(&self.classes[cid as usize].name),
-                            name
-                        )
+                        (Some(self.classes[cid as usize].name_str()), Some(sep), name)
                     }
-                    _ => name.into_owned(),
+                    _ => (None, None, name),
                 }
             }
         }
@@ -291,48 +327,164 @@ impl Interp {
         frame.func.as_ref().map_or(0, |f| f.line_at(frame.pc))
     }
 
-    /// Render php's `Stack trace:` body for the current frames (bottom =
-    /// `{main}` first): `#0 file(line): callee(args)` per call, innermost
-    /// first, then `#N {main}`. A callee whose caller is a native or internal
-    /// frame prints `[internal function]` as its site.
-    pub fn render_trace(&self) -> String {
+    /// php's backtrace over the current frames as `debug_backtrace()` /
+    /// `Exception::getTrace()` build it: one entry per call, innermost
+    /// first — `['file', 'line', 'function', 'class', 'object', 'type',
+    /// 'args']` with `file`/`line` being the *call site* in the caller (absent
+    /// when the caller is a native or internal frame: `[internal function]`).
+    /// `skip` frames are dropped from the top (a native that builds its own
+    /// trace skips itself), `limit` caps the entries (0 = all).
+    pub fn build_trace(&self, opts: TraceOpts) -> Array {
         let frames = &self.frames;
-        let mut out = String::new();
-        let mut n = 0;
+        let mut out = Array::new();
+        let mut skipped = 0usize;
+        let mut n = 0usize;
         for i in (1..frames.len()).rev() {
             let callee = &frames[i];
             if callee.kind == FrameKind::Internal {
                 continue;
             }
-            if callee.func.as_ref().is_some_and(|f| f.is_main())
-                && callee.kind != FrameKind::Include
-            {
+            if callee.func.as_ref().is_some_and(|f| f.is_main()) && callee.kind != FrameKind::Include {
                 // A nested entry `{main}` (shutdown functions after the main
-                // frame is gone) prints only as the final `{main}` line.
+                // frame is gone) is the final `{main}` line only.
                 continue;
             }
+            if skipped < opts.skip {
+                skipped += 1;
+                continue;
+            }
+            if opts.limit != 0 && n >= opts.limit {
+                break;
+            }
             let caller = &frames[i - 1];
-            let site = if caller.is_user() {
-                format!("{}({})", self.frame_file(caller), self.frame_line(caller))
-            } else {
-                "[internal function]".to_string()
+            let mut entry = Array::new();
+            if caller.is_user() {
+                entry.set(ArrayKey::str(b"file"), Value::string(self.frame_file(caller).as_bytes()));
+                entry.set(ArrayKey::str(b"line"), Value::Int(i64::from(self.frame_line(caller))));
+            }
+            let (class, sep, name) = self.frame_parts(callee);
+            entry.set(ArrayKey::str(b"function"), Value::string(name.as_bytes()));
+            if let Some(class) = class {
+                entry.set(ArrayKey::str(b"class"), Value::string(class.as_bytes()));
+                if opts.provide_object {
+                    if let Some(this) = &callee.this {
+                        entry.set(ArrayKey::str(b"object"), Value::Object(this.clone()));
+                    }
+                }
+                if let Some(sep) = sep {
+                    entry.set(ArrayKey::str(b"type"), Value::string(sep.as_bytes()));
+                }
+            }
+            if !opts.ignore_args {
+                let mut args = Array::new();
+                match callee.kind {
+                    FrameKind::Include => {
+                        if let Some(f) = &callee.func {
+                            args.push(Value::string(f.unit.file.as_bytes()));
+                        }
+                    }
+                    _ => {
+                        for a in self.frame_args(callee) {
+                            args.push(a);
+                        }
+                    }
+                }
+                entry.set(ArrayKey::str(b"args"), Value::Array(args));
+            }
+            out.push(Value::Array(entry));
+            n += 1;
+        }
+        out
+    }
+
+    /// Render a backtrace array as php's `Stack trace:` body /
+    /// `getTraceAsString()`: `#0 file(line): callee(args)` per entry, then
+    /// `#N {main}`.
+    pub fn trace_to_string(&self, trace: &Array) -> String {
+        let mut out = String::new();
+        let mut n = 0;
+        for (_, entry) in trace.iter() {
+            let Value::Array(e) = &*entry.deref() else { continue };
+            let get = |k: &[u8]| e.get_deref(&ArrayKey::str(k));
+            let site = match (get(b"file"), get(b"line")) {
+                (Some(f), Some(l)) => format!("{}({})", f.to_php_string(), l.to_int()),
+                _ => "[internal function]".to_string(),
             };
-            let args: Vec<String> = match callee.kind {
-                FrameKind::Include => Vec::new(),
-                _ => self
-                    .frame_args(callee)
-                    .iter()
-                    .map(|v| trace_arg(self, v))
-                    .collect(),
+            let mut name = String::new();
+            if let Some(c) = get(b"class") {
+                name.push_str(&c.to_php_string());
+                if let Some(t) = get(b"type") {
+                    name.push_str(&t.to_php_string());
+                }
+            }
+            if let Some(f) = get(b"function") {
+                name.push_str(&f.to_php_string());
+            }
+            let args: Vec<String> = match get(b"args") {
+                Some(Value::Array(a)) => a.iter().map(|(_, v)| trace_arg(self, v)).collect(),
+                _ => Vec::new(),
             };
-            out.push_str(&format!(
-                "#{n} {site}: {}({})\n",
-                self.frame_name(callee),
-                args.join(", ")
-            ));
+            out.push_str(&format!("#{n} {site}: {name}({})\n", args.join(", ")));
             n += 1;
         }
         out.push_str(&format!("#{n} {{main}}"));
         out
+    }
+
+    /// Render php's `Stack trace:` body for the current frames.
+    pub fn render_trace(&self) -> String {
+        self.trace_to_string(&self.build_trace(TraceOpts::default()))
+    }
+
+    /// A float as php prints it with the `precision` ini setting (the form
+    /// backtrace arguments use).
+    pub fn float_to_string_precision(&self, v: &Value) -> String {
+        let precision = self.ini_get("precision").and_then(|p| p.parse::<i64>().ok()).unwrap_or(14);
+        match &*v.deref() {
+            Value::Float(f) => format_float_precision(*f, precision),
+            other => other.to_php_string(),
+        }
+    }
+}
+
+/// Options for [`Interp::build_trace`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TraceOpts {
+    /// Include the `object` entry for method frames (`DEBUG_BACKTRACE_PROVIDE_OBJECT`).
+    pub provide_object: bool,
+    /// Leave out `args` (`DEBUG_BACKTRACE_IGNORE_ARGS`).
+    pub ignore_args: bool,
+    /// Maximum number of entries (0 = unlimited).
+    pub limit: usize,
+    /// Frames to skip from the top.
+    pub skip: usize,
+}
+
+/// php's `%.*G`-style float rendering with `precision` significant digits
+/// (`smart_str_append_double` without the `.0` suffix).
+pub fn format_float_precision(f: f64, precision: i64) -> String {
+    if f.is_nan() {
+        return "NAN".to_string();
+    }
+    if f.is_infinite() {
+        return if f > 0.0 { "INF".to_string() } else { "-INF".to_string() };
+    }
+    let p = precision.clamp(1, 40) as usize;
+    let s = format!("{:.*e}", p - 1, f);
+    // Split mantissa / exponent and re-render like %G.
+    let (mant, exp) = s.split_once('e').unwrap_or((&s, "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    if exp < -4 || exp >= p as i32 {
+        let mant = mant.trim_end_matches('0').trim_end_matches('.');
+        let mant = if mant.contains('.') { mant.to_string() } else { format!("{mant}.0") };
+        format!("{mant}E{}{}", if exp < 0 { "-" } else { "+" }, exp.abs())
+    } else {
+        let decimals = (p as i32 - 1 - exp).max(0) as usize;
+        let s = format!("{:.*}", decimals, f);
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            s
+        }
     }
 }

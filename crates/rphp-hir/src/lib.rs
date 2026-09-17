@@ -51,6 +51,13 @@
 //!   readable and hoisting classification can see namespace bodies.
 //! * `Name::resolved` is filled on every class/function/constant reference;
 //!   `use` items and namespace names are declarations and stay `None`.
+//!   `Resolved::Class::key` is the lowercased class-table key;
+//!   `Resolved::Func`/`Const` carry the resolved names *as spelled* (the
+//!   compiler's `NameConst` derives the lookup twins) — `ns_key` first,
+//!   then `global_key`, is the runtime two-step.
+//! * The declared name of a function, class-like and file-level `const`
+//!   (`FuncDecl::name`, `ClassLike::name`, `ConstItem::name`) is its FQN
+//!   (`N\f`); methods, properties and class constants keep their own names.
 //! * The only `MagicConst` nodes left are `__CLASS__` inside traits and
 //!   anonymous classes, and `__METHOD__`/`__FUNCTION__` where they would
 //!   embed an anonymous class name (see [`magic`]).

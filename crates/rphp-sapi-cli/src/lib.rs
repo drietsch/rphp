@@ -9,7 +9,7 @@
 //!   rphp run <file.php>                             run a script
 //!   rphp -d key=value                               set an ini directive (repeatable)
 //!   rphp -l <file.php>                              syntax check only (php's `-l`)
-//!   rphp --emit=tokens|ast|bytecode <file.php>      dump a pipeline stage
+//!   rphp --emit=tokens|ast|hir|bytecode <file.php>  dump a pipeline stage
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
@@ -36,6 +36,7 @@ OPTIONS:
     -l | --lint <file.php>           syntax check only; exit 0 or 255 like `php -l`
     --emit=tokens <file.php>         dump the token stream (`T_NAME(\"text\") Lline` per token)
     --emit=ast <file.php>            dump the parsed AST (S-expressions)
+    --emit=hir <file.php>            dump the resolved, desugared HIR (S-expressions)
     --emit=bytecode <file.php>       dump the compiled bytecode module
     --                               end of options; the rest is the script's $argv
     --help | -h                      show this help
@@ -49,6 +50,7 @@ Exit codes: 0 success, 255 fatal error / parse error (or the script's exit()),
 enum EmitKind {
     Tokens,
     Ast,
+    Hir,
     Bytecode,
 }
 
@@ -99,6 +101,7 @@ fn parse_args(args: &[String]) -> Result<Cli, i32> {
                 cli.emit = Some(match &a["--emit=".len()..] {
                     "tokens" => EmitKind::Tokens,
                     "ast" => EmitKind::Ast,
+                    "hir" => EmitKind::Hir,
                     "bytecode" => EmitKind::Bytecode,
                     other => {
                         eprintln!("rphp: unknown emit kind `{other}`\n");
@@ -203,6 +206,7 @@ pub fn run(args: Vec<String>) -> i32 {
         return match cli.emit {
             Some(EmitKind::Tokens) => emit_tokens(&bytes),
             Some(EmitKind::Ast) => emit_ast(&file, &bytes),
+            Some(EmitKind::Hir) => emit_hir(&file, &bytes),
             Some(EmitKind::Bytecode) => emit_bytecode(&file, &bytes),
             None => unreachable!(),
         };
@@ -323,6 +327,49 @@ fn emit_ast(name: &str, bytes: &[u8]) -> i32 {
         eprintln!("{d}");
     }
     0
+}
+
+/// The `--emit=hir` dump of `bytes` (named `name` in diagnostics): the tree
+/// after `rphp-hir`'s resolution, validation and desugaring, as
+/// S-expressions (every name carries its `resolved=` entry, declarations
+/// are FQNs, `Let`/`Temp`/`Seq` replace the desugared sugar), plus the
+/// rendered parser and HIR diagnostics and whether any of them is an
+/// error. A program the parser rejects is not lowered (the parser's
+/// diagnostics are returned with an empty tree).
+pub fn emit_hir_to_string(name: &str, bytes: &[u8]) -> (String, Vec<String>, bool) {
+    let (parsed, mut interner, sources) = front_end(name, bytes);
+    let mut diags: Vec<String> = parsed
+        .diagnostics
+        .iter()
+        .map(|d| d.render(&sources))
+        .collect();
+    if parsed.diagnostics.iter().any(|d| d.is_error()) {
+        return (String::new(), diags, true);
+    }
+    let line_of = |s: rphp_span::Span| sources.get(s.file).line_col(s.lo).0;
+    let mut opts = rphp_hir::LowerOptions::new(&line_of);
+    let path = Path::new(name);
+    if path.is_absolute() {
+        opts.file = Some(path.to_path_buf());
+    } else {
+        opts.eval_name = Some(name.to_string());
+        opts.dir = std::env::current_dir().ok();
+    }
+    let (hir, hir_diags) = rphp_hir::lower(parsed.program, &mut interner, &opts);
+    let had_error = hir_diags.iter().any(|d| d.is_error());
+    diags.extend(hir_diags.iter().map(|d| d.render(&sources)));
+    (rphp_hir::print(&hir, &interner), diags, had_error)
+}
+
+/// `--emit=hir`: the S-expression HIR on stdout, diagnostics on stderr;
+/// exit 1 when the front end or the HIR pass reported an error.
+fn emit_hir(name: &str, bytes: &[u8]) -> i32 {
+    let (tree, diags, had_error) = emit_hir_to_string(name, bytes);
+    print!("{tree}");
+    for d in &diags {
+        eprintln!("{d}");
+    }
+    i32::from(had_error)
 }
 
 /// `--emit=bytecode`: pretty-debug dump of the compiled `Module` on stdout,

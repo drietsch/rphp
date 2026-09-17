@@ -10,6 +10,7 @@ repository.workspace = true
 # used directly by the `--emit=tokens|ast` dumps and `-l`.
 rphp-embed.workspace = true
 rphp-source.workspace = true
+rphp-hir.workspace = true
 rphp-span.workspace = true
 rphp-intern.workspace = true
 rphp-ast.workspace = true

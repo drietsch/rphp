@@ -10,6 +10,7 @@ use std::rc::Rc;
 use rphp_bytecode::FnFlags;
 use rphp_value::{Closure, Object, PhpRef, Value};
 
+use crate::class::{MethodBody, MethodDef};
 use crate::frame::{CallTarget, Frame, FrameKind, PendingCall, RetTarget};
 use crate::registry::{Ctx, NativeId, NativeResult, Unwind};
 use crate::symtab::Symtab;
@@ -30,6 +31,11 @@ pub enum Callable {
     },
     /// A native.
     Native(NativeId),
+    /// A native method with its receiver.
+    NativeMethod {
+        method: Rc<MethodDef>,
+        this: Option<Object>,
+    },
 }
 
 impl Interp {
@@ -242,10 +248,16 @@ impl Interp {
         if let Some(c) = &closure {
             self.bind_closure(&func, args_base, c);
         }
+        // Parameter types are checked under the *caller's* strict_types; a
+        // call from a native (re-entry) is coercive and has no `called in`.
+        let (caller_strict, caller_site) = match self.frames.last() {
+            Some(f) if f.is_user() => (f.strict, Some((self.frame_file(f), self.frame_line(f)))),
+            _ => (false, None),
+        };
         let strict = func.f.flags.contains(FnFlags::STRICT_TYPES);
         let frame = Frame {
             kind,
-            func: Some(func),
+            func: Some(func.clone()),
             base: args_base,
             pc: 0,
             argc: argc.max(if used_named { passed_total } else { 0 }),
@@ -276,7 +288,7 @@ impl Interp {
                     p.site = Some(Box::new(crate::FaultSite {
                         file: func.unit.file.to_string(),
                         line: func.f.decl_line,
-                        trace: self.render_trace(),
+                        trace: self.exception_trace(0),
                     }));
                     Unwind::Pending(p)
                 }
@@ -285,6 +297,27 @@ impl Interp {
             let f = self.frames.pop().expect("frame");
             self.stack.truncate(f.base);
             return Err(u);
+        }
+        let has_types = func.f.params.iter().any(|p| p.ty.is_some());
+        if has_types {
+            let argc = self.frames.last().expect("frame").argc;
+            if let Err(u) = self.verify_params(&func, args_base, argc, caller_strict, caller_site) {
+                // Raised from the callee's RECV like the arity error.
+                let u = match u {
+                    Unwind::Pending(mut p) => {
+                        p.site = Some(Box::new(crate::FaultSite {
+                            file: func.unit.file.to_string(),
+                            line: func.f.decl_line,
+                            trace: self.exception_trace(0),
+                        }));
+                        Unwind::Pending(p)
+                    }
+                    other => other,
+                };
+                let f = self.frames.pop().expect("frame");
+                self.stack.truncate(f.base);
+                return Err(u);
+            }
         }
         Ok(())
     }
@@ -395,6 +428,140 @@ impl Interp {
         r
     }
 
+    /// Invoke a native method over a staged window (`DoCall` on a
+    /// `CallTarget::NativeMethod`): named arguments are placed by the
+    /// method's parameter names, then [`Interp::call_native_method`] runs.
+    pub(crate) fn call_native_method_window(
+        &mut self,
+        m: Rc<MethodDef>,
+        this: Option<Object>,
+        args_base: usize,
+        argc: usize,
+        named: Vec<(Box<[u8]>, Value)>,
+    ) -> NativeResult {
+        let MethodBody::Native(nm) = &m.body else {
+            unreachable!("call_native_method_window on a user method")
+        };
+        let mut args: Vec<Value> = self.stack.drain(args_base..args_base + argc).collect();
+        for (name, v) in named {
+            match nm.params.iter().position(|p| p.as_bytes() == name.as_ref()) {
+                Some(p) => {
+                    if p < args.len() {
+                        if !args[p].is_uninit() {
+                            return Err(Unwind::error(format!(
+                                "Named parameter ${} overwrites previous argument",
+                                String::from_utf8_lossy(&name)
+                            )));
+                        }
+                        args[p] = v;
+                    } else {
+                        while args.len() < p {
+                            args.push(Value::Uninit);
+                        }
+                        args.push(v);
+                    }
+                }
+                None => {
+                    return Err(Unwind::error(format!(
+                        "Unknown named parameter ${}",
+                        String::from_utf8_lossy(&name)
+                    )))
+                }
+            }
+        }
+        for a in &mut args {
+            if a.is_uninit() {
+                *a = Value::Null;
+            }
+        }
+        self.call_native_method(m, this, &mut args)
+    }
+
+    /// Invoke a native method with already-evaluated arguments: arity check,
+    /// a native frame (`Class->method` in traces), by-reference write-back,
+    /// output flush — the method counterpart of [`Interp::call_native`].
+    pub fn call_native_method(&mut self, m: Rc<MethodDef>, this: Option<Object>, args: &mut [Value]) -> NativeResult {
+        let MethodBody::Native(nm) = &m.body else {
+            return Err(Unwind::error("internal error: call_native_method on a user method"));
+        };
+        let nm = *nm;
+        if !nm.accepts(args.len()) {
+            let display = format!(
+                "{}::{}",
+                self.classes[m.decl as usize].name_str(),
+                String::from_utf8_lossy(&m.name)
+            );
+            return Err(Unwind::argument_count_error(nm.arity_message(&display, args.len())));
+        }
+        let mut cells: Vec<(usize, PhpRef)> = Vec::new();
+        for (i, a) in args.iter_mut().enumerate() {
+            if let Value::Ref(r) = a {
+                if nm.is_by_ref(i) {
+                    cells.push((i, r.clone()));
+                }
+                *a = r.get();
+            }
+        }
+        let silence = self.silence;
+        self.frames.push(Frame::native_method(m, this.clone(), args.to_vec(), silence));
+        let r = {
+            let mut ctx = Ctx(self);
+            (nm.handler)(&mut ctx, this.as_ref(), args)
+        };
+        let r = self.locate_fault(r);
+        self.frames.pop();
+        self.silence = silence;
+        for (i, cell) in cells {
+            cell.set(args[i].clone());
+        }
+        self.out.flush_pending();
+        r
+    }
+
+    /// Call method `name` on `obj` from native code (no visibility check:
+    /// the engine's own dispatch for `__toString`, `__destruct`, …). The
+    /// method must exist (`Error: Call to undefined method` otherwise).
+    pub fn call_method(&mut self, obj: &Object, name: &[u8], args: &[Value]) -> NativeResult {
+        let Some(m) = self.resolve_method(obj.class_id(), name) else {
+            return Err(Unwind::error(format!(
+                "Call to undefined method {}::{}()",
+                self.class_name_of(obj),
+                String::from_utf8_lossy(name)
+            )));
+        };
+        match &m.body {
+            MethodBody::Native(_) => {
+                let mut args = args.to_vec();
+                self.call_native_method(m, Some(obj.clone()), &mut args)
+            }
+            MethodBody::User(func) => {
+                let func = func.clone();
+                self.call_user_func(func, Some(obj.clone()), Some(m.decl), Some(obj.class_id()), None, args)
+            }
+        }
+    }
+
+    /// Call static method `name` of `class` from native code.
+    pub fn call_static_method(&mut self, class: u32, name: &[u8], args: &[Value]) -> NativeResult {
+        let Some(m) = self.resolve_method(class, name) else {
+            return Err(Unwind::error(format!(
+                "Call to undefined method {}::{}()",
+                self.classes[class as usize].name_str(),
+                String::from_utf8_lossy(name)
+            )));
+        };
+        match &m.body {
+            MethodBody::Native(_) => {
+                let mut args = args.to_vec();
+                self.call_native_method(m, None, &mut args)
+            }
+            MethodBody::User(func) => {
+                let func = func.clone();
+                self.call_user_func(func, None, Some(m.decl), Some(class), None, args)
+            }
+        }
+    }
+
     // ---- callables ---------------------------------------------------------
 
     /// Resolve a callable value — a closure, a `'func'` / `'A::m'` string,
@@ -462,7 +629,7 @@ impl Interp {
                 };
                 match &first {
                     Value::Object(o) => {
-                        let (fid, vis, decl) = self
+                        let m = self
                             .resolve_method(o.class_id(), method.as_bytes())
                             .ok_or_else(|| {
                                 Unwind::error(format!(
@@ -471,14 +638,21 @@ impl Interp {
                                     String::from_utf8_lossy(method.as_bytes())
                                 ))
                             })?;
-                        self.check_method_access(vis, decl, method.as_bytes())?;
-                        Ok(Callable::User {
-                            func: self.funcs[fid as usize].clone(),
-                            this: Some(o.clone()),
-                            scope: Some(decl),
-                            static_class: Some(o.class_id()),
-                            closure: None,
-                        })
+                        self.check_method_access(m.vis, m.decl, method.as_bytes())?;
+                        let this = if m.is_static { None } else { Some(o.clone()) };
+                        match &m.body {
+                            MethodBody::Native(_) => Ok(Callable::NativeMethod {
+                                method: m.clone(),
+                                this,
+                            }),
+                            MethodBody::User(func) => Ok(Callable::User {
+                                func: func.clone(),
+                                this,
+                                scope: Some(m.decl),
+                                static_class: Some(o.class_id()),
+                                closure: None,
+                            }),
+                        }
                     }
                     Value::Str(class) => {
                         self.resolve_static_callable(class.as_bytes(), method.as_bytes(), None)
@@ -514,35 +688,44 @@ impl Interp {
                 String::from_utf8_lossy(class)
             ))
         })?;
-        let (fid, vis, decl) = self.resolve_method(cid, method).ok_or_else(|| {
+        let m = self.resolve_method(cid, method).ok_or_else(|| {
             Unwind::error(format!(
                 "Call to undefined method {}::{}()",
                 String::from_utf8_lossy(&self.classes[cid as usize].name),
                 String::from_utf8_lossy(method)
             ))
         })?;
-        self.check_method_access(vis, decl, method)?;
-        let func = self.funcs[fid as usize].clone();
-        let this = this.or_else(|| {
-            self.current_user_frame()
-                .and_then(|f| f.this.clone())
-                .filter(|o| self.is_subclass_or_eq(o.class_id(), cid))
-        });
-        if this.is_none() && !func.f.flags.contains(FnFlags::STATIC) {
+        self.check_method_access(m.vis, m.decl, method)?;
+        let this = if m.is_static {
+            None
+        } else {
+            this.or_else(|| {
+                self.current_user_frame()
+                    .and_then(|f| f.this.clone())
+                    .filter(|o| self.is_subclass_or_eq(o.class_id(), cid))
+            })
+        };
+        if this.is_none() && !m.is_static {
             return Err(Unwind::error(format!(
                 "Non-static method {}::{}() cannot be called statically",
-                String::from_utf8_lossy(&self.classes[decl as usize].name),
-                String::from_utf8_lossy(&func.f.name_bytes)
+                String::from_utf8_lossy(&self.classes[m.decl as usize].name),
+                String::from_utf8_lossy(&m.name)
             )));
         }
         let static_class = this.as_ref().map(|o| o.class_id()).unwrap_or(cid);
-        Ok(Callable::User {
-            func,
-            this,
-            scope: Some(decl),
-            static_class: Some(static_class),
-            closure: None,
-        })
+        match &m.body {
+            MethodBody::Native(_) => Ok(Callable::NativeMethod {
+                method: m.clone(),
+                this,
+            }),
+            MethodBody::User(func) => Ok(Callable::User {
+                func: func.clone(),
+                this,
+                scope: Some(m.decl),
+                static_class: Some(static_class),
+                closure: None,
+            }),
+        }
     }
 
     /// Enforce method visibility against the current frame's scope.
@@ -619,6 +802,13 @@ impl Interp {
                     self.stack.push(a.clone());
                 }
                 self.call_native_window(id, args_base, args.len(), named)
+            }
+            Callable::NativeMethod { method, this } => {
+                let args_base = self.stack.len();
+                for a in args {
+                    self.stack.push(a.clone());
+                }
+                self.call_native_method_window(method, this, args_base, args.len(), named)
             }
             Callable::User {
                 func,

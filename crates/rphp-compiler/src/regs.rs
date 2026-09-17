@@ -118,11 +118,17 @@ impl Visitor for VarCollector<'_> {
                 args,
                 ..
             } => {
-                if crate::name_is_global(name) {
-                    let text = self.interner.resolve(name.text);
-                    if SYMTAB_NATIVES.iter().any(|n| text.eq_ignore_ascii_case(n)) {
-                        self.facts.needs_symtab = true;
+                // The global candidate of the call (the fallback of a
+                // two-step lookup inside a namespace, the only candidate
+                // otherwise); an import alias of another function is not it.
+                let text = match name.resolved {
+                    Some(rphp_ast::v2::Resolved::Func { global_key, .. }) => {
+                        self.interner.resolve(global_key)
                     }
+                    _ => self.interner.resolve(name.text),
+                };
+                if SYMTAB_NATIVES.iter().any(|n| text.eq_ignore_ascii_case(n)) {
+                    self.facts.needs_symtab = true;
                 }
                 for a in args {
                     self.visit_expr(&a.value);

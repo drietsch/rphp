@@ -2,6 +2,14 @@
 //! `DoCall` calls, late-bound names, references and fetch-for-write chains,
 //! control flow, operators).
 //!
+//! The pipeline is `parse_v2 → rphp_hir::lower → compile` (plan F4): the
+//! parsed program first goes through the HIR pass — name resolution (every
+//! class/function/constant name carries its [`rphp_hir::Resolved`] entry
+//! and declarations are renamed to their FQN), magic-constant folding,
+//! php's compile-time validation, and desugaring into the canonical subset
+//! (`Let`/`Temp`/`Seq` temporaries). An HIR *error* is php's compile-time
+//! fatal and fails the compile before anything is lowered.
+//!
 //! The lowering is a straightforward tree-walk into three-address register
 //! bytecode (`rphp-bytecode`). Function `0` is the synthetic `{main}`; every
 //! other function (hoisted or conditional declarations, methods, closures,
@@ -10,8 +18,11 @@
 //! pre-pass over the whole unit ([`class::collect_class_ids`]) so `extends`
 //! can name a class declared later or conditionally. Every name a program
 //! *uses* — functions, classes, constants — stays a name in the bytecode
-//! (`Const::Name`) and is resolved by the runtime (plan D5): the compiler no
-//! longer depends on the native registry.
+//! (`Const::Name`, spelled as the resolver resolved it: `App\Foo`) and is
+//! resolved by the runtime (plan D5): the compiler no longer depends on the
+//! native registry. Unqualified function and constant names inside a
+//! namespace carry both candidates of php's two-step rule
+//! (`InitFCall{name: N\f, ns_fallback: f}`).
 //!
 //! Each function pre-scans its body to give every variable a permanent
 //! register; intermediate results use a stack of temporaries allocated above
@@ -42,6 +53,7 @@ mod expr;
 mod func;
 mod regs;
 mod stmt;
+mod tryfin;
 
 #[cfg(test)]
 mod tests;
@@ -49,9 +61,10 @@ mod tests;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use rphp_ast::v2::{ClassLike, FuncDecl, Program, Stmt};
+use rphp_ast::v2::{ClassLike, FuncDecl, Program};
 use rphp_bytecode::{Const, FuncId, Module, Op};
 use rphp_diagnostics::{codes, Diagnostic};
+use rphp_hir::{Hir, LowerOptions};
 use rphp_intern::Interner;
 use rphp_span::Span;
 
@@ -79,21 +92,6 @@ pub const INVALID_WRITE_TARGET: &str = "RPHP_E0114";
 /// (`codes::UNSUPPORTED_CONSTRUCT`).
 pub const UNSUPPORTED_CONSTRUCT: &str = codes::UNSUPPORTED_CONSTRUCT;
 
-/// Whether a written name resolves as spelled: every unit compiled today is
-/// in the global namespace (namespace declarations are not lowered), so an
-/// unqualified, qualified (`Foo\Bar`), fully qualified (`\Foo\Bar`) or
-/// `namespace\`-relative name all denote the global symbol with that
-/// spelling. Namespaced *resolution* (imports, the two-step fallback) is F4.
-pub(crate) fn name_is_global(name: &rphp_ast::v2::Name) -> bool {
-    matches!(
-        name.kind,
-        rphp_ast::v2::NameKind::Unqualified
-            | rphp_ast::v2::NameKind::Qualified
-            | rphp_ast::v2::NameKind::FullyQualified
-            | rphp_ast::v2::NameKind::Relative
-    )
-}
-
 /// Report a construct outside the lowered slice:
 /// `RPHP_E0300 unsupported construct: <what> (not lowered yet)` at `span`.
 pub(crate) fn unsupported(diags: &mut Vec<Diagnostic>, span: Span, what: &str) {
@@ -110,11 +108,29 @@ pub(crate) fn unsupported(diags: &mut Vec<Diagnostic>, span: Span, what: &str) {
 #[derive(Default)]
 pub struct CompileOptions<'a> {
     /// Maps a byte offset in the source to its 1-based line, for
-    /// `Function::lines` and `__LINE__`; `None` leaves the line tables empty.
+    /// `Function::lines` and `__LINE__`; `None` leaves the line tables empty
+    /// (and folds `__LINE__` to 0).
     pub line_of: Option<&'a dyn Fn(u32) -> u32>,
     /// The script's path as php reports it (`__FILE__`; `__DIR__` is its
     /// parent). `None` for `-r`/eval code (`Command line code`, cwd).
     pub file: Option<PathBuf>,
+}
+
+impl CompileOptions<'_> {
+    /// The HIR naming options these compile options imply: the file (or
+    /// php's `Command line code` unit with the working directory as
+    /// `__DIR__`) and the span → line mapping.
+    fn lower_options<'l>(&self, line_of: &'l dyn Fn(Span) -> u32) -> LowerOptions<'l> {
+        let mut lo = LowerOptions::new(line_of);
+        match &self.file {
+            Some(p) => lo.file = Some(p.clone()),
+            None => {
+                lo.eval_name = Some("Command line code".to_string());
+                lo.dir = Some(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            }
+        }
+        lo
+    }
 }
 
 impl<'a> CompileOptions<'a> {
@@ -124,40 +140,60 @@ impl<'a> CompileOptions<'a> {
     }
 }
 
-/// The declarations PHP hoists: functions and classes directly in the
-/// top-level statement list, in plain `{ }` blocks at that level, and in the
-/// global `namespace { }` body — the statements `zend_compile_top_stmt`
-/// reaches. Named namespaces are left alone (reported as `RPHP_E0300` when
-/// `{main}` is compiled).
-fn hoisted<'a>(stmts: &'a [Stmt], funcs: &mut Vec<&'a FuncDecl>, classes: &mut Vec<&'a ClassLike>) {
-    for s in stmts {
-        match s {
-            Stmt::Func(f) => funcs.push(f),
-            Stmt::ClassLike(c) => classes.push(c),
-            Stmt::Block { body, .. }
-            | Stmt::Namespace {
-                name: None, body, ..
-            } => hoisted(body, funcs, classes),
-            _ => {}
-        }
-    }
+/// The declarations PHP hoists ahead of `{main}`, from [`Hir::hoisted`]:
+/// every top-level function, and the top-level classes php binds early —
+/// those without parent/interfaces/traits ([`rphp_hir::ClassHoist::Early`])
+/// and, in the same source order, those with only a parent
+/// ([`rphp_hir::ClassHoist::TryEarly`]: php binds them iff the parent is
+/// known when the declaration is compiled, and this unit's parents are all
+/// numbered by the class pre-pass). Everything else (`implements`, traits,
+/// enums, nested or conditional declarations) is declared when its
+/// statement executes.
+fn hoisted(hir: &Hir) -> (Vec<&FuncDecl>, Vec<&ClassLike>) {
+    let h = hir.hoisted();
+    let mut classes: Vec<&ClassLike> = h
+        .classes
+        .iter()
+        .chain(h.classes_try_early.iter())
+        .copied()
+        .collect();
+    classes.sort_by_key(|c| c.span.lo);
+    (h.funcs, classes)
 }
 
-/// Compile a parsed program into a bytecode module. Function `0` is the
-/// synthetic `{main}` entry containing the top-level statements; hoisted
-/// functions and classes are declared by the runtime before `{main}` runs
-/// (`Module::hoist_funcs` / `hoist_classes`), conditional ones by their
-/// `DeclareFunction` / `DeclareClass` ops.
+/// Whether a top-level class-like is declared in statement order rather
+/// than hoisted (see [`hoisted`]).
+pub(crate) fn class_declared_in_order(c: &ClassLike) -> bool {
+    rphp_hir::class_hoist(c) == rphp_hir::ClassHoist::InOrder
+}
+
+/// Lower a parsed program to its HIR and compile that into a bytecode
+/// module. Function `0` is the synthetic `{main}` entry containing the
+/// top-level statements; hoisted functions and classes are declared by the
+/// runtime before `{main}` runs (`Module::hoist_funcs` / `hoist_classes`),
+/// conditional ones by their `DeclareFunction` / `DeclareClass` ops.
+///
+/// The interner is mutable because resolution interns the names it
+/// synthesizes (FQNs, folded magic constants). An HIR error (php's
+/// compile-time fatal: `Cannot use X as Y because the name is already in
+/// use`, an invalid `break` level, …) is returned as the diagnostics of
+/// that pass, before lowering; HIR warnings are carried along with the
+/// compiler's own diagnostics.
 pub fn compile(
-    program: &Program,
-    interner: &Interner,
+    program: Program,
+    interner: &mut Interner,
     opts: &CompileOptions<'_>,
 ) -> Result<Module, Vec<Diagnostic>> {
-    let mut diags: Vec<Diagnostic> = Vec::new();
+    let line_of_span = |s: Span| opts.line_of.map_or(0, |f| f(s.lo));
+    let lower_opts = opts.lower_options(&line_of_span);
+    let (hir, mut diags) = rphp_hir::lower(program, interner, &lower_opts);
+    if diags.iter().any(Diagnostic::is_error) {
+        return Err(diags);
+    }
+    let interner: &Interner = interner;
+    let program = hir.program();
 
-    let mut func_decls: Vec<&FuncDecl> = Vec::new();
-    let mut class_decls: Vec<&ClassLike> = Vec::new();
-    hoisted(&program.items, &mut func_decls, &mut class_decls);
+    let (func_decls, class_decls) = hoisted(&hir);
 
     let (class_map, class_ids) = class::collect_class_ids(program, interner);
     let mx = ModuleCtx::new(
@@ -196,14 +232,7 @@ pub fn compile(
     let classes = sink
         .classes
         .into_iter()
-        .map(|c| c.unwrap_or_else(|| rphp_bytecode::Class {
-            name: rphp_intern::IdentId(0),
-            name_bytes: Box::from(&b""[..]),
-            parent: None,
-            props: Vec::new(),
-            methods: Vec::new(),
-            line: 0,
-        }))
+        .map(|c| c.unwrap_or_else(|| rphp_bytecode::Class::new_minimal(rphp_intern::IdentId(0), b"")))
         .collect();
     let file: Rc<str> = Rc::from(String::from_utf8_lossy(&mx.file).as_ref());
     Ok(Module {
@@ -234,6 +263,7 @@ pub(crate) fn compile_nested_function(
             by_ref: f.by_ref,
             cur_class: None,
             is_static: false,
+            ret: f.ret.as_ref(),
         },
     )
 }

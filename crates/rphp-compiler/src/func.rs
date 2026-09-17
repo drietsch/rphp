@@ -15,7 +15,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use rphp_ast::v2::{Closure, Expr, Param, Stmt};
+use rphp_ast::v2::{Closure, Expr, Param, Stmt, TempId};
 use rphp_bytecode::{
     CaptureDesc, Class as BcClass, ClassId, CodeAddr, Const, FnFlags, FuncId, Function, InitRef,
     NameConst, Op, ParamDef, Reg, StaticVar,
@@ -143,6 +143,8 @@ pub(crate) struct FnSpec<'a> {
     /// The declaring class for a method, with its name.
     pub(crate) cur_class: Option<(ClassId, IdentId)>,
     pub(crate) is_static: bool,
+    /// The declared return type.
+    pub(crate) ret: Option<&'a rphp_ast::v2::Type>,
 }
 
 /// An enclosing loop or `switch`, for `break N` / `continue N`.
@@ -155,6 +157,9 @@ pub(crate) struct LoopCtx {
     pub(crate) continues: Vec<usize>,
     /// A `switch` (where `continue` acts like `break`).
     pub(crate) is_switch: bool,
+    /// Number of `finally` regions open when the loop was entered: a
+    /// `break`/`continue` to it crosses the regions opened after that.
+    pub(crate) finally_depth: usize,
 }
 
 /// A nullsafe chain in progress: jumps that must land on "result = null".
@@ -217,6 +222,16 @@ pub(crate) struct FnCompiler<'a> {
     /// Compiling the object/base link of a nullsafe chain (a nested `?->`
     /// joins the enclosing chain instead of starting its own).
     pub(crate) in_nullsafe: bool,
+    /// HIR temporaries in scope (`Let` bindings and `foreach` value temps),
+    /// innermost last: `Temp(t)` reads the register of the latest binding
+    /// of `t`.
+    pub(crate) temps: Vec<(TempId, Reg)>,
+    /// Open `try` regions with a `finally`, innermost last (`tryfin.rs`).
+    pub(crate) finallys: Vec<crate::tryfin::FinallyCtx>,
+    /// Closed exception regions, innermost-first (`Function::ex_regions`).
+    pub(crate) ex_regions: Vec<rphp_bytecode::ExRegion>,
+    /// The declared return type (`Function::ret_ty`).
+    pub(crate) ret_ty: Option<rphp_bytecode::TypeDecl>,
 }
 
 impl<'a> FnCompiler<'a> {
@@ -289,6 +304,10 @@ impl<'a> FnCompiler<'a> {
             gotos: Vec::new(),
             nullsafe: Vec::new(),
             in_nullsafe: false,
+            temps: Vec::new(),
+            finallys: Vec::new(),
+            ex_regions: Vec::new(),
+            ret_ty: None,
         }
     }
 
@@ -506,9 +525,9 @@ impl<'a> FnCompiler<'a> {
             closures: Vec::new(),
             span,
             params,
-            ret_ty: None,
+            ret_ty: self.ret_ty,
             flags: self.flags,
-            ex_regions: Vec::new(),
+            ex_regions: self.ex_regions,
             captures: self.captures,
             statics: self.statics,
             var_names,
@@ -561,7 +580,7 @@ impl<'a> FnCompiler<'a> {
                 by_ref: p.by_ref,
                 variadic: p.variadic,
                 default,
-                ty: None,
+                ty: p.ty.as_ref().map(|t| self.lower_type(t)),
                 promoted: None,
                 attrs: Vec::new(),
             });
@@ -615,7 +634,7 @@ impl<'a> FnCompiler<'a> {
     /// by-reference ones) and the current `$this`/scope at runtime.
     pub(crate) fn compile_closure_expr(&mut self, c: &Closure) -> Reg {
         let uses: Vec<(IdentId, bool)> = c.uses.iter().map(|u| (u.name, u.by_ref)).collect();
-        self.compile_closure(&c.params, &uses, ClosureBody::Stmts(&c.body), c.span, c.static_)
+        self.compile_closure(&c.params, &uses, ClosureBody::Stmts(&c.body), c.span, c.static_, c.ret.as_ref())
     }
 
     /// Lower `fn (...) => e`: the free variables of `e` are captured by value
@@ -625,7 +644,7 @@ impl<'a> FnCompiler<'a> {
             .into_iter()
             .map(|id| (id, false))
             .collect();
-        self.compile_closure(&f.params, &uses, ClosureBody::ReturnExpr(&f.body), f.span, f.static_)
+        self.compile_closure(&f.params, &uses, ClosureBody::ReturnExpr(&f.body), f.span, f.static_, f.ret.as_ref())
     }
 
     fn compile_closure(
@@ -635,6 +654,7 @@ impl<'a> FnCompiler<'a> {
         body: ClosureBody<'_>,
         span: Span,
         is_static: bool,
+        ret: Option<&rphp_ast::v2::Type>,
     ) -> Reg {
         let line = self.mx.line(span.lo);
         // php 8.4+: `{closure:<enclosing>:<line>}` where the enclosing scope is
@@ -675,6 +695,7 @@ impl<'a> FnCompiler<'a> {
         if is_static {
             fc.flags |= FnFlags::STATIC;
         }
+        fc.ret_ty = ret.map(|t| fc.lower_type(t));
         for (i, src) in srcs.into_iter().enumerate() {
             fc.captures[i].src = src;
         }
@@ -714,6 +735,7 @@ pub(crate) fn compile_function(
         by_ref,
         cur_class,
         is_static,
+        ret,
     } = spec;
     let id = mx.sink.borrow_mut().reserve();
     let name_bytes: Box<[u8]> = mx.interner.resolve(name).into();
@@ -729,6 +751,7 @@ pub(crate) fn compile_function(
     if is_static {
         fc.flags |= FnFlags::STATIC;
     }
+    fc.ret_ty = ret.map(|t| fc.lower_type(t));
     if by_ref {
         // `function &f()`: the flag is metadata; the value is returned by
         // value until reference returns land (`$x = &f()` binds a copy).

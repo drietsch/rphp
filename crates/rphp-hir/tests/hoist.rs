@@ -15,8 +15,9 @@ fn names(v: &[&rphp_ast::v2::ClassLike], l: &common::Lowered) -> Vec<String> {
 fn functions_hoist_from_top_level_blocks_only() {
     let l = common::lower("<?php namespace N { function a(){} { function b(){} } if (1) { function d(){} } declare(ticks=1) { function e(){} } function outer() { function inner(){} } } namespace { function c(){} }");
     let h = l.hir.hoisted();
+    // Declared names are FQNs after resolution.
     let funcs: Vec<String> = h.funcs.iter().map(|f| l.text(f.name)).collect();
-    assert_eq!(funcs, ["a", "b", "outer", "c"]);
+    assert_eq!(funcs, ["N\\a", "N\\b", "N\\outer", "c"]);
 }
 
 /// php: `var_dump(new B instanceof A); class A {} class B extends A {}` → true

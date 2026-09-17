@@ -653,6 +653,15 @@ pub enum Op {
         pos: u16,
         var: Reg,
     },
+    /// Pass a function-call result (`f(g())`, `f(new X)`) as argument `pos`
+    /// (E5 addition, CONTRACT.md §8.1): by value, unless the resolved callee
+    /// declares the parameter by-reference, in which case php's `Notice:
+    /// Only variables should be passed by reference` is emitted and a fresh
+    /// reference cell holding the value is passed.
+    SendFuncResult {
+        pos: u16,
+        src: Reg,
+    },
     /// Pass `arr[key]` as argument `pos`: a `Ref` to the (autovivified) element
     /// if the parameter is by-ref, else its value (with the usual undefined-key
     /// warning).

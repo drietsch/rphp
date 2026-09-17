@@ -35,6 +35,7 @@ mod output_buffering;
 mod pack;
 mod pcre;
 mod random;
+mod spl_exceptions;
 mod string2;
 mod strings;
 mod types;
@@ -42,6 +43,7 @@ mod uniqid;
 mod url;
 mod var;
 mod versioning;
+mod zend_exceptions;
 
 /// Every module's `FUNCTIONS` slice, in registration order.
 const MODULES: &[&[NativeFn]] = &[
@@ -82,7 +84,10 @@ pub fn register(r: &mut Registry) {
     for m in MODULES {
         r.functions(m);
     }
+    zend_exceptions::register_classes(r);
+    spl_exceptions::register_classes(r);
     math::register_constants(r);
+    json::register_constants(r);
     output_buffering::register_constants(r);
     string2::register_constants(r);
     array2::register_constants(r);

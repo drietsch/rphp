@@ -44,6 +44,36 @@ pub struct Class {
     /// Source line of the declaration (E3 addition, for `Cannot redeclare
     /// class X (previously declared in file:line)`); 0 when unknown.
     pub line: u32,
+    /// E4 additions (CONTRACT.md §8.1): the parent's *name* (FQN, no leading
+    /// `\`), resolved by the runtime against its process-wide class table at
+    /// declaration time — so a class may extend a native class (`Exception`)
+    /// or one declared by another unit; `parent` (unit-local) is the
+    /// compile-time hint for classes of the same unit.
+    pub parent_name: Option<Box<[u8]>>,
+    /// `implements` names (FQN), resolved at declaration time.
+    pub interfaces: Vec<Box<[u8]>>,
+    /// Class/interface/trait/enum.
+    pub kind: ClassKind,
+    /// Modifiers (`abstract`, `final`, `readonly`, `#[AllowDynamicProperties]`).
+    pub flags: ClassFlags,
+}
+
+impl Class {
+    /// A bare `class Name {}` for struct-update construction.
+    pub fn new_minimal(name: IdentId, name_bytes: &[u8]) -> Class {
+        Class {
+            name,
+            name_bytes: Box::from(name_bytes),
+            parent: None,
+            props: Vec::new(),
+            methods: Vec::new(),
+            line: 0,
+            parent_name: None,
+            interfaces: Vec::new(),
+            kind: ClassKind::Class,
+            flags: ClassFlags::NONE,
+        }
+    }
 }
 
 // ---- v2 ------------------------------------------------------------------------

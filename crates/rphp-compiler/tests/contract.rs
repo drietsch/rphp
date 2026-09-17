@@ -14,8 +14,12 @@ use rphp_intern::Interner;
 use rphp_parser::{parse_v2, ParseOptions};
 use rphp_span::FileId;
 
-/// The codes the compiler may report on a syntactically valid program.
+/// The codes the compiler may report on a syntactically valid program: its
+/// own, and the resolution/validation codes of the `rphp-hir` pass it runs
+/// first (php's compile-time fatals).
 const KNOWN_CODES: &[&str] = &[
+    "RPHP_E0011", // superset rejected with php's text (HIR validation)
+    "RPHP_E0025", // strict_types placement (HIR validation)
     "RPHP_E0102", // redeclared function
     "RPHP_E0104", // `[]` read
     "RPHP_E0106", // redeclared class
@@ -26,6 +30,13 @@ const KNOWN_CODES: &[&str] = &[
     "RPHP_E0112", // undefined / duplicate label
     "RPHP_E0113", // goto into loop
     "RPHP_E0114", // invalid write target
+    "RPHP_E0200", // import conflict (HIR)
+    "RPHP_E0201", // reserved class name (HIR)
+    "RPHP_E0202", // undefined / duplicate label (HIR)
+    "RPHP_E0203", // invalid jump (HIR)
+    "RPHP_E0204", // self/static without class scope (HIR)
+    "RPHP_E0205", // parent without parent (HIR)
+    "RPHP_E0206", // mixed namespace declaration forms (HIR)
     "RPHP_E0300", // not lowered yet
 ];
 
@@ -83,7 +94,7 @@ fn compile_source(path: &Path, src: &[u8]) -> Result<Option<Vec<Reported>>, Stri
         file: Some(path.to_path_buf()),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        compile(&parsed.program, &interner, &opts)
+        compile(parsed.program, &mut interner, &opts)
     }))
     .map_err(|_| format!("{}: the compiler panicked", path.display()))?;
     Ok(Some(match result {

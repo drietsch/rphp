@@ -29,11 +29,13 @@ pub enum NameKind {
 
 /// The outcome of name resolution, stored on the [`Name`] by the resolver.
 ///
-/// `key` fields are the *lookup keys* the runtime tables use: class and
-/// function keys are lowercased, constant keys keep their case (the namespace
-/// part of a constant key is lowercased by the resolver; the last segment is
-/// not). `fqn` is the display spelling (original case) used for `::class` and
-/// messages.
+/// A class name resolves statically to its `fqn` (original case, for
+/// `::class` and messages) plus the lowercased class-table `key`. Function
+/// and constant names carry the *resolved spelling* (the name php reports in
+/// `Call to undefined function N\f()` / `Undefined constant "N\X"`); the
+/// compiler's `NameConst` derives the case-insensitive lookup twin from it,
+/// and the runtime folds a constant's namespace part while keeping its last
+/// segment case-sensitive.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Resolved {
     /// A class-like name (class, interface, trait, enum): statically known.
@@ -47,17 +49,18 @@ pub enum Resolved {
     /// runtime with the two-step rule (`ns_key` first, then `global_key`);
     /// otherwise `ns_key` is `None` and `global_key` is the single candidate.
     Func {
-        /// Namespaced candidate key (lowercased), if the two-step rule applies.
+        /// Namespaced candidate (`N\f`, as spelled), if the two-step rule
+        /// applies.
         ns_key: Option<IdentId>,
-        /// The fallback (or only) key, lowercased.
+        /// The fallback (or only) candidate, as spelled.
         global_key: IdentId,
     },
     /// A constant name, with the same two-step shape as [`Resolved::Func`].
-    /// Constant keys are case-sensitive in their last segment.
     Const {
-        /// Namespaced candidate key, if the two-step rule applies.
+        /// Namespaced candidate (`N\X`, as spelled), if the two-step rule
+        /// applies.
         ns_key: Option<IdentId>,
-        /// The fallback (or only) key.
+        /// The fallback (or only) candidate, as spelled.
         global_key: IdentId,
     },
 }

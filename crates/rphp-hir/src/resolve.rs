@@ -31,13 +31,16 @@
 //!   `extends`/`implements`/`use`/`catch` operands when they spell
 //!   `self`/`static`/`parent`.
 //! * **Functions.** Qualified/fully qualified/relative names resolve to one
-//!   key (`ns_key: None`); an unqualified name goes through the function
+//!   name (`ns_key: None`); an unqualified name goes through the function
 //!   import table, else — inside a namespace — to the runtime two-step
-//!   `Resolved::Func{ns_key: Some(ns\f), global_key: f}`. Keys are
-//!   lowercased. Nothing is folded (`strlen` stays a two-step call).
-//! * **Constants.** Same shape with case-sensitive last segments; the
-//!   constant import table is case-sensitive. `__COMPILER_HALT_OFFSET__` is
-//!   folded to the program's halt offset when there is one.
+//!   `Resolved::Func{ns_key: Some(ns\f), global_key: f}`. Names keep the
+//!   spelling php reports in `Call to undefined function N\f()`; the
+//!   bytecode's `NameConst` carries the lowercased lookup twin. Nothing is
+//!   folded (`strlen` stays a two-step call).
+//! * **Constants.** Same shape; the constant import table is case-sensitive
+//!   and the runtime's constant table folds only the namespace part
+//!   ([`crate::scope::const_key`]). `__COMPILER_HALT_OFFSET__` is folded to
+//!   the program's halt offset when there is one.
 //! * **`self`/`static`/`parent`.** Kept as `ClassRef` keywords for the
 //!   compiler. Where php knows the scope at compile time (free functions,
 //!   non-trait class bodies; not closures, the pseudo-main, traits or
@@ -53,7 +56,10 @@
 //!   declared as local import)`; likewise functions and constants. Two
 //!   declarations of the same function or class-like in top-level position
 //!   (the statement list, plain blocks, namespace bodies) are
-//!   `RPHP_E0102`/`RPHP_E0106` with php's `Cannot redeclare ...` text.
+//!   `RPHP_E0102`/`RPHP_E0106` with php's `Cannot redeclare ...` text. The
+//!   declared name of a function, class-like and file-level `const` is
+//!   rewritten to its FQN (`N\f`, `N\C`, `N\X`): that is the name the
+//!   runtime tables register, and what `__FUNCTION__`/`__CLASS__` print.
 
 use rphp_ast::v2::visit::mutable::{
     walk_arg, walk_class_ref, walk_expr, walk_func_decl, walk_hook, walk_method_decl, walk_stmt,
@@ -70,7 +76,7 @@ use rphp_span::Span;
 
 use crate::magic::{Magic, MagicCtx};
 use crate::scope::{
-    alias_key, const_key, is_reserved_class_name, is_scope_keyword, last_segment, split_first,
+    alias_key, is_reserved_class_name, is_scope_keyword, last_segment, split_first,
     ClassScope, FnKind, Import, NamespaceScope, ScopeStack, SeenSymbols,
 };
 use crate::LowerOptions;
@@ -217,22 +223,21 @@ impl Resolver<'_> {
         fqn
     }
 
-    /// Fill `n.resolved` for a function position.
+    /// Fill `n.resolved` for a function position. The names keep the
+    /// spelling php reports (`Call to undefined function Foo\BAR\f()`); the
+    /// bytecode's `NameConst` derives the case-insensitive lookup key.
     fn resolve_func(&mut self, n: &mut Name) {
         let text = self.text(n.text);
         let (ns_key, global_key): (Option<Vec<u8>>, Vec<u8>) = match n.kind {
-            NameKind::FullyQualified => (None, text.to_ascii_lowercase()),
-            NameKind::Relative => (None, self.ns.prefix(&text).to_ascii_lowercase()),
-            NameKind::Qualified => (
-                None,
-                self.qualified_via_class_imports(&text).to_ascii_lowercase(),
-            ),
+            NameKind::FullyQualified => (None, text),
+            NameKind::Relative => (None, self.ns.prefix(&text)),
+            NameKind::Qualified => (None, self.qualified_via_class_imports(&text)),
             NameKind::Unqualified => {
                 let lower = text.to_ascii_lowercase();
                 match self.ns.imports.func.get(&lower) {
-                    Some(i) => (None, i.fqn.to_ascii_lowercase()),
-                    None if self.ns.name.is_empty() => (None, lower),
-                    None => (Some(self.ns.prefix(&text).to_ascii_lowercase()), lower),
+                    Some(i) => (None, i.fqn.clone()),
+                    None if self.ns.name.is_empty() => (None, text),
+                    None => (Some(self.ns.prefix(&text)), text),
                 }
             }
         };
@@ -253,14 +258,17 @@ impl Resolver<'_> {
                 return Some(Expr::Int(i64::from(off), n.span));
             }
         }
+        // As for functions: the spelling php reports (`Undefined constant
+        // "Foo\BAR\X"`); the runtime's constant table folds the namespace
+        // part and keeps the last segment case-sensitive.
         let (ns_key, global_key): (Option<Vec<u8>>, Vec<u8>) = match n.kind {
-            NameKind::FullyQualified => (None, const_key(&text)),
-            NameKind::Relative => (None, const_key(&self.ns.prefix(&text))),
-            NameKind::Qualified => (None, const_key(&self.qualified_via_class_imports(&text))),
+            NameKind::FullyQualified => (None, text),
+            NameKind::Relative => (None, self.ns.prefix(&text)),
+            NameKind::Qualified => (None, self.qualified_via_class_imports(&text)),
             NameKind::Unqualified => match self.ns.imports.const_.get(&text) {
-                Some(i) => (None, const_key(&i.fqn)),
-                None if self.ns.name.is_empty() => (None, text.clone()),
-                None => (Some(const_key(&self.ns.prefix(&text))), text.clone()),
+                Some(i) => (None, i.fqn.clone()),
+                None if self.ns.name.is_empty() => (None, text),
+                None => (Some(self.ns.prefix(&text)), text),
             },
         };
         n.resolved = Some(Resolved::Const {
@@ -587,6 +595,9 @@ impl VisitorMut for Resolver<'_> {
             } => self.use_stmt(*kind, prefix, items),
             Stmt::Func(f) => {
                 let fqn = self.declare_function(f);
+                // The declaration registers under its FQN (`N\f`): the
+                // compiler reads `FuncDecl::name` as the runtime name.
+                f.name = self.intern(&fqn);
                 self.stack.push_fn(FnKind::Function { fqn });
                 self.nested(|r| walk_func_decl(r, f));
                 self.stack.pop();
@@ -594,6 +605,13 @@ impl VisitorMut for Resolver<'_> {
             Stmt::ClassLike(c) => self.visit_class_like(c),
             Stmt::ConstDecl { attrs, items, .. } => {
                 self.declare_consts(items);
+                // `const X = 1;` in namespace `N` defines `N\X`.
+                if !self.ns.name.is_empty() {
+                    for it in items.iter_mut() {
+                        let fqn = self.declared_fqn(it.name);
+                        it.name = self.intern(&fqn);
+                    }
+                }
                 self.in_const(|r| {
                     for g in attrs {
                         r.visit_attr_group(g);
@@ -764,6 +782,10 @@ impl VisitorMut for Resolver<'_> {
 
     fn visit_class_like(&mut self, c: &mut ClassLike) {
         let fqn = self.declare_class(c);
+        if let Some(f) = &fqn {
+            // As for functions: the declared name is the FQN (`N\C`).
+            c.name = Some(self.intern(f));
+        }
         for g in &mut c.attrs {
             self.visit_attr_group(g);
         }

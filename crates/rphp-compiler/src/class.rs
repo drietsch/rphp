@@ -16,14 +16,17 @@ use rphp_ast::v2::{
     ArrayItem, ClassKind, ClassLike, Expr, Member, Modifiers, Program, Stmt, UnOp,
     Visibility as AstVis,
 };
-use rphp_bytecode::{Class as BcClass, ClassId, Method as BcMethod, PropDef, Visibility};
+use rphp_bytecode::{
+    Class as BcClass, ClassFlags, ClassId, ClassKind as BcClassKind, Method as BcMethod, PropDef,
+    Visibility,
+};
 use rphp_diagnostics::Diagnostic;
 use rphp_intern::{IdentId, Interner};
 use rphp_span::Span;
 use rphp_value::{array_key, Array, Str, Value};
 
 use crate::func::{compile_function, FnSpec, ModuleCtx};
-use crate::{name_is_global, unsupported, NON_CONST_PROP_DEFAULT, REDECLARED_CLASS, UNDEFINED_CLASS};
+use crate::{unsupported, NON_CONST_PROP_DEFAULT, REDECLARED_CLASS};
 
 /// Lowercased class name → pre-assigned id.
 pub(crate) type ClassMap = HashMap<Box<[u8]>, ClassId>;
@@ -98,39 +101,29 @@ pub(crate) fn compile_class(
         return None;
     };
     let id = *mx.class_ids.get(&(c as *const ClassLike)).expect("class numbered by the pre-pass");
+    let mut flags = ClassFlags::NONE;
     if c.modifiers.abstract_ {
-        unsupported(diags, c.modifiers.span, "abstract class");
+        flags |= ClassFlags::ABSTRACT;
+    }
+    if c.modifiers.final_ {
+        flags |= ClassFlags::FINAL;
     }
     if c.modifiers.readonly {
         unsupported(diags, c.modifiers.span, "readonly class");
     }
-    // `final` has no effect the slice observes (no declaration-time checks).
-    let parent = match c.extends.as_slice() {
-        [] => None,
+    // The parent is carried by name (resolved by the runtime against its
+    // class table, so native and cross-unit parents work); a parent of the
+    // same unit also gets the unit-local id hint.
+    let (parent, parent_name) = match c.extends.as_slice() {
+        [] => (None, None),
         [p] => {
-            if name_is_global(p) {
-                let key = interner.resolve(p.text).to_ascii_lowercase();
-                match mx.class_map.get(key.as_slice()) {
-                    Some(&pid) => Some(pid),
-                    None => {
-                        diags.push(
-                            Diagnostic::error(
-                                UNDEFINED_CLASS,
-                                format!("class \"{}\" not found", interner.resolve_lossy(p.text)),
-                            )
-                            .with_primary(p.span, "unknown parent class"),
-                        );
-                        None
-                    }
-                }
-            } else {
-                unsupported(diags, p.span, "namespaced parent class name");
-                None
-            }
+            let fqn = class_fqn(p, interner);
+            let key = fqn.to_ascii_lowercase();
+            (mx.class_map.get(key.as_slice()).copied(), Some(fqn.into_boxed_slice()))
         }
         [_, second, ..] => {
             unsupported(diags, second.span, "multiple parents on a class");
-            None
+            (None, None)
         }
     };
     if parent == Some(id) {
@@ -145,9 +138,11 @@ pub(crate) fn compile_class(
             .with_primary(c.span, "cyclic `extends`"),
         );
     }
-    for i in &c.implements {
-        unsupported(diags, i.span, "interface implementation");
-    }
+    let interfaces: Vec<Box<[u8]>> = c
+        .implements
+        .iter()
+        .map(|i| class_fqn(i, interner).into_boxed_slice())
+        .collect();
     if let Some(b) = &c.backing {
         unsupported(diags, b.span, "enum backing type");
     }
@@ -204,6 +199,7 @@ pub(crate) fn compile_class(
                         by_ref: md.by_ref,
                         cur_class: Some((id, name)),
                         is_static: md.modifiers.static_,
+                        ret: md.ret.as_ref(),
                     },
                 );
                 methods.push(BcMethod {
@@ -224,9 +220,23 @@ pub(crate) fn compile_class(
         props,
         methods,
         line: mx.line(c.span.lo),
+        parent_name,
+        interfaces,
+        kind: BcClassKind::Class,
+        flags,
     };
     mx.sink.borrow_mut().classes[id as usize] = Some(class);
     Some(id)
+}
+
+/// The FQN bytes of a class-position name: the resolver's `fqn` when the
+/// HIR pass filled it, else the spelling.
+fn class_fqn(name: &rphp_ast::v2::Name, interner: &Interner) -> Vec<u8> {
+    let id = match name.resolved {
+        Some(rphp_ast::v2::Resolved::Class { fqn, .. }) => fqn,
+        _ => name.text,
+    };
+    interner.resolve(id).to_vec()
 }
 
 /// Reject the member modifiers the slice does not model (`static`,

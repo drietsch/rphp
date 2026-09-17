@@ -7,11 +7,12 @@
 //! `call_value`, or the SAPI for the entry `{main}`.
 
 use rphp_bytecode::{
-    AssignOpKind, ClassRef, ClassRefKind, Const, FnFlags, IncludeKind, InitRef, NameRef,
-    NameRefKind, Op, Visibility,
+    AssignOpKind, ClassRef, ClassRefKind, Const, FinallyState, FnFlags, IncludeKind, InitRef,
+    NameRef, NameRefKind, Op, Visibility,
 };
 use rphp_value::{array_key, Closure, Object, PhpRef, Value};
 
+use crate::class::{MagicFlags, MethodBody};
 use crate::frame::{CallTarget, FrameKind, IterState, PendingCall, RetTarget};
 use crate::ops::value_name;
 use crate::registry::Unwind;
@@ -49,8 +50,10 @@ impl Interp {
                 Ok(Switch::Done(v)) => return Ok(v),
                 Err(u) => {
                     let u = self.locate_fault(Err::<(), _>(u)).unwrap_err();
-                    self.unwind_to(stop_depth);
-                    return Err(u);
+                    // Search the frames above `stop_depth` for a handler
+                    // (`unwind.rs`); when none applies they are popped and
+                    // the unwind returns to the caller of this loop.
+                    self.dispatch_unwind(u, stop_depth)?;
                 }
             }
         }
@@ -274,10 +277,10 @@ impl Interp {
     /// php 8.2: creating a dynamic property on a class without
     /// `#[AllowDynamicProperties]` is deprecated (`stdClass` is exempt).
     fn dynamic_prop_notice(&mut self, o: &Object, name: &[u8]) -> Result<(), Unwind> {
-        let class = self.class_name_of(o);
-        if class.eq_ignore_ascii_case("stdClass") {
+        if self.class_of(o).allows_dynamic_props() {
             return Ok(());
         }
+        let class = self.class_name_of(o);
         self.deprecated(&format!(
             "Creation of dynamic property {class}::${} is deprecated",
             String::from_utf8_lossy(name)
@@ -309,10 +312,18 @@ impl Interp {
         let mut pc = self.frames[fi].pc;
         let code = &func.f.code;
         loop {
+            if rphp_value::has_pending_destructors() {
+                // ADR-017: objects whose last handle dropped during the
+                // previous op get their `__destruct` now.
+                self.frames[fi].pc = pc;
+                self.run_pending_destructors()?;
+            }
             let Some(&op) = code.get(pc) else {
                 // Falling off the end is an implicit `return null`.
                 self.frames[fi].pc = pc;
-                return self.do_return(Value::Null, stop_depth);
+                let strict = self.frames[fi].strict;
+                let v = self.verify_return(&func, None, strict)?;
+                return self.do_return(v, stop_depth);
             };
             self.frames[fi].pc = pc;
             match op {
@@ -379,14 +390,12 @@ impl Interp {
                     let mut out = Vec::new();
                     for i in 0..n {
                         let v = self.rd(base, b0 + i);
-                        self.check_array_to_string(&v)?;
-                        if let Value::Object(o) = &v {
-                            return Err(Unwind::error(format!(
-                                "Object of class {} could not be converted to string",
-                                self.class_name_of(o)
-                            )));
+                        match &v {
+                            Value::Object(_) | Value::Array(_) => {
+                                out.extend_from_slice(self.to_string(&v)?.as_bytes());
+                            }
+                            _ => v.append_php_bytes(&mut out),
                         }
-                        v.append_php_bytes(&mut out);
                     }
                     self.set(base, dst, Value::Str(rphp_value::Str::from_vec(out)));
                 }
@@ -845,7 +854,15 @@ impl Interp {
                 }
                 Op::Throw { src } => {
                     return match self.rd(base, src) {
-                        Value::Object(o) => Err(Unwind::Throw(o)),
+                        Value::Object(o) => {
+                            if self.well_known.throwable.is_some() && !self.is_throwable(&o) {
+                                Err(Unwind::error(
+                                    "Cannot throw objects that do not implement Throwable",
+                                ))
+                            } else {
+                                Err(Unwind::Throw(o))
+                            }
+                        }
                         _ => Err(Unwind::error("Can only throw objects")),
                     };
                 }
@@ -878,6 +895,12 @@ impl Interp {
                             None,
                             Box::from(self.natives[id.0 as usize].name.as_bytes()),
                         ),
+                        crate::call::Callable::NativeMethod { method, this } => {
+                            let name = method.name.clone();
+                            let decl = method.decl;
+                            let static_class = this.as_ref().map(|o| o.class_id()).or(Some(decl));
+                            (CallTarget::NativeMethod(method), this, Some(decl), static_class, name)
+                        }
                         crate::call::Callable::User {
                             func: f,
                             this,
@@ -912,23 +935,35 @@ impl Interp {
                             value_name(&o),
                         )));
                     };
-                    let (fid, vis, decl) = self.resolve_method(o.class_id(), &mname).ok_or_else(|| {
+                    let m = self.resolve_method(o.class_id(), &mname).ok_or_else(|| {
                         Unwind::error(format!(
                             "Call to undefined method {}::{}()",
                             self.class_name_of(&o),
                             String::from_utf8_lossy(&mname),
                         ))
                     })?;
-                    self.check_method_access(vis, decl, &mname)?;
-                    let target = CallTarget::User {
-                        func: self.funcs[fid as usize].clone(),
-                        closure: None,
+                    self.check_method_access(m.vis, m.decl, &mname)?;
+                    if m.is_abstract {
+                        return Err(Unwind::error(format!(
+                            "Cannot call abstract method {}::{}()",
+                            self.classes[m.decl as usize].name_str(),
+                            String::from_utf8_lossy(&m.name)
+                        )));
+                    }
+                    let target = match &m.body {
+                        MethodBody::User(f) => CallTarget::User {
+                            func: f.clone(),
+                            closure: None,
+                        },
+                        MethodBody::Native(_) => CallTarget::NativeMethod(m.clone()),
                     };
                     let args_base = self.stack.len();
                     let static_class = Some(o.class_id());
+                    let decl = m.decl;
+                    let this = if m.is_static { None } else { Some(o) };
                     self.frames[fi].pending.push(PendingCall {
                         target,
-                        this: Some(o),
+                        this,
                         scope: Some(decl),
                         static_class,
                         args_base,
@@ -941,26 +976,37 @@ impl Interp {
                 Op::InitStaticCall { class, name, .. } => {
                     let cid = self.resolve_class_ref(&func, base, class)?;
                     let mname = self.member_name(&func, base, name)?;
-                    let (fid, vis, decl) = self.resolve_method(cid, &mname).ok_or_else(|| {
+                    let m = self.resolve_method(cid, &mname).ok_or_else(|| {
                         Unwind::error(format!(
                             "Call to undefined method {}::{}()",
                             String::from_utf8_lossy(&self.classes[cid as usize].name),
                             String::from_utf8_lossy(&mname),
                         ))
                     })?;
-                    self.check_method_access(vis, decl, &mname)?;
-                    let callee = self.funcs[fid as usize].clone();
+                    self.check_method_access(m.vis, m.decl, &mname)?;
+                    if m.is_abstract {
+                        return Err(Unwind::error(format!(
+                            "Cannot call abstract method {}::{}()",
+                            self.classes[m.decl as usize].name_str(),
+                            String::from_utf8_lossy(&m.name)
+                        )));
+                    }
+                    let decl = m.decl;
                     // A forwarding instance call keeps `$this` when it is an
                     // instance of the named class.
-                    let this = self.frames[fi]
-                        .this
-                        .clone()
-                        .filter(|o| self.is_subclass_or_eq(o.class_id(), cid));
-                    if this.is_none() && !callee.f.flags.contains(FnFlags::STATIC) {
+                    let this = if m.is_static {
+                        None
+                    } else {
+                        self.frames[fi]
+                            .this
+                            .clone()
+                            .filter(|o| self.is_subclass_or_eq(o.class_id(), cid))
+                    };
+                    if this.is_none() && !m.is_static {
                         return Err(Unwind::error(format!(
                             "Non-static method {}::{}() cannot be called statically",
                             String::from_utf8_lossy(&self.classes[decl as usize].name),
-                            String::from_utf8_lossy(&callee.f.name_bytes)
+                            String::from_utf8_lossy(&m.name)
                         )));
                     }
                     let forwarding = matches!(class.kind(), ClassRefKind::SelfKw | ClassRefKind::Parent | ClassRefKind::Static);
@@ -969,12 +1015,16 @@ impl Interp {
                     } else {
                         this.as_ref().map(|o| o.class_id()).or(Some(cid))
                     };
-                    let args_base = self.stack.len();
-                    self.frames[fi].pending.push(PendingCall {
-                        target: CallTarget::User {
-                            func: callee,
+                    let target = match &m.body {
+                        MethodBody::User(f) => CallTarget::User {
+                            func: f.clone(),
                             closure: None,
                         },
+                        MethodBody::Native(_) => CallTarget::NativeMethod(m.clone()),
+                    };
+                    let args_base = self.stack.len();
+                    self.frames[fi].pending.push(PendingCall {
+                        target,
                         this,
                         scope: Some(decl),
                         static_class,
@@ -987,28 +1037,29 @@ impl Interp {
                 }
                 Op::InitNew { class, .. } => {
                     let cid = self.resolve_class_ref(&func, base, class)?;
-                    let obj = self.instantiate(cid);
+                    let obj = self.new_object(cid)?;
                     let (target, scope) = match self.resolve_method(cid, b"__construct") {
-                        Some((fid, vis, decl)) => {
+                        Some(m) => {
                             let scope = self.frames[fi].scope;
-                            if !self.access_ok(vis, decl, scope) {
+                            if !self.access_ok(m.vis, m.decl, scope) {
                                 return Err(Unwind::error(format!(
                                     "Call to {} {}::__construct() from {}",
-                                    vis_word(vis),
-                                    String::from_utf8_lossy(&self.classes[decl as usize].name),
+                                    vis_word(m.vis),
+                                    String::from_utf8_lossy(&self.classes[m.decl as usize].name),
                                     match scope {
                                         Some(c) => format!("scope {}", String::from_utf8_lossy(&self.classes[c as usize].name)),
                                         None => "global scope".to_string(),
                                     }
                                 )));
                             }
-                            (
-                                CallTarget::User {
-                                    func: self.funcs[fid as usize].clone(),
+                            let target = match &m.body {
+                                MethodBody::User(f) => CallTarget::User {
+                                    func: f.clone(),
                                     closure: None,
                                 },
-                                Some(decl),
-                            )
+                                MethodBody::Native(_) => CallTarget::NativeMethod(m.clone()),
+                            };
+                            (target, Some(m.decl))
                         }
                         None => (CallTarget::NoCtor, None),
                     };
@@ -1040,6 +1091,15 @@ impl Interp {
                         Value::Ref(self.make_ref(base, var))
                     } else {
                         self.rd(base, var)
+                    };
+                    self.send(fi, v);
+                }
+                Op::SendFuncResult { pos, src } => {
+                    let v = if self.pending_by_ref(fi, pos as usize) {
+                        self.notice("Only variables should be passed by reference")?;
+                        Value::Ref(PhpRef::new(self.rd(base, src)))
+                    } else {
+                        self.rd(base, src)
                     };
                     self.send(fi, v);
                 }
@@ -1132,6 +1192,21 @@ impl Interp {
                             let r = self.call_native_window(id, args_base, argc, named)?;
                             self.stack[abs] = r;
                         }
+                        CallTarget::NativeMethod(m) => {
+                            let PendingCall {
+                                args_base,
+                                argc,
+                                named,
+                                this,
+                                new_obj,
+                                ..
+                            } = pending;
+                            let r = self.call_native_method_window(m, this, args_base, argc, named)?;
+                            self.stack[abs] = match new_obj {
+                                Some(obj) => Value::Object(obj),
+                                None => r,
+                            };
+                        }
                         CallTarget::NoCtor => {
                             self.stack.truncate(pending.args_base);
                             let obj = pending.new_obj.expect("NoCtor carries the object");
@@ -1147,7 +1222,9 @@ impl Interp {
                             } else {
                                 None
                             };
-                            self.frames[fi].pc = pc + 1;
+                            // The frame keeps the call op as its pc (traces
+                            // and region lookups use it); `do_return`
+                            // advances it when the callee returns.
                             self.activate(pending, FrameKind::Normal, ret, symtab, closure)?;
                             return Ok(Switch::Continue);
                         }
@@ -1180,11 +1257,23 @@ impl Interp {
                     self.set(base, dst, Value::Closure(Closure::new(fid, captures)));
                 }
                 Op::Ret { src } => {
-                    let v = src.map_or(Value::Null, |r| self.rd(base, r));
+                    let v = src.map(|r| self.rd(base, r));
+                    let v = if func.f.ret_ty.is_some() {
+                        let strict = self.frames[fi].strict;
+                        self.verify_return(&func, v, strict)?
+                    } else {
+                        v.unwrap_or(Value::Null)
+                    };
                     return self.do_return(v, stop_depth);
                 }
                 Op::RetRef { var } => {
                     let v = self.rd(base, var);
+                    let v = if func.f.ret_ty.is_some() {
+                        let strict = self.frames[fi].strict;
+                        self.verify_return(&func, Some(v), strict)?
+                    } else {
+                        v
+                    };
                     return self.do_return(v, stop_depth);
                 }
 
@@ -1437,7 +1526,7 @@ impl Interp {
                     } else {
                         let cid = self.resolve_class_ref_quiet(&func, base, class)?;
                         match (o, cid) {
-                            (Value::Object(o), Some(cid)) => self.is_subclass_or_eq(o.class_id(), cid),
+                            (Value::Object(o), Some(cid)) => self.instanceof_class(o.class_id(), cid),
                             _ => false,
                         }
                     };
@@ -1452,6 +1541,10 @@ impl Interp {
                     let layout = o.layout();
                     let slots = o.with_data(|d| d.slots().to_vec());
                     let copy = Object::new(o.class_id(), id, layout, slots);
+                    if self.class_of(&o).magic.contains(MagicFlags::DESTRUCT) {
+                        copy.add_flags(rphp_value::ObjFlags::HAS_DESTRUCTOR);
+                        self.destructibles.push(copy.downgrade());
+                    }
                     let dyns: Vec<(Box<[u8]>, Value)> = o.with_data(|d| {
                         d.dyn_props()
                             .map(|p| p.iter().map(|(n, v)| (Box::from(n), v.clone())).collect())
@@ -1474,7 +1567,6 @@ impl Interp {
                 }
                 Op::Include { dst, path, kind } => {
                     let p = self.rd(base, path).to_php_bytes();
-                    self.frames[fi].pc = pc + 1;
                     if self.include_file(&p, kind, base + dst as usize)? {
                         return Ok(Switch::Continue);
                     }
@@ -1485,21 +1577,55 @@ impl Interp {
                 Op::Yield { .. } | Op::YieldFrom { .. } | Op::GenReturn { .. } => {
                     return Err(Unwind::error("generators are not supported yet"));
                 }
-                Op::FinallyEnd { .. } => {
-                    return Err(Unwind::error("try/finally is not supported yet"));
+                Op::FinallyEnd { state, payload, targets } => {
+                    let st = self.rd(base, state);
+                    match FinallyState::from_code(st.to_int()) {
+                        Some(FinallyState::None) | None => {}
+                        Some(FinallyState::Throw) => {
+                            let v = self.rd(base, payload);
+                            self.set(base, state, Value::Int(0));
+                            return match v {
+                                Value::Object(o) => Err(Unwind::Throw(o)),
+                                _ => Err(Unwind::error("internal error: FinallyEnd without a pending exception")),
+                            };
+                        }
+                        Some(FinallyState::Return) => {
+                            let v = self.rd(base, payload);
+                            self.set(base, state, Value::Int(0));
+                            let v = if func.f.ret_ty.is_some() {
+                                let strict = self.frames[fi].strict;
+                                self.verify_return(&func, Some(v), strict)?
+                            } else {
+                                v
+                            };
+                            return self.do_return(v, stop_depth);
+                        }
+                        Some(FinallyState::Jump) => {
+                            let k = self.rd(base, payload).to_int();
+                            self.set(base, state, Value::Int(0));
+                            let rows = func.f.consts[targets as usize]
+                                .as_jump_table()
+                                .expect("FinallyEnd targets");
+                            let Some((_, target)) = rows.get(k as usize) else {
+                                return Err(Unwind::error("internal error: FinallyEnd jump target out of range"));
+                            };
+                            pc = *target as usize;
+                            continue;
+                        }
+                    }
                 }
 
                 // --- io ---
                 Op::Echo { src } => {
                     let v = self.rd(base, src);
-                    self.check_array_to_string(&v)?;
-                    if let Value::Object(o) = &v {
-                        return Err(Unwind::error(format!(
-                            "Object of class {} could not be converted to string",
-                            self.class_name_of(o)
-                        )));
+                    match &v {
+                        Value::Object(_) | Value::Array(_) => {
+                            let s = self.to_string(&v)?;
+                            self.echo(s.as_bytes());
+                            self.out.flush_pending();
+                        }
+                        _ => self.echo_value(&v),
                     }
-                    self.echo_value(&v);
                 }
 
                 // The M0 ops are no longer produced by the compiler.
@@ -1538,6 +1664,14 @@ impl Interp {
         let f = self.frames.pop().expect("frame");
         self.stack.truncate(f.base);
         self.silence = f.silence_base;
+        // A frame pushed by bytecode (`DoCall`, `Include`) left its caller
+        // parked on the call op: resume after it. A boundary frame's caller
+        // is a native still inside its own op.
+        if matches!(f.kind, FrameKind::Normal | FrameKind::Include) {
+            if let Some(top) = self.frames.last_mut() {
+                top.pc += 1;
+            }
+        }
         match f.ret {
             RetTarget::Discard => {}
             RetTarget::Reg(abs) => {
@@ -1573,6 +1707,10 @@ impl Interp {
                 }
             }
             CallTarget::Native(id) => self.natives[id.0 as usize].is_by_ref(pos),
+            CallTarget::NativeMethod(m) => match &m.body {
+                MethodBody::Native(nm) => nm.is_by_ref(pos),
+                MethodBody::User(_) => false,
+            },
             CallTarget::NoCtor => false,
         }
     }
@@ -1592,6 +1730,14 @@ impl Interp {
                 .get(pos)
                 .map(|n| format!(" (${n})"))
                 .unwrap_or_default(),
+            CallTarget::NativeMethod(m) => match &m.body {
+                MethodBody::Native(nm) => nm
+                    .params
+                    .get(pos)
+                    .map(|n| format!(" (${n})"))
+                    .unwrap_or_default(),
+                MethodBody::User(_) => String::new(),
+            },
             CallTarget::NoCtor => String::new(),
         };
         let name = match &p.target {
@@ -1659,9 +1805,7 @@ impl Interp {
     fn array_set(&mut self, base: usize, arr: u16, key: Option<u16>, v: Value) -> Result<(), Unwind> {
         let k = key.map(|k| self.rd(base, k));
         let classes = self.classes.clone();
-        let class_name = move |o: &Object| {
-            String::from_utf8_lossy(&classes[o.class_id() as usize].name).into_owned()
-        };
+        let class_name = move |o: &Object| classes[o.class_id() as usize].name_str();
         let notice =
             self.with_slot(base, arr, |slot| Interp::array_set_in(slot, k.as_ref(), v, &class_name))?;
         match notice {

@@ -3,7 +3,7 @@
 //! A [`Module`] is loaded into an [`Interp`] as a [`UnitRt`]: every function
 //! of the module becomes a [`FuncRt`] with a process-wide id (the module's
 //! unit-local [`FuncId`]s are offset by the unit's `func_base`), every class
-//! a [`ClassRt`] (offset by `class_base`). Names are bound late: the
+//! a [`ClassDef`] (offset by `class_base`). Names are bound late: the
 //! function table (`Interp::func_index`) and the class table
 //! (`Interp::class_index`) map lowercased names to ids and are filled by
 //! hoisting at load and by `DeclareFunction` / `DeclareClass` at run time;
@@ -13,9 +13,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use rphp_bytecode::{ClassId, FuncId, Function, Module, PropDef, Visibility};
-use rphp_value::{Layout, PhpRef, PropMeta, Value};
+use rphp_bytecode::{ClassId, FuncId, Function, Module, Visibility};
+use rphp_value::{PhpRef, Value};
 
+use crate::class::{ClassDef, ClassSpec, MagicFlags, MethodBody, MethodDef, MethodSpec, PropDefault};
 use crate::registry::{NativeId, Unwind};
 use crate::Interp;
 
@@ -29,6 +30,9 @@ pub struct UnitRt {
     pub class_base: u32,
     /// The unit's `{main}` (process-wide id).
     pub main: u32,
+    /// The unit's compiled class declarations (unit-local ids), linked by
+    /// `declare_class`.
+    pub decls: Vec<rphp_bytecode::Class>,
 }
 
 impl UnitRt {
@@ -95,28 +99,6 @@ impl FuncRt {
     }
 }
 
-/// A declared class as the runtime holds it (the M0 `Class` shape, plan E6
-/// replaces it with the `ClassDef` built from `ClassDecl`).
-pub struct ClassRt {
-    /// Process-wide id.
-    pub id: u32,
-    /// Declared name (original case).
-    pub name: Box<[u8]>,
-    /// Parent class (process-wide id).
-    pub parent: Option<u32>,
-    /// Own declared properties.
-    pub props: Vec<PropDef>,
-    /// Own methods: (name, process-wide function id, visibility).
-    pub methods: Vec<(Box<[u8]>, u32, Visibility)>,
-    /// The instance layout (parent-first property set) and default slots.
-    pub layout: Rc<Layout>,
-    /// Default slot values, parallel to the layout.
-    pub defaults: Vec<Value>,
-    /// The unit that declared it and the declaration line (for
-    /// "previously declared in" messages); `None` for engine classes.
-    pub declared_at: Option<(Rc<str>, u32)>,
-}
-
 impl Interp {
     /// The function with process-wide id `id`.
     pub fn func(&self, id: u32) -> &Rc<FuncRt> {
@@ -124,8 +106,18 @@ impl Interp {
     }
 
     /// The class with process-wide id `id`.
-    pub fn class(&self, id: u32) -> &Rc<ClassRt> {
+    pub fn class(&self, id: u32) -> &Rc<ClassDef> {
         &self.classes[id as usize]
+    }
+
+    /// Every class in the table (declared or not), by id.
+    pub fn classes(&self) -> &[Rc<ClassDef>] {
+        &self.classes
+    }
+
+    /// The declared classes in declaration order (`get_declared_classes()`).
+    pub fn declared_classes(&self) -> impl Iterator<Item = &Rc<ClassDef>> {
+        self.class_order.iter().map(|&id| &self.classes[id as usize])
     }
 
     /// Look a (case-insensitive) function name up in the user function table.
@@ -141,44 +133,23 @@ impl Interp {
         self.class_index.get(key.as_slice()).copied()
     }
 
-    /// Whether `class` is `ancestor` or descends from it.
+    /// Whether `class` is `ancestor`, descends from it or implements it
+    /// (kept under its E3 name for callers; see
+    /// [`Interp::instanceof_class`]).
     pub fn is_subclass_or_eq(&self, class: u32, ancestor: u32) -> bool {
-        let mut cur = Some(class);
-        while let Some(cid) = cur {
-            if cid == ancestor {
-                return true;
-            }
-            cur = self.classes[cid as usize].parent;
-        }
-        false
+        self.instanceof_class(class, ancestor)
     }
 
-    /// Resolve a method by (case-insensitive) name on `class`, walking up the
-    /// chain: the function id, its visibility and the declaring class.
-    pub fn resolve_method(&self, class: u32, name: &[u8]) -> Option<(u32, Visibility, u32)> {
-        let mut cur = Some(class);
-        while let Some(cid) = cur {
-            let c = &self.classes[cid as usize];
-            if let Some((_, fid, vis)) = c.methods.iter().find(|(n, _, _)| n.eq_ignore_ascii_case(name)) {
-                return Some((*fid, *vis, cid));
-            }
-            cur = c.parent;
-        }
-        None
+    /// Resolve a method by (case-insensitive) name on `class` (own or
+    /// inherited).
+    pub fn resolve_method(&self, class: u32, name: &[u8]) -> Option<Rc<MethodDef>> {
+        self.classes[class as usize].method(name).cloned()
     }
 
-    /// Resolve a declared property's visibility and declaring class, walking
-    /// up the chain. `None` for an undeclared (dynamic) property.
+    /// Resolve a declared property's visibility and declaring class.
+    /// `None` for an undeclared (dynamic) property.
     pub fn resolve_prop(&self, class: u32, name: &[u8]) -> Option<(Visibility, u32)> {
-        let mut cur = Some(class);
-        while let Some(cid) = cur {
-            let c = &self.classes[cid as usize];
-            if let Some(p) = c.props.iter().find(|p| p.name.as_ref() == name) {
-                return Some((p.visibility, cid));
-            }
-            cur = c.parent;
-        }
-        None
+        self.classes[class as usize].prop(name).map(|p| (p.vis, p.decl))
     }
 
     /// Install a compiled module: every function and class gets a
@@ -187,19 +158,21 @@ impl Interp {
     pub fn load_unit(&mut self, module: Module) -> Result<u32, Unwind> {
         let func_base = self.funcs.len() as u32;
         let class_base = self.classes.len() as u32;
-        let unit = Rc::new(UnitRt {
-            file: module.file.clone(),
-            func_base,
-            class_base,
-            main: func_base + module.main,
-        });
         let Module {
             funcs,
             classes,
             hoist_funcs,
             hoist_classes,
-            ..
+            main,
+            file,
         } = module;
+        let unit = Rc::new(UnitRt {
+            file,
+            func_base,
+            class_base,
+            main: func_base + main,
+            decls: classes,
+        });
         for (i, f) in funcs.into_iter().enumerate() {
             let mut reg_names: Vec<Option<Box<[u8]>>> = vec![None; f.num_regs as usize];
             for (name, reg) in &f.var_names {
@@ -220,36 +193,59 @@ impl Interp {
                 reg_names,
             }));
         }
-        for (i, c) in classes.into_iter().enumerate() {
+        for (i, c) in unit.decls.iter().enumerate() {
             let id = class_base + i as u32;
-            let parent = c.parent.map(|p| class_base + p);
-            let methods = c
-                .methods
-                .iter()
-                .map(|m| (m.name_bytes.clone(), func_base + m.func, m.visibility))
-                .collect();
-            // Placeholder layout; finalized when the class is declared (its
-            // parent's layout must exist by then).
-            let rt = ClassRt {
+            let mut stub = ClassDef::stub(
                 id,
-                name: c.name_bytes.clone(),
-                parent,
-                props: c.props.clone(),
-                methods,
-                layout: Rc::new(Layout::empty(Rc::from(&c.name_bytes[..]))),
-                defaults: Vec::new(),
-                declared_at: Some((unit.file.clone(), c.line)),
-            };
-            self.classes.push(Rc::new(rt));
+                &c.name_bytes,
+                c.kind,
+                c.flags,
+                Some((unit.file.clone(), c.line)),
+            );
+            stub.unit = Some(unit.clone());
+            self.classes.push(Rc::new(stub));
         }
         self.units.push(unit.clone());
         for fid in hoist_funcs {
             self.declare_function(func_base + fid)?;
         }
-        for cid in hoist_classes {
-            self.declare_class(class_base + cid)?;
+        // Parents first: a hoisted class whose parent is another hoisted
+        // class of this unit waits for it.
+        let mut pending: Vec<u32> = hoist_classes.iter().map(|&c| class_base + c).collect();
+        let mut progress = true;
+        while !pending.is_empty() && progress {
+            progress = false;
+            let mut rest = Vec::new();
+            for cid in pending {
+                let decl = &unit.decls[(cid - class_base) as usize];
+                let parent_ready = match self.parent_id_of(decl, class_base) {
+                    Some(pid) => self.classes[pid as usize].linked,
+                    None => true,
+                };
+                if parent_ready {
+                    self.declare_class(cid)?;
+                    progress = true;
+                } else {
+                    rest.push(cid);
+                }
+            }
+            pending = rest;
+        }
+        for cid in pending {
+            self.declare_class(cid)?;
         }
         Ok(unit.main)
+    }
+
+    /// The process-wide id of a compiled class's parent: by name in the
+    /// class table, else the unit-local hint.
+    fn parent_id_of(&self, decl: &rphp_bytecode::Class, class_base: u32) -> Option<u32> {
+        if let Some(name) = &decl.parent_name {
+            if let Some(id) = self.class_by_name(name) {
+                return Some(id);
+            }
+        }
+        decl.parent.map(|p| class_base + p)
     }
 
     /// Declare function `id` in the function table (`DeclareFunction` and
@@ -287,116 +283,211 @@ impl Interp {
     }
 
     /// Declare class `id` in the class table (`DeclareClass` and hoisting):
-    /// resolves its parent's layout and builds its own.
+    /// resolve its parent and interfaces, link it ([`Interp::link_class`])
+    /// and publish it.
     pub fn declare_class(&mut self, id: u32) -> Result<(), Unwind> {
-        let c = self.classes[id as usize].clone();
-        let key: Box<[u8]> = c.name.to_ascii_lowercase().into();
-        if let Some(&prev) = self.class_index.get(&key) {
+        let stub = self.classes[id as usize].clone();
+        let Some(unit) = stub.unit.clone() else {
+            return Ok(());
+        };
+        let decl = &unit.decls[(id - unit.class_base) as usize];
+        let (here_file, here_line) = stub
+            .declared_at
+            .clone()
+            .unwrap_or((Rc::from("Unknown"), 0));
+        if let Some(&prev) = self.class_index.get(&stub.lname) {
             let p = self.classes[prev as usize].clone();
-            let (file, line) = p
-                .declared_at
-                .clone()
-                .unwrap_or((Rc::from("Unknown"), 0));
-            let msg = format!(
-                "Cannot redeclare class {} (previously declared in {}:{})",
-                String::from_utf8_lossy(&p.name),
-                file,
-                line
-            );
-            let (here_file, here_line) = c
-                .declared_at
-                .clone()
-                .unwrap_or((Rc::from("Unknown"), 0));
+            let msg = match &p.declared_at {
+                Some((file, line)) => format!(
+                    "Cannot redeclare class {} (previously declared in {}:{})",
+                    p.name_str(),
+                    file,
+                    line
+                ),
+                None => format!("Cannot redeclare class {}", p.name_str()),
+            };
             return Err(self.fatal_at(&msg, &here_file, here_line));
         }
-        // Parent-first property set; a redeclaration overrides the default.
-        let mut chain = Vec::new();
-        let mut cur = Some(id);
-        let mut hops = 0;
-        while let Some(cid) = cur {
-            chain.push(cid);
-            cur = self.classes[cid as usize].parent;
-            hops += 1;
-            if hops > self.classes.len() {
-                return Err(self.fatal(&format!(
-                    "Class {} has a cyclic inheritance chain",
-                    String::from_utf8_lossy(&c.name)
-                )));
-            }
+        let parent = match &decl.parent_name {
+            Some(name) => match self.class_by_name(name) {
+                Some(pid) => Some(pid),
+                None => match decl.parent.map(|p| unit.class_base + p) {
+                    Some(pid) if self.classes[pid as usize].linked => Some(pid),
+                    _ => {
+                        let msg = format!(
+                            "Class \"{}\" not found",
+                            String::from_utf8_lossy(name)
+                        );
+                        return Err(self.throw_at(crate::ErrorKind::Error, msg, &here_file, here_line));
+                    }
+                },
+            },
+            None => match decl.parent.map(|p| unit.class_base + p) {
+                Some(pid) if self.classes[pid as usize].linked => Some(pid),
+                Some(pid) => {
+                    let msg = format!(
+                        "Class \"{}\" not found",
+                        self.classes[pid as usize].name_str()
+                    );
+                    return Err(self.throw_at(crate::ErrorKind::Error, msg, &here_file, here_line));
+                }
+                None => None,
+            },
+        };
+        if parent == Some(id) {
+            return Err(self.fatal_at(
+                &format!("Class {} has a cyclic inheritance chain", stub.name_str()),
+                &here_file,
+                here_line,
+            ));
         }
-        let mut metas: Vec<PropMeta> = Vec::new();
-        let mut defaults: Vec<Value> = Vec::new();
-        for &cid in chain.iter().rev() {
-            let cls = self.classes[cid as usize].clone();
-            for p in &cls.props {
-                let vis = match p.visibility {
-                    Visibility::Public => rphp_value::Vis::Public,
-                    Visibility::Protected => rphp_value::Vis::Protected,
-                    Visibility::Private => rphp_value::Vis::Private,
-                };
-                if let Some(i) = metas.iter().position(|m| m.name.as_ref() == p.name.as_ref()) {
-                    metas[i].vis = vis;
-                    metas[i].decl_class = cid;
-                    metas[i].decl_class_name = Rc::from(&cls.name[..]);
-                    defaults[i] = p.default.clone();
-                } else {
-                    metas.push(PropMeta {
-                        name: p.name.clone(),
-                        vis,
-                        decl_class: cid,
-                        decl_class_name: Rc::from(&cls.name[..]),
-                    });
-                    defaults.push(p.default.clone());
+        let mut interfaces = Vec::new();
+        for iname in &decl.interfaces {
+            match self.class_by_name(iname) {
+                Some(iid) => interfaces.push(iid),
+                None => {
+                    let msg = format!("Interface \"{}\" not found", String::from_utf8_lossy(iname));
+                    return Err(self.throw_at(crate::ErrorKind::Error, msg, &here_file, here_line));
                 }
             }
         }
-        let layout = Rc::new(Layout::new(Rc::from(&c.name[..]), metas));
-        let rt = ClassRt {
-            id,
-            name: c.name.clone(),
-            parent: c.parent,
-            props: c.props.clone(),
-            methods: c.methods.clone(),
-            layout,
-            defaults,
-            declared_at: c.declared_at.clone(),
+        let props = decl
+            .props
+            .iter()
+            .map(|p| {
+                (
+                    p.name.clone(),
+                    p.visibility,
+                    None,
+                    false,
+                    PropDefault::Value(p.default.clone()),
+                )
+            })
+            .collect();
+        let methods = decl
+            .methods
+            .iter()
+            .map(|m| {
+                let func = self.funcs[(unit.func_base + m.func) as usize].clone();
+                let is_static = func.f.flags.contains(rphp_bytecode::FnFlags::STATIC);
+                MethodSpec {
+                    name: m.name_bytes.clone(),
+                    body: MethodBody::User(func),
+                    vis: m.visibility,
+                    is_static,
+                    is_abstract: false,
+                    is_final: false,
+                }
+            })
+            .collect();
+        let spec = ClassSpec {
+            name: stub.name.clone(),
+            kind: decl.kind,
+            flags: decl.flags,
+            parent,
+            interfaces,
+            props,
+            methods,
+            native_init: None,
+            declared_at: stub.declared_at.clone(),
+            internal: false,
         };
-        self.classes[id as usize] = Rc::new(rt);
-        self.class_index.insert(key, id);
-        self.class_gen += 1;
+        let mut def = match self.link_class(id, spec) {
+            Ok(d) => d,
+            Err(Unwind::Pending(p)) => {
+                // Linking faults are compile-time fatals in php.
+                return Err(self.fatal_at(&p.message, &here_file, here_line));
+            }
+            Err(other) => return Err(other),
+        };
+        def.unit = Some(unit.clone());
+        self.publish_class(def);
         Ok(())
     }
 
-    /// Register an engine-provided class with no members (`stdClass`).
-    pub(crate) fn register_builtin_class(&mut self, name: &[u8]) -> u32 {
-        let id = self.classes.len() as u32;
-        let rt = ClassRt {
-            id,
-            name: Box::from(name),
-            parent: None,
-            props: Vec::new(),
-            methods: Vec::new(),
-            layout: Rc::new(Layout::empty(Rc::from(name))),
-            defaults: Vec::new(),
-            declared_at: None,
-        };
-        self.classes.push(Rc::new(rt));
-        self.class_index
-            .insert(name.to_ascii_lowercase().into_boxed_slice(), id);
+    /// Put a linked definition into the table under its id and name.
+    fn publish_class(&mut self, def: ClassDef) {
+        let id = def.id;
+        let lname = def.lname.clone();
+        self.well_known.record(&lname, id);
+        if id as usize == self.classes.len() {
+            self.classes.push(Rc::new(def));
+        } else {
+            self.classes[id as usize] = Rc::new(def);
+        }
+        if !self.class_order.contains(&id) {
+            self.class_order.push(id);
+        }
+        self.class_index.insert(lname, id);
         self.class_gen += 1;
+    }
+
+    /// Register a native class from its specification (the
+    /// [`ClassBuilder`](crate::ClassBuilder) end point): a re-registered
+    /// name keeps its id.
+    pub(crate) fn register_class_spec(&mut self, spec: ClassSpec) -> u32 {
+        let lname: Box<[u8]> = spec.name.to_ascii_lowercase().into();
+        let id = match self.class_index.get(&lname) {
+            Some(&id) => id,
+            None => self.classes.len() as u32,
+        };
+        let def = self
+            .link_class(id, spec)
+            .unwrap_or_else(|u| panic!("native class {}: {}", String::from_utf8_lossy(&lname), u.describe()));
+        self.publish_class(def);
         id
     }
 
-    /// `new <class>` without running a constructor: an instance with its
-    /// default slots and the next object id.
+    /// An instance of `class` with its default slots and the next object id:
+    /// no thunk defaults, no `native_init`, no constructor (the shape
+    /// `unserialize` and `(object)` casts need). See [`Interp::new_object`]
+    /// for `new`.
     pub fn instantiate(&mut self, class: u32) -> rphp_value::Object {
         let c = self.classes[class as usize].clone();
         let id = self.object_ids.alloc();
-        rphp_value::Object::new(class, id, c.layout.clone(), c.defaults.clone())
+        let defaults: Vec<Value> = c
+            .props
+            .iter()
+            .map(|p| match &p.default {
+                PropDefault::Value(v) => v.clone(),
+                PropDefault::Thunk(_) => Value::Null,
+            })
+            .collect();
+        let obj = rphp_value::Object::new(class, id, c.layout.clone(), defaults);
+        if c.magic.contains(MagicFlags::DESTRUCT) {
+            obj.add_flags(rphp_value::ObjFlags::HAS_DESTRUCTOR);
+            self.destructibles.push(obj.downgrade());
+        }
+        obj
+    }
+
+    /// `new <class>` without running the constructor: rejects abstract
+    /// classes, interfaces, traits and enums with php's `Error`, seeds the
+    /// slots (thunk defaults evaluated now), runs the `native_init` hook.
+    pub fn new_object(&mut self, class: u32) -> Result<rphp_value::Object, Unwind> {
+        let c = self.classes[class as usize].clone();
+        if !c.is_instantiable() {
+            return Err(Unwind::error(format!(
+                "Cannot instantiate {} {}",
+                c.kind_word(),
+                c.name_str()
+            )));
+        }
+        let obj = self.instantiate(class);
+        for p in &c.props {
+            if let PropDefault::Thunk(fid) = p.default {
+                let v = self.run_thunk(fid, None, Some(p.decl))?;
+                obj.set_slot(p.slot, v);
+            }
+        }
+        if let Some(init) = c.native_init {
+            init(self, &obj)?;
+        }
+        Ok(obj)
     }
 
     /// The class name of an object (its runtime class).
     pub fn class_name_of(&self, o: &rphp_value::Object) -> String {
-        String::from_utf8_lossy(&self.classes[o.class_id() as usize].name).into_owned()
+        self.classes[o.class_id() as usize].name_str()
     }
 }

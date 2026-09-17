@@ -12,8 +12,10 @@ use std::fmt;
 use std::ops::{Deref, DerefMut};
 
 pub use rphp_ext_api::FnFlags;
+use rphp_bytecode::{ClassFlags, ClassKind, Visibility};
 use rphp_value::{Object, Value};
 
+use crate::class::{ClassSpec, MethodBody, MethodSpec, NativeInit, NativeMethod, PropDefault};
 use crate::Interp;
 
 /// Process-local index of a registered native, assigned at registration
@@ -138,12 +140,13 @@ impl ErrorKind {
 
 /// Where a fault happened, captured at the first frame boundary the unwind
 /// crosses (so the innermost frame is still on the stack): the file, the
-/// line, and the rendered PHP stack trace (`#0 …\n#1 {main}`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// line, and the backtrace as `Exception::getTrace()` shapes it (rendered
+/// to php's `#0 …\n#1 {main}` by `Interp::trace_to_string`).
+#[derive(Clone, Debug)]
 pub struct FaultSite {
     pub file: String,
     pub line: u32,
-    pub trace: String,
+    pub trace: rphp_value::Array,
 }
 
 /// An engine fault that has not been materialized as a `Throwable` object yet
@@ -223,11 +226,21 @@ impl Unwind {
         Unwind::Exit(code)
     }
 
-    /// The fault message, when this is a pending fault.
+    /// The fault message, when this is a pending fault (a thrown object's
+    /// message is read with [`Unwind::message_string`]).
     pub fn message(&self) -> Option<&str> {
         match self {
             Unwind::Pending(p) => Some(&p.message),
             _ => None,
+        }
+    }
+
+    /// The message of a pending fault or of a thrown object.
+    pub fn message_string(&self) -> Option<String> {
+        match self {
+            Unwind::Pending(p) => Some(p.message.clone()),
+            Unwind::Throw(o) => o.get_deref(b"message").map(|v| v.to_php_string()),
+            Unwind::Exit(_) => None,
         }
     }
 
@@ -239,15 +252,30 @@ impl Unwind {
         }
     }
 
+    /// The class name of the throwable this unwind carries (pending or
+    /// materialized).
+    pub fn class_name(&self) -> Option<String> {
+        match self {
+            Unwind::Pending(p) => Some(p.kind.class_name().to_string()),
+            Unwind::Throw(o) => Some(String::from_utf8_lossy(o.layout().class_name()).into_owned()),
+            Unwind::Exit(_) => None,
+        }
+    }
+
     /// `Uncaught <Class>: <message>` — the one-line description used when an
     /// unwind reaches the top without a PHP-shaped renderer (tests,
-    /// embedders).
+    /// embedders). A thrown object's `message` property is read directly.
     pub fn describe(&self) -> String {
         match self {
-            Unwind::Throw(o) => format!(
-                "Uncaught {}",
-                String::from_utf8_lossy(o.layout().class_name())
-            ),
+            Unwind::Throw(o) => {
+                let class = String::from_utf8_lossy(o.layout().class_name()).into_owned();
+                match o.get_deref(b"message") {
+                    Some(Value::Str(m)) if !m.is_empty() => {
+                        format!("Uncaught {class}: {}", m.to_string_lossy())
+                    }
+                    _ => format!("Uncaught {class}"),
+                }
+            }
             Unwind::Pending(p) => format!("Uncaught {}: {}", p.kind.class_name(), p.message),
             Unwind::Exit(code) => format!("exit({code})"),
         }
@@ -300,6 +328,165 @@ impl Registry<'_> {
     /// The interpreter being populated.
     pub fn interp(&mut self) -> &mut Interp {
         self.0
+    }
+
+    /// Start declaring a native class (plan E4, ADR-021):
+    /// `r.class("Exception").implements(&["Throwable"]).prop("message",
+    /// Protected, Value::string(b"")).method("getMessage", nm!(..))
+    /// .native_init(f).finish()`. Parent and interfaces must already be
+    /// registered when `finish` runs.
+    pub fn class(&mut self, name: &str) -> ClassBuilder<'_> {
+        ClassBuilder {
+            interp: self.0,
+            name: name.to_string(),
+            kind: ClassKind::Class,
+            parent: None,
+            interfaces: Vec::new(),
+            flags: ClassFlags::NONE,
+            props: Vec::new(),
+            methods: Vec::new(),
+            native_init: None,
+        }
+    }
+
+    /// Declare a native interface (no members needed for `instanceof`).
+    pub fn interface(&mut self, name: &str) -> ClassBuilder<'_> {
+        let mut b = self.class(name);
+        b.kind = ClassKind::Interface;
+        b.flags |= ClassFlags::ABSTRACT;
+        b
+    }
+}
+
+/// The builder behind [`Registry::class`]: collects a native class's shape
+/// and links it into the interpreter's class table on [`ClassBuilder::finish`].
+pub struct ClassBuilder<'a> {
+    interp: &'a mut Interp,
+    name: String,
+    kind: ClassKind,
+    parent: Option<String>,
+    interfaces: Vec<String>,
+    flags: ClassFlags,
+    props: Vec<(String, Visibility, Value)>,
+    methods: Vec<MethodSpec>,
+    native_init: Option<NativeInit>,
+}
+
+impl ClassBuilder<'_> {
+    /// Class / interface / trait / enum.
+    pub fn kind(mut self, kind: ClassKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// `extends <name>` (resolved on `finish`; the parent must be registered).
+    pub fn extends(mut self, parent: &str) -> Self {
+        self.parent = Some(parent.to_string());
+        self
+    }
+
+    /// `implements <names>` (resolved on `finish`).
+    pub fn implements(mut self, names: &[&str]) -> Self {
+        self.interfaces.extend(names.iter().map(|n| n.to_string()));
+        self
+    }
+
+    /// Add modifiers (`ABSTRACT`, `FINAL`, `ALLOW_DYNAMIC`, …).
+    pub fn flags(mut self, flags: ClassFlags) -> Self {
+        self.flags |= flags;
+        self
+    }
+
+    /// Declare an instance property with a constant default.
+    pub fn prop(mut self, name: &str, vis: Visibility, default: Value) -> Self {
+        self.props.push((name.to_string(), vis, default));
+        self
+    }
+
+    /// Declare a public method.
+    pub fn method(self, name: &str, m: NativeMethod) -> Self {
+        self.method_vis(name, Visibility::Public, m)
+    }
+
+    /// Declare a method with an explicit visibility.
+    pub fn method_vis(mut self, name: &str, vis: Visibility, m: NativeMethod) -> Self {
+        self.methods.push(MethodSpec {
+            name: Box::from(name.as_bytes()),
+            body: MethodBody::Native(m),
+            vis,
+            is_static: m.is_static,
+            is_abstract: false,
+            is_final: m.is_final,
+        });
+        self
+    }
+
+    /// Declare an abstract method signature (interfaces).
+    pub fn abstract_method(mut self, name: &str, m: NativeMethod) -> Self {
+        self.methods.push(MethodSpec {
+            name: Box::from(name.as_bytes()),
+            body: MethodBody::Native(m),
+            vis: Visibility::Public,
+            is_static: m.is_static,
+            is_abstract: true,
+            is_final: false,
+        });
+        self
+    }
+
+    /// The hook run on every new instance (after the slots are seeded,
+    /// before the constructor), inherited by user subclasses.
+    pub fn native_init(mut self, f: NativeInit) -> Self {
+        self.native_init = Some(f);
+        self
+    }
+
+    /// Link and register the class; returns its process-wide id. Re-registering
+    /// a name keeps the earlier id (the definition is replaced).
+    ///
+    /// # Panics
+    /// When `extends`/`implements` name a class that is not registered:
+    /// native class tables are static data, so that is a programming error
+    /// caught at startup.
+    pub fn finish(self) -> u32 {
+        let ClassBuilder {
+            interp,
+            name,
+            kind,
+            parent,
+            interfaces,
+            flags,
+            props,
+            methods,
+            native_init,
+        } = self;
+        let lookup = |interp: &Interp, n: &str| {
+            interp.class_by_name(n.as_bytes()).unwrap_or_else(|| {
+                panic!("native class {name} refers to unregistered class {n}")
+            })
+        };
+        let parent = parent.map(|p| lookup(interp, &p));
+        let interfaces: Vec<u32> = interfaces.iter().map(|i| lookup(interp, i)).collect();
+        let mut flags = flags;
+        if kind != ClassKind::Class {
+            flags |= ClassFlags::ABSTRACT;
+        }
+        let spec = ClassSpec {
+            name: Box::from(name.as_bytes()),
+            kind,
+            flags,
+            parent,
+            interfaces,
+            props: props
+                .into_iter()
+                .map(|(n, vis, v)| (Box::from(n.as_bytes()), vis, None, false, PropDefault::Value(v)))
+                .collect(),
+            methods,
+            native_init,
+            declared_at: None,
+            internal: true,
+        };
+        interp.register_class_spec(spec)
     }
 }
 

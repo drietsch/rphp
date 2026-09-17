@@ -230,6 +230,21 @@ impl Interp {
         file: &str,
         line: u32,
     ) -> Result<(), Unwind> {
+        self.emit_error_full(level, message, file, line, true)
+    }
+
+    /// [`Interp::emit_error_at`]; `with_trace = false` never appends the
+    /// `fatal_error_backtraces` block (an uncaught exception carries its
+    /// own `Stack trace:` inside the message, or none when a user
+    /// `__toString` produced it).
+    pub fn emit_error_full(
+        &mut self,
+        level: ErrLevel,
+        message: &str,
+        file: &str,
+        line: u32,
+        with_trace: bool,
+    ) -> Result<(), Unwind> {
         // 1. The user handler — called regardless of error_reporting / `@`
         //    (php ≥ 8.0); it sees the masked value through error_reporting().
         if level.user_handleable() && !self.in_error_handler {
@@ -268,7 +283,8 @@ impl Interp {
             // php ≥ 8.5 (`fatal_error_backtraces=1`) appends a backtrace to a
             // fatal error after the location; an uncaught-exception message
             // already carries its own `Stack trace:` block.
-            let trace = if level.is_fatal()
+            let trace = if with_trace
+                && level.is_fatal()
                 && self.ini.bool("fatal_error_backtraces")
                 && !message.contains("Stack trace:")
             {
@@ -351,7 +367,7 @@ impl Interp {
     /// duplicates it on stderr).
     pub fn render_uncaught(&mut self, p: &PendingThrow) {
         let (file, line, trace) = match &p.site {
-            Some(site) => (site.file.clone(), site.line, site.trace.clone()),
+            Some(site) => (site.file.clone(), site.line, self.trace_to_string(&site.trace)),
             None => (self.current_file(), self.current_line(), self.render_trace()),
         };
         let message = format!(

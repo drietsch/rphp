@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use rphp_bytecode::Module;
 use rphp_compiler::{compile, CompileOptions};
-use rphp_diagnostics::Diagnostic;
+use rphp_diagnostics::{codes, Diagnostic};
 use rphp_intern::Interner;
 use rphp_parser::{parse_v2, ParseOptions};
 use rphp_runtime::{CompileFailure, DisplayMode};
@@ -41,6 +41,19 @@ pub enum CompileError {
         /// Every diagnostic, rendered one per element.
         rendered: Vec<String>,
     },
+    /// The program parsed but resolution/validation (`rphp-hir`) rejected
+    /// it with one of php's compile-time fatals (`Cannot use X as Y because
+    /// the name is already in use`, `Cannot mix bracketed namespace
+    /// declarations …`, an invalid `break` level, …): php reports the first
+    /// one as `Fatal error: <message> in <file> on line <N>` (exit 255).
+    Fatal {
+        /// The first error's message, php's text.
+        message: String,
+        /// The 1-based line of the first error.
+        line: u32,
+        /// Every diagnostic, rendered one per element.
+        rendered: Vec<String>,
+    },
     /// The program parsed but the compiler rejected it (unsupported
     /// construct, undefined function, wrong arity, ...): the rendered
     /// diagnostics, one per element.
@@ -51,14 +64,18 @@ impl CompileError {
     /// The rendered diagnostics, whichever stage failed.
     pub fn rendered(&self) -> &[String] {
         match self {
-            CompileError::Parse { rendered, .. } | CompileError::Compile(rendered) => rendered,
+            CompileError::Parse { rendered, .. }
+            | CompileError::Fatal { rendered, .. }
+            | CompileError::Compile(rendered) => rendered,
         }
     }
 
     /// The rendered diagnostics, whichever stage failed.
     pub fn into_rendered(self) -> Vec<String> {
         match self {
-            CompileError::Parse { rendered, .. } | CompileError::Compile(rendered) => rendered,
+            CompileError::Parse { rendered, .. }
+            | CompileError::Fatal { rendered, .. }
+            | CompileError::Compile(rendered) => rendered,
         }
     }
 }
@@ -147,7 +164,12 @@ impl Engine {
         it.compile_hook = Some(Box::new(|interp: &Interp, src: &[u8], name: &str| {
             compile_unit(interp, src, name).map_err(|e| match e {
                 CompileError::Parse { message, line, .. } => CompileFailure::Parse { message, line },
-                CompileError::Compile(lines) => CompileFailure::Rejected(lines),
+                // php renders a compile-time fatal of an included file as a
+                // `Fatal error:`; the runtime's hook contract has no such
+                // variant yet, so it goes through the rejection channel.
+                CompileError::Fatal { rendered, .. } | CompileError::Compile(rendered) => {
+                    CompileFailure::Rejected(rendered)
+                }
             })
         }));
         it
@@ -221,9 +243,12 @@ impl Engine {
     /// exit code (255): a parse error is displayed as
     /// `Parse error: <message> in <file> on line <N>` through the error
     /// display channel (`display_errors`, `log_errors`), like a fatal error
-    /// but without a backtrace; a compile rejection prints its rendered
-    /// diagnostics on stderr (php has no equivalent: these are constructs
-    /// the engine does not lower yet).
+    /// but without a backtrace; a resolution/validation error is php's
+    /// compile-time fatal, rendered through the same channel as a runtime
+    /// fatal (`Fatal error: <message> in <file> on line <N>` plus the
+    /// `Stack trace:` block php ≥ 8.5 prints); a compile rejection prints
+    /// its rendered diagnostics on stderr (php has no equivalent: these are
+    /// constructs the engine does not lower yet).
     fn report_load_error(&self, interp: &mut Interp, name: &str, err: CompileError) -> i32 {
         match err {
             CompileError::Parse { message, line, .. } => {
@@ -236,6 +261,10 @@ impl Engine {
                     DisplayMode::Stderr => eprint!("{text}"),
                     DisplayMode::Off => {}
                 }
+                interp.finish_output();
+            }
+            CompileError::Fatal { message, line, .. } => {
+                let _ = interp.fatal_at(&message, name, line);
                 interp.finish_output();
             }
             CompileError::Compile(lines) => {
@@ -258,6 +287,12 @@ impl Engine {
             Err(u) => interp.handle_top_level_unwind(u),
         };
         let code = interp.run_shutdown_functions(code);
+        // php's `zend_call_destructors`: after the shutdown functions and
+        // before the output buffers are flushed (ADR-017).
+        let code = match interp.shutdown_destructors() {
+            Ok(()) => code,
+            Err(u) => interp.handle_top_level_unwind(u),
+        };
         interp.finish_output();
         code
     }
@@ -349,10 +384,23 @@ fn compile_unit(interp: &Interp, src: &[u8], name: &str) -> Result<Module, Compi
             .primary
             .as_ref()
             .map_or(1, |l| file.line_col(l.span.lo).0);
-        return Err(CompileError::Parse {
-            message: first.message.clone(),
-            line,
-            rendered: render(&parsed.diagnostics),
+        // The adapter's conformance pass reports php's *compile-time*
+        // rejections too (`Cannot re-assign $this`, `Cannot mix bracketed
+        // namespace declarations …`): those are fatals in php.
+        let rendered = render(&parsed.diagnostics);
+        let message = first.message.clone();
+        return Err(if is_php_compile_fatal(first.code, &message) {
+            CompileError::Fatal {
+                message,
+                line,
+                rendered,
+            }
+        } else {
+            CompileError::Parse {
+                message,
+                line,
+                rendered,
+            }
         });
     }
     let line_of = |offset: u32| file.line_col(offset).0;
@@ -362,7 +410,77 @@ fn compile_unit(interp: &Interp, src: &[u8], name: &str) -> Result<Module, Compi
         line_of: Some(&line_of),
         file: path.is_absolute().then(|| path.to_path_buf()),
     };
-    compile(&parsed.program, &interner, &opts).map_err(|d| CompileError::Compile(render(&d)))
+    // `compile` runs the HIR pass (resolution, validation, desugaring) and
+    // then lowers; a resolution/validation error is php's compile-time
+    // fatal, an `RPHP_E0300`-style rejection is the engine's own.
+    compile(parsed.program, &mut interner, &opts).map_err(|diags| {
+        let first = diags.iter().find(|d| d.is_error());
+        let line = |d: &Diagnostic| d.primary.as_ref().map_or(1, |l| file.line_col(l.span.lo).0);
+        match first {
+            // php's own compile-time errors carry php's text: the HIR's
+            // resolution/validation codes are fatals, except the rejections
+            // php's grammar itself makes (`syntax error, unexpected token
+            // "const"`), which are parse errors.
+            Some(d) if is_php_compile_fatal(d.code, &d.message) => CompileError::Fatal {
+                message: d.message.clone(),
+                line: line(d),
+                rendered: render(&diags),
+            },
+            Some(d) if is_php_parse_error(d.code, &d.message) => CompileError::Parse {
+                message: d.message.clone(),
+                line: line(d),
+                rendered: render(&diags),
+            },
+            _ => CompileError::Compile(render(&diags)),
+        }
+    })
+}
+
+/// Whether a front-end diagnostic is one php's grammar reports (`Parse
+/// error:`): the lexer/parser codes, and the superset/validation
+/// rejections whose text is php's parser's.
+fn is_php_parse_error(code: &str, message: &str) -> bool {
+    matches!(
+        code,
+        codes::UNEXPECTED_CHAR
+            | codes::UNEXPECTED_TOKEN
+            | codes::UNTERMINATED
+            | codes::UNEXPECTED_EOF
+            | codes::RECURSION_LIMIT
+            | codes::INVALID_LITERAL
+            | codes::UNSUPPORTED_NODE
+    ) || message.starts_with("syntax error")
+        || message.starts_with("The (real) cast")
+}
+
+/// Whether a front-end diagnostic is one of php's compile-time fatals
+/// (`Fatal error:`): the adapter's conformance/lvalue rejections and the
+/// HIR's resolution/validation codes — everything php's compiler (not its
+/// grammar) refuses, with php's own text. Engine rejections (`RPHP_E0300`
+/// and the compiler's own codes) are neither.
+fn is_php_compile_fatal(code: &str, message: &str) -> bool {
+    if is_php_parse_error(code, message) {
+        return false;
+    }
+    matches!(
+        code,
+        codes::SUPERSET_REJECTED
+            | codes::LVALUE_NOT_WRITABLE
+            | codes::LVALUE_NULLSAFE
+            | codes::LVALUE_THIS
+            | codes::LVALUE_GLOBALS
+            | codes::LVALUE_APPEND
+            | codes::LVALUE_DESTRUCTURING
+            | codes::IMPORT_CONFLICT
+            | codes::RESERVED_CLASS_NAME
+            | codes::UNDEFINED_LABEL
+            | codes::INVALID_JUMP
+            | codes::NO_CLASS_SCOPE
+            | codes::NO_PARENT_SCOPE
+            | codes::NAMESPACE_MIX
+            | codes::REDECLARED_FUNCTION
+            | codes::REDECLARED_CLASS
+    )
 }
 
 /// Evaluate PHP source through the full parse → compile → run pipeline on an
@@ -387,7 +505,14 @@ pub fn eval_to_bytes(src: &[u8]) -> Result<Vec<u8>, String> {
             .map_err(|e| e.into_rendered().join("\n"))?;
         match interp.run_main() {
             Ok(_) | Err(Unwind::Exit(_)) => {}
-            Err(u) => return Err(u.describe()),
+            Err(u) => return Err(interp.describe_unwind(&u)),
+        }
+        // Objects still alive at the end are destructed as php does at
+        // request shutdown (their output belongs to the script's).
+        if let Err(u) = interp.shutdown_destructors() {
+            if !matches!(u, Unwind::Exit(_)) {
+                return Err(interp.describe_unwind(&u));
+            }
         }
         interp.finish_output();
         Ok(())

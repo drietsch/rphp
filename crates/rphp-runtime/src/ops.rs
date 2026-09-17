@@ -127,8 +127,13 @@ impl Interp {
         let b = b.deref().into_owned();
         match op {
             AssignOpKind::Concat => {
-                self.check_array_to_string(&a)?;
-                self.check_array_to_string(&b)?;
+                if matches!(a, Value::Object(_) | Value::Array(_))
+                    || matches!(b, Value::Object(_) | Value::Array(_))
+                {
+                    let mut out = self.to_string(&a)?.as_bytes().to_vec();
+                    out.extend_from_slice(self.to_string(&b)?.as_bytes());
+                    return Ok(Value::Str(Str::from_vec(out)));
+                }
                 Ok(a.concat(&b))
             }
             AssignOpKind::Add
@@ -392,16 +397,7 @@ impl Interp {
                 }
                 _ => Value::Float(v.to_float()),
             },
-            CastKind::String => {
-                self.check_array_to_string(&v)?;
-                if let Value::Object(o) = &v {
-                    return Err(Unwind::error(format!(
-                        "Object of class {} could not be converted to string",
-                        self.class_name_of(o)
-                    )));
-                }
-                Value::Str(Str::from_vec(v.to_php_bytes()))
-            }
+            CastKind::String => Value::Str(self.to_string(&v)?),
             CastKind::Bool => Value::Bool(v.to_bool()),
             CastKind::Array => match v {
                 Value::Array(a) => Value::Array(a),

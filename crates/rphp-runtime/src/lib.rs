@@ -18,6 +18,7 @@
 
 mod api;
 mod call;
+mod class;
 mod errors;
 mod exec;
 mod frame;
@@ -28,7 +29,10 @@ mod output;
 mod registry;
 mod resources;
 mod symtab;
+mod throwable;
+mod types;
 mod unit;
+mod unwind;
 
 pub use api::parse_error_reporting;
 pub use call::Callable;
@@ -37,14 +41,22 @@ pub use errors::{
     E_CORE_WARNING, E_DEPRECATED, E_ERROR, E_NOTICE, E_PARSE, E_RECOVERABLE_ERROR, E_STRICT,
     E_USER_DEPRECATED, E_USER_ERROR, E_USER_NOTICE, E_USER_WARNING, E_WARNING, SILENCE_MASK,
 };
-pub use frame::{trace_arg, CallTarget, Frame, FrameKind, PendingCall, RetTarget};
+pub use frame::{
+    format_float_precision, trace_arg, CallTarget, Frame, FrameKind, NativeTarget, PendingCall,
+    RetTarget, TraceOpts,
+};
 pub use ini::{parse_bool, IniEntry, IniTable, CORE_DEFAULTS};
 pub use interp::{
     CompileFailure, CompileHook, ExtState, Interp, SapiKind, MAX_FRAMES, MAX_REENTRY_DEPTH,
 };
 pub use ops::{str_increment, value_name};
 pub use symtab::{Symtab, SymtabData};
-pub use unit::{ClassRt, FuncRt, IcSlot, UnitRt};
+pub use types::Coerced;
+pub use unit::{FuncRt, IcSlot, UnitRt};
+pub use class::{
+    ClassDef, ClassSpec, MagicFlags, MethodBody, MethodDef, MethodSpec, NativeInit, NativeMethod,
+    NativeMethodHandler, PropDefault, PropInfo, WellKnown,
+};
 pub use output::{
     NullSink, ObLevel, OutputSink, OutputStack, SharedBuffer, PHP_OUTPUT_HANDLER_CLEAN,
     PHP_OUTPUT_HANDLER_CLEANABLE, PHP_OUTPUT_HANDLER_DISABLED, PHP_OUTPUT_HANDLER_FINAL,
@@ -53,10 +65,11 @@ pub use output::{
     PHP_OUTPUT_HANDLER_STDFLAGS, PHP_OUTPUT_HANDLER_USER,
 };
 pub use registry::{
-    Ctx, ErrorKind, FaultSite, FnFlags, NativeFn, NativeHandler, NativeId, NativeResult,
-    PendingThrow, Registry, Unwind,
+    ClassBuilder, Ctx, ErrorKind, FaultSite, FnFlags, NativeFn, NativeHandler, NativeId,
+    NativeResult, PendingThrow, Registry, Unwind,
 };
 pub use resources::ResourceTable;
+pub use rphp_bytecode::{ClassFlags, ClassKind, Visibility};
 
 #[cfg(test)]
 mod tests {
@@ -319,7 +332,7 @@ mod tests {
         assert_eq!(err.message(), Some("Division by zero"));
         // The site was captured at the frame boundary: `{main}` only.
         let Unwind::Pending(p) = err else { panic!() };
-        assert_eq!(p.site.unwrap().trace, "#0 {main}");
+        assert!(p.site.unwrap().trace.is_empty());
     }
 
     #[test]
@@ -649,7 +662,7 @@ mod tests {
             site: Some(Box::new(FaultSite {
                 file: "/abs/file.php".into(),
                 line: 3,
-                trace: "#0 {main}".into(),
+                trace: rphp_value::Array::new(),
             })),
         };
         it.render_uncaught(&p);

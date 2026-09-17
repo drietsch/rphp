@@ -3,6 +3,7 @@
 
 use super::*;
 use rphp_bytecode::{CodeAddr, Const, FnFlags, InitRef, Op};
+use rphp_diagnostics::codes;
 use rphp_parser::{parse_v2, ParseOptions};
 use rphp_span::FileId;
 use rphp_value::Str;
@@ -20,7 +21,7 @@ fn parse(src: &str, interner: &mut Interner) -> Program {
 fn compile_src(src: &str) -> Result<Module, Vec<Diagnostic>> {
     let mut interner = Interner::new();
     let program = parse(src, &mut interner);
-    compile(&program, &interner, &CompileOptions::new())
+    compile(program, &mut interner, &CompileOptions::new())
 }
 
 fn compile_ok(src: &str) -> Module {
@@ -73,7 +74,7 @@ fn line_tables_follow_statements_and_calls() {
         line_of: Some(&line_of),
         file: None,
     };
-    let m = compile(&program, &interner, &opts).unwrap();
+    let m = compile(program, &mut interner, &opts).unwrap();
     let main = m.func(0);
     assert_eq!(main.lines.len(), main.code.len());
     // BindSymtab, then `echo 1` (2 ops) on line 1, `echo 2` on line 3, the
@@ -155,8 +156,9 @@ fn argument_shapes_pick_the_send_form() {
     assert_eq!(count(main, |op| matches!(op, Op::SendVar { pos: 0, .. })), 1);
     assert!(main.iter().any(|op| matches!(op, Op::SendRefElem { pos: 1, .. })));
     assert!(main.iter().any(|op| matches!(op, Op::SendRefProp { pos: 2, .. })));
-    // A call result travels through a temp `SendVar` (silent by-value).
-    assert!(main.iter().any(|op| matches!(op, Op::SendVar { pos: 3, .. })));
+    // A call result is sent as `SendFuncResult` (by value; php's notice when
+    // the parameter is by-reference).
+    assert!(main.iter().any(|op| matches!(op, Op::SendFuncResult { pos: 3, .. })));
     assert!(main.iter().any(|op| matches!(op, Op::SendVal { pos: 4, .. })));
     assert!(main.iter().any(|op| matches!(op, Op::SendUnpack { .. })));
     assert!(main.iter().any(|op| matches!(op, Op::SendNamed { .. })));
@@ -202,15 +204,17 @@ fn conditional_declarations_are_declared_in_place() {
 }
 
 #[test]
-fn duplicate_declarations_are_left_to_the_runtime() {
-    // php raises `Cannot redeclare` when the second declaration runs; both
-    // are compiled and hoisted.
-    let m = compile_ok("<?php function foo() {} function foo() {}");
-    assert_eq!(m.hoist_funcs.len(), 2);
-    let m = compile_ok("<?php class A {} class A {}");
-    assert_eq!(m.hoist_classes.len(), 2);
-    let diags = compile_err("<?php class B extends Nope {}");
-    assert!(has_code(&diags, UNDEFINED_CLASS));
+fn duplicate_declarations_in_one_file_are_compile_errors() {
+    // php: two unconditional declarations in one file are a compile-time
+    // `Cannot redeclare` (the HIR pass reports it); a conditional second
+    // declaration is left to the runtime.
+    let diags = compile_err("<?php function foo() {} function foo() {}");
+    assert!(has_code(&diags, codes::REDECLARED_FUNCTION), "{diags:#?}");
+    let diags = compile_err("<?php class A {} class A {}");
+    assert!(has_code(&diags, codes::REDECLARED_CLASS), "{diags:#?}");
+    let m = compile_ok("<?php function foo() {} if (1) { function foo() {} }");
+    assert_eq!(m.hoist_funcs.len(), 1);
+    assert!(m.func(0).code.iter().any(|op| matches!(op, Op::DeclareFunction { .. })));
 }
 
 #[test]
@@ -284,10 +288,11 @@ fn switch_and_match_use_jump_tables_for_literal_cases() {
 fn goto_and_labels() {
     let m = compile_ok("<?php $i = 0; again: $i++; if ($i < 3) goto again; echo $i;");
     assert_branch_targets_in_range(&m.func(0).code);
+    // `goto` validation happens in the HIR pass (php's compile-time texts).
     let diags = compile_err("<?php goto nope;");
-    assert!(has_code(&diags, UNDEFINED_LABEL));
+    assert!(has_code(&diags, codes::UNDEFINED_LABEL), "{diags:#?}");
     let diags = compile_err("<?php goto inside; while (1) { inside: echo 1; }");
-    assert!(has_code(&diags, GOTO_INTO_LOOP));
+    assert!(has_code(&diags, codes::INVALID_JUMP), "{diags:#?}");
 }
 
 #[test]
@@ -477,7 +482,7 @@ fn constants_and_magic_constants() {
         line_of: Some(&line_of),
         file: Some(PathBuf::from("/tmp/dir/file.php")),
     };
-    let m = compile(&program, &interner, &opts).unwrap();
+    let m = compile(program, &mut interner, &opts).unwrap();
     let main = m.func(0);
     assert!(main.code.iter().any(|op| matches!(op, Op::DeclareConst { .. })));
     assert_eq!(count(&main.code, |op| matches!(op, Op::FetchConst { .. })), 2);
@@ -511,11 +516,7 @@ fn unsupported_constructs_report_e0300_with_a_description() {
         .iter()
         .all(|m| m.starts_with("unsupported construct: ") && m.ends_with(" (not lowered yet)")));
 
-    let msgs = unsupported_messages("<?php namespace Foo; use Bar\\Baz; echo Foo\\X;");
-    assert!(msgs.iter().any(|m| m.contains("namespace declaration")), "{msgs:?}");
-
-    let msgs = unsupported_messages("<?php try { } catch (E $e) { } A::$p; A::K; strlen(...);");
-    assert!(msgs.iter().any(|m| m.contains("try/catch/finally")), "{msgs:?}");
+    let msgs = unsupported_messages("<?php A::$p; A::K; strlen(...);");
     assert!(msgs.iter().any(|m| m.contains("static property")), "{msgs:?}");
     assert!(msgs.iter().any(|m| m.contains("class constant")), "{msgs:?}");
     assert!(msgs.iter().any(|m| m.contains("first-class callable")), "{msgs:?}");
@@ -527,7 +528,6 @@ fn unsupported_constructs_report_e0300_with_a_description() {
         "interface declaration",
         "trait declaration",
         "enum declaration",
-        "abstract class",
         "class constant",
         "static property",
         "abstract method",
@@ -547,6 +547,144 @@ fn global_namespace_body_and_inline_html_lower() {
     assert!(main.consts.contains(&Const::Str(Str::new(b"head\n"))));
     assert!(main.consts.contains(&Const::Str(Str::new(b"tail"))));
     assert_eq!(count(&main.code, |op| matches!(op, Op::Echo { .. })), 3);
+}
+
+/// Names come from the resolver: declarations register under their FQN,
+/// class positions carry the static FQN, and an unqualified function or
+/// constant inside a namespace carries both candidates of php's two-step
+/// lookup (`name` = the namespaced one, `ns_fallback` = the global one).
+#[test]
+fn namespaced_names_are_resolved_and_two_step_where_php_says_so() {
+    let m = compile_ok(
+        "<?php namespace App\\Models; use Other\\Thing as T; use function Other\\helper; use const Other\\LIMIT;\n\
+         const X = 1; function f() {} class C { function m() { return [__CLASS__, __METHOD__, __FUNCTION__, __NAMESPACE__, self::class]; } }\n\
+         new C; new T; new \\Exception; new namespace\\D; f(); \\strlen('a'); strlen('a'); helper(); Sub\\g();\n\
+         echo X, \\PHP_EOL, PHP_EOL, LIMIT, namespace\\Y, C::class, T::class;",
+    );
+    assert_eq!(&*func_named(&m, "App\\Models\\f").name_bytes, b"App\\Models\\f");
+    assert_eq!(&*m.classes[0].name_bytes, b"App\\Models\\C");
+    let main = m.func(0);
+    let name = |k: u32| match &main.consts[k as usize] {
+        Const::Name(n) => String::from_utf8_lossy(&n.orig).into_owned(),
+        other => panic!("not a name: {other:?}"),
+    };
+    let news: Vec<String> = main
+        .code
+        .iter()
+        .filter_map(|op| match op {
+            Op::InitNew { class, .. } => match class.kind() {
+                rphp_bytecode::ClassRefKind::Named(i) => Some(name(i)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        news,
+        ["App\\Models\\C", "Other\\Thing", "Exception", "App\\Models\\D"]
+    );
+    let calls: Vec<(String, Option<String>)> = main
+        .code
+        .iter()
+        .filter_map(|op| match op {
+            Op::InitFCall {
+                name: n,
+                ns_fallback,
+                ..
+            } => Some((name(*n), ns_fallback.map(name))),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ("App\\Models\\f".to_string(), Some("f".to_string())),
+            ("strlen".to_string(), None),
+            ("App\\Models\\strlen".to_string(), Some("strlen".to_string())),
+            ("Other\\helper".to_string(), None),
+            ("App\\Models\\Sub\\g".to_string(), None),
+        ]
+    );
+    let consts: Vec<(String, Option<String>)> = main
+        .code
+        .iter()
+        .filter_map(|op| match op {
+            Op::FetchConst {
+                name: n,
+                ns_fallback,
+                ..
+            } => Some((name(*n), ns_fallback.map(name))),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        consts,
+        [
+            ("App\\Models\\X".to_string(), Some("X".to_string())),
+            ("PHP_EOL".to_string(), None),
+            ("App\\Models\\PHP_EOL".to_string(), Some("PHP_EOL".to_string())),
+            ("Other\\LIMIT".to_string(), None),
+            ("App\\Models\\Y".to_string(), None),
+        ]
+    );
+    // `const X` declares `App\Models\X`; `::class` and the magic constants
+    // are folded strings.
+    let declared: Vec<String> = main
+        .code
+        .iter()
+        .filter_map(|op| match op {
+            Op::DeclareConst { name: n, .. } => Some(name(*n)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(declared, ["App\\Models\\X"]);
+    for folded in ["App\\Models\\C", "Other\\Thing"] {
+        assert!(main.consts.contains(&Const::Str(Str::new(folded.as_bytes()))), "{folded}");
+    }
+    let method = m.func(m.classes[0].methods[0].func);
+    for folded in ["App\\Models\\C", "App\\Models\\C::m", "m", "App\\Models"] {
+        assert!(method.consts.contains(&Const::Str(Str::new(folded.as_bytes()))), "{folded}");
+    }
+    assert_eq!(count(&main.code, |op| matches!(op, Op::FetchClass { .. })), 0);
+}
+
+/// `use` is inert and every namespace form is a transparent statement list;
+/// declarations inside named namespace bodies are still hoisted.
+#[test]
+fn namespace_bodies_are_transparent_and_use_is_inert() {
+    let m = compile_ok("<?php namespace A { use B\\C; function f() {} class K {} echo 1; } namespace D { function g() {} echo 2; }");
+    assert_eq!(m.hoist_funcs.len(), 2);
+    assert_eq!(m.hoist_classes, vec![0]);
+    assert_eq!(count(&m.func(0).code, |op| matches!(op, Op::Echo { .. })), 2);
+    assert_eq!(&*func_named(&m, "A\\f").name_bytes, b"A\\f");
+    assert_eq!(&*func_named(&m, "D\\g").name_bytes, b"D\\g");
+    // php's compile-time fatal for mixed namespace forms is an HIR error.
+    let diags = compile_err("<?php namespace A; use B\\C; use D\\C;");
+    assert!(has_code(&diags, codes::IMPORT_CONFLICT), "{diags:#?}");
+}
+
+/// The HIR's `Let`/`Temp`/`Seq` shapes: destructuring reads its snapshot
+/// with `ListGet`, `?:` evaluates its operand once, a stabilized `??=`
+/// evaluates the key once, a nullsafe chain is an identical-to-null test,
+/// and a destructuring `foreach` binds its temporary.
+#[test]
+fn hir_temporaries_lower_to_registers() {
+    let m = compile_ok("<?php [$a, [$b, $c]] = f(); ['k' => $d] = f2(); $e = g() ?: 0; $h[k()] ??= 1; $n = $o?->p?->q(); foreach (xs() as [$x, $y]) { echo $x; }");
+    let code = &m.func(0).code;
+    assert_eq!(count(code, |op| matches!(op, Op::ListGet { .. })), 7);
+    assert_eq!(count(code, |op| matches!(op, Op::InitFCall { .. })), 5, "every call once");
+    assert!(code.iter().any(|op| matches!(op, Op::CmpIdentical { .. })));
+    assert!(code.iter().any(|op| matches!(op, Op::IterNext { .. })));
+    // One snapshot per `Let`: the two patterns (outer + nested), `?:`, the
+    // stabilized key, the nullsafe chain (two links).
+    assert_eq!(count(code, |op| matches!(op, Op::Deref { .. })), 7, "one snapshot per Let");
+    assert_branch_targets_in_range(code);
+    // A by-reference pattern reads from the stabilized source itself.
+    let m = compile_ok("<?php [$a, &$b] = $arr; foreach ($rows as [$k, &$v]) { $v++; }");
+    let code = &m.func(0).code;
+    assert_eq!(count(code, |op| matches!(op, Op::RefElem { .. })), 2);
+    assert!(code.iter().any(|op| matches!(op, Op::IterInit { by_ref: true, .. })));
+    assert_branch_targets_in_range(code);
 }
 
 #[test]

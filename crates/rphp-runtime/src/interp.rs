@@ -18,7 +18,8 @@ use crate::output::{OutputStack, SharedBuffer};
 use crate::registry::{NativeFn, NativeId, Unwind};
 use crate::resources::ResourceTable;
 use crate::symtab::Symtab;
-use crate::unit::{ClassRt, FuncRt, UnitRt};
+use crate::class::{ClassDef, WellKnown};
+use crate::unit::{FuncRt, UnitRt};
 use crate::LastError;
 
 /// Which SAPI created this interpreter (`PHP_SAPI`, `php_sapi_name()`).
@@ -97,11 +98,20 @@ pub struct Interp {
     /// Bumped by every function declaration (inline-cache stamp).
     pub(crate) func_gen: u32,
     /// Every class of every loaded unit (plus engine classes), by id.
-    pub(crate) classes: Vec<Rc<ClassRt>>,
+    pub(crate) classes: Vec<Rc<ClassDef>>,
     /// Lowercased name → declared class.
     pub(crate) class_index: HashMap<Box<[u8]>, u32>,
+    /// Declared classes in declaration order (`get_declared_classes`).
+    pub(crate) class_order: Vec<u32>,
     /// Bumped by every class declaration.
     pub(crate) class_gen: u32,
+    /// Ids of the classes the engine needs to find by role.
+    pub well_known: WellKnown,
+    /// Live objects whose class has `__destruct`, in creation order, for
+    /// the end-of-request destructor pass (ADR-017).
+    pub(crate) destructibles: Vec<rphp_value::WeakObject>,
+    /// `true` while the end-of-request destructor pass runs.
+    pub(crate) in_shutdown: bool,
     /// The entry script's `{main}` (set by [`Interp::load_module`]).
     pub(crate) main_func: Option<u32>,
     /// The frame stack.
@@ -173,7 +183,11 @@ impl Interp {
             func_gen: 0,
             classes: Vec::new(),
             class_index: HashMap::new(),
+            class_order: Vec::new(),
             class_gen: 0,
+            well_known: WellKnown::default(),
+            destructibles: Vec::new(),
+            in_shutdown: false,
             main_func: None,
             frames: Vec::new(),
             stack: Vec::new(),
@@ -201,7 +215,10 @@ impl Interp {
             in_error_handler: false,
             test_buf: None,
         };
-        it.register_builtin_class(b"stdClass");
+        crate::Registry(&mut it)
+            .class("stdClass")
+            .flags(rphp_bytecode::ClassFlags::ALLOW_DYNAMIC)
+            .finish();
         it
     }
 
@@ -314,11 +331,7 @@ impl Interp {
     pub(crate) fn locate_fault<T>(&self, r: Result<T, Unwind>) -> Result<T, Unwind> {
         match r {
             Err(Unwind::Pending(mut p)) if p.site.is_none() => {
-                p.site = Some(Box::new(crate::FaultSite {
-                    file: self.current_file().to_string(),
-                    line: self.current_line(),
-                    trace: self.render_trace(),
-                }));
+                p.site = Some(Box::new(self.capture_site()));
                 Err(Unwind::Pending(p))
             }
             other => other,
@@ -332,20 +345,53 @@ impl Interp {
     pub fn handle_top_level_unwind(&mut self, u: Unwind) -> i32 {
         match u {
             Unwind::Exit(code) => code,
-            Unwind::Pending(p) => {
-                self.render_uncaught(&p);
-                255
-            }
-            Unwind::Throw(o) => {
-                let p = crate::PendingThrow {
-                    kind: crate::ErrorKind::Exception("Exception"),
-                    message: format!("Uncaught exception of class {}", self.class_name_of(&o)),
-                    site: None,
-                };
-                self.render_uncaught(&p);
-                255
-            }
+            Unwind::Pending(p) => match self.materialize(p) {
+                Ok(o) => self.uncaught_object(o),
+                Err(p) => {
+                    self.render_uncaught(&p);
+                    255
+                }
+            },
+            Unwind::Throw(o) => self.uncaught_object(o),
         }
+    }
+
+    /// An uncaught throwable: the `set_exception_handler` callback runs
+    /// with it (a throw inside the handler is itself uncaught, rendered
+    /// without a handler; a handler that returns yields exit code 0), else
+    /// php's uncaught rendering with exit code 255.
+    fn uncaught_object(&mut self, o: rphp_value::Object) -> i32 {
+        let handler = self
+            .exception_handler
+            .last()
+            .cloned()
+            .filter(|h| !matches!(h, Value::Null));
+        if let Some(h) = handler {
+            let base = self.frames.len();
+            let silence = self.silence;
+            self.frames.push(Frame::internal(silence));
+            // php unsets the handler while it runs.
+            self.exception_handler.push(Value::Null);
+            let r = self.call_value(&h, &[Value::Object(o)]);
+            self.exception_handler.pop();
+            self.frames.truncate(base);
+            // php: a handler that returns leaves the exit status alone (0).
+            return match r {
+                Ok(_) => 0,
+                Err(Unwind::Exit(code)) => code,
+                Err(u) => {
+                    let u = self.materialize_unwind(u);
+                    match u {
+                        Unwind::Throw(e) => self.render_uncaught_object(&e),
+                        Unwind::Pending(p) => self.render_uncaught(&p),
+                        Unwind::Exit(_) => unreachable!("handled above"),
+                    }
+                    255
+                }
+            };
+        }
+        self.render_uncaught_object(&o);
+        255
     }
 
     /// Run the registered shutdown functions in order (php: a fault or

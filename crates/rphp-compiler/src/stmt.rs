@@ -2,14 +2,17 @@
 //!
 //! Lowered: `echo`, expression statements, `if`/`elseif`/`else`, `while`,
 //! `do`/`while`, `for`, `foreach` (by value and by reference, with
-//! destructuring targets), `switch` (jump table or compare chain),
-//! `break N`/`continue N`, `goto`/labels, `return`, `global`, `static`,
-//! `unset`, top-level `const`, `declare(strict_types)`, blocks, inline HTML
-//! and the global `namespace { }` wrapper. Function and class declarations
-//! are hoisted when PHP hoists them and lowered to `DeclareFunction` /
-//! `DeclareClass` in place otherwise. `try`/`catch`/`finally` (E5), named
-//! namespaces and `use` imports (F4) and `declare(ticks)` are reported as
-//! `RPHP_E0300`.
+//! destructuring targets — after the HIR pass a destructuring `foreach`
+//! binds an HIR temporary and the pattern statement prepended to the body
+//! reads it), `switch` (jump table or compare chain), `break N`/`continue
+//! N`, `goto`/labels, `return`, `global`, `static`, `unset`, top-level
+//! `const`, `declare(strict_types)`, blocks, inline HTML, and namespaces:
+//! `namespace X;` / `namespace X { }` are transparent statement lists
+//! (resolution already happened in `rphp-hir`, and declared names are
+//! FQNs) and `use` imports are inert. Function and class declarations are
+//! hoisted when PHP hoists them and lowered to `DeclareFunction` /
+//! `DeclareClass` in place otherwise. `try`/`catch`/`finally` (E5) and
+//! `declare(ticks)` are reported as `RPHP_E0300`.
 
 use rphp_ast::v2::{Case, Expr, Stmt};
 use rphp_bytecode::{ClassId, Const, FuncId, InitRef, Op, Reg, StaticVar};
@@ -44,11 +47,13 @@ impl FnCompiler<'_> {
     fn push_loop(&mut self, is_switch: bool) {
         let id = self.next_loop_id;
         self.next_loop_id += 1;
+        let finally_depth = self.finallys.len();
         self.loops.push(LoopCtx {
             id,
             breaks: Vec::new(),
             continues: Vec::new(),
             is_switch,
+            finally_depth,
         });
     }
 
@@ -201,6 +206,9 @@ impl FnCompiler<'_> {
                     return;
                 }
                 let idx = self.loops.len() - n;
+                if self.exit_loop_via_finally(idx, is_break) {
+                    return;
+                }
                 let j = self.jmp_fwd();
                 let target = &mut self.loops[idx];
                 // `continue` targeting a `switch` behaves like `break` (PHP
@@ -211,20 +219,13 @@ impl FnCompiler<'_> {
                     target.continues.push(j);
                 }
             }
-            Stmt::Return { value, .. } => match value {
-                Some(e) => {
-                    let mark = self.temp_top;
-                    let r = self.compile_expr(e);
-                    self.emit(Op::Ret { src: Some(r) });
-                    self.free_to(mark);
-                }
-                None => {
-                    self.emit(Op::Ret { src: None });
-                }
-            },
+            Stmt::Return { value, .. } => self.compile_return(value.as_ref()),
             Stmt::Block { body, .. } => self.compile_stmts(body),
             Stmt::Nop { .. } => {}
             Stmt::Goto { label, span } => {
+                if !self.check_goto_finally(*span) {
+                    return;
+                }
                 let j = self.jmp_fwd();
                 let loops = self.loop_ids();
                 self.gotos.push((j, *label, loops, *span));
@@ -255,20 +256,23 @@ impl FnCompiler<'_> {
                 }
             }
             Stmt::ClassLike(c) => {
-                if !self.at_top_level {
+                // A top-level class php cannot bind early (`implements`,
+                // traits, enums) is declared in statement order too.
+                if !self.at_top_level || crate::class_declared_in_order(c) {
                     let idx = crate::class::compile_class(self.mx, self.diags, c);
                     if let Some(idx) = idx {
                         self.emit(Op::DeclareClass { idx });
                     }
                 }
             }
-            Stmt::Namespace {
-                name: None, body, ..
-            } => {
-                // The global `namespace { }` wrapper; its declarations were
-                // hoisted by the driver.
+            Stmt::Namespace { body, .. } => {
+                // `namespace X;` / `namespace X { }` / the global wrapper:
+                // a transparent statement list at the same level (php hoists
+                // from namespace bodies), names already resolved.
                 self.compile_stmts(body);
             }
+            // Imports were consumed by the resolver.
+            Stmt::Use { .. } => {}
             Stmt::Global { vars, .. } => {
                 for v in vars {
                     match v {
@@ -362,11 +366,12 @@ impl FnCompiler<'_> {
                     self.compile_nested(body);
                 }
             }
-            Stmt::Namespace { span, .. } => {
-                unsupported(self.diags, *span, "namespace declaration");
-            }
-            Stmt::Use { span, .. } => unsupported(self.diags, *span, "use import"),
-            Stmt::Try { span, .. } => unsupported(self.diags, *span, "try/catch/finally"),
+            Stmt::Try {
+                body,
+                catches,
+                finally,
+                ..
+            } => self.compile_try(body, catches, finally.as_deref()),
             Stmt::HaltCompiler { span } => unsupported(self.diags, *span, "__halt_compiler"),
         }
     }
@@ -454,10 +459,19 @@ impl FnCompiler<'_> {
         };
         let it = self.alloc_temp();
         self.emit(Op::IterInit { it, src, by_ref });
-        // Simple variable targets receive the element directly; anything else
+        // Simple variable targets receive the element directly; an HIR
+        // temporary (a desugared destructuring pattern) is *bound* to a fresh
+        // register the pattern statement in the body reads; anything else
         // goes through a temp and an assignment.
+        let mut bound_temp = None;
         let val_direct = match value {
             Expr::Var(id, _) if !self.is_this(*id) => Some(self.var_reg(*id)),
+            Expr::Temp(t, _) => {
+                let r = self.alloc_temp();
+                self.temps.push((*t, r));
+                bound_temp = Some(*t);
+                Some(r)
+            }
             _ => None,
         };
         let key_direct = match key {
@@ -498,6 +512,9 @@ impl FnCompiler<'_> {
         self.patch(next, lend);
         self.emit(Op::IterFree { it });
         self.pop_loop(lend, ltop);
+        if let Some(t) = bound_temp {
+            self.unbind_temp(t);
+        }
         self.free_to(mark);
     }
 

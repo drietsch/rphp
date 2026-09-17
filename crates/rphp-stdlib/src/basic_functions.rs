@@ -22,8 +22,13 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     // --- class introspection over the engine's class table ---
     nf!("class_exists", 1, Some(2), class_exists),
     nf!("interface_exists", 1, Some(2), interface_exists),
-    nf!("trait_exists", 1, Some(2), interface_exists),
-    nf!("enum_exists", 1, Some(2), interface_exists),
+    nf!("trait_exists", 1, Some(2), trait_exists),
+    nf!("enum_exists", 1, Some(2), enum_exists),
+    nf!("get_declared_classes", 0, Some(0), get_declared_classes),
+    nf!("get_declared_interfaces", 0, Some(0), get_declared_interfaces),
+    nf!("get_class_vars", 1, Some(1), get_class_vars),
+    nf!("class_implements", 1, Some(2), class_implements),
+    nf!("class_parents", 1, Some(2), class_parents),
     nf!("get_class", 0, Some(1), get_class),
     nf!("get_parent_class", 0, Some(1), get_parent_class),
     nf!("get_called_class", 0, Some(0), get_called_class),
@@ -152,16 +157,142 @@ pub(crate) fn set_time_limit(_: &mut Ctx, _: &mut [Value]) -> NativeResult {
     Ok(Value::Bool(true))
 }
 
-/// `class_exists(string $class, bool $autoload = true): bool` — declared
-/// classes only (autoloading arrives with plan E7).
-pub(crate) fn class_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    Ok(Value::Bool(ctx.class_exists(&args[0].to_php_bytes())))
+/// Whether a declared class-like of `kind` exists under the name in
+/// `args[0]` (autoloading arrives with plan E7).
+fn class_like_exists(ctx: &Ctx, args: &[Value], want: fn(&rphp_runtime::ClassDef) -> bool) -> NativeResult {
+    let name = args[0].to_php_bytes();
+    Ok(Value::Bool(
+        ctx.class_by_name(&name)
+            .map(|id| ctx.class(id))
+            .is_some_and(|c| c.linked && want(c)),
+    ))
 }
 
-/// `interface_exists` / `trait_exists` / `enum_exists`: no interfaces,
-/// traits or enums can be declared yet (plan E6), so always `false`.
-pub(crate) fn interface_exists(_: &mut Ctx, _: &mut [Value]) -> NativeResult {
-    Ok(Value::Bool(false))
+/// `class_exists(string $class, bool $autoload = true): bool` — declared
+/// classes (not interfaces, traits or enums).
+pub(crate) fn class_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    class_like_exists(ctx, args, |c| c.kind == rphp_runtime::ClassKind::Class)
+}
+
+/// `interface_exists(string $interface, bool $autoload = true): bool`
+pub(crate) fn interface_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    class_like_exists(ctx, args, |c| c.kind == rphp_runtime::ClassKind::Interface)
+}
+
+/// `trait_exists(string $trait, bool $autoload = true): bool`
+pub(crate) fn trait_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    class_like_exists(ctx, args, |c| c.kind == rphp_runtime::ClassKind::Trait)
+}
+
+/// `enum_exists(string $enum, bool $autoload = true): bool`
+pub(crate) fn enum_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    class_like_exists(ctx, args, |c| matches!(c.kind, rphp_runtime::ClassKind::Enum { .. }))
+}
+
+/// `get_declared_classes(): array` — declared classes (internal first, then
+/// user classes in declaration order), as php lists them.
+pub(crate) fn get_declared_classes(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
+    let mut out = rphp_value::Array::new();
+    for c in ctx.declared_classes() {
+        if c.kind == rphp_runtime::ClassKind::Class {
+            out.push(Value::string(&c.name));
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+/// `get_declared_interfaces(): array`
+pub(crate) fn get_declared_interfaces(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
+    let mut out = rphp_value::Array::new();
+    for c in ctx.declared_classes() {
+        if c.kind == rphp_runtime::ClassKind::Interface {
+            out.push(Value::string(&c.name));
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+/// `get_class_vars(string $class): array` — the default values of the
+/// properties visible from the calling scope.
+pub(crate) fn get_class_vars(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let name = args[0].to_php_bytes();
+    let Some(cid) = ctx.class_by_name(&name) else {
+        return Err(Unwind::type_error(format!(
+            "get_class_vars(): Argument #1 ($class) must be a valid class name, {} given",
+            String::from_utf8_lossy(&name)
+        )));
+    };
+    let scope = ctx.current_user_frame().and_then(|f| f.scope);
+    let class = ctx.class(cid).clone();
+    let mut out = rphp_value::Array::new();
+    for p in &class.props {
+        if !ctx.access_ok_public(p.vis, p.decl, scope) {
+            continue;
+        }
+        let v = match &p.default {
+            rphp_runtime::PropDefault::Value(v) => v.clone(),
+            rphp_runtime::PropDefault::Thunk(_) => Value::Null,
+        };
+        out.set(rphp_value::ArrayKey::str(&p.name), v);
+    }
+    Ok(Value::Array(out))
+}
+
+/// `class_implements(object|string $object_or_class, bool $autoload = true): array|false`
+/// — `name => name` for every implemented interface.
+pub(crate) fn class_implements(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let class = match &*args[0].deref() {
+        Value::Object(o) => Some(o.class_id()),
+        Value::Str(s) => ctx.class_by_name(s.as_bytes()),
+        other => {
+            return Err(Unwind::type_error(format!(
+                "class_implements(): Argument #1 ($object_or_class) must be of type object|string, {} given",
+                other.type_name()
+            )))
+        }
+    };
+    let Some(cid) = class else {
+        ctx.warn(&format!(
+            "class_implements(): Class {} does not exist and could not be loaded",
+            String::from_utf8_lossy(&args[0].to_php_bytes())
+        ))?;
+        return Ok(Value::Bool(false));
+    };
+    let mut out = rphp_value::Array::new();
+    for &iid in &ctx.class(cid).interfaces {
+        let n = ctx.class(iid).name.clone();
+        out.set(rphp_value::ArrayKey::str(&n), Value::string(&n));
+    }
+    Ok(Value::Array(out))
+}
+
+/// `class_parents(object|string $object_or_class, bool $autoload = true): array|false`
+pub(crate) fn class_parents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let class = match &*args[0].deref() {
+        Value::Object(o) => Some(o.class_id()),
+        Value::Str(s) => ctx.class_by_name(s.as_bytes()),
+        other => {
+            return Err(Unwind::type_error(format!(
+                "class_parents(): Argument #1 ($object_or_class) must be of type object|string, {} given",
+                other.type_name()
+            )))
+        }
+    };
+    let Some(cid) = class else {
+        ctx.warn(&format!(
+            "class_parents(): Class {} does not exist and could not be loaded",
+            String::from_utf8_lossy(&args[0].to_php_bytes())
+        ))?;
+        return Ok(Value::Bool(false));
+    };
+    let mut out = rphp_value::Array::new();
+    let mut cur = ctx.class(cid).parent;
+    while let Some(p) = cur {
+        let n = ctx.class(p).name.clone();
+        out.set(rphp_value::ArrayKey::str(&n), Value::string(&n));
+        cur = ctx.class(p).parent;
+    }
+    Ok(Value::Array(out))
 }
 
 /// The class id a `$object_or_class` argument denotes, with php's
@@ -276,22 +407,16 @@ pub(crate) fn get_class_methods(ctx: &mut Ctx, args: &mut [Value]) -> NativeResu
     };
     let scope = ctx.current_user_frame().and_then(|f| f.scope);
     let mut out = rphp_value::Array::new();
-    let mut seen: Vec<Vec<u8>> = Vec::new();
-    loop {
-        let c = ctx.class(cur).clone();
-        for (name, _, vis) in &c.methods {
-            let key = name.to_ascii_lowercase();
-            if seen.contains(&key) || !ctx.access_ok_public(*vis, cur, scope) {
-                continue;
-            }
-            seen.push(key);
-            out.push(Value::string(name));
+    let c = ctx.class(cur).clone();
+    for key in &c.method_order {
+        let Some(m) = c.methods.get(key) else { continue };
+        if !ctx.access_ok_public(m.vis, m.decl, scope) {
+            continue;
         }
-        match c.parent {
-            Some(p) => cur = p,
-            None => break,
-        }
+        out.push(Value::string(&m.name));
     }
+    cur = c.id;
+    let _ = cur;
     Ok(Value::Array(out))
 }
 

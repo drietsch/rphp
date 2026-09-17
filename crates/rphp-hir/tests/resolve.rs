@@ -177,8 +177,8 @@ fn import_tables_are_independent() {
     );
     assert!(l.diags.is_empty(), "{:?}", l.messages());
     assert_eq!(l.class_names()[0].0, "B\\C");
-    assert_eq!(l.func_names(), s(&[("", "b\\c")]));
-    assert_eq!(l.const_names(), s(&[("", "b\\C")]));
+    assert_eq!(l.func_names(), s(&[("", "B\\C")]));
+    assert_eq!(l.const_names(), s(&[("", "B\\C")]));
 }
 
 // ----- functions (ns_022..ns_040 family) --------------------------------------------
@@ -189,12 +189,12 @@ fn import_tables_are_independent() {
 fn group_use_function_and_const() {
     assert_eq!(
         funcs("<?php namespace A; use B\\{function f, const X, C}; f();"),
-        s(&[("", "b\\f")])
+        s(&[("", "B\\f")])
     );
     // php: `... echo X;` → `Undefined constant "B\X"`
     assert_eq!(
         consts("<?php namespace A; use B\\{function f, const X, C}; echo X;"),
-        s(&[("", "b\\X")])
+        s(&[("", "B\\X")])
     );
 }
 
@@ -203,7 +203,7 @@ fn group_use_function_and_const() {
 fn function_import_alias_case_insensitive() {
     assert_eq!(
         funcs("<?php namespace A; use function B\\f as g; G(); g();"),
-        s(&[("", "b\\f"), ("", "b\\f")])
+        s(&[("", "B\\f"), ("", "B\\f")])
     );
 }
 
@@ -213,7 +213,7 @@ fn function_import_alias_case_insensitive() {
 fn unqualified_function_in_namespace_is_two_step() {
     assert_eq!(
         funcs("<?php namespace A; f(); strlen('x');"),
-        s(&[("a\\f", "f"), ("a\\strlen", "strlen")])
+        s(&[("A\\f", "f"), ("A\\strlen", "strlen")])
     );
 }
 
@@ -222,7 +222,7 @@ fn unqualified_function_in_namespace_is_two_step() {
 fn unqualified_function_at_global_scope_is_single_step() {
     assert_eq!(
         funcs("<?php f(); STRLEN('x');"),
-        s(&[("", "f"), ("", "strlen")])
+        s(&[("", "f"), ("", "STRLEN")])
     );
 }
 
@@ -234,10 +234,10 @@ fn qualified_function_names() {
         funcs("<?php namespace A; use B\\C; \\f(); namespace\\f(); C\\f(); c\\f(); B\\f();"),
         s(&[
             ("", "f"),
-            ("", "a\\f"),
-            ("", "b\\c\\f"),
-            ("", "b\\c\\f"),
-            ("", "a\\b\\f")
+            ("", "A\\f"),
+            ("", "B\\C\\f"),
+            ("", "B\\C\\f"),
+            ("", "A\\B\\f")
         ])
     );
 }
@@ -246,7 +246,7 @@ fn qualified_function_names() {
 fn function_import_beats_namespace_fallback() {
     assert_eq!(
         funcs("<?php namespace A; use function B\\f; f(); F(); g();"),
-        s(&[("", "b\\f"), ("", "b\\f"), ("a\\g", "g")])
+        s(&[("", "B\\f"), ("", "B\\f"), ("A\\g", "g")])
     );
 }
 
@@ -258,7 +258,7 @@ fn function_import_beats_namespace_fallback() {
 fn const_import_is_case_sensitive() {
     assert_eq!(
         consts("<?php namespace A; use const B\\X; echo X, x;"),
-        s(&[("", "b\\X"), ("a\\x", "x")])
+        s(&[("", "B\\X"), ("A\\x", "x")])
     );
 }
 
@@ -269,21 +269,25 @@ fn constant_name_forms() {
     assert_eq!(
         consts("<?php namespace A; use B\\C; echo X, \\X, namespace\\X, C\\X, B\\X;"),
         s(&[
-            ("a\\X", "X"),
+            ("A\\X", "X"),
             ("", "X"),
-            ("", "a\\X"),
-            ("", "b\\c\\X"),
-            ("", "a\\b\\X")
+            ("", "A\\X"),
+            ("", "B\\C\\X"),
+            ("", "A\\B\\X")
         ])
     );
 }
 
+/// The resolved names keep their spelling; the runtime key folds only the
+/// namespace part (`rphp_hir::scope::const_key`).
 #[test]
-fn constant_keys_lowercase_only_the_namespace_part() {
+fn constant_names_keep_their_spelling_and_keys_fold_the_namespace_part() {
     assert_eq!(
         consts("<?php namespace Foo\\BAR; echo Baz, \\Qux\\ZED\\Mixed;"),
-        s(&[("foo\\bar\\Baz", "Baz"), ("", "qux\\zed\\Mixed")])
+        s(&[("Foo\\BAR\\Baz", "Baz"), ("", "Qux\\ZED\\Mixed")])
     );
+    assert_eq!(rphp_hir::scope::const_key(b"Foo\\BAR\\Baz"), b"foo\\bar\\Baz");
+    assert_eq!(rphp_hir::scope::const_key(b"Baz"), b"Baz");
 }
 
 #[test]

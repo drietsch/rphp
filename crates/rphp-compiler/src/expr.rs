@@ -13,10 +13,25 @@
 //! fetch-for-write chain (`FetchElemW`/`FetchPropW`, which move the element
 //! out), the innermost store, and the write-backs in reverse
 //! (`ArraySet`/`ArrayPush`/`AssignProp`) — see CONTRACT.md §8.
+//!
+//! HIR temporaries (`rphp-hir`'s `Let`/`Temp`/`Seq`, the only nodes the
+//! parser never produces): `Let` evaluates its initializer into a fresh
+//! register that stays allocated while the body compiles (the temporary
+//! stack discipline keeps every temp of the body above it), `Temp` reads
+//! that register — as a value, as a write-target root (`Temp(t)->p = v`,
+//! `&Temp(t)[k]`) or as a destructuring source, where `Temp(t)[k]` is a
+//! `ListGet` — and `Seq` evaluates in order and yields the last value.
+//!
+//! Names are emitted from the resolver's [`Resolved`] entries: class
+//! positions carry the static FQN; an unqualified function/constant name
+//! inside a namespace carries both candidates of php's two-step lookup
+//! (`InitFCall{name: N\f, ns_fallback: f}` — the runtime tries `name`
+//! first).
 
 use rphp_ast::v2::{
     Arg, ArrayItem, BinOp, CallableTarget, Callee, CastKind as AstCast, ClassRef as AstClassRef,
-    ConstSel, Expr, InterpPart, MagicKind, MatchArm, MemberName, Name, NewTarget, UnOp,
+    ConstSel, Expr, InterpPart, MagicKind, MatchArm, MemberName, Name, NewTarget, Resolved,
+    TempId, UnOp,
 };
 use rphp_bytecode::{
     AssignOpKind, CastKind, ClassRef, Const, IncludeKind as BcInclude, NameRef, Op, Reg,
@@ -28,7 +43,7 @@ use rphp_value::{Str, Value};
 
 use crate::func::{FnCompiler, NullsafeCtx};
 use crate::stmt::literal_value;
-use crate::{name_is_global, unsupported, INVALID_APPEND_READ, INVALID_SCOPE, INVALID_WRITE_TARGET};
+use crate::{unsupported, INVALID_APPEND_READ, INVALID_SCOPE, INVALID_WRITE_TARGET};
 
 /// One step of a write-target chain below its root.
 pub(crate) enum Step {
@@ -265,15 +280,18 @@ impl FnCompiler<'_> {
                 dst
             }
             Expr::Const(name) => {
-                if !name_is_global(name) {
-                    return self.unsupported_expr(name.span, "namespaced constant");
-                }
-                let k = self.sym_const(self.interner().resolve(name.text));
+                let (k, ns_fallback) = match name.resolved {
+                    Some(Resolved::Const { ns_key, global_key }) => {
+                        self.two_step_consts(ns_key, global_key)
+                    }
+                    // Not visited by the resolver: as spelled.
+                    _ => (self.sym_const(self.interner().resolve(name.text)), None),
+                };
                 let dst = self.alloc_temp();
                 self.emit(Op::FetchConst {
                     dst,
                     name: k,
-                    ns_fallback: None,
+                    ns_fallback,
                 });
                 dst
             }
@@ -355,9 +373,21 @@ impl FnCompiler<'_> {
             Expr::Eval { span, .. } => self.unsupported_expr(*span, "eval"),
             Expr::Yield { span, .. } => self.unsupported_expr(*span, "yield"),
             Expr::YieldFrom { span, .. } => self.unsupported_expr(*span, "yield from"),
-            Expr::Let { span, .. } => self.unsupported_expr(*span, "HIR let"),
-            Expr::Temp(_, span) => self.unsupported_expr(*span, "HIR temporary"),
-            Expr::Seq(_, span) => self.unsupported_expr(*span, "HIR sequence"),
+            Expr::Let {
+                temp, init, body, ..
+            } => self.compile_let(*temp, init, body),
+            Expr::Temp(t, span) => self.temp_reg(*t, *span),
+            Expr::Seq(exprs, _) => {
+                let Some((last, rest)) = exprs.split_last() else {
+                    return self.null_temp();
+                };
+                for e in rest {
+                    let mark = self.temp_top;
+                    self.compile_expr_discard(e);
+                    self.free_to(mark);
+                }
+                self.compile_expr(last)
+            }
             Expr::Error(span) => self.unsupported_expr(*span, "parse-error placeholder"),
         }
     }
@@ -476,6 +506,70 @@ impl FnCompiler<'_> {
         }
     }
 
+    // ---- HIR temporaries ----------------------------------------------------------
+
+    /// `Let(t, init, body)`: bind `t` to a register holding `init`'s value
+    /// (a dereferenced copy, so a variable initializer is snapshotted as
+    /// php's temporary would be) for the duration of `body`.
+    fn compile_let(&mut self, temp: TempId, init: &Expr, body: &Expr) -> Reg {
+        let reg = self.alloc_temp();
+        let mark = self.temp_top;
+        let r = self.compile_expr(init);
+        self.emit(Op::Deref { dst: reg, src: r });
+        self.free_to(mark);
+        self.temps.push((temp, reg));
+        let out = self.compile_expr(body);
+        self.unbind_temp(temp);
+        out
+    }
+
+    /// The register bound to an HIR temporary.
+    pub(crate) fn temp_reg(&mut self, t: TempId, span: Span) -> Reg {
+        match self.temps.iter().rev().find(|(id, _)| *id == t) {
+            Some(&(_, r)) => r,
+            None => {
+                // An HIR invariant violation (a `Temp` outside its `Let`);
+                // report rather than mis-compile.
+                unsupported(self.diags, span, "HIR temporary outside its binding");
+                self.null_temp()
+            }
+        }
+    }
+
+    /// Drop the innermost binding of `t`.
+    pub(crate) fn unbind_temp(&mut self, t: TempId) {
+        if let Some(i) = self.temps.iter().rposition(|(id, _)| *id == t) {
+            self.temps.remove(i);
+        }
+    }
+
+    /// The pool constants of a two-step function/constant lookup: the
+    /// namespaced candidate as `name` and the global one as `ns_fallback`
+    /// (`None` when the resolver found a single candidate).
+    fn two_step_consts(
+        &mut self,
+        ns_key: Option<IdentId>,
+        global_key: IdentId,
+    ) -> (u32, Option<u32>) {
+        match ns_key {
+            Some(ns) => {
+                let k = self.sym_const(self.interner().resolve(ns));
+                let g = self.sym_const(self.interner().resolve(global_key));
+                (k, Some(g))
+            }
+            None => (self.sym_const(self.interner().resolve(global_key)), None),
+        }
+    }
+
+    /// The pool constant of a class-position name: its resolved FQN.
+    fn class_name_const(&mut self, name: &Name) -> u32 {
+        let id = match name.resolved {
+            Some(Resolved::Class { fqn, .. }) => fqn,
+            _ => name.text,
+        };
+        self.sym_const(self.interner().resolve(id))
+    }
+
     // ---- names --------------------------------------------------------------
 
     /// Lower a member name to a [`NameRef`]: a `Const::Str` for a literal
@@ -493,11 +587,7 @@ impl FnCompiler<'_> {
     pub(crate) fn class_ref(&mut self, class: &AstClassRef, span: Span) -> Option<ClassRef> {
         Some(match class {
             AstClassRef::Named(name) => {
-                if !name_is_global(name) {
-                    unsupported(self.diags, name.span, "namespaced class name");
-                    return None;
-                }
-                let k = self.sym_const(self.interner().resolve(name.text));
+                let k = self.class_name_const(name);
                 ClassRef::named(k)
             }
             AstClassRef::SelfKw(_) => {
@@ -529,10 +619,13 @@ impl FnCompiler<'_> {
     fn compile_class_name(&mut self, class: &AstClassRef, span: Span) -> Reg {
         match class {
             AstClassRef::Named(name) => {
-                if !name_is_global(name) {
-                    return self.unsupported_expr(name.span, "namespaced class name");
-                }
-                let n = self.interner().resolve(name.text).to_vec();
+                // The resolver folds `Name::class` to a string; this is the
+                // fallback for a tree that did not go through it.
+                let id = match name.resolved {
+                    Some(Resolved::Class { fqn, .. }) => fqn,
+                    _ => name.text,
+                };
+                let n = self.interner().resolve(id).to_vec();
                 self.load_bytes(&n)
             }
             AstClassRef::SelfKw(_) => match self.cur_class {
@@ -725,10 +818,12 @@ impl FnCompiler<'_> {
                 unsupported(self.diags, *span, "static property");
                 None
             }
-            Expr::Temp(_, span) => {
-                unsupported(self.diags, *span, "HIR temporary");
-                None
-            }
+            // A stabilized chain base (`Let(t, f(), Temp(t)->p = v)`) or a
+            // by-reference destructuring source.
+            Expr::Temp(t, span) => Some(Plan {
+                root: self.temp_reg(*t, *span),
+                steps: Vec::new(),
+            }),
             other => {
                 self.diags.push(
                     Diagnostic::error(INVALID_WRITE_TARGET, "Cannot use temporary expression in write context")
@@ -1684,11 +1779,21 @@ impl FnCompiler<'_> {
         let kr = self.compile_expr(index);
         self.free_to(mark);
         let dst = self.alloc_temp();
-        self.emit(Op::ArrayGet {
-            dst,
-            base: br,
-            key: kr,
-        });
+        // `Temp(t)[k]` is how a desugared destructuring pattern reads its
+        // source: php's list-read semantics (silently null on a null source).
+        if matches!(base, Expr::Temp(..)) {
+            self.emit(Op::ListGet {
+                dst,
+                base: br,
+                key: kr,
+            });
+        } else {
+            self.emit(Op::ArrayGet {
+                dst,
+                base: br,
+                key: kr,
+            });
+        }
         dst
     }
 
@@ -1868,6 +1973,12 @@ impl FnCompiler<'_> {
             }
             Expr::Var(id, _) => {
                 let var = self.var_reg(*id);
+                let dst = self.alloc_temp();
+                self.emit(Op::IssetVar { dst, var });
+                dst
+            }
+            Expr::Temp(t, span) => {
+                let var = self.temp_reg(*t, *span);
                 let dst = self.alloc_temp();
                 self.emit(Op::IssetVar { dst, var });
                 dst
@@ -2122,13 +2233,18 @@ impl FnCompiler<'_> {
             Expr::Index {
                 index: Some(_), ..
             }
-            | Expr::VarVar { .. }
-            | Expr::Call { .. }
+            | Expr::VarVar { .. } => {
+                let var = self.compile_expr(value);
+                self.emit(Op::SendVar { pos, var });
+            }
+            Expr::Call { .. }
             | Expr::MethodCall { .. }
             | Expr::StaticCall { .. }
             | Expr::New { .. } => {
-                let var = self.compile_expr(value);
-                self.emit(Op::SendVar { pos, var });
+                // A call result: by value, with php's notice when the
+                // parameter turns out to be by-reference.
+                let src = self.compile_expr(value);
+                self.emit(Op::SendFuncResult { pos, src });
             }
             Expr::Index { index: None, span, .. } => {
                 unsupported(self.diags, *span, "`[]` append as an argument");
@@ -2140,17 +2256,19 @@ impl FnCompiler<'_> {
         }
     }
 
-    /// `name(args...)`: late-bound through the runtime's function table.
+    /// `name(args...)`: late-bound through the runtime's function table,
+    /// with php's two-step lookup for an unqualified name in a namespace.
     fn compile_call(&mut self, name: &Name, args: &[Arg], span: Span) -> Reg {
         let _ = span;
-        if !name_is_global(name) {
-            return self.unsupported_expr(name.span, "namespaced function call");
-        }
-        let k = self.sym_const(self.interner().resolve(name.text));
+        let (k, ns_fallback) = match name.resolved {
+            Some(Resolved::Func { ns_key, global_key }) => self.two_step_consts(ns_key, global_key),
+            // Not visited by the resolver: as spelled.
+            _ => (self.sym_const(self.interner().resolve(name.text)), None),
+        };
         let ic = self.ic();
         self.emit(Op::InitFCall {
             name: k,
-            ns_fallback: None,
+            ns_fallback,
             ic,
         });
         self.compile_sends(args);

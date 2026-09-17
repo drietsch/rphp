@@ -19,6 +19,7 @@ members = [
     "crates/rphp-tokenizer",
     "crates/rphp-embed",
     "crates/rphp-hir",
+    "crates/rphp-pcre2",
     "tools/rphp",
     "xtask",
 ]
@@ -52,6 +53,7 @@ rphp-test = { path = "crates/rphp-test" }
 rphp-tokenizer = { path = "crates/rphp-tokenizer" }
 rphp-embed = { path = "crates/rphp-embed" }
 rphp-hir = { path = "crates/rphp-hir" }
+rphp-pcre2 = { path = "crates/rphp-pcre2" }
 
 # External crates. Versions are pinned here once; member crates use
 # `{ workspace = true }` so the whole workspace agrees on one version.
@@ -72,6 +74,11 @@ insta = "1.48"
 pico-args = "0.5"
 memchr = "2.8"
 sha2 = "0.10"
+# mbstring/iconv (ADR-032): legacy CJK double-byte tables.
+encoding_rs = "0.8.41"
+# pcre extension (ADR-032): PCRE2 itself, through the raw `-sys` bindings; the
+# safe surface lives in crates/rphp-pcre2.
+pcre2-sys = "0.2.10"
 
 [profile.release]
 opt-level = 3

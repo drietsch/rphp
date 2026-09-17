@@ -465,7 +465,7 @@ pub fn discover(root: &Path) -> Result<Vec<Fixture>, String> {
 
 /// Parse `major.minor.patch` (extra components / suffixes ignored).
 pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
-    let core = s.trim().split(|c: char| c == '-' || c == '+' || c == '~').next()?;
+    let core = s.trim().split(['-', '+', '~']).next()?;
     let mut it = core.split('.').map(|p| p.parse::<u64>().ok());
     let major = it.next()??;
     let minor = it.next().unwrap_or(Some(0))?;

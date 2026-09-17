@@ -1,0 +1,10 @@
+[package]
+name = "rphp-pcre2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Minimal safe wrapper over PCRE2 (pcre2-sys) for the pcre extension"
+
+[dependencies]
+pcre2-sys.workspace = true

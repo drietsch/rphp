@@ -28,6 +28,7 @@ mod html;
 mod iconv;
 mod info;
 mod json;
+mod libmbfl;
 mod math;
 mod mbstring;
 mod output;
@@ -87,6 +88,7 @@ pub fn register(r: &mut Registry) {
     zend_exceptions::register_classes(r);
     spl_exceptions::register_classes(r);
     math::register_constants(r);
+    pcre::register_constants(r);
     json::register_constants(r);
     output_buffering::register_constants(r);
     string2::register_constants(r);

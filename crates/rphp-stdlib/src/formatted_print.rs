@@ -566,6 +566,7 @@ pub(crate) fn vprintf(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 }
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)] // 3.14/3.14159 here are sprintf inputs, not pi
 mod tests {
     use crate::tests::{call_err, call_named};
     use rphp_runtime::ErrorKind;

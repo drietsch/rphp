@@ -838,54 +838,6 @@ pub(crate) fn get_html_translation_table(ctx: &mut Ctx, args: &mut [Value]) -> N
     Ok(Value::Array(out))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tables_are_sorted_for_binary_search() {
-        assert!(HTML401_ENTITIES.windows(2).all(|w| w[0].0 < w[1].0));
-        assert!(HTML5_ENTITIES.windows(2).all(|w| w[0].0 < w[1].0));
-        assert!(HTML5_ENTITIES_2.windows(2).all(|w| (w[0].0, w[0].1) < (w[1].0, w[1].1)));
-        assert!(HTML5_DECODE.windows(2).all(|w| w[0].0.as_bytes() < w[1].0.as_bytes()));
-        assert_eq!(HTML5_DECODE.len(), 2125);
-        assert_eq!(HTML401_ENTITIES.len(), 248);
-    }
-
-    #[test]
-    fn utf8_error_charging_matches_php() {
-        let count = |s: &[u8]| {
-            let mut pos = 0;
-            let mut errors = 0;
-            while pos < s.len() {
-                if next_utf8_char(s, &mut pos).is_none() {
-                    errors += 1;
-                }
-            }
-            errors
-        };
-        assert_eq!(count(b"\xc3("), 1);
-        assert_eq!(count(b"\xe2\x82("), 1);
-        assert_eq!(count(b"\xc0\x80"), 2);
-        assert_eq!(count(b"\xed\xa0\x80"), 1);
-        assert_eq!(count(b"\xf8\x88\x80\x80\x80"), 5);
-        assert_eq!(count(b"\xef\xbf\xbf"), 0);
-    }
-
-    #[test]
-    fn encode_and_decode_round_trip() {
-        let e = escape_html("a & b < c > d \" e ' f".as_bytes(), false, 3, Charset::Utf8, true);
-        assert_eq!(e, b"a &amp; b &lt; c &gt; d &quot; e &#039; f");
-        assert_eq!(unescape_html(&e, true, 3, Charset::Utf8), "a & b < c > d \" e ' f".as_bytes());
-        let e5 = escape_html("caf\u{e9} \u{2242}\u{338}".as_bytes(), true, 3 | 48, Charset::Utf8, true);
-        assert_eq!(e5, b"caf&eacute; &nesim;");
-        assert_eq!(unescape_html(b"&nesim;&AMP;&#x41;", true, 3 | 48, Charset::Utf8), "\u{2242}\u{338}&A".as_bytes());
-        assert_eq!(unescape_html(b"&apos;&#1;&#xD;", true, 3 | 48, Charset::Utf8), b"'&#1;&#xD;");
-        assert_eq!(escape_html(b"\xff a", false, 3 | 8, Charset::Utf8, true), b"\xEF\xBF\xBD a");
-        assert_eq!(escape_html(b"\xff a", false, 3, Charset::Utf8, true), b"");
-    }
-}
-
 // ---- generated tables (php get_html_translation_table + WHATWG entities.json + iconv) ----
 
 /// ISO-8859-15 bytes 0x80..=0xFF as code points (0 = undefined).
@@ -4922,3 +4874,51 @@ static HTML5_DECODE: &[(&str, &str)] = &[
     ("zwj", "\u{200d}"),
     ("zwnj", "\u{200c}"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tables_are_sorted_for_binary_search() {
+        assert!(HTML401_ENTITIES.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(HTML5_ENTITIES.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(HTML5_ENTITIES_2.windows(2).all(|w| (w[0].0, w[0].1) < (w[1].0, w[1].1)));
+        assert!(HTML5_DECODE.windows(2).all(|w| w[0].0.as_bytes() < w[1].0.as_bytes()));
+        assert_eq!(HTML5_DECODE.len(), 2125);
+        assert_eq!(HTML401_ENTITIES.len(), 248);
+    }
+
+    #[test]
+    fn utf8_error_charging_matches_php() {
+        let count = |s: &[u8]| {
+            let mut pos = 0;
+            let mut errors = 0;
+            while pos < s.len() {
+                if next_utf8_char(s, &mut pos).is_none() {
+                    errors += 1;
+                }
+            }
+            errors
+        };
+        assert_eq!(count(b"\xc3("), 1);
+        assert_eq!(count(b"\xe2\x82("), 1);
+        assert_eq!(count(b"\xc0\x80"), 2);
+        assert_eq!(count(b"\xed\xa0\x80"), 1);
+        assert_eq!(count(b"\xf8\x88\x80\x80\x80"), 5);
+        assert_eq!(count(b"\xef\xbf\xbf"), 0);
+    }
+
+    #[test]
+    fn encode_and_decode_round_trip() {
+        let e = escape_html("a & b < c > d \" e ' f".as_bytes(), false, 3, Charset::Utf8, true);
+        assert_eq!(e, b"a &amp; b &lt; c &gt; d &quot; e &#039; f");
+        assert_eq!(unescape_html(&e, true, 3, Charset::Utf8), "a & b < c > d \" e ' f".as_bytes());
+        let e5 = escape_html("caf\u{e9} \u{2242}\u{338}".as_bytes(), true, 3 | 48, Charset::Utf8, true);
+        assert_eq!(e5, b"caf&eacute; &nesim;");
+        assert_eq!(unescape_html(b"&nesim;&AMP;&#x41;", true, 3 | 48, Charset::Utf8), "\u{2242}\u{338}&A".as_bytes());
+        assert_eq!(unescape_html(b"&apos;&#1;&#xD;", true, 3 | 48, Charset::Utf8), b"'&#1;&#xD;");
+        assert_eq!(escape_html(b"\xff a", false, 3 | 8, Charset::Utf8, true), b"\xEF\xBF\xBD a");
+        assert_eq!(escape_html(b"\xff a", false, 3, Charset::Utf8, true), b"");
+    }
+}

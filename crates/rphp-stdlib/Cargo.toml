@@ -15,5 +15,9 @@ sha1 = "0.10"
 sha2.workspace = true
 crc32fast = "1.4"
 
-# pcre extension — PCRE2 (the engine php-src links), bundled by pcre2-sys.
-pcre2 = "0.2"
+# pcre extension — PCRE2 (the engine php-src links) through the workspace's
+# minimal safe wrapper (ADR-032).
+rphp-pcre2.workspace = true
+
+# mbstring / iconv (S8, ADR-032) — legacy CJK charset tables; everything else is own code.
+encoding_rs.workspace = true

@@ -1,20 +1,21 @@
 //! `ctype` extension — character-class predicates (`ctype_alpha`, `ctype_digit`,
-//! …). Each tests whether **every byte** of its argument belongs to a class and
-//! treats the empty string as `false`, exactly like php-src's `ctype.c`.
+//! …), a transcription of php-src's `ext/ctype/ctype.c` (`ctype_impl`). Each
+//! tests whether **every byte** of a string belongs to a class and treats the
+//! empty string as `false`.
 //!
 //! Classification is ASCII-only and locale-independent (the `C`/`POSIX` locale
 //! that production PHP runs under). PHP's `ctype` is nominally locale-sensitive,
 //! but the portable behaviour rphp targets — and what these predicates encode —
 //! is the ASCII table, mirroring Rust's `u8::is_ascii_*` family.
 //!
-//! A legacy quirk is replicated: a **non-string** argument never matches except
-//! for integers, which PHP reinterprets — an int in `-128..=255` is the byte of
-//! that code, anything else is rendered as its decimal string and checked
-//! digit-by-digit (so `ctype_digit(48)` is `true` via the byte `'0'`, and
-//! `ctype_digit(256)` is `true` via the string `"256"`).
+//! A **non-string** argument raises php 8.1's deprecation (`Argument of type
+//! int will be interpreted as string in the future`) and then follows the
+//! legacy rules: an int in `0..=255` is the byte of that code, `-128..=-1` the
+//! byte `+256`, any larger int answers the predicate's "digits allowed" bit and
+//! any smaller one its "minus allowed" bit; every other type is `false`.
 use rphp_value::Value;
 
-use rphp_runtime::{Ctx, NativeFn, NativeResult, nf};
+use rphp_runtime::{nf, Ctx, NativeFn, NativeResult};
 
 /// This extension's registry contribution (see `lib.rs`). Every predicate has
 /// the same shape: one `mixed` argument, returns `bool`.
@@ -32,84 +33,133 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("ctype_xdigit", 1, Some(1), ctype_xdigit),
 ];
 
-pub(crate) fn ctype_alnum(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    predicate(&args[0], |b| b.is_ascii_alphanumeric())
+/// `ctype_alnum($text)`.
+pub(crate) fn ctype_alnum(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctype_impl(ctx, "ctype_alnum", &args[0], |b| b.is_ascii_alphanumeric(), true, false)
 }
 
-pub(crate) fn ctype_alpha(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    predicate(&args[0], |b| b.is_ascii_alphabetic())
+/// `ctype_alpha($text)`.
+pub(crate) fn ctype_alpha(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctype_impl(ctx, "ctype_alpha", &args[0], |b| b.is_ascii_alphabetic(), false, false)
 }
 
-pub(crate) fn ctype_cntrl(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    predicate(&args[0], |b| b.is_ascii_control())
+/// `ctype_cntrl($text)`.
+pub(crate) fn ctype_cntrl(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctype_impl(ctx, "ctype_cntrl", &args[0], |b| b.is_ascii_control(), false, false)
 }
 
-pub(crate) fn ctype_digit(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    predicate(&args[0], |b| b.is_ascii_digit())
+/// `ctype_digit($text)`.
+pub(crate) fn ctype_digit(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctype_impl(ctx, "ctype_digit", &args[0], |b| b.is_ascii_digit(), true, false)
 }
 
-pub(crate) fn ctype_graph(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    predicate(&args[0], |b| b.is_ascii_graphic())
+/// `ctype_graph($text)`.
+pub(crate) fn ctype_graph(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctype_impl(ctx, "ctype_graph", &args[0], |b| b.is_ascii_graphic(), true, true)
 }
 
-pub(crate) fn ctype_lower(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    predicate(&args[0], |b| b.is_ascii_lowercase())
+/// `ctype_lower($text)`.
+pub(crate) fn ctype_lower(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctype_impl(ctx, "ctype_lower", &args[0], |b| b.is_ascii_lowercase(), false, false)
 }
 
-pub(crate) fn ctype_print(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    // Printable = graphic plus the space; unlike `is_ascii_graphic`, `0x20` counts.
-    predicate(&args[0], |b| (0x20..=0x7e).contains(&b))
+/// `ctype_print($text)`: graphic plus the space.
+pub(crate) fn ctype_print(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctype_impl(ctx, "ctype_print", &args[0], |b| (0x20..=0x7e).contains(&b), true, true)
 }
 
-pub(crate) fn ctype_punct(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    predicate(&args[0], |b| b.is_ascii_punctuation())
+/// `ctype_punct($text)`.
+pub(crate) fn ctype_punct(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctype_impl(ctx, "ctype_punct", &args[0], |b| b.is_ascii_punctuation(), false, false)
 }
 
-pub(crate) fn ctype_space(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    // php-src's whitespace set: space, \t, \n, \v (0x0b), \f (0x0c), \r.
-    predicate(&args[0], |b| {
-        matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
-    })
+/// `ctype_space($text)`: php-src's whitespace set — space, `\t`, `\n`, `\v`,
+/// `\f`, `\r`.
+pub(crate) fn ctype_space(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctype_impl(
+        ctx,
+        "ctype_space",
+        &args[0],
+        |b| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c),
+        false,
+        false,
+    )
 }
 
-pub(crate) fn ctype_upper(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    predicate(&args[0], |b| b.is_ascii_uppercase())
+/// `ctype_upper($text)`.
+pub(crate) fn ctype_upper(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctype_impl(ctx, "ctype_upper", &args[0], |b| b.is_ascii_uppercase(), false, false)
 }
 
-pub(crate) fn ctype_xdigit(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    predicate(&args[0], |b| b.is_ascii_hexdigit())
+/// `ctype_xdigit($text)`.
+pub(crate) fn ctype_xdigit(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctype_impl(ctx, "ctype_xdigit", &args[0], |b| b.is_ascii_hexdigit(), true, false)
 }
 
 // ---- helpers ----------------------------------------------------------------
 
-/// Apply a per-byte class test with PHP's argument rules and wrap the result.
-fn predicate(arg: &Value, class: impl Fn(u8) -> bool) -> NativeResult {
-    Ok(Value::Bool(matches_class(arg, class)))
+/// php's `ctype_impl`: a string is tested byte by byte (empty → `false`);
+/// anything else raises the 8.1 deprecation and follows the legacy integer
+/// rules (`allow_digits` for ints above 255, `allow_minus` below -128).
+fn ctype_impl(
+    ctx: &mut Ctx,
+    func: &str,
+    arg: &Value,
+    class: impl Fn(u8) -> bool,
+    allow_digits: bool,
+    allow_minus: bool,
+) -> NativeResult {
+    let arg = arg.deref().into_owned();
+    if let Value::Str(s) = &arg {
+        let bytes = s.as_bytes();
+        return Ok(Value::Bool(!bytes.is_empty() && bytes.iter().all(|&b| class(b))));
+    }
+    ctx.deprecated(&format!(
+        "{func}(): Argument of type {} will be interpreted as string in the future",
+        type_name(&arg)
+    ))?;
+    Ok(Value::Bool(match arg {
+        Value::Int(n) if (0..=255).contains(&n) => class(n as u8),
+        Value::Int(n) if (-128..0).contains(&n) => class((n + 256) as u8),
+        Value::Int(n) if n >= 0 => allow_digits,
+        Value::Int(_) => allow_minus,
+        _ => false,
+    }))
 }
 
-/// `true` when every byte of `arg` is in the class. A string is taken verbatim
-/// (empty → `false`); an integer follows PHP's legacy reinterpretation; any
-/// other type (`null`, `bool`, `float`, `array`) never matches.
-fn matches_class(arg: &Value, class: impl Fn(u8) -> bool) -> bool {
-    match arg {
-        Value::Str(s) => {
-            let bytes = s.as_bytes();
-            !bytes.is_empty() && bytes.iter().all(|&b| class(b))
-        }
-        Value::Int(n) => int_matches(*n, class),
-        _ => false,
+/// `zend_zval_value_name` as the deprecation prints it: `int`, `float`,
+/// `bool`, `null`, `array`, the class name of an object.
+fn type_name(v: &Value) -> String {
+    match v {
+        Value::Bool(_) => "bool".to_string(),
+        other => rphp_runtime::value_name(other),
     }
 }
 
-/// PHP's integer special case: a code in `-128..=255` is that single byte
-/// (negatives wrap by `+256`); otherwise the int is rendered as its decimal
-/// string and every byte of it must be in the class. The decimal form is never
-/// empty, so the "empty is false" rule needs no extra guard here.
-fn int_matches(n: i64, class: impl Fn(u8) -> bool) -> bool {
-    if (-128..=255).contains(&n) {
-        let byte = if n < 0 { (n + 256) as u8 } else { n as u8 };
-        class(byte)
-    } else {
-        n.to_string().bytes().all(class)
+#[cfg(test)]
+mod tests {
+    use rphp_value::Value;
+
+    use crate::tests::call_named;
+
+    #[test]
+    fn strings_are_tested_byte_by_byte() {
+        assert_eq!(call_named(b"ctype_digit", &[Value::string(b"0123")]), Value::Bool(true));
+        assert_eq!(call_named(b"ctype_digit", &[Value::string(b"12a")]), Value::Bool(false));
+        assert_eq!(call_named(b"ctype_digit", &[Value::string(b"")]), Value::Bool(false));
+        assert_eq!(call_named(b"ctype_space", &[Value::string(b" \t\x0b\x0c")]), Value::Bool(true));
+    }
+
+    #[test]
+    fn ints_follow_the_legacy_rules() {
+        assert_eq!(call_named(b"ctype_digit", &[Value::Int(53)]), Value::Bool(true));
+        assert_eq!(call_named(b"ctype_digit", &[Value::Int(5)]), Value::Bool(false));
+        assert_eq!(call_named(b"ctype_digit", &[Value::Int(256)]), Value::Bool(true));
+        assert_eq!(call_named(b"ctype_punct", &[Value::Int(-500)]), Value::Bool(false));
+        assert_eq!(call_named(b"ctype_graph", &[Value::Int(-300)]), Value::Bool(true));
+        assert_eq!(call_named(b"ctype_space", &[Value::Int(-224)]), Value::Bool(false));
+        assert_eq!(call_named(b"ctype_alpha", &[Value::Int(-159)]), Value::Bool(true));
+        assert_eq!(call_named(b"ctype_digit", &[Value::Float(5.0)]), Value::Bool(false));
+        assert_eq!(call_named(b"ctype_digit", &[Value::Null]), Value::Bool(false));
     }
 }

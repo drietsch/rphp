@@ -259,6 +259,12 @@ impl Interp {
             include_kind: None,
             iters: Vec::new(),
             generator: None,
+            // A closure body binds *its own* statics (php gives each closure
+            // object a fresh set); everything else uses the function's.
+            statics: closure
+                .as_ref()
+                .filter(|_| !func.f.statics.is_empty())
+                .map(|c| c.statics(func.f.statics.len())),
         };
         self.frames.push(frame);
         // E8: calling a generator function evaluates its arguments and then

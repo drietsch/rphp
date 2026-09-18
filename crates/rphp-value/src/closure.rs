@@ -6,10 +6,11 @@
 //! (`function () use ($x)` / `fn () => $x`). Like other heap values it is
 //! refcounted and cheaply cloned; identity is by pointer, matching PHP where two
 //! distinct closures are never `==`.
+use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
-use crate::Value;
+use crate::{PhpRef, Value};
 
 #[derive(Clone)]
 pub struct Closure(Rc<ClosureData>);
@@ -17,13 +18,22 @@ pub struct Closure(Rc<ClosureData>);
 struct ClosureData {
     func: u32,
     captures: Vec<Value>,
+    /// The closure's own `static` variables. php gives **each closure
+    /// object** a fresh set — two closures made from the same literal do not
+    /// share a counter — so they cannot live on the compiled function the way
+    /// a named function's statics do. `None` until the body first binds one.
+    statics: RefCell<Option<Rc<RefCell<Vec<Option<PhpRef>>>>>>,
 }
 
 impl Closure {
     /// Create a closure over compiled function `func` capturing `captures`
     /// (in the order the function expects to bind them).
     pub fn new(func: u32, captures: Vec<Value>) -> Self {
-        Closure(Rc::new(ClosureData { func, captures }))
+        Closure(Rc::new(ClosureData {
+            func,
+            captures,
+            statics: RefCell::new(None),
+        }))
     }
 
     /// The compiled-function id this closure invokes.
@@ -34,6 +44,15 @@ impl Closure {
     /// The captured environment, in capture order.
     pub fn captures(&self) -> &[Value] {
         &self.0.captures
+    }
+
+    /// This closure's own static-variable table, created on first use with
+    /// `len` slots. Every call of *this* closure shares it; a different
+    /// closure object made from the same literal gets its own.
+    pub fn statics(&self, len: usize) -> Rc<RefCell<Vec<Option<PhpRef>>>> {
+        let mut slot = self.0.statics.borrow_mut();
+        slot.get_or_insert_with(|| Rc::new(RefCell::new(vec![None; len])))
+            .clone()
     }
 }
 

@@ -149,6 +149,10 @@ pub struct Frame {
     /// For `Generator` frames: the generator this body belongs to, as an
     /// index into `Interp::generators`.
     pub generator: Option<u32>,
+    /// A closure frame's own `static` table. php gives each closure *object*
+    /// its own, so it cannot come from the compiled function; `None` for an
+    /// ordinary function, which uses `FuncRt::statics`.
+    pub statics: Option<std::rc::Rc<std::cell::RefCell<Vec<Option<rphp_value::PhpRef>>>>>,
 }
 
 impl Frame {
@@ -174,6 +178,7 @@ impl Frame {
             include_kind: None,
             iters: Vec::new(),
             generator: None,
+            statics: None,
         }
     }
 

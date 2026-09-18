@@ -1368,7 +1368,12 @@ impl Interp {
                     Value::assign(&mut self.stack[base + reg as usize], Value::Array(arr));
                 }
                 Op::BindStatic { reg, idx } => {
-                    let existing = func.statics.borrow()[idx as usize].clone();
+                    // A closure frame keeps its own table (`frame.statics`).
+                    let table = self.frames[fi].statics.clone();
+                    let existing = match &table {
+                        Some(t) => t.borrow()[idx as usize].clone(),
+                        None => func.statics.borrow()[idx as usize].clone(),
+                    };
                     let cell = match existing {
                         Some(c) => c,
                         None => {
@@ -1388,12 +1393,20 @@ impl Interp {
                             // A recursive call inside the initializer may
                             // have created the cell meanwhile: php keeps
                             // that one (BIND_INIT_STATIC_OR_JMP).
-                            let existing = func.statics.borrow()[idx as usize].clone();
+                            let existing = match &table {
+                                Some(t) => t.borrow()[idx as usize].clone(),
+                                None => func.statics.borrow()[idx as usize].clone(),
+                            };
                             match existing {
                                 Some(c) => c,
                                 None => {
                                     let c = PhpRef::new(v);
-                                    func.statics.borrow_mut()[idx as usize] = Some(c.clone());
+                                    match &table {
+                                        Some(t) => t.borrow_mut()[idx as usize] = Some(c.clone()),
+                                        None => {
+                                            func.statics.borrow_mut()[idx as usize] = Some(c.clone())
+                                        }
+                                    }
                                     c
                                 }
                             }
@@ -1402,7 +1415,11 @@ impl Interp {
                     self.rebind(base, reg, cell);
                 }
                 Op::BindStaticOrJmp { reg, idx, target } => {
-                    let existing = func.statics.borrow()[idx as usize].clone();
+                    let table = self.frames[fi].statics.clone();
+                    let existing = match &table {
+                        Some(t) => t.borrow()[idx as usize].clone(),
+                        None => func.statics.borrow()[idx as usize].clone(),
+                    };
                     if let Some(cell) = existing {
                         self.rebind(base, reg, cell);
                         pc = target as usize;

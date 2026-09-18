@@ -74,6 +74,9 @@ insta = "1.48"
 pico-args = "0.5"
 memchr = "2.8"
 sha2 = "0.10"
+# date extension (S6): civil/zoned datetime arithmetic and the tz database.
+jiff = "0.2"
+jiff-tzdb = "0.1"
 # mbstring/iconv (ADR-032): legacy CJK double-byte tables.
 encoding_rs = "0.8.41"
 # pcre extension (ADR-032): PCRE2 itself, through the raw `-sys` bindings; the

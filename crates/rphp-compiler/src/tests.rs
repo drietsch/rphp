@@ -518,8 +518,9 @@ fn unsupported_constructs_report_e0300_with_a_description() {
         .iter()
         .all(|m| m.starts_with("unsupported construct: ") && m.ends_with(" (not lowered yet)")));
 
-    let msgs = unsupported_messages("<?php class C { public static $p; } unset(C::$p);");
-    assert!(msgs.iter().any(|m| m.contains("unset of a static property")), "{msgs:?}");
+    // `unset(C::$p)` and `C::$p = &$x` lower as of the P4 trunk: php resolves
+    // both at run time, so the compiler only has to emit the op.
+    compile_ok("<?php class C { public static $p; } unset(C::$p); $x = 1; C::$p = &$x;");
 }
 
 #[test]

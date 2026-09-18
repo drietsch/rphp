@@ -118,7 +118,7 @@ impl Interp {
         if let Some(m) = self.resolve_method(class.id, b"__clone") {
             self.check_method_access(m.vis, m.decl, b"__clone")?;
         }
-        let copy = self.shallow_copy(&o);
+        let copy = self.shallow_copy(&o)?;
         let window = CloneWindow::open(copy.id());
         let r = self.run_clone_body(&copy, class.magic, with);
         drop(window);
@@ -168,7 +168,7 @@ impl Interp {
     /// an object whose engine-side state lives in `Payload` (`WeakMap`,
     /// `SplObjectStorage`, the SPL containers) clones to an empty payload —
     /// see the module report for the hook this needs.
-    fn shallow_copy(&mut self, o: &Object) -> Object {
+    fn shallow_copy(&mut self, o: &Object) -> Result<Object, Unwind> {
         let id = self.object_ids.alloc();
         let layout = o.layout();
         let slots = o.with_data(|d| d.slots().to_vec());
@@ -185,7 +185,12 @@ impl Interp {
         for (n, v) in dyns {
             copy.dyn_set(&n, v);
         }
-        copy
+        // A class whose state lives in a native payload copies it here;
+        // without the hook the copy would silently start empty.
+        if let Some(hook) = self.class_of(o).payload_clone {
+            hook(self, o, &copy)?;
+        }
+        Ok(copy)
     }
 }
 

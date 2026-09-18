@@ -796,6 +796,21 @@ pub enum Op {
         class: ClassRef,
         name: NameRef,
     },
+    /// `Class::$name = &src`: bind the static property's slot to the reference
+    /// cell in `src`, so both names share one value afterwards.
+    AssignRefStaticProp {
+        class: ClassRef,
+        name: NameRef,
+        src: Reg,
+    },
+    /// `unset(Class::$name)`: php never actually removes a static property —
+    /// it throws `Error: Attempt to unset static property C::$p`, naming the
+    /// **resolved** class and the property whether or not it exists. The op
+    /// exists so the compiler can defer that resolution to run time.
+    UnsetStaticProp {
+        class: ClassRef,
+        name: NameRef,
+    },
     /// Fetch-for-write: make `arr[key]` (or, when `key` is `None`, a freshly
     /// appended element) a write handle in `dst` so a nested lvalue op can
     /// modify it in place (`$a[i][j] = v` ⇒ `FetchElemW t,a,i; ArraySet t,j,v`).

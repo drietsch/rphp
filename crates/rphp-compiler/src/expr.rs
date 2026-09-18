@@ -1475,6 +1475,13 @@ impl FnCompiler<'_> {
                 self.emit(Op::AssignThroughRef { dst: reg, src });
                 src
             }
+            // `A::$p = &$x`: bind the shared cell to the reference.
+            Expr::StaticProp { class, name, span } => {
+                if let Some((class, name)) = self.static_prop_ref(class, name, *span) {
+                    self.emit(Op::AssignRefStaticProp { class, name, src });
+                }
+                src
+            }
             other => self.unsupported_expr(other.span(), "reference assignment target"),
         }
     }

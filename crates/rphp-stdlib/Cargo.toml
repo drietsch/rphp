@@ -21,3 +21,6 @@ rphp-pcre2.workspace = true
 
 # mbstring / iconv (S8, ADR-032) — legacy CJK charset tables; everything else is own code.
 encoding_rs.workspace = true
+
+# date extension (S6).
+jiff.workspace = true

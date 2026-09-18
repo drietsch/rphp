@@ -344,8 +344,10 @@ impl Registry<'_> {
             interfaces: Vec::new(),
             flags: ClassFlags::NONE,
             props: Vec::new(),
+            consts: Vec::new(),
             methods: Vec::new(),
             native_init: None,
+            payload_clone: None,
         }
     }
 
@@ -368,8 +370,10 @@ pub struct ClassBuilder<'a> {
     interfaces: Vec<String>,
     flags: ClassFlags,
     props: Vec<(String, Visibility, Value)>,
+    consts: Vec<(String, Value)>,
     methods: Vec<MethodSpec>,
     native_init: Option<NativeInit>,
+    payload_clone: Option<crate::class::PayloadClone>,
 }
 
 impl ClassBuilder<'_> {
@@ -400,6 +404,14 @@ impl ClassBuilder<'_> {
     /// Declare an instance property with a constant default.
     pub fn prop(mut self, name: &str, vis: Visibility, default: Value) -> Self {
         self.props.push((name.to_string(), vis, default));
+        self
+    }
+
+    /// Declare a public class constant (`ArrayObject::ARRAY_AS_PROPS`,
+    /// `SplDoublyLinkedList::IT_MODE_LIFO`, …). Native constants are always
+    /// ready values, never lazy initializers.
+    pub fn class_const(mut self, name: &str, value: Value) -> Self {
+        self.consts.push((name.to_string(), value));
         self
     }
 
@@ -441,6 +453,13 @@ impl ClassBuilder<'_> {
         self
     }
 
+    /// The hook `clone` uses to copy this class's native payload. A class
+    /// that keeps state in `Payload` and omits this clones to an empty one.
+    pub fn payload_clone(mut self, f: crate::class::PayloadClone) -> Self {
+        self.payload_clone = Some(f);
+        self
+    }
+
     /// Link and register the class; returns its process-wide id. Re-registering
     /// a name keeps the earlier id (the definition is replaced).
     ///
@@ -457,8 +476,10 @@ impl ClassBuilder<'_> {
             interfaces,
             flags,
             props,
+            consts,
             methods,
             native_init,
+            payload_clone,
         } = self;
         let lookup = |interp: &Interp, n: &str| {
             interp.class_by_name(n.as_bytes()).unwrap_or_else(|| {
@@ -485,10 +506,20 @@ impl ClassBuilder<'_> {
                 .collect(),
             methods,
             native_init,
+            payload_clone,
             declared_at: None,
             internal: true,
             static_props: Vec::new(),
-            consts: Vec::new(),
+            consts: consts
+                .into_iter()
+                .map(|(n, v)| crate::class::ConstSpec {
+                    name: Box::from(n.as_bytes()),
+                    vis: Visibility::Public,
+                    is_final: false,
+                    ty: None,
+                    init: PropDefault::Value(v),
+                })
+                .collect(),
             enum_cases: Vec::new(),
             enum_backing: crate::class::EnumBacking::None,
         };

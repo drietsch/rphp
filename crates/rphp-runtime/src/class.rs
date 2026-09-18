@@ -36,6 +36,13 @@ pub type NativeMethodHandler = fn(&mut Ctx, Option<&Object>, &mut [Value]) -> Na
 /// instances of user subclasses.
 pub type NativeInit = fn(&mut Interp, &Object) -> Result<(), Unwind>;
 
+/// The `payload_clone` hook of a native class: copies the native state of
+/// `src` into the freshly made `dst` during `clone`. Without it a class whose
+/// state lives in [`Payload`](rphp_value::Payload) — `WeakMap`, the SPL
+/// containers — would clone to an *empty* payload, losing its contents
+/// silently.
+pub type PayloadClone = fn(&mut Interp, &Object, &Object) -> Result<(), Unwind>;
+
 /// A native method descriptor (every field `Copy`, so method tables can be
 /// `'static` data).
 #[derive(Clone, Copy)]
@@ -434,6 +441,8 @@ pub struct ClassDef {
     pub magic: MagicFlags,
     /// The native initialization hook (own or inherited).
     pub native_init: Option<NativeInit>,
+    /// The native payload-copy hook used by `clone` (own or inherited).
+    pub payload_clone: Option<PayloadClone>,
     /// The instance layout, shared by every instance.
     pub layout: Rc<Layout>,
     /// The unit that declared the class and the declaration line, for
@@ -480,6 +489,7 @@ impl ClassDef {
             method_order: Vec::new(),
             magic: MagicFlags::NONE,
             native_init: None,
+            payload_clone: None,
             layout: Rc::new(Layout::empty(Rc::from(name))),
             declared_at,
             linked: false,
@@ -562,6 +572,8 @@ pub struct ClassSpec {
     pub methods: Vec<MethodSpec>,
     /// The native init hook (own).
     pub native_init: Option<NativeInit>,
+    /// The native payload-copy hook for `clone` (own).
+    pub payload_clone: Option<PayloadClone>,
     /// Where it was declared.
     pub declared_at: Option<(Rc<str>, u32)>,
     /// Registered by the engine / an extension.
@@ -623,6 +635,7 @@ impl Interp {
             props,
             methods,
             native_init,
+            payload_clone,
             declared_at,
             internal,
             static_props,
@@ -669,6 +682,7 @@ impl Interp {
             }
             def.magic = p.magic;
             def.native_init = p.native_init;
+            def.payload_clone = p.payload_clone;
             // Static properties are inherited by *sharing* the parent's cell:
             // `B::$n` and `A::$n` are one location unless B redeclares it.
             def.static_props = p.static_props.clone();
@@ -828,6 +842,9 @@ impl Interp {
         }
         if let Some(f) = native_init {
             def.native_init = Some(f);
+        }
+        if let Some(f) = payload_clone {
+            def.payload_clone = Some(f);
         }
         // php implicitly implements `Stringable` for any class that declares
         // `__toString()`, so `$o instanceof Stringable` and a `Stringable`

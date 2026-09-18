@@ -163,6 +163,21 @@ impl Interp {
         Ok(Value::make_ref(&mut slot))
     }
 
+    /// `Class::$name = &$x`: put the caller's reference cell into the
+    /// property's shared slot, so the two names share one value afterwards
+    /// (php binds both directions).
+    pub(crate) fn bind_static_prop_ref(
+        &mut self,
+        cid: u32,
+        name: &[u8],
+        scope: Option<u32>,
+        r: PhpRef,
+    ) -> Result<(), Unwind> {
+        let cell = self.static_prop_cell(cid, name, scope)?;
+        *cell.borrow_mut() = Value::Ref(r);
+        Ok(())
+    }
+
     /// `isset(Class::$name)`: never warns and never throws — an undeclared,
     /// invisible, uninitialized or null property is simply not set.
     pub(crate) fn isset_static_prop(&mut self, cid: u32, name: &[u8], scope: Option<u32>) -> bool {

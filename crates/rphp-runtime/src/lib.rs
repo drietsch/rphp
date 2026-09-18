@@ -65,7 +65,7 @@ pub use types::Coerced;
 pub use unit::{FuncRt, IcSlot, UnitRt};
 pub use class::{
     ClassConst, ClassDef, ClassSpec, ConstSpec, ConstState, EnumBacking, EnumCaseInfo, MagicFlags,
-    MethodBody, MethodDef, MethodSpec, NativeInit, NativeMethod, NativeMethodHandler, PropDefault,
+    MethodBody, MethodDef, MethodSpec, NativeInit, NativeMethod, NativeMethodHandler, PayloadClone, PropDefault,
     PropHooks, PropInfo, PropSpec, StaticPropInfo, WellKnown,
 };
 pub use output::{

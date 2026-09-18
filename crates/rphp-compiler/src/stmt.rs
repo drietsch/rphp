@@ -660,12 +660,14 @@ impl FnCompiler<'_> {
             }
             // php raises `Error: Attempt to unset static property C::$p` at
             // run time, naming the *resolved* class (`unset(B::$p)` on a
-            // property declared in `A` says `B`). No op can express that, and
-            // the compiler cannot name the class for `static::`/`parent::`/
-            // `$cls::`, so this stays a diagnostic until the ISA grows an
-            // `UnsetStaticProp { class, name }`.
-            Expr::StaticProp { span, .. } => {
-                unsupported(self.diags, *span, "unset of a static property")
+            // property declared in `A` says `B`), so the resolution has to
+            // happen there rather than here.
+            Expr::StaticProp { class, name, span } => {
+                let mark = self.temp_top;
+                if let Some((class, name)) = self.static_prop_ref(class, name, *span) {
+                    self.emit(Op::UnsetStaticProp { class, name });
+                }
+                self.free_to(mark);
             }
             other => unsupported(self.diags, other.span(), "unset target"),
         }

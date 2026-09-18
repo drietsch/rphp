@@ -1574,6 +1574,26 @@ impl Interp {
                     let cell = self.ref_static_prop(cid, &n, scope)?;
                     self.set(base, dst, Value::Ref(cell));
                 }
+                Op::AssignRefStaticProp { class, name, src } => {
+                    let cid = self.resolve_class_ref(&func, base, class)?;
+                    let n = self.member_name(&func, base, name)?;
+                    let scope = self.frames[fi].scope;
+                    // The property's slot takes the *caller's* reference cell,
+                    // so both names share one value from here on.
+                    let r = self.make_ref(base, src);
+                    self.bind_static_prop_ref(cid, &n, scope, r)?;
+                }
+                Op::UnsetStaticProp { class, name } => {
+                    // php never removes a static property; it throws, naming
+                    // the resolved class and the property as written.
+                    let cid = self.resolve_class_ref(&func, base, class)?;
+                    let n = self.member_name(&func, base, name)?;
+                    return Err(Unwind::error(format!(
+                        "Attempt to unset static property {}::${}",
+                        self.classes[cid as usize].name_str(),
+                        String::from_utf8_lossy(&n)
+                    )));
+                }
                 Op::FetchProp { dst, obj, name, .. } => {
                     let o = self.rd(base, obj);
                     let n = self.member_name(&func, base, name)?;

@@ -55,6 +55,10 @@ pub struct ExtState {
     pub json_last_error: i64,
     /// `json_last_error_msg()`.
     pub json_last_error_msg: String,
+    /// php's per-request stat cache (`filestat.rs`): path → metadata, with
+    /// `None` meaning "checked, does not exist". `clearstatcache()` empties
+    /// it and anything that changes a path drops its entry.
+    pub stat_cache: std::collections::HashMap<std::path::PathBuf, Option<std::fs::Metadata>>,
 }
 
 /// Why the compile hook could not produce a unit for `include`/`eval`.
@@ -122,6 +126,13 @@ pub struct Interp {
     pub(crate) reentry_depth: usize,
     /// Canonical paths of files included with `_once`.
     pub(crate) included: HashSet<PathBuf>,
+    /// Parked generator bodies, indexed by the id in a `Generator` object's
+    /// payload (E8).
+    pub(crate) generators: Vec<crate::generator::GeneratorState>,
+    /// The value a re-entry boundary must hand back when its frame was
+    /// removed without returning through `do_return` — which is what calling
+    /// a generator function from native code does (E8).
+    pub(crate) boundary_value: Option<rphp_value::Value>,
     /// The `spl_autoload_register` stack, in call order (E7).
     pub(crate) autoloaders: Vec<rphp_value::Value>,
     /// Class names an autoloader is running for right now, so a loader that
@@ -198,6 +209,8 @@ impl Interp {
             stack: Vec::new(),
             reentry_depth: 0,
             included: HashSet::new(),
+            generators: Vec::new(),
+            boundary_value: None,
             autoloaders: Vec::new(),
             autoloading: Vec::new(),
             compile_hook: None,

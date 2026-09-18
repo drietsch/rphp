@@ -509,18 +509,14 @@ fn misc_expressions_lower() {
 
 #[test]
 fn unsupported_constructs_report_e0300_with_a_description() {
-    // `eval` lowers as of E7; `yield` waits for E8.
-    let msgs = unsupported_messages("<?php function g() { yield 1; } $x |> strlen(...);");
-    assert!(msgs.iter().any(|m| m.contains("yield")), "{msgs:?}");
+    // E6 lowered class declarations, static access and first-class
+    // callables; E7 lowered `eval`; E8 lowered `yield`. What is left is the
+    // genuinely unlowered tail.
+    let msgs = unsupported_messages("<?php enum E: string { case A = 1 << 0; }");
+    assert!(msgs.iter().any(|m| m.contains("non-literal enum case value")), "{msgs:?}");
     assert!(msgs
         .iter()
         .all(|m| m.starts_with("unsupported construct: ") && m.ends_with(" (not lowered yet)")));
-
-    // E6 lowered static access, class constants, first-class callables and
-    // every class-like declaration, so the sources that used to belong here
-    // now compile. What is left is the genuinely unlowered tail.
-    let msgs = unsupported_messages("<?php enum E: string { case A = 1 << 0; }");
-    assert!(msgs.iter().any(|m| m.contains("non-literal enum case value")), "{msgs:?}");
 
     let msgs = unsupported_messages("<?php class C { public static $p; } unset(C::$p);");
     assert!(msgs.iter().any(|m| m.contains("unset of a static property")), "{msgs:?}");

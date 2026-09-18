@@ -285,6 +285,9 @@ impl<'a> FnCompiler<'a> {
         if facts.needs_symtab {
             flags |= FnFlags::NEEDS_SYMTAB;
         }
+        if facts.is_generator {
+            flags |= FnFlags::GENERATOR;
+        }
         if mx.strict_types {
             flags |= FnFlags::STRICT_TYPES;
         }

@@ -264,8 +264,15 @@ impl FnCompiler<'_> {
     pub(crate) fn compile_return(&mut self, value: Option<&Expr>) {
         let mark = self.temp_top;
         let src = value.map(|e| self.compile_expr(e));
+        // In a generator `return $v` does not return a value to the caller: it
+        // records `$v` for `getReturn()` and finishes the generator (E8).
+        let is_generator = self.flags.contains(rphp_bytecode::FnFlags::GENERATOR);
         if self.finallys.is_empty() {
-            self.emit(Op::Ret { src });
+            if is_generator {
+                self.emit(Op::GenReturn { src });
+            } else {
+                self.emit(Op::Ret { src });
+            }
             self.free_to(mark);
             return;
         }

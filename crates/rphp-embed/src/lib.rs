@@ -159,6 +159,9 @@ impl Engine {
             }
         }
         rphp_stdlib::register(&mut Registry(&mut it));
+        // `Generator` is the engine's own class but implements the stdlib's
+        // `Iterator`, so it is registered after the extensions (E8).
+        rphp_runtime::register_generator_class(&mut Registry(&mut it));
         constants::register(&mut Registry(&mut it), cfg.sapi);
         self.seed_globals(&mut it);
         it.compile_hook = Some(Box::new(|interp: &Interp, src: &[u8], name: &str| {
@@ -582,7 +585,9 @@ mod tests {
             other => panic!("expected a parse error, got {other:?}"),
         }
         // An unsupported construct is a compile rejection, not a parse error.
-        match engine.compile(&interp, b"<?php function g() { yield 1; }", "t.php") {
+        // (`yield` used to sit here; it lowers as of E8, so this uses a
+        // construct that is still unlowered.)
+        match engine.compile(&interp, b"<?php enum E: string { case A = 1 << 0; }", "t.php") {
             Err(CompileError::Compile(lines)) => {
                 assert!(lines[0].contains("RPHP_E0300"), "{lines:?}")
             }

@@ -258,8 +258,14 @@ impl Interp {
             native: None,
             include_kind: None,
             iters: Vec::new(),
+            generator: None,
         };
         self.frames.push(frame);
+        // E8: calling a generator function evaluates its arguments and then
+        // parks the body — the caller gets a `Generator`, not a result.
+        if func.f.is_generator() && arity_error.is_none() {
+            return self.park_new_generator();
+        }
         if let Some(u) = arity_error {
             // php raises this from the callee's RECV: the callee shows in the
             // trace and the fault line is the declaration line. Locate it

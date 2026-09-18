@@ -413,8 +413,25 @@ impl FnCompiler<'_> {
                 self.emit(Op::Eval { dst, src });
                 dst
             }
-            Expr::Yield { span, .. } => self.unsupported_expr(*span, "yield"),
-            Expr::YieldFrom { span, .. } => self.unsupported_expr(*span, "yield from"),
+            // `yield` / `yield from` park the frame; the value the
+            // generator is resumed with lands in `dst` (E8, `generator.rs`).
+            Expr::Yield { key, value, .. } => {
+                let mark = self.temp_top;
+                let k = key.as_ref().map(|k| self.compile_expr(k));
+                let v = value.as_ref().map(|v| self.compile_expr(v));
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.emit(Op::Yield { dst, key: k, val: v });
+                dst
+            }
+            Expr::YieldFrom { expr, .. } => {
+                let mark = self.temp_top;
+                let src = self.compile_expr(expr);
+                self.free_to(mark);
+                let dst = self.alloc_temp();
+                self.emit(Op::YieldFrom { dst, src });
+                dst
+            }
             Expr::Let {
                 temp, init, body, ..
             } => self.compile_let(*temp, init, body),

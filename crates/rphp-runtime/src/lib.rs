@@ -25,6 +25,7 @@ mod errors;
 mod eval;
 mod exec;
 mod frame;
+mod generator;
 mod ini;
 mod interp;
 mod methods;
@@ -49,6 +50,7 @@ pub use errors::{
     E_CORE_WARNING, E_DEPRECATED, E_ERROR, E_NOTICE, E_PARSE, E_RECOVERABLE_ERROR, E_STRICT,
     E_USER_DEPRECATED, E_USER_ERROR, E_USER_NOTICE, E_USER_WARNING, E_WARNING, SILENCE_MASK,
 };
+pub use generator::register_generator_class;
 pub use frame::{
     format_float_precision, trace_arg, CallTarget, Frame, FrameKind, NativeTarget, PendingCall,
     RetTarget, TraceOpts,

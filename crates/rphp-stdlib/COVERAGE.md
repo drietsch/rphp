@@ -149,3 +149,78 @@ keeps the sign of the partial product; `Value::pow` does not) — `pow_basiclong
 - `json_decode` returns an **array** for JSON objects regardless of `$assoc` (no object type yet).
 - ctype on bytes ≥ 128 is ASCII/C-locale only (stock php here is C.UTF-8 and classifies some high bytes differently); bytes 0–127 match exactly.
 - PHP 8.4+ `E_DEPRECATED`/warning notices (non-string ctype args, invalid base chars, NAN-to-string) are not emitted — the engine has no warning channel yet.
+
+## E6 / E7 / E8 (object model, eval + autoload, generators)
+
+**Object model divergences (E6).**
+
+- `unset()` on a *typed* property is indistinguishable from "never
+  initialized": `Value::Uninit` covers both, where php has a separate
+  `IS_PROP_UNINIT` bit. Resolved toward the far more common
+  never-initialized case, so reading such a slot is the initialization
+  `Error` and writing it stores directly; php would route both to
+  `__get`/`__set` after an explicit `unset()`. Untyped slots are exact.
+  A real fix needs a per-slot flag in `rphp-value`.
+- `FetchPropW`/`RefProp`/`AssignRefProp`/`SendRefProp` keep pre-E6
+  semantics: php calls `__get` and then emits `Notice: Indirect
+  modification of overloaded property C::$p has no effect`.
+- `[$obj, 'parent::m']` works but php's `Deprecated: Callables of the form
+  ["B", "parent::m"] are deprecated` is not emitted — `resolve_callable` is
+  `&self` (the stdlib calls it through a shared borrow) and the deprecation
+  channel needs `&mut self`.
+- Bad-callable errors lack php's zpp wrapper (`call_user_func(): Argument #1
+  ($callback) must be a valid callback, …`); rphp emits the engine message.
+- `clone` of an object whose state lives in a native `Payload` (WeakMap,
+  WeakReference, the SPL containers) produces an empty payload: `ClassDef`
+  has no clone hook yet.
+- `Closure::getCurrent()` (8.5) is unimplementable until `Frame` carries the
+  running closure — php returns the *identical* closure object.
+- `ArrayObject::getIterator()` iterates a copy-on-write snapshot where php
+  shares the backing array; `WeakMap::getIterator()` likewise. A fault inside
+  a container sort names the builtin (`uasort(): …`) where php names the
+  method (`ArrayObject::uasort(): …`).
+- `SplFixedArray` is not implemented: its `var_dump` is a synthesized numeric
+  property list the object model cannot express. `SplDoublyLinkedList` /
+  `SplStack` / `SplQueue` wait on class constants for the native class
+  builder (`ClassBuilder` cannot declare them yet), which their
+  `IT_MODE_*` flags need.
+- `serialize()`/`unserialize()` of the SPL containers are not implemented
+  (php's `x:i:0;a:…;m:a:0:{}` needs a consumed-length from the `unserialize`
+  native); `__serialize`/`__unserialize` are exact.
+- `ClassFlags::ABSTRACT` is set on interfaces and traits, matching the
+  existing native registrations; php's reflection reports `isAbstract()` as
+  `false` for both. Unobservable until Reflection (E10) lands.
+
+**Still unlowered (compile-time `RPHP_E0300`).**
+
+- A non-literal enum case value (`case A = 1 << 0;`, `case B = self::X;`):
+  `EnumCaseDef.value` is an eager `Option<Value>` with nowhere to put a
+  thunk. Literal-backed cases — the overwhelming majority — work.
+- `unset(C::$p)` on a static property, and `C::$p = &$x`: both need ops the
+  ISA does not have (`UnsetStaticProp`, `AssignRefStaticProp`). php's unset
+  error names the *resolved* class, which the compiler cannot compute for
+  `static::`/`parent::`/`$cls::`.
+- Anonymous classes (`new class { … }`).
+
+**eval / autoload (E7).**
+
+- A `ParseError` from `include`/`eval` is catchable and carries php's file
+  and line, but the **message text** is rphp's parser wording, not php's
+  bison text (`Expected one of ...` vs `syntax error, unexpected identifier
+  "is"`). Every other observable — class, file, line, exit code — matches.
+- `spl_autoload_register(null)` is an error rather than registering php's
+  default include-path loader, which rphp does not have.
+
+**Generators (E8).**
+
+- A suspended generator that is destroyed does not run its pending `finally`
+  blocks (php does). `Generator::rewind()` does not raise php's "Cannot
+  rewind a generator that was already run" for a generator advanced past its
+  first yield.
+
+**Parser.**
+
+- php 8.5's `Deprecated: Case statements followed by a semicolon (;) are
+  deprecated` is not emitted; the syntax is accepted silently. This is the
+  only difference when running Composer's generated autoloader over a real
+  Symfony vendor tree.

@@ -32,6 +32,10 @@ pub(crate) struct BodyFacts {
     /// The body needs a named symbol table (`$$x`, `compact`, `extract`,
     /// `get_defined_vars`, `eval`, `include`/`require`).
     pub(crate) needs_symtab: bool,
+    /// The body contains `yield` or `yield from` anywhere, which makes the
+    /// whole function a generator (E8) — php decides this at compile time,
+    /// and calling it builds a `Generator` instead of running the body.
+    pub(crate) is_generator: bool,
 }
 
 /// Assign a permanent register to every variable a body names, in first-use
@@ -112,6 +116,19 @@ impl Visitor for VarCollector<'_> {
             Expr::Eval { code, .. } => {
                 self.facts.needs_symtab = true;
                 self.visit_expr(code);
+            }
+            Expr::Yield { key, value, .. } => {
+                self.facts.is_generator = true;
+                if let Some(k) = key {
+                    self.visit_expr(k);
+                }
+                if let Some(v) = value {
+                    self.visit_expr(v);
+                }
+            }
+            Expr::YieldFrom { expr, .. } => {
+                self.facts.is_generator = true;
+                self.visit_expr(expr);
             }
             Expr::Call {
                 callee: Callee::Name(name),

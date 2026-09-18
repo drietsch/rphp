@@ -43,7 +43,9 @@ impl Interp {
     pub fn run_until(&mut self, stop_depth: usize) -> Result<Value, Unwind> {
         loop {
             if self.frames.len() <= stop_depth {
-                return Ok(Value::Null);
+                // A generator built at a re-entry boundary left its value
+                // here, because its frame never returned (`generator.rs`).
+                return Ok(self.boundary_value.take().unwrap_or(Value::Null));
             }
             match self.run_frame(stop_depth) {
                 Ok(Switch::Continue) => continue,
@@ -1298,6 +1300,12 @@ impl Interp {
                     self.set(base, dst, Value::Closure(Closure::new(fid, captures)));
                 }
                 Op::Ret { src } => {
+                    // A generator body that falls off the end finishes the
+                    // generator; it does not return to a caller.
+                    if let Some(gid) = self.frames[fi].generator {
+                        self.finish_generator(gid, Value::Null);
+                        return Ok(Switch::Done(Value::Null));
+                    }
                     let v = src.map(|r| self.rd(base, r));
                     let v = if func.f.ret_ty.is_some() {
                         let strict = self.frames[fi].strict;
@@ -1655,8 +1663,37 @@ impl Interp {
                         return Ok(Switch::Continue);
                     }
                 }
-                Op::Yield { .. } | Op::YieldFrom { .. } | Op::GenReturn { .. } => {
-                    return Err(Unwind::error("generators are not supported yet"));
+                Op::Yield { dst, key, val } => {
+                    let Some(gid) = self.frames[fi].generator else {
+                        return Err(Unwind::error("Cannot yield outside a generator"));
+                    };
+                    let v = val.map(|r| self.rd(base, r)).unwrap_or(Value::Null);
+                    let k = match key {
+                        Some(r) => {
+                            let k = self.rd(base, r);
+                            self.generator_note_key(gid, &k);
+                            k
+                        }
+                        None => self.generator_auto_key(gid),
+                    };
+                    self.park_generator(gid, k, v, dst)?;
+                    return Ok(Switch::Done(Value::Null));
+                }
+                Op::YieldFrom { dst, src } => {
+                    let Some(gid) = self.frames[fi].generator else {
+                        return Err(Unwind::error("Cannot yield outside a generator"));
+                    };
+                    let v = self.rd(base, src);
+                    self.begin_yield_from(gid, v, dst)?;
+                    return Ok(Switch::Done(Value::Null));
+                }
+                Op::GenReturn { src } => {
+                    let Some(gid) = self.frames[fi].generator else {
+                        return Err(Unwind::error("Cannot return from outside a generator"));
+                    };
+                    let v = src.map(|r| self.rd(base, r)).unwrap_or(Value::Null);
+                    self.finish_generator(gid, v);
+                    return Ok(Switch::Done(Value::Null));
                 }
                 Op::FinallyEnd { state, payload, targets } => {
                     let st = self.rd(base, state);

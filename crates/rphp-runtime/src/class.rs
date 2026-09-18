@@ -966,6 +966,8 @@ pub struct WellKnown {
     pub array_access: Option<u32>,
     /// `Countable`, for `count($o)`.
     pub countable: Option<u32>,
+    /// `Generator` (E8).
+    pub generator: Option<u32>,
 }
 
 impl WellKnown {
@@ -993,6 +995,7 @@ impl WellKnown {
             b"backedenum" => &mut self.backed_enum,
             b"arrayaccess" => &mut self.array_access,
             b"countable" => &mut self.countable,
+            b"generator" => &mut self.generator,
             _ => return,
         };
         *slot = Some(id);

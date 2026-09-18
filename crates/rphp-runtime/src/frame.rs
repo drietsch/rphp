@@ -33,6 +33,10 @@ pub enum FrameKind {
     /// An engine-internal caller (shutdown functions, output handlers):
     /// renders as `[internal function]` for the frame it calls.
     Internal,
+    /// A generator body, resumed from `Generator::current/next/send/throw`.
+    /// The frame is *parked* between resumptions: its registers live in the
+    /// generator's state, not on the register stack (E8, `generator.rs`).
+    Generator,
 }
 
 /// Where a returning frame delivers its value.
@@ -142,6 +146,9 @@ pub struct Frame {
     pub include_kind: Option<IncludeKind>,
     /// Live `foreach` iterators by iterator register.
     pub iters: Vec<(u16, IterState)>,
+    /// For `Generator` frames: the generator this body belongs to, as an
+    /// index into `Interp::generators`.
+    pub generator: Option<u32>,
 }
 
 impl Frame {
@@ -166,6 +173,7 @@ impl Frame {
             native: Some((NativeTarget::Func(id), args)),
             include_kind: None,
             iters: Vec::new(),
+            generator: None,
         }
     }
 
@@ -285,6 +293,15 @@ impl Interp {
                 None => (None, None, "[internal]".to_string()),
             },
             FrameKind::Internal => (None, None, "[internal]".to_string()),
+            // A generator body shows under the function that declared it.
+            FrameKind::Generator => {
+                let name = frame
+                    .func
+                    .as_ref()
+                    .map(|f| String::from_utf8_lossy(&f.f.name_bytes).into_owned())
+                    .unwrap_or_else(|| "{generator}".to_string());
+                (None, None, name)
+            }
             FrameKind::Include => (
                 None,
                 None,

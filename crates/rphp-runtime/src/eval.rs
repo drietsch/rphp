@@ -12,7 +12,6 @@
 //! built here rather than left to the compile hook.
 
 use rphp_bytecode::Op;
-use rphp_value::Value;
 
 use crate::frame::{FrameKind, RetTarget};
 use crate::registry::Unwind;

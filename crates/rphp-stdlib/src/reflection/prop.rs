@@ -514,11 +514,19 @@ fn prop_set_accessible(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Na
     Ok(Value::Null)
 }
 
-/// `ReflectionProperty::getDocComment(): string|false` and
-/// `ReflectionProperty::getAttributes(): array` — see the module header.
-fn prop_doc_comment(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    let _: PropState = state(this(o)?)?;
-    Ok(Value::Bool(false))
+/// `ReflectionProperty::getDocComment(): string|false` — the `/** … */`
+/// before the declaration. A declaration that names several properties
+/// gives each of them the same one, as php does.
+fn prop_doc_comment(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let doc = match locate(ctx, &s) {
+        Decl::Instance(i) => ctx.class(s.cid).props[i].doc.clone(),
+        Decl::Static(_) | Decl::Dynamic => None,
+    };
+    Ok(match doc {
+        Some(d) => Value::string(&d),
+        None => Value::Bool(false),
+    })
 }
 
 /// `ReflectionProperty::getAttributes(?string $name = null, int $flags = 0): array`

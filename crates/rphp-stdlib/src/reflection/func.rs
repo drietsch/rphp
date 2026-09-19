@@ -13,8 +13,12 @@
 //! * `getAttributes()` is always empty: the compiler drops every `#[...]`
 //!   group, so `Function::attrs` and `ParamDef::attrs` never fill. The code
 //!   below reads those fields, so it starts answering as soon as they do.
-//! * `getDocComment()` reads `Function::doc`, which the compiler always
-//!   leaves `None`, so it is always `false` today.
+//! * `getDocComment()` reads `Function::doc`, which the compiler fills from
+//!   the declaration. php's scanner keeps the last docblock it saw and
+//!   hands it to the next declaration it opens, so `/** … */ $f = function
+//!   () {};` documents the *closure* there; the parser here asks for the
+//!   docblock directly before the `function` keyword, and that spelling
+//!   finds none.
 //! * A native function carries no arginfo beyond its arity, its
 //!   by-reference mask and (sometimes) its parameter *names*: there are no
 //!   declared types and no defaults. `getReturnType()` on an internal
@@ -386,6 +390,11 @@ fn get_end_line(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRes
 }
 
 /// `ReflectionFunctionAbstract::getDocComment(): string|false`
+///
+/// **Known divergence.** php's scanner keeps the last docblock it saw and
+/// gives it to the next declaration it opens, so `/** … */ $f = function
+/// () {};` documents the *closure*. The parser here asks for the docblock
+/// directly before the `function` keyword, so that spelling finds none.
 fn get_doc_comment(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     match recv(ctx, o)?.func.as_ref().and_then(|f| f.f.doc.clone()) {
         Some(d) => Ok(Value::string(&d)),

@@ -34,6 +34,8 @@ pub struct PropDef {
     /// zero-argument thunk evaluated at `new` in the class's scope. When set,
     /// `default` is ignored.
     pub default_thunk: Option<FuncId>,
+    /// The `/** … */` immediately before the declaration.
+    pub doc: Option<Box<[u8]>>,
 }
 
 impl PropDef {
@@ -45,6 +47,7 @@ impl PropDef {
             visibility,
             is_static: false,
             readonly: false,
+            doc: None,
             set_vis: None,
             ty: None,
             hooks: None,
@@ -130,6 +133,8 @@ impl Method {
 pub struct Class {
     pub name: IdentId,
     pub name_bytes: Box<[u8]>,
+    /// The `/** … */` immediately before the declaration.
+    pub doc: Option<Box<[u8]>>,
     pub parent: Option<ClassId>,
     pub props: Vec<PropDef>,
     pub methods: Vec<Method>,
@@ -165,6 +170,7 @@ impl Class {
         Class {
             name,
             name_bytes: Box::from(name_bytes),
+            doc: None,
             parent: None,
             props: Vec::new(),
             methods: Vec::new(),

@@ -18,7 +18,8 @@
 //!
 //! **Known divergences**, all upstream of this module:
 //!
-//! * `getAttributes()` is always empty and `getDocComment()` always `false`:
+//! * `getAttributes()` is always empty (`getDocComment()` answers the real
+//!   docblock since the compiler carries it):
 //!   the compiler drops both, and the runtime's compiled class declaration
 //!   (`rphp_bytecode::Class`) has no field for either.
 //! * `getEndLine()` is always `false` for the same reason — that declaration
@@ -829,14 +830,15 @@ fn get_end_line(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResul
     Ok(Value::Bool(false))
 }
 
-/// `ReflectionClass::getDocComment(): string|false`
-///
-/// **Engine gap.** The compiler drops doc comments and the runtime's class
-/// declaration has no field for one, so this is always php's "no doc
-/// comment" answer.
-fn get_doc_comment(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    cid_of(this(o)?)?;
-    Ok(Value::Bool(false))
+/// `ReflectionClass::getDocComment(): string|false` — the `/** … */` the
+/// declaration carries, which is what a container compiler reads its
+/// annotations out of.
+fn get_doc_comment(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let cid = cid_of(this(o)?)?;
+    Ok(match &ctx.class(cid).doc {
+        Some(d) => Value::string(d),
+        None => Value::Bool(false),
+    })
 }
 
 /// `ReflectionClass::getAttributes(?string $name = null, int $flags = 0): array`

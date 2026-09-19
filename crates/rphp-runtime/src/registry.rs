@@ -491,6 +491,7 @@ impl ClassBuilder<'_> {
         let interfaces: Vec<u32> = interfaces.iter().map(|i| lookup(interp, i)).collect();
         let spec = ClassSpec {
             used_traits: Vec::new(),
+            doc: None,
             name: Box::from(name.as_bytes()),
             kind,
             flags,

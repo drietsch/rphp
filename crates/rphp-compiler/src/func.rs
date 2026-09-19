@@ -169,6 +169,9 @@ pub(crate) struct FnSpec<'a> {
     pub(crate) is_static: bool,
     /// The declared return type.
     pub(crate) ret: Option<&'a rphp_ast::v2::Type>,
+    /// The `/** … */` immediately before the declaration, which
+    /// `ReflectionFunctionAbstract::getDocComment()` answers with.
+    pub(crate) doc: Option<IdentId>,
 }
 
 /// An enclosing loop or `switch`, for `break N` / `continue N`.
@@ -742,7 +745,7 @@ impl<'a> FnCompiler<'a> {
     /// by-reference ones) and the current `$this`/scope at runtime.
     pub(crate) fn compile_closure_expr(&mut self, c: &Closure) -> Reg {
         let uses: Vec<(IdentId, bool)> = c.uses.iter().map(|u| (u.name, u.by_ref)).collect();
-        self.compile_closure(&c.params, &uses, ClosureBody::Stmts(&c.body), c.span, c.static_, c.ret.as_ref())
+        self.compile_closure(&c.params, &uses, ClosureBody::Stmts(&c.body), c.span, c.static_, c.ret.as_ref(), c.doc)
     }
 
     /// Lower `fn (...) => e`: the free variables of `e` are captured by value
@@ -752,7 +755,7 @@ impl<'a> FnCompiler<'a> {
             .into_iter()
             .map(|id| (id, false))
             .collect();
-        self.compile_closure(&f.params, &uses, ClosureBody::ReturnExpr(&f.body), f.span, f.static_, f.ret.as_ref())
+        self.compile_closure(&f.params, &uses, ClosureBody::ReturnExpr(&f.body), f.span, f.static_, f.ret.as_ref(), f.doc)
     }
 
     fn compile_closure(
@@ -763,6 +766,7 @@ impl<'a> FnCompiler<'a> {
         span: Span,
         is_static: bool,
         ret: Option<&rphp_ast::v2::Type>,
+        doc: Option<IdentId>,
     ) -> Reg {
         let line = self.mx.line(span.lo);
         // php 8.4+: `{closure:<enclosing>:<line>}` where the enclosing scope is
@@ -820,7 +824,8 @@ impl<'a> FnCompiler<'a> {
             }
         }
         fc.emit(Op::Ret { src: None });
-        let f = fc.finish(name.into(), defs, span);
+        let mut f = fc.finish(name.into(), defs, span);
+        f.doc = doc.map(|d| Box::from(self.interner().resolve(d)));
         self.mx.sink.borrow_mut().fill(id, f);
         let dst = self.alloc_temp();
         self.emit(Op::MakeClosure { dst, proto: id });
@@ -844,6 +849,7 @@ pub(crate) fn compile_function(
         cur_class,
         is_static,
         ret,
+        doc,
     } = spec;
     let id = mx.sink.borrow_mut().reserve();
     let name_bytes: Box<[u8]> = mx.interner.resolve(name).into();
@@ -872,7 +878,8 @@ pub(crate) fn compile_function(
     // Always terminate with a fall-through return so every code path (and every
     // branch target that lands at the textual end) has a valid `Ret`.
     fc.emit(Op::Ret { src: None });
-    let f = fc.finish(name_bytes, defs, span);
+    let mut f = fc.finish(name_bytes, defs, span);
+    f.doc = doc.map(|d| Box::from(mx.interner.resolve(d)));
     mx.sink.borrow_mut().fill(id, f);
     id
 }

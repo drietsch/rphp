@@ -271,6 +271,7 @@ pub(crate) fn compile_class(
     let class = BcClass {
         name,
         name_bytes: interner.resolve(name).into(),
+        doc: c.doc.map(|d| Box::from(interner.resolve(d))),
         parent,
         props,
         methods,
@@ -338,7 +339,7 @@ impl<'m> MemberLower<'_, 'm> {
         // A hooked declaration names exactly one property (the front end
         // rejects `$a, $b { ... }`), so one compile serves every item.
         let hooks = self.hooks(&p.hooks, p.items.first().map(|i| i.name), p.ty.as_ref());
-        for item in &p.items {
+        for (index, item) in p.items.iter().enumerate() {
             let (default, default_thunk) =
                 self.initializer(item.default.as_ref(), item.span, ty.is_some());
             self.props.push(PropDef {
@@ -347,6 +348,11 @@ impl<'m> MemberLower<'_, 'm> {
                 visibility,
                 is_static,
                 readonly,
+                // php gives the docblock to the *first* property a
+                // declaration names and to no other.
+                doc: (index == 0)
+                    .then(|| p.doc.map(|d| Box::from(it.resolve(d))))
+                    .flatten(),
                 set_vis,
                 ty: ty.clone(),
                 hooks,
@@ -374,6 +380,7 @@ impl<'m> MemberLower<'_, 'm> {
                 cur_class: Some(self.scope),
                 is_static: md.modifiers.static_,
                 ret: md.ret.as_ref(),
+                doc: md.doc,
             },
         );
         self.methods.push(BcMethod {
@@ -403,6 +410,7 @@ impl<'m> MemberLower<'_, 'm> {
         let hooks = self.hooks(&param.hooks, Some(param.name), param.ty.as_ref());
         self.props.push(PropDef {
             name: it.resolve(param.name).into(),
+            doc: None,
             default: if ty.is_some() {
                 Value::Uninit
             } else {

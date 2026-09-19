@@ -295,6 +295,7 @@ impl Interp {
             ty: Some(TypeDecl::Builtin(BuiltinType::String)),
             readonly: true,
             hooks: None,
+            doc: None,
             default: PropDefault::Value(Value::Uninit),
         }];
         if let Some(ty) = value_ty {
@@ -302,6 +303,7 @@ impl Interp {
                 name: Box::from(&b"value"[..]),
                 vis: Visibility::Public,
                 set_vis: None,
+                doc: None,
                 ty: Some(ty),
                 readonly: true,
                 hooks: None,

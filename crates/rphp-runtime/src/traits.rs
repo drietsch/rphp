@@ -605,6 +605,7 @@ impl Interp {
                     set_vis: p.set_vis,
                     ty: p.ty.clone(),
                     readonly: p.readonly,
+                    doc: p.doc.clone(),
                     hooks: p.hooks,
                     default: p.default.clone(),
                 });

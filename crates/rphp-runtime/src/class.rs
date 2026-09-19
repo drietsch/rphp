@@ -181,6 +181,8 @@ pub struct PropInfo {
     pub hooks: Option<PropHooks>,
     /// The default value.
     pub default: PropDefault,
+    /// The `/** … */` immediately before the declaration.
+    pub doc: Option<Box<[u8]>>,
 }
 
 /// A property's `get`/`set` hooks, as **process-wide** function ids (the
@@ -209,6 +211,8 @@ pub struct PropSpec {
     pub hooks: Option<PropHooks>,
     /// The initializer.
     pub default: PropDefault,
+    /// The `/** … */` immediately before the declaration.
+    pub doc: Option<Box<[u8]>>,
 }
 
 impl PropSpec {
@@ -217,6 +221,7 @@ impl PropSpec {
         PropSpec {
             name,
             vis,
+            doc: None,
             set_vis: None,
             ty: None,
             readonly: false,
@@ -469,6 +474,9 @@ pub struct ClassDef {
     pub linked: bool,
     /// `true` for classes registered by the engine / an extension.
     pub internal: bool,
+    /// The `/** … */` immediately before the declaration, which
+    /// `ReflectionClass::getDocComment()` answers with.
+    pub doc: Option<Box<[u8]>>,
     /// The unit that compiled the class (user classes), for `declare_class`.
     pub unit: Option<Rc<crate::unit::UnitRt>>,
     /// Static properties in declaration order (own and inherited).
@@ -516,6 +524,7 @@ impl ClassDef {
             declared_at,
             linked: false,
             internal: false,
+            doc: None,
             unit: None,
             static_props: Vec::new(),
             static_index: HashMap::new(),
@@ -616,6 +625,8 @@ pub struct ClassSpec {
     /// The traits the declaration `use`s, resolved to ids by
     /// [`Interp::apply_trait_uses`] before linking (`class_uses()`).
     pub used_traits: Vec<u32>,
+    /// The `/** … */` immediately before the declaration.
+    pub doc: Option<Box<[u8]>>,
 }
 
 /// One own class constant of a [`ClassSpec`].
@@ -658,6 +669,7 @@ impl Interp {
     pub(crate) fn link_class(&self, id: u32, spec: ClassSpec) -> Result<ClassDef, Unwind> {
         let ClassSpec {
             used_traits,
+            doc,
             name,
             kind,
             flags,
@@ -677,6 +689,7 @@ impl Interp {
         let name_str = String::from_utf8_lossy(&name).into_owned();
         let mut def = ClassDef::stub(id, &name, kind, flags, declared_at);
         def.internal = internal;
+        def.doc = doc;
         def.linked = true;
         if let Some(pid) = parent {
             let p = self.classes[pid as usize].clone();
@@ -781,6 +794,7 @@ impl Interp {
                         set_vis: ps.set_vis,
                         hooks: ps.hooks,
                         default: ps.default,
+                        doc: ps.doc,
                     });
                 }
             }

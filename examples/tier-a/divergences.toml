@@ -39,3 +39,21 @@ snippet   = "lang/include.php"
 category  = "platform-value"
 reason    = "the include_path in php's 'Failed opening' warning is the build's default (`.:/opt/homebrew/.../pear` for the Homebrew oracle, `.:/usr/share/php` for rphp's core ini defaults)"
 normalize = "regex:include_path='[^']*' => include_path='<default>'"
+
+[[allow]]
+snippet   = "date/datetime.php"
+category  = "object-id"
+reason    = "the snippet dumps many short-lived date objects; php reuses each freed handle while the engine's ObjectIdAllocator is monotonic (documented in rphp-value)"
+normalize = ""
+
+[[allow]]
+snippet   = "date/interval.php"
+category  = "object-id"
+reason    = "the snippet dumps many short-lived date objects; php reuses each freed handle while the engine's ObjectIdAllocator is monotonic (documented in rphp-value)"
+normalize = ""
+
+[[allow]]
+snippet   = "date/period.php"
+category  = "object-id"
+reason    = "the snippet dumps many short-lived date objects; php reuses each freed handle while the engine's ObjectIdAllocator is monotonic (documented in rphp-value)"
+normalize = ""

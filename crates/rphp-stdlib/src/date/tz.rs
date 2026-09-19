@@ -11,7 +11,11 @@ pub(crate) enum Tz {
     /// `timezone_type` 1 — a fixed offset in seconds east of UTC.
     Offset(i32),
     /// `timezone_type` 2 — an abbreviation with its fixed offset and DST flag.
-    Abbr { name: String, offset: i32, dst: bool },
+    Abbr {
+        name: String,
+        offset: i32,
+        dst: bool,
+    },
     /// `timezone_type` 3 — an IANA identifier, kept with the spelling the
     /// caller used: php echoes `new DateTimeZone("europe/BERLIN")->getName()`
     /// back verbatim.
@@ -169,16 +173,6 @@ pub(crate) fn is_known_id(name: &str) -> bool {
             .any(|(id, _, _)| id.eq_ignore_ascii_case(name))
 }
 
-/// The identifiers `timezone_identifiers_list()` returns by default: php's
-/// list without the backward-compatibility names.
-pub(crate) fn identifiers() -> Vec<String> {
-    IDENTIFIERS
-        .iter()
-        .filter(|(_, _, bc)| !*bc)
-        .map(|(id, _, _)| (*id).to_string())
-        .collect()
-}
-
 /// A timestamp the zone database can be asked about.
 ///
 /// php extrapolates a zone's last rule forwards for ever, so `date("T",
@@ -252,7 +246,9 @@ pub(crate) fn parse_offset(s: &str) -> Option<i32> {
         (h, m, sec)
     } else {
         let n = |a: usize, b: usize| -> i32 {
-            digits[a..b].iter().fold(0, |acc, d| acc * 10 + (d - b'0') as i32)
+            digits[a..b]
+                .iter()
+                .fold(0, |acc, d| acc * 10 + (d - b'0') as i32)
         };
         match digits.len() {
             1 | 2 => (n(0, digits.len()), 0, 0),
@@ -2219,8 +2215,14 @@ mod tests {
     #[test]
     fn reports_offsets_abbreviations_and_dst() {
         let berlin = Tz::Id("Europe/Berlin".to_string());
-        assert_eq!(berlin.info(1_626_343_200), (7_200, "CEST".to_string(), true));
-        assert_eq!(berlin.info(1_610_708_400), (3_600, "CET".to_string(), false));
+        assert_eq!(
+            berlin.info(1_626_343_200),
+            (7_200, "CEST".to_string(), true)
+        );
+        assert_eq!(
+            berlin.info(1_610_708_400),
+            (3_600, "CET".to_string(), false)
+        );
         assert_eq!(Tz::Offset(19_800).info(0).1, "GMT+0530");
         assert_eq!(Tz::Offset(-28_800).info(0).1, "GMT-0800");
     }

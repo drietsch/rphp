@@ -60,7 +60,7 @@ impl Interp {
 
     /// `lookup_class` with php's `Class "X" not found` when nothing declares
     /// it — the form every call site that *requires* a class wants.
-    pub(crate) fn lookup_class_or_error(&mut self, name: &[u8]) -> Result<u32, Unwind> {
+    pub fn lookup_class_or_error(&mut self, name: &[u8]) -> Result<u32, Unwind> {
         match self.lookup_class(name)? {
             Some(id) => Ok(id),
             None => Err(Unwind::error(format!(
@@ -116,7 +116,10 @@ impl Interp {
 
     /// `class_alias()`: make `alias` name the same class definition.
     pub fn alias_class(&mut self, alias: &[u8], id: u32) {
-        let key = alias.strip_prefix(b"\\").unwrap_or(alias).to_ascii_lowercase();
+        let key = alias
+            .strip_prefix(b"\\")
+            .unwrap_or(alias)
+            .to_ascii_lowercase();
         self.class_index.insert(key.into_boxed_slice(), id);
     }
 }

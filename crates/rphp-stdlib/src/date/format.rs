@@ -2,7 +2,7 @@
 //! php; the surprising ones are commented where they are produced.
 
 use super::civil;
-use super::tz::{render_offset, Tz};
+use super::tz::Tz;
 
 /// A timestamp already broken down in some timezone: what every format
 /// character reads from.
@@ -262,10 +262,7 @@ mod tests {
             fmt(1_234_567_890, "a A B g G h H i s u v e I O P p T Z"),
             "pm PM 021 11 23 11 23 31 30 000000 000 UTC 0 +0000 +00:00 Z UTC 0"
         );
-        assert_eq!(
-            fmt(1_234_567_890, "c"),
-            "2009-02-13T23:31:30+00:00"
-        );
+        assert_eq!(fmt(1_234_567_890, "c"), "2009-02-13T23:31:30+00:00");
         assert_eq!(fmt(1_234_567_890, "r"), "Fri, 13 Feb 2009 23:31:30 +0000");
         assert_eq!(fmt(1_234_567_890, "U"), "1234567890");
         assert_eq!(fmt(0, "B"), "041");
@@ -274,11 +271,23 @@ mod tests {
 
     #[test]
     fn extreme_years_pad_the_way_php_pads_them() {
-        assert_eq!(fmt(-62_135_596_800, "Y y X x o c r"), "0001 01 +0001 0001 1 0001-01-01T00:00:00+00:00 Mon, 01 Jan 0001 00:00:00 +0000");
-        assert_eq!(fmt(-62_451_993_600, "Y y X x o"), "-0010 -10 -0010 -0010 -10");
+        assert_eq!(
+            fmt(-62_135_596_800, "Y y X x o c r"),
+            "0001 01 +0001 0001 1 0001-01-01T00:00:00+00:00 Mon, 01 Jan 0001 00:00:00 +0000"
+        );
+        assert_eq!(
+            fmt(-62_451_993_600, "Y y X x o"),
+            "-0010 -10 -0010 -0010 -10"
+        );
         assert_eq!(fmt(-62_451_993_600, "c"), "-010-12-23T00:00:00+00:00");
-        assert_eq!(fmt(253_402_300_800, "Y y X x o L z W"), "10000 00 +10000 +10000 9999 1 0 52");
-        assert_eq!(fmt(-68_000_000_000, "Y y X x o z W"), "-0185 -85 -0185 -0185 -185 60 09");
+        assert_eq!(
+            fmt(253_402_300_800, "Y y X x o L z W"),
+            "10000 00 +10000 +10000 9999 1 0 52"
+        );
+        assert_eq!(
+            fmt(-68_000_000_000, "Y y X x o z W"),
+            "-0185 -85 -0185 -0185 -185 60 09"
+        );
     }
 
     #[test]

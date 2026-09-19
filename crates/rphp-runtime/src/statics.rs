@@ -280,6 +280,12 @@ impl Interp {
             ))
         };
         let Some(k) = class.consts.get(name).cloned() else {
+            // An enum case *is* a class constant to php — `constant('E::A')`
+            // and `ReflectionClassConstant` both reach one — but the runtime
+            // keeps the cases in their own table.
+            if class.enum_index.contains_key(name) {
+                return self.enum_case(cid, name);
+            }
             return Err(undefined());
         };
         // A private constant is not inherited: through a subclass it does not

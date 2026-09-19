@@ -107,10 +107,6 @@ impl<'a> Cur<'a> {
         Cur { s, p: 0 }
     }
 
-    fn done(&self) -> bool {
-        self.p >= self.s.len()
-    }
-
     fn peek(&self) -> Option<u8> {
         self.s.get(self.p).copied()
     }
@@ -704,10 +700,18 @@ enum Tok {
     /// A wall-clock time. `us` is `None` for the readings php leaves the
     /// microsecond field unset for, which `date_parse()` reports as
     /// `fraction => false`.
-    Time { h: i64, i: i64, s: i64, us: Option<i64> },
+    Time {
+        h: i64,
+        i: i64,
+        s: i64,
+        us: Option<i64>,
+    },
     /// A bare four-digit clock reading (`1230`), which php re-reads as a
     /// year once a time is already known.
-    GnuNoColon { h: i64, i: i64 },
+    GnuNoColon {
+        h: i64,
+        i: i64,
+    },
     /// A timezone, still as written: an offset resolves immediately, a name
     /// is looked up when the token is applied.
     Offset(i32),
@@ -720,7 +724,10 @@ enum Tok {
         keep_time: bool,
     },
     /// `<ordinal> <weekday> of` — the n-th weekday of the month.
-    NthWeekdayOf { n: i64, weekday: i64 },
+    NthWeekdayOf {
+        n: i64,
+        weekday: i64,
+    },
     /// `first day of` (1) / `last day of` (2).
     FirstLastDayOf(u8),
     /// A bare four-digit year, which php does not count as a date.
@@ -982,7 +989,7 @@ fn match_time(c: &Cur, need_sep: bool) -> Option<(usize, Tok)> {
                                         &t,
                                         Tok::Time {
                                             h: apply_meridian(h, pm),
-                                                            i,
+                                            i,
                                             s,
                                             us: Some(us),
                                         },
@@ -1066,12 +1073,39 @@ fn match_time(c: &Cur, need_sep: bool) -> Option<(usize, Tok)> {
     if let Some(h) = hour24(&mut t) {
         if t.eat_any(b":.") {
             if let Some(i) = minute(&mut t) {
-                keep(&t, Tok::Time { h, i, s: 0, us: Some(0) }, &mut best);
+                keep(
+                    &t,
+                    Tok::Time {
+                        h,
+                        i,
+                        s: 0,
+                        us: Some(0),
+                    },
+                    &mut best,
+                );
                 if t.eat_any(b":.") {
                     if let Some(s) = second(&mut t) {
-                        keep(&t, Tok::Time { h, i, s, us: Some(0) }, &mut best);
+                        keep(
+                            &t,
+                            Tok::Time {
+                                h,
+                                i,
+                                s,
+                                us: Some(0),
+                            },
+                            &mut best,
+                        );
                         if let Some(us) = fraction(&mut t) {
-                            keep(&t, Tok::Time { h, i, s, us: Some(us) }, &mut best);
+                            keep(
+                                &t,
+                                Tok::Time {
+                                    h,
+                                    i,
+                                    s,
+                                    us: Some(us),
+                                },
+                                &mut best,
+                            );
                         }
                     }
                 }
@@ -1085,7 +1119,16 @@ fn match_time(c: &Cur, need_sep: bool) -> Option<(usize, Tok)> {
             if let Some(i) = minutelz(&mut t) {
                 keep(&t, Tok::GnuNoColon { h, i }, &mut best);
                 if let Some(s) = secondlz(&mut t) {
-                    keep(&t, Tok::Time { h, i, s, us: Some(0) }, &mut best);
+                    keep(
+                        &t,
+                        Tok::Time {
+                            h,
+                            i,
+                            s,
+                            us: Some(0),
+                        },
+                        &mut best,
+                    );
                 }
             }
         }
@@ -1443,7 +1486,12 @@ fn r_exif(c: &mut Cur) -> Option<Vec<Tok>> {
             m: Some(m),
             d: Some(d),
         },
-        Tok::Time { h, i, s, us: Some(0) },
+        Tok::Time {
+            h,
+            i,
+            s,
+            us: Some(0),
+        },
     ])
 }
 

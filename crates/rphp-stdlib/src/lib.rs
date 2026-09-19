@@ -18,13 +18,18 @@ mod base64;
 mod basic_functions;
 mod closure_class;
 mod ctype;
+mod date;
 mod dir;
 mod errorfunc;
+mod exec;
 mod file;
+mod file2;
 mod filestat;
+mod filter;
 mod formatted_print;
 mod funcs;
 mod hash;
+mod head;
 mod html;
 mod iconv;
 mod info;
@@ -35,24 +40,20 @@ mod mbstring;
 mod output;
 mod output_buffering;
 mod pack;
+mod password;
 mod pcre;
 mod random;
+mod reflection;
+mod spl_autoload;
 mod spl_containers;
-mod exec;
-mod file2;
-mod head;
+mod spl_containers2;
 mod spl_decorators;
+mod spl_directory;
+mod spl_exceptions;
 mod spl_fixedarray;
 mod spl_heaps;
-mod date;
-mod filter;
-mod reflection;
-mod spl_containers2;
-mod password;
-mod spl_autoload;
-mod spl_iterators;
-mod spl_exceptions;
 mod spl_interfaces;
+mod spl_iterators;
 mod string2;
 mod strings;
 mod types;
@@ -67,6 +68,7 @@ mod zend_exceptions;
 const MODULES: &[&[NativeFn]] = &[
     filter::FUNCTIONS,
     date::FUNCTIONS,
+    date::CLASS_FUNCTIONS,
     reflection::FUNCTIONS,
     spl_containers2::FUNCTIONS,
     password::FUNCTIONS,
@@ -74,6 +76,7 @@ const MODULES: &[&[NativeFn]] = &[
     file2::FUNCTIONS,
     head::FUNCTIONS,
     spl_decorators::FUNCTIONS,
+    spl_directory::FUNCTIONS,
     spl_fixedarray::FUNCTIONS,
     spl_heaps::FUNCTIONS,
     spl_iterators::FUNCTIONS,
@@ -120,16 +123,19 @@ pub fn register(r: &mut Registry) {
     spl_interfaces::register_classes(r);
     closure_class::register_classes(r);
     weak::register_classes(r);
+    hash::register_classes(r);
     spl_containers::register_classes(r);
     spl_containers2::register_classes(r);
     spl_fixedarray::register_classes(r);
     spl_heaps::register_classes(r);
     spl_decorators::register_classes(r);
+    spl_directory::register_classes(r);
     date::register_classes(r);
     reflection::register_classes(r);
     math::register_constants(r);
     pcre::register_constants(r);
     json::register_constants(r);
+    hash::register_constants(r);
     output_buffering::register_constants(r);
     string2::register_constants(r);
     array2::register_constants(r);
@@ -151,6 +157,7 @@ pub fn register(r: &mut Registry) {
     spl_fixedarray::register_constants(r);
     spl_heaps::register_constants(r);
     spl_decorators::register_constants(r);
+    spl_directory::register_constants(r);
     password::register_constants(r);
     filestat::register_constants(r);
     dir::register_constants(r);
@@ -203,7 +210,9 @@ mod tests {
     #[test]
     fn all_functions_are_registered_and_unique() {
         let it = interp();
-        let mut names: Vec<String> = super::all_functions().map(|f| f.name.to_ascii_lowercase()).collect();
+        let mut names: Vec<String> = super::all_functions()
+            .map(|f| f.name.to_ascii_lowercase())
+            .collect();
         let n = names.len();
         names.sort();
         names.dedup();
@@ -215,14 +224,30 @@ mod tests {
     #[test]
     fn substr_negative_length_trims_the_tail() {
         let s = Value::string(b"abcdef");
-        assert_eq!(call_named(b"substr", &[s.clone(), Value::Int(1), Value::Int(-1)]), Value::string(b"bcde"));
-        assert_eq!(call_named(b"substr", &[s.clone(), Value::Int(-2)]), Value::string(b"ef"));
-        assert_eq!(call_named(b"substr", &[s, Value::Int(0), Value::Int(-10)]), Value::string(b""));
+        assert_eq!(
+            call_named(b"substr", &[s.clone(), Value::Int(1), Value::Int(-1)]),
+            Value::string(b"bcde")
+        );
+        assert_eq!(
+            call_named(b"substr", &[s.clone(), Value::Int(-2)]),
+            Value::string(b"ef")
+        );
+        assert_eq!(
+            call_named(b"substr", &[s, Value::Int(0), Value::Int(-10)]),
+            Value::string(b"")
+        );
     }
 
     #[test]
     fn explode_respects_a_positive_limit() {
-        let parts = call_named(b"explode", &[Value::string(b","), Value::string(b"a,b,c,d"), Value::Int(2)]);
+        let parts = call_named(
+            b"explode",
+            &[
+                Value::string(b","),
+                Value::string(b"a,b,c,d"),
+                Value::Int(2),
+            ],
+        );
         assert_eq!(parts, arr(&[Value::string(b"a"), Value::string(b"b,c,d")]));
     }
 
@@ -247,7 +272,10 @@ mod tests {
     #[test]
     fn intdiv_by_zero_is_a_division_by_zero_error() {
         let err = call_err(b"intdiv", &[Value::Int(1), Value::Int(0)]);
-        assert_eq!(err.kind(), Some(rphp_runtime::ErrorKind::DivisionByZeroError));
+        assert_eq!(
+            err.kind(),
+            Some(rphp_runtime::ErrorKind::DivisionByZeroError)
+        );
         assert_eq!(err.message(), Some("Division by zero"));
     }
 
@@ -256,21 +284,36 @@ mod tests {
         // array_map with a builtin callable re-enters through the interpreter.
         let mapped = call_named(
             b"array_map",
-            &[Value::string(b"strtoupper"), arr(&[Value::string(b"a"), Value::string(b"b")])],
+            &[
+                Value::string(b"strtoupper"),
+                arr(&[Value::string(b"a"), Value::string(b"b")]),
+            ],
         );
         assert_eq!(mapped, arr(&[Value::string(b"A"), Value::string(b"B")]));
     }
 
     #[test]
     fn max_min_over_array_and_args() {
-        assert_eq!(call_named(b"max", &[Value::Int(3), Value::Int(9), Value::Int(2)]), Value::Int(9));
-        assert_eq!(call_named(b"min", &[arr(&[Value::Int(4), Value::Int(1), Value::Int(8)])]), Value::Int(1));
+        assert_eq!(
+            call_named(b"max", &[Value::Int(3), Value::Int(9), Value::Int(2)]),
+            Value::Int(9)
+        );
+        assert_eq!(
+            call_named(
+                b"min",
+                &[arr(&[Value::Int(4), Value::Int(1), Value::Int(8)])]
+            ),
+            Value::Int(1)
+        );
     }
 
     #[test]
     fn aliases_share_an_implementation() {
         let a = arr(&[Value::Int(1), Value::Int(2)]);
-        assert_eq!(call_named(b"count", std::slice::from_ref(&a)), Value::Int(2));
+        assert_eq!(
+            call_named(b"count", std::slice::from_ref(&a)),
+            Value::Int(2)
+        );
         assert_eq!(call_named(b"sizeof", &[a]), Value::Int(2));
     }
 
@@ -281,7 +324,8 @@ mod tests {
         assert_eq!(it.take_test_output(), b"int(1)\n");
         // With a level active the output is captured there instead.
         it.ob_start(None, 0, rphp_runtime::PHP_OUTPUT_HANDLER_STDFLAGS);
-        it.call_function(b"print_r", &[Value::string(b"x")]).unwrap();
+        it.call_function(b"print_r", &[Value::string(b"x")])
+            .unwrap();
         assert_eq!(it.take_test_output(), b"");
         assert_eq!(it.ob_discard_top().unwrap().unwrap(), b"x");
     }

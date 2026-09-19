@@ -14,7 +14,12 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("define", 2, Some(3), define),
     nf!("defined", 1, Some(1), defined),
     nf!("constant", 1, Some(1), constant),
-    nf!("register_shutdown_function", 1, None, register_shutdown_function),
+    nf!(
+        "register_shutdown_function",
+        1,
+        None,
+        register_shutdown_function
+    ),
     nf!("php_sapi_name", 0, Some(0), php_sapi_name),
     nf!("phpversion", 0, Some(1), phpversion),
     nf!("function_exists", 1, Some(1), function_exists),
@@ -32,7 +37,12 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("trait_exists", 1, Some(2), trait_exists),
     nf!("enum_exists", 1, Some(2), enum_exists),
     nf!("get_declared_classes", 0, Some(0), get_declared_classes),
-    nf!("get_declared_interfaces", 0, Some(0), get_declared_interfaces),
+    nf!(
+        "get_declared_interfaces",
+        0,
+        Some(0),
+        get_declared_interfaces
+    ),
     nf!("get_class_vars", 1, Some(1), get_class_vars),
     nf!("class_implements", 1, Some(2), class_implements),
     nf!("class_parents", 1, Some(2), class_parents),
@@ -85,7 +95,8 @@ pub(crate) fn ini_restore(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     ctx.ini.restore(&name);
     if name == "error_reporting" {
         let v = ctx.ini.get("error_reporting").unwrap_or("").to_string();
-        ctx.error_reporting = rphp_runtime::parse_error_reporting(&v).unwrap_or(rphp_runtime::E_ALL);
+        ctx.error_reporting =
+            rphp_runtime::parse_error_reporting(&v).unwrap_or(rphp_runtime::E_ALL);
     }
     Ok(Value::Null)
 }
@@ -109,17 +120,42 @@ pub(crate) fn define(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `defined(string $constant_name): bool`
 pub(crate) fn defined(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    Ok(Value::Bool(ctx.defined(&args[0].to_php_bytes())))
+    let raw = args[0].to_php_bytes();
+    let name = raw.strip_prefix(b"\\").unwrap_or(&raw);
+    if let Some(pos) = find_scope_sep(name) {
+        let (class, member) = (name[..pos].to_vec(), name[pos + 2..].to_vec());
+        // php answers `false` for an unknown class rather than raising.
+        let Some(cid) = ctx.lookup_class(&class)? else {
+            return Ok(Value::Bool(false));
+        };
+        return Ok(Value::Bool(ctx.class_const(cid, &member, None).is_ok()));
+    }
+    Ok(Value::Bool(ctx.defined(name)))
 }
 
-/// `constant(string $name): mixed` — `Error: Undefined constant "X"` when
-/// unknown (class constants `A::B` arrive with the class model).
+/// `constant(string $name): mixed` — a global constant, or the `A::B` form,
+/// which reaches a class constant *and* an enum case (php answers the case
+/// object). Unknown is `Error: Undefined constant "X"` for a global and
+/// `Undefined constant A::B` for a class one — php quotes only the first.
 pub(crate) fn constant(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let name = args[0].to_php_bytes();
-    let name = name.strip_prefix(b"\\").unwrap_or(&name);
+    let raw = args[0].to_php_bytes();
+    let name = raw.strip_prefix(b"\\").unwrap_or(&raw);
+    if let Some(pos) = find_scope_sep(name) {
+        let (class, member) = (&name[..pos], &name[pos + 2..]);
+        let cid = ctx.lookup_class_or_error(class)?;
+        return ctx.class_const(cid, member, None);
+    }
     ctx.constant(name).ok_or_else(|| {
-        Unwind::error(format!("Undefined constant \"{}\"", String::from_utf8_lossy(name)))
+        Unwind::error(format!(
+            "Undefined constant \"{}\"",
+            String::from_utf8_lossy(name)
+        ))
     })
+}
+
+/// The `::` of a `Class::CONST` name, if there is one.
+fn find_scope_sep(name: &[u8]) -> Option<usize> {
+    name.windows(2).position(|w| w == b"::")
 }
 
 /// `register_shutdown_function(callable $callback, mixed ...$args): void`
@@ -141,7 +177,8 @@ pub(crate) fn php_sapi_name(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
 pub(crate) fn phpversion(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     match args.first() {
         Some(v) if !matches!(*v.deref(), Value::Null) => {
-            Ok(crate::info::extension_version(&v.to_php_string()).map_or(Value::Bool(false), |ver| Value::string(ver.as_bytes())))
+            Ok(crate::info::extension_version(&v.to_php_string())
+                .map_or(Value::Bool(false), |ver| Value::string(ver.as_bytes())))
         }
         _ => Ok(Value::string(crate::info::PHP_VERSION.as_bytes())),
     }
@@ -181,7 +218,8 @@ fn class_like_exists(
         ctx.class_by_name(&name)
     };
     Ok(Value::Bool(
-        id.map(|id| ctx.class(id)).is_some_and(|c| c.linked && want(c)),
+        id.map(|id| ctx.class(id))
+            .is_some_and(|c| c.linked && want(c)),
     ))
 }
 
@@ -203,7 +241,9 @@ pub(crate) fn trait_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `enum_exists(string $enum, bool $autoload = true): bool`
 pub(crate) fn enum_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    class_like_exists(ctx, args, |c| matches!(c.kind, rphp_runtime::ClassKind::Enum { .. }))
+    class_like_exists(ctx, args, |c| {
+        matches!(c.kind, rphp_runtime::ClassKind::Enum { .. })
+    })
 }
 
 /// `get_declared_classes(): array` — declared classes (internal first, then
@@ -291,12 +331,10 @@ pub(crate) fn class_uses(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
         Value::Str(s) => ctx.class_by_name(s.as_bytes()),
-        other => {
-            return Err(Unwind::type_error(format!(
-                "class_uses(): Argument #1 ($object_or_class) must be of type object|string, {} given",
-                other.type_name()
-            )))
-        }
+        other => return Err(Unwind::type_error(format!(
+            "class_uses(): Argument #1 ($object_or_class) must be of type object|string, {} given",
+            other.type_name()
+        ))),
     };
     let Some(cid) = class else {
         ctx.warn(&format!(
@@ -431,7 +469,10 @@ pub(crate) fn get_defined_functions(ctx: &mut Ctx, _: &mut [Value]) -> NativeRes
         user.push(Value::string(&name));
     }
     let mut out = rphp_value::Array::new();
-    out.set(rphp_value::ArrayKey::str(b"internal"), Value::Array(internal));
+    out.set(
+        rphp_value::ArrayKey::str(b"internal"),
+        Value::Array(internal),
+    );
     out.set(rphp_value::ArrayKey::str(b"user"), Value::Array(user));
     Ok(Value::Array(out))
 }
@@ -466,13 +507,23 @@ pub(crate) fn class_parents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// The class id a `$object_or_class` argument denotes, with php's
 /// `TypeError` text for `func`.
-fn class_arg(ctx: &Ctx, func: &str, pos: usize, v: &Value, allow_string: bool) -> Result<Option<u32>, Unwind> {
+fn class_arg(
+    ctx: &Ctx,
+    func: &str,
+    pos: usize,
+    v: &Value,
+    allow_string: bool,
+) -> Result<Option<u32>, Unwind> {
     match &*v.deref() {
         Value::Object(o) => Ok(Some(o.class_id())),
         Value::Str(s) if allow_string => Ok(ctx.class_by_name(s.as_bytes())),
         other => Err(Unwind::type_error(format!(
             "{func}(): Argument #{pos} ($object_or_class) must be of type {}, {} given",
-            if allow_string { "object|string" } else { "object" },
+            if allow_string {
+                "object|string"
+            } else {
+                "object"
+            },
             other.type_name()
         ))),
     }
@@ -520,9 +571,14 @@ pub(crate) fn get_parent_class(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
 
 /// `get_called_class(): string` — the late-static-bound class of the caller.
 pub(crate) fn get_called_class(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
-    match ctx.current_user_frame().and_then(|f| f.static_class.or(f.scope)) {
+    match ctx
+        .current_user_frame()
+        .and_then(|f| f.static_class.or(f.scope))
+    {
         Some(c) => Ok(Value::string(&ctx.class(c).name)),
-        None => Err(Unwind::error("get_called_class() must be called from within a class")),
+        None => Err(Unwind::error(
+            "get_called_class() must be called from within a class",
+        )),
     }
 }
 
@@ -530,7 +586,9 @@ pub(crate) fn get_called_class(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
 pub(crate) fn method_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let class = class_arg(ctx, "method_exists", 1, &args[0], true)?;
     let name = args[1].to_php_bytes();
-    Ok(Value::Bool(class.is_some_and(|c| ctx.resolve_method(c, &name).is_some())))
+    Ok(Value::Bool(
+        class.is_some_and(|c| ctx.resolve_method(c, &name).is_some()),
+    ))
 }
 
 /// `property_exists(object|string $object_or_class, string $property): bool`
@@ -543,7 +601,9 @@ pub(crate) fn property_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult
         }
     }
     let class = class_arg(ctx, "property_exists", 1, &args[0], true)?;
-    Ok(Value::Bool(class.is_some_and(|c| ctx.resolve_prop(c, &name).is_some())))
+    Ok(Value::Bool(
+        class.is_some_and(|c| ctx.resolve_prop(c, &name).is_some()),
+    ))
 }
 
 /// `get_object_vars(object $object): array` — the properties visible from
@@ -580,7 +640,9 @@ pub(crate) fn get_class_methods(ctx: &mut Ctx, args: &mut [Value]) -> NativeResu
     let mut out = rphp_value::Array::new();
     let c = ctx.class(cur).clone();
     for key in &c.method_order {
-        let Some(m) = c.methods.get(key) else { continue };
+        let Some(m) = c.methods.get(key) else {
+            continue;
+        };
         if !ctx.access_ok_public(m.vis, m.decl, scope) {
             continue;
         }
@@ -646,16 +708,38 @@ mod tests {
     fn define_constant_defined() {
         let mut it = interp();
         Registry(&mut it).constant("PHP_EOL", Value::string(b"\n"));
-        assert_eq!(it.call_function(b"defined", &[Value::string(b"PHP_EOL")]).unwrap(), Value::Bool(true));
-        assert_eq!(it.call_function(b"constant", &[Value::string(b"PHP_EOL")]).unwrap(), Value::string(b"\n"));
-        assert_eq!(it.call_function(b"define", &[Value::string(b"X"), Value::Int(1)]).unwrap(), Value::Bool(true));
-        assert_eq!(it.call_function(b"define", &[Value::string(b"X"), Value::Int(2)]).unwrap(), Value::Bool(false));
+        assert_eq!(
+            it.call_function(b"defined", &[Value::string(b"PHP_EOL")])
+                .unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            it.call_function(b"constant", &[Value::string(b"PHP_EOL")])
+                .unwrap(),
+            Value::string(b"\n")
+        );
+        assert_eq!(
+            it.call_function(b"define", &[Value::string(b"X"), Value::Int(1)])
+                .unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            it.call_function(b"define", &[Value::string(b"X"), Value::Int(2)])
+                .unwrap(),
+            Value::Bool(false)
+        );
         assert_eq!(
             String::from_utf8(it.take_test_output()).unwrap(),
             "\nWarning: Constant X already defined, this will be an error in PHP 9 in Command line code on line 0\n"
         );
-        assert_eq!(it.call_function(b"constant", &[Value::string(b"X")]).unwrap(), Value::Int(1));
-        let err = it.call_function(b"constant", &[Value::string(b"NOPE")]).unwrap_err();
+        assert_eq!(
+            it.call_function(b"constant", &[Value::string(b"X")])
+                .unwrap(),
+            Value::Int(1)
+        );
+        let err = it
+            .call_function(b"constant", &[Value::string(b"NOPE")])
+            .unwrap_err();
         assert_eq!(err.kind(), Some(ErrorKind::Error));
         assert_eq!(err.message(), Some("Undefined constant \"NOPE\""));
     }
@@ -663,24 +747,67 @@ mod tests {
     #[test]
     fn ini_get_set_and_friends() {
         let mut it = interp();
-        assert_eq!(it.call_function(b"ini_get", &[Value::string(b"precision")]).unwrap(), Value::string(b"14"));
         assert_eq!(
-            it.call_function(b"ini_set", &[Value::string(b"precision"), Value::Int(10)]).unwrap(),
+            it.call_function(b"ini_get", &[Value::string(b"precision")])
+                .unwrap(),
             Value::string(b"14")
         );
-        assert_eq!(it.call_function(b"ini_get", &[Value::string(b"precision")]).unwrap(), Value::string(b"10"));
-        assert_eq!(it.call_function(b"ini_set", &[Value::string(b"nope.x"), Value::Int(1)]).unwrap(), Value::Bool(false));
-        assert_eq!(it.call_function(b"ini_get", &[Value::string(b"nope.x")]).unwrap(), Value::Bool(false));
         assert_eq!(
-            it.call_function(b"ini_set", &[Value::string(b"display_errors"), Value::Bool(false)]).unwrap(),
+            it.call_function(b"ini_set", &[Value::string(b"precision"), Value::Int(10)])
+                .unwrap(),
+            Value::string(b"14")
+        );
+        assert_eq!(
+            it.call_function(b"ini_get", &[Value::string(b"precision")])
+                .unwrap(),
+            Value::string(b"10")
+        );
+        assert_eq!(
+            it.call_function(b"ini_set", &[Value::string(b"nope.x"), Value::Int(1)])
+                .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            it.call_function(b"ini_get", &[Value::string(b"nope.x")])
+                .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            it.call_function(
+                b"ini_set",
+                &[Value::string(b"display_errors"), Value::Bool(false)]
+            )
+            .unwrap(),
             Value::string(b"1")
         );
-        assert_eq!(it.call_function(b"ini_get", &[Value::string(b"display_errors")]).unwrap(), Value::string(b""));
-        assert_eq!(it.call_function(b"php_sapi_name", &[]).unwrap(), Value::string(b"embed"));
-        assert_eq!(it.call_function(b"phpversion", &[]).unwrap(), Value::string(b"8.5.0"));
-        assert_eq!(it.call_function(b"function_exists", &[Value::string(b"StrLen")]).unwrap(), Value::Bool(true));
-        assert_eq!(it.call_function(b"function_exists", &[Value::string(b"nope")]).unwrap(), Value::Bool(false));
-        it.call_function(b"register_shutdown_function", &[Value::string(b"strlen"), Value::string(b"x")]).unwrap();
+        assert_eq!(
+            it.call_function(b"ini_get", &[Value::string(b"display_errors")])
+                .unwrap(),
+            Value::string(b"")
+        );
+        assert_eq!(
+            it.call_function(b"php_sapi_name", &[]).unwrap(),
+            Value::string(b"embed")
+        );
+        assert_eq!(
+            it.call_function(b"phpversion", &[]).unwrap(),
+            Value::string(b"8.5.0")
+        );
+        assert_eq!(
+            it.call_function(b"function_exists", &[Value::string(b"StrLen")])
+                .unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            it.call_function(b"function_exists", &[Value::string(b"nope")])
+                .unwrap(),
+            Value::Bool(false)
+        );
+        it.call_function(
+            b"register_shutdown_function",
+            &[Value::string(b"strlen"), Value::string(b"x")],
+        )
+        .unwrap();
         assert_eq!(it.shutdown.len(), 1);
     }
 }

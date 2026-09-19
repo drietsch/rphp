@@ -1,27 +1,51 @@
-//! `hash` extension — message digests (`md5`, `sha1`, `crc32`, the generic
-//! `hash`/`hash_algos`). Byte-oriented like the rest of stdlib: the input is the
-//! `(string)` cast of each argument, the result is a lowercase-hex string, or the
-//! raw digest bytes when the `$binary` flag is set. Backed by the pure-Rust
-//! `md-5`, `sha1`, `sha2`, and `crc32fast` crates (no `unsafe`, no OpenSSL).
+//! `hash` extension — message digests one-shot (`md5`, `sha1`, `hash`),
+//! incremental (`hash_init`/`update`/`final` over a `HashContext`), keyed
+//! (`hash_hmac`) and derived (`hash_pbkdf2`, `hash_hkdf`). Byte-oriented like
+//! the rest of stdlib: the input is the `(string)` cast of each argument, the
+//! result is a lowercase-hex string, or the raw digest bytes when the
+//! `$binary` flag is set. Backed by the pure-Rust `md-5`, `sha1`, `sha2` and
+//! `crc32fast` crates plus the four trivial checksums php ships (Adler-32,
+//! the FNV pair, Jenkins one-at-a-time), so there is no `unsafe` and no
+//! OpenSSL.
+//!
+//! **What a `HashContext` holds.** php shows one property, `algo`, so that is
+//! a real declared slot; the running state lives in the instance's native
+//! payload, which `payload_clone` copies so `hash_copy()` really forks a
+//! digest. A context that has been finalized is spent: php's
+//! `HashContext` cannot be reused, and using one raises.
+//!
+//! **Algorithms.** php lists 60; this is the 17 that need no further
+//! dependency — the MD5/SHA-1/SHA-2 families, both CRC-32 variants,
+//! Adler-32, the four FNV-1 forms and joaat. `hash("sha3-256", …)` and the
+//! murmur/xxHash family are cataloged, not faked: an unknown name is php's
+//! `ValueError`.
 use crc32fast::Hasher as Crc32;
 use md5::{Digest, Md5};
 use sha1::Sha1;
-use sha2::{Sha256, Sha384, Sha512};
+use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
 
-use rphp_value::{Array, Str, Value};
+use rphp_value::{Array, Object, Payload, Str, Value};
 
-use rphp_runtime::{Ctx, NativeFn, NativeResult, nf, Unwind};
+use rphp_runtime::{nf, nm, ClassFlags, Ctx, NativeFn, NativeResult, Registry, Unwind, Visibility};
 
-/// This extension's registry contribution (see `lib.rs`). Keyed-hash and
-/// incremental-state APIs (`hash_hmac`, `hash_init`/`hash_update`/`hash_final`)
-/// wait on objects and resource handles; only the pure one-shot digests live
-/// here.
+/// This extension's registry contribution (see `lib.rs`).
 pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("md5", 1, Some(2), md5),
     nf!("sha1", 1, Some(2), sha1),
     nf!("crc32", 1, Some(1), crc32),
-    nf!("hash", 2, Some(3), hash),
+    nf!("hash", 2, Some(4), hash),
     nf!("hash_algos", 0, Some(0), hash_algos),
+    nf!("hash_hmac_algos", 0, Some(0), hash_hmac_algos),
+    nf!("hash_init", 1, Some(3), hash_init),
+    nf!("hash_update", 2, Some(2), hash_update),
+    nf!("hash_final", 1, Some(2), hash_final),
+    nf!("hash_copy", 1, Some(1), hash_copy),
+    nf!("hash_equals", 2, Some(2), hash_equals),
+    nf!("hash_hmac", 3, Some(4), hash_hmac),
+    nf!("hash_file", 2, Some(3), hash_file),
+    nf!("hash_hmac_file", 3, Some(4), hash_hmac_file),
+    nf!("hash_pbkdf2", 4, Some(6), hash_pbkdf2),
+    nf!("hash_hkdf", 2, Some(5), hash_hkdf),
 ];
 
 /// The byte string an argument coerces to (the `(string)` cast), so any scalar
@@ -32,12 +56,18 @@ fn bytes(v: &Value) -> Vec<u8> {
 
 pub(crate) fn md5(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let binary = args.get(1).is_some_and(Value::to_bool);
-    Ok(digest_value(&one_shot(Md5::new(), &bytes(&args[0])), binary))
+    Ok(digest_value(
+        &one_shot(Md5::new(), &bytes(&args[0])),
+        binary,
+    ))
 }
 
 pub(crate) fn sha1(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let binary = args.get(1).is_some_and(Value::to_bool);
-    Ok(digest_value(&one_shot(Sha1::new(), &bytes(&args[0])), binary))
+    Ok(digest_value(
+        &one_shot(Sha1::new(), &bytes(&args[0])),
+        binary,
+    ))
 }
 
 pub(crate) fn crc32(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
@@ -47,28 +77,13 @@ pub(crate) fn crc32(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Int(crc32_of(&bytes(&args[0])) as i64))
 }
 
-pub(crate) fn hash(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn hash(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let algo = bytes(&args[0]);
     let data = bytes(&args[1]);
     let binary = args.get(2).is_some_and(Value::to_bool);
-    // PHP resolves the algorithm name case-insensitively (`hash("MD5", …)` works
-    // even though `hash_algos()` only lists the lowercase spelling).
-    let raw = match bytes(&args[0]).to_ascii_lowercase().as_slice() {
-        b"md5" => one_shot(Md5::new(), &data),
-        b"sha1" => one_shot(Sha1::new(), &data),
-        b"sha256" => one_shot(Sha256::new(), &data),
-        b"sha384" => one_shot(Sha384::new(), &data),
-        b"sha512" => one_shot(Sha512::new(), &data),
-        // "crc32b" is the reflected CRC-32; its digest is the 4-byte big-endian
-        // encoding of the integer `crc32()` returns. (PHP's "crc32" alias is a
-        // different, non-reflected variant — see the module caveats.)
-        b"crc32b" => crc32_of(&data).to_be_bytes().to_vec(),
-        _ => {
-            return Err(Unwind::value_error(
-                "hash(): Argument #1 ($algo) must be a valid hashing algorithm",
-            ))
-        }
-    };
-    Ok(digest_value(&raw, binary))
+    let mut st = state_for(ctx, &algo, "hash")?;
+    st.update(&data);
+    Ok(digest_value(&st.finish(), binary))
 }
 
 pub(crate) fn hash_algos(_: &mut Ctx, _args: &mut [Value]) -> NativeResult {
@@ -79,11 +94,595 @@ pub(crate) fn hash_algos(_: &mut Ctx, _args: &mut [Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
+/// `hash_hmac_algos(): array` — the subset a *keyed* hash accepts, which is
+/// every real digest: a checksum has no block size to key with.
+pub(crate) fn hash_hmac_algos(_: &mut Ctx, _args: &mut [Value]) -> NativeResult {
+    let mut out = Array::new();
+    for name in SUPPORTED_ALGOS {
+        if State::new(name.as_bytes()).is_some_and(|s| s.block_size().is_some()) {
+            out.push(Value::string(name.as_bytes()));
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+/// `hash_init(string $algo, int $flags = 0, string $key = "", array $options = []): HashContext`
+pub(crate) fn hash_init(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let algo = bytes(&args[0]);
+    let flags = args.get(1).map_or(0, |v| v.deref().to_int());
+    let key = args
+        .get(2)
+        .map(|v| v.to_php_bytes().to_vec())
+        .unwrap_or_default();
+    let st = state_for(ctx, &algo, "hash_init")?;
+    // `HASH_HMAC` keys the context: php runs the inner pass eagerly, so
+    // everything fed in afterwards lands inside it.
+    let ctx_state = if flags & HASH_HMAC != 0 {
+        let Some(block) = st.block_size() else {
+            return Err(Unwind::value_error(
+                "hash_init(): Argument #1 ($algo) must be a cryptographic hashing algorithm if HMAC is requested",
+            ));
+        };
+        if key.is_empty() {
+            return Err(Unwind::value_error(
+                "hash_init(): Argument #3 ($key) must not be empty when HMAC is requested",
+            ));
+        }
+        let (inner, outer) = hmac_pads(&algo, &key, block);
+        let mut st = State::new(&algo).expect("checked above");
+        st.update(&inner);
+        CtxState {
+            algo: algo.to_ascii_lowercase(),
+            state: Some(st),
+            hmac: Some(outer),
+        }
+    } else {
+        CtxState {
+            algo: algo.to_ascii_lowercase(),
+            state: Some(st),
+            hmac: None,
+        }
+    };
+    let cid = ctx
+        .class_by_name(b"HashContext")
+        .ok_or_else(|| Unwind::error("Class \"HashContext\" not found"))?;
+    let o = ctx.instantiate(cid);
+    o.set(b"algo", Value::string(&ctx_state.algo));
+    o.set_payload(Payload::Native(Box::new(ctx_state)));
+    Ok(Value::Object(o))
+}
+
+/// `hash_update(HashContext $context, string $data): bool`
+pub(crate) fn hash_update(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let data = bytes(&args[1]);
+    let o = context_arg(ctx, &args[0], "hash_update")?;
+    with_context(&o, "hash_update", |c| {
+        c.state.as_mut().expect("live").update(&data);
+        Value::Bool(true)
+    })
+}
+
+/// `hash_final(HashContext $context, bool $binary = false): string` — and the
+/// context is spent afterwards, as php's is.
+pub(crate) fn hash_final(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let binary = args.get(1).is_some_and(|v| v.deref().to_bool());
+    let o = context_arg(ctx, &args[0], "hash_final")?;
+    let algo = with_context(&o, "hash_final", |c| c.algo.clone())?;
+    let (raw, outer) = with_context(&o, "hash_final", |c| {
+        let raw = c.state.take().expect("live").finish();
+        (raw, c.hmac.take())
+    })?;
+    let digest = match outer {
+        // The outer pass of an HMAC context.
+        Some(outer) => {
+            let mut st = State::new(&algo).expect("context algorithm");
+            st.update(&outer);
+            st.update(&raw);
+            st.finish()
+        }
+        None => raw,
+    };
+    Ok(digest_value(&digest, binary))
+}
+
+/// `hash_copy(HashContext $context): HashContext` — a fork of the running
+/// state, which is what the payload clone hook is for.
+pub(crate) fn hash_copy(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let o = context_arg(ctx, &args[0], "hash_copy")?;
+    let copy = with_context(&o, "hash_copy", |c| c.clone())?;
+    let cid = o.class_id();
+    let new = ctx.instantiate(cid);
+    new.set(b"algo", Value::string(&copy.algo));
+    new.set_payload(Payload::Native(Box::new(copy)));
+    Ok(Value::Object(new))
+}
+
+/// `hash_equals(string $known_string, string $user_string): bool` — the
+/// comparison whose running time does not depend on where the strings differ.
+pub(crate) fn hash_equals(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let a = bytes(&args[0]);
+    let b = bytes(&args[1]);
+    if a.len() != b.len() {
+        return Ok(Value::Bool(false));
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    Ok(Value::Bool(diff == 0))
+}
+
+/// `hash_hmac(string $algo, string $data, string $key, bool $binary = false): string`
+pub(crate) fn hash_hmac(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let algo = bytes(&args[0]);
+    let data = bytes(&args[1]);
+    let key = bytes(&args[2]);
+    let binary = args.get(3).is_some_and(|v| v.deref().to_bool());
+    let raw = hmac(ctx, &algo, &key, &data, "hash_hmac")?;
+    Ok(digest_value(&raw, binary))
+}
+
+/// `hash_file(string $algo, string $filename, bool $binary = false): string|false`
+pub(crate) fn hash_file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let algo = bytes(&args[0]);
+    let binary = args.get(2).is_some_and(|v| v.deref().to_bool());
+    let Some(data) = read_file(ctx, &args[1], "hash_file")? else {
+        return Ok(Value::Bool(false));
+    };
+    let mut st = state_for(ctx, &algo, "hash_file")?;
+    st.update(&data);
+    Ok(digest_value(&st.finish(), binary))
+}
+
+/// `hash_hmac_file(string $algo, string $filename, string $key, bool $binary = false): string|false`
+pub(crate) fn hash_hmac_file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let algo = bytes(&args[0]);
+    let key = bytes(&args[2]);
+    let binary = args.get(3).is_some_and(|v| v.deref().to_bool());
+    let Some(data) = read_file(ctx, &args[1], "hash_hmac_file")? else {
+        return Ok(Value::Bool(false));
+    };
+    let raw = hmac(ctx, &algo, &key, &data, "hash_hmac_file")?;
+    Ok(digest_value(&raw, binary))
+}
+
+/// `hash_pbkdf2(string $algo, string $password, string $salt, int $iterations, int $length = 0, bool $binary = false): string`
+pub(crate) fn hash_pbkdf2(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let algo = bytes(&args[0]);
+    let password = bytes(&args[1]);
+    let salt = bytes(&args[2]);
+    let iterations = args[3].deref().to_int();
+    let length = args.get(4).map_or(0, |v| v.deref().to_int());
+    let binary = args.get(5).is_some_and(|v| v.deref().to_bool());
+    if iterations <= 0 {
+        return Err(Unwind::value_error(
+            "hash_pbkdf2(): Argument #4 ($iterations) must be greater than 0",
+        ));
+    }
+    if length < 0 {
+        return Err(Unwind::value_error(
+            "hash_pbkdf2(): Argument #5 ($length) must be greater than or equal to 0",
+        ));
+    }
+    let hlen = hmac(ctx, &algo, &password, b"", "hash_pbkdf2")?.len();
+    // php's `$length` counts *output* characters: hex ones unless `$binary`.
+    let want = if length == 0 {
+        hlen
+    } else if binary {
+        length as usize
+    } else {
+        ((length + 1) / 2) as usize
+    };
+    let mut out: Vec<u8> = Vec::with_capacity(want);
+    let mut block = 1u32;
+    while out.len() < want {
+        let mut salted = salt.clone();
+        salted.extend_from_slice(&block.to_be_bytes());
+        let mut u = hmac(ctx, &algo, &password, &salted, "hash_pbkdf2")?;
+        let mut acc = u.clone();
+        for _ in 1..iterations {
+            u = hmac(ctx, &algo, &password, &u, "hash_pbkdf2")?;
+            for (a, b) in acc.iter_mut().zip(u.iter()) {
+                *a ^= b;
+            }
+        }
+        out.extend_from_slice(&acc);
+        block += 1;
+    }
+    out.truncate(want);
+    if binary || length == 0 {
+        Ok(digest_value(&out, binary))
+    } else {
+        // An odd `$length` cuts the hex string, not the bytes.
+        let mut hex = to_hex(&out);
+        hex.truncate(length as usize);
+        Ok(Value::Str(Str::from_vec(hex)))
+    }
+}
+
+/// `hash_hkdf(string $algo, string $key, int $length = 0, string $info = "", string $salt = ""): string`
+pub(crate) fn hash_hkdf(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let algo = bytes(&args[0]);
+    let key = bytes(&args[1]);
+    let length = args.get(2).map_or(0, |v| v.deref().to_int());
+    let info = args
+        .get(3)
+        .map(|v| v.to_php_bytes().to_vec())
+        .unwrap_or_default();
+    let salt = args
+        .get(4)
+        .map(|v| v.to_php_bytes().to_vec())
+        .unwrap_or_default();
+    if key.is_empty() {
+        return Err(Unwind::value_error(
+            "hash_hkdf(): Argument #2 ($key) must not be empty",
+        ));
+    }
+    let hlen = hmac(ctx, &algo, b"", b"", "hash_hkdf")?.len();
+    if length < 0 || length as usize > 255 * hlen {
+        return Err(Unwind::value_error(format!(
+            "hash_hkdf(): Argument #3 ($length) must be less than or equal to {}",
+            255 * hlen
+        )));
+    }
+    let want = if length == 0 { hlen } else { length as usize };
+    // Extract, then expand (RFC 5869); an empty salt is `hlen` zero bytes.
+    let salt = if salt.is_empty() {
+        vec![0u8; hlen]
+    } else {
+        salt
+    };
+    let prk = hmac(ctx, &algo, &salt, &key, "hash_hkdf")?;
+    let mut out: Vec<u8> = Vec::with_capacity(want);
+    let mut prev: Vec<u8> = Vec::new();
+    let mut counter = 1u8;
+    while out.len() < want {
+        let mut block = prev.clone();
+        block.extend_from_slice(&info);
+        block.push(counter);
+        prev = hmac(ctx, &algo, &prk, &block, "hash_hkdf")?;
+        out.extend_from_slice(&prev);
+        counter += 1;
+    }
+    out.truncate(want);
+    Ok(Value::Str(Str::from_vec(out)))
+}
+
+/// Register `HashContext`. php's dump shows one property, `algo`.
+pub(crate) fn register_classes(r: &mut Registry) {
+    if r.0.class_by_name(b"HashContext").is_some() {
+        return;
+    }
+    r.class("HashContext")
+        .flags(ClassFlags::FINAL)
+        .prop("algo", Visibility::Public, Value::Null)
+        .method_vis(
+            "__construct",
+            Visibility::Private,
+            nm!(0, Some(0), ctx_construct),
+        )
+        .payload_clone(ctx_payload_clone)
+        .finish();
+}
+
+/// php's `HASH_*` flags.
+pub(crate) fn register_constants(r: &mut Registry) {
+    r.constant("HASH_HMAC", Value::Int(HASH_HMAC));
+}
+
+/// `HASH_HMAC`.
+const HASH_HMAC: i64 = 1;
+
+/// php makes the constructor private: a context only comes from
+/// `hash_init()`.
+fn ctx_construct(_: &mut Ctx, _: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    Err(Unwind::error(
+        "Call to private HashContext::__construct() from global scope",
+    ))
+}
+
+/// `clone $ctx` forks the running digest, like `hash_copy()`.
+fn ctx_payload_clone(
+    _: &mut rphp_runtime::Interp,
+    src: &Object,
+    dst: &Object,
+) -> Result<(), Unwind> {
+    if let Some(c) = src.with_payload::<CtxState, _>(|c| c.clone()) {
+        dst.set_payload(Payload::Native(Box::new(c)));
+    }
+    Ok(())
+}
+
+/// The state behind a `HashContext`: the running digest, and the outer HMAC
+/// pad when the context was keyed.
+#[derive(Clone)]
+struct CtxState {
+    algo: Vec<u8>,
+    /// `None` once `hash_final()` has spent it.
+    state: Option<State>,
+    hmac: Option<Vec<u8>>,
+}
+
+/// The argument as a live `HashContext`.
+fn context_arg(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Object, Unwind> {
+    match &*v.deref() {
+        Value::Object(o) if ctx.class_name_of(o) == "HashContext" => Ok(o.clone()),
+        other => Err(Unwind::type_error(format!(
+            "{func}(): Argument #1 ($context) must be of type HashContext, {} given",
+            rphp_runtime::value_name(other)
+        ))),
+    }
+}
+
+/// Run `f` on a context that has not been finalized.
+fn with_context<R>(
+    o: &Object,
+    func: &str,
+    f: impl FnOnce(&mut CtxState) -> R,
+) -> Result<R, Unwind> {
+    let spent = o.with_payload::<CtxState, _>(|c| c.state.is_none());
+    match spent {
+        Some(false) => Ok(o.with_payload::<CtxState, _>(f).expect("payload present")),
+        // php: using a context after `hash_final()` is an error, and one that
+        // never went through `hash_init()` has no state at all.
+        _ => Err(Unwind::type_error(format!(
+            "{func}(): Argument #1 ($context) must be a valid, non-finalized HashContext"
+        ))),
+    }
+}
+
+/// The digest state for an algorithm name, or php's `ValueError`.
+fn state_for(_: &mut Ctx, algo: &[u8], func: &str) -> Result<State, Unwind> {
+    State::new(algo).ok_or_else(|| {
+        Unwind::value_error(format!(
+            "{func}(): Argument #1 ($algo) must be a valid hashing algorithm"
+        ))
+    })
+}
+
+/// One HMAC pass: `H((K ^ opad) || H((K ^ ipad) || m))`.
+fn hmac(
+    ctx: &mut Ctx,
+    algo: &[u8],
+    key: &[u8],
+    data: &[u8],
+    func: &str,
+) -> Result<Vec<u8>, Unwind> {
+    let st = state_for(ctx, algo, func)?;
+    let Some(block) = st.block_size() else {
+        return Err(Unwind::value_error(format!(
+            "{func}(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm"
+        )));
+    };
+    let (inner, outer) = hmac_pads(algo, key, block);
+    let mut h = State::new(algo).expect("checked above");
+    h.update(&inner);
+    h.update(data);
+    let inner_digest = h.finish();
+    let mut h = State::new(algo).expect("checked above");
+    h.update(&outer);
+    h.update(&inner_digest);
+    Ok(h.finish())
+}
+
+/// The two padded keys HMAC needs. A key longer than the block is replaced by
+/// its own digest first.
+fn hmac_pads(algo: &[u8], key: &[u8], block: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut k = if key.len() > block {
+        let mut h = State::new(algo).expect("caller checked the name");
+        h.update(key);
+        h.finish()
+    } else {
+        key.to_vec()
+    };
+    k.resize(block, 0);
+    let inner: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+    let outer: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+    (inner, outer)
+}
+
+/// Read a file for `hash_file`/`hash_hmac_file`, warning as php does.
+fn read_file(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<Vec<u8>>, Unwind> {
+    let path = crate::filestat::arg_path(ctx, v);
+    match std::fs::read(&path) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) => {
+            let shown = String::from_utf8_lossy(&v.to_php_bytes()).into_owned();
+            ctx.warn(&format!(
+                "{func}({shown}): Failed to open stream: {}",
+                crate::filestat::io_text(&e)
+            ))?;
+            Ok(None)
+        }
+    }
+}
+
 // ---- helpers ----------------------------------------------------------------
 
-/// The algorithm names `hash()` accepts, in registry order. A strict subset of
-/// stock PHP's much larger list (see caveats).
-const SUPPORTED_ALGOS: &[&str] = &["md5", "sha1", "sha256", "sha384", "sha512", "crc32b"];
+/// The algorithm names `hash()` accepts, in php's own `hash_algos()` order
+/// for the ones it has. A strict subset of stock php's 60 (see the header).
+const SUPPORTED_ALGOS: &[&str] = &[
+    "md5",
+    "sha1",
+    "sha224",
+    "sha256",
+    "sha384",
+    "sha512/224",
+    "sha512/256",
+    "sha512",
+    "crc32",
+    "crc32b",
+    "adler32",
+    "fnv132",
+    "fnv1a32",
+    "fnv164",
+    "fnv1a64",
+    "joaat",
+];
+
+/// A running digest. One variant per algorithm rather than a boxed trait
+/// object, because `hash_copy()` has to clone it.
+#[derive(Clone)]
+enum State {
+    Md5(Md5),
+    Sha1(Sha1),
+    Sha224(Sha224),
+    Sha256(Sha256),
+    Sha384(Sha384),
+    Sha512(Sha512),
+    Sha512_224(Sha512_224),
+    Sha512_256(Sha512_256),
+    /// php's `crc32`: the non-reflected CRC-32/BZIP2 polynomial.
+    Crc32(u32),
+    /// php's `crc32b`: the reflected IEEE CRC-32 every other language calls
+    /// "crc32".
+    Crc32b(Crc32),
+    Adler(u32, u32),
+    Fnv132(u32),
+    Fnv1a32(u32),
+    Fnv164(u64),
+    Fnv1a64(u64),
+    Joaat(u32),
+}
+
+impl State {
+    /// The state for an algorithm name (case-insensitive, as php resolves
+    /// it), or `None` when nothing here implements it.
+    fn new(algo: &[u8]) -> Option<State> {
+        Some(match algo.to_ascii_lowercase().as_slice() {
+            b"md5" => State::Md5(Md5::new()),
+            b"sha1" => State::Sha1(Sha1::new()),
+            b"sha224" => State::Sha224(Sha224::new()),
+            b"sha256" => State::Sha256(Sha256::new()),
+            b"sha384" => State::Sha384(Sha384::new()),
+            b"sha512" => State::Sha512(Sha512::new()),
+            b"sha512/224" => State::Sha512_224(Sha512_224::new()),
+            b"sha512/256" => State::Sha512_256(Sha512_256::new()),
+            b"crc32" => State::Crc32(0xFFFF_FFFF),
+            b"crc32b" => State::Crc32b(Crc32::new()),
+            b"adler32" => State::Adler(1, 0),
+            b"fnv132" => State::Fnv132(FNV32_OFFSET),
+            b"fnv1a32" => State::Fnv1a32(FNV32_OFFSET),
+            b"fnv164" => State::Fnv164(FNV64_OFFSET),
+            b"fnv1a64" => State::Fnv1a64(FNV64_OFFSET),
+            b"joaat" => State::Joaat(0),
+            _ => return None,
+        })
+    }
+
+    /// The HMAC block size, or `None` for a checksum php refuses to key.
+    fn block_size(&self) -> Option<usize> {
+        Some(match self {
+            State::Md5(_) | State::Sha1(_) | State::Sha224(_) | State::Sha256(_) => 64,
+            State::Sha384(_) | State::Sha512(_) | State::Sha512_224(_) | State::Sha512_256(_) => {
+                128
+            }
+            _ => return None,
+        })
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        match self {
+            State::Md5(h) => h.update(data),
+            State::Sha1(h) => h.update(data),
+            State::Sha224(h) => h.update(data),
+            State::Sha256(h) => h.update(data),
+            State::Sha384(h) => h.update(data),
+            State::Sha512(h) => h.update(data),
+            State::Sha512_224(h) => h.update(data),
+            State::Sha512_256(h) => h.update(data),
+            State::Crc32(c) => *c = crc32_bzip2_update(*c, data),
+            State::Crc32b(h) => h.update(data),
+            State::Adler(a, b) => {
+                for &byte in data {
+                    *a = (*a + u32::from(byte)) % 65521;
+                    *b = (*b + *a) % 65521;
+                }
+            }
+            State::Fnv132(h) => {
+                for &byte in data {
+                    *h = h.wrapping_mul(FNV32_PRIME) ^ u32::from(byte);
+                }
+            }
+            State::Fnv1a32(h) => {
+                for &byte in data {
+                    *h = (*h ^ u32::from(byte)).wrapping_mul(FNV32_PRIME);
+                }
+            }
+            State::Fnv164(h) => {
+                for &byte in data {
+                    *h = h.wrapping_mul(FNV64_PRIME) ^ u64::from(byte);
+                }
+            }
+            State::Fnv1a64(h) => {
+                for &byte in data {
+                    *h = (*h ^ u64::from(byte)).wrapping_mul(FNV64_PRIME);
+                }
+            }
+            State::Joaat(h) => {
+                for &byte in data {
+                    *h = h.wrapping_add(u32::from(byte));
+                    *h = h.wrapping_add(*h << 10);
+                    *h ^= *h >> 6;
+                }
+            }
+        }
+    }
+
+    /// The digest bytes, big-endian for the integer checksums — which is how
+    /// php renders them.
+    fn finish(self) -> Vec<u8> {
+        match self {
+            State::Md5(h) => h.finalize().to_vec(),
+            State::Sha1(h) => h.finalize().to_vec(),
+            State::Sha224(h) => h.finalize().to_vec(),
+            State::Sha256(h) => h.finalize().to_vec(),
+            State::Sha384(h) => h.finalize().to_vec(),
+            State::Sha512(h) => h.finalize().to_vec(),
+            State::Sha512_224(h) => h.finalize().to_vec(),
+            State::Sha512_256(h) => h.finalize().to_vec(),
+            // php writes this one's state out **little-endian**, which is why
+            // `hash('crc32', …)` and `hash('crc32b', …)` of the same input
+            // are byte-reversals of each other rather than equal.
+            State::Crc32(c) => (!c).to_le_bytes().to_vec(),
+            State::Crc32b(h) => h.finalize().to_be_bytes().to_vec(),
+            State::Adler(a, b) => ((b << 16) | a).to_be_bytes().to_vec(),
+            State::Fnv132(h) | State::Fnv1a32(h) => h.to_be_bytes().to_vec(),
+            State::Fnv164(h) | State::Fnv1a64(h) => h.to_be_bytes().to_vec(),
+            State::Joaat(h) => {
+                let mut h = h;
+                h = h.wrapping_add(h << 3);
+                h ^= h >> 11;
+                h = h.wrapping_add(h << 15);
+                h.to_be_bytes().to_vec()
+            }
+        }
+    }
+}
+
+/// FNV-1's 32-bit offset basis and prime.
+const FNV32_OFFSET: u32 = 0x811c_9dc5;
+const FNV32_PRIME: u32 = 0x0100_0193;
+/// The 64-bit pair.
+const FNV64_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV64_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// php's `crc32` algorithm: the CRC-32/BZIP2 variant, most-significant bit
+/// first with polynomial `0x04C11DB7` and no reflection — a different answer
+/// from `crc32()` the *function*, which is `crc32b`.
+fn crc32_bzip2_update(mut crc: u32, data: &[u8]) -> u32 {
+    for &byte in data {
+        crc ^= u32::from(byte) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04C1_1DB7
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
 
 /// Run a one-shot digest over `data`, returning the raw digest bytes. Generic
 /// over every `RustCrypto` digest (they share the `Digest` trait).

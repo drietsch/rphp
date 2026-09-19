@@ -23,7 +23,10 @@ pub fn value_name(v: &Value) -> String {
         Value::Str(_) => "string".to_string(),
         Value::Array(_) => "array".to_string(),
         Value::Closure(_) => "Closure".to_string(),
-        Value::Object(o) => String::from_utf8_lossy(o.layout().class_name()).into_owned(),
+        Value::Object(o) => {
+            String::from_utf8_lossy(rphp_value::display_class_name(o.layout().class_name()))
+                .into_owned()
+        }
         Value::Resource(_) => "resource".to_string(),
         Value::Ref(_) => unreachable!("deref'd above"),
     }

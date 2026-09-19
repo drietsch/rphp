@@ -31,7 +31,9 @@
 use rphp_bytecode::{BuiltinType, TypeDecl, Visibility};
 use rphp_value::{Array, Object, Value};
 
-use crate::class::{ClassSpec, EnumBacking, MethodBody, MethodSpec, NativeMethod, PropDefault};
+use crate::class::{
+    ClassSpec, EnumBacking, EnumCaseValue, MethodBody, MethodSpec, NativeMethod, PropDefault,
+};
 use crate::frame::NativeTarget;
 use crate::registry::{Ctx, NativeResult, Unwind};
 use crate::types::Coerced;
@@ -72,7 +74,7 @@ const TRY_FROM: NativeMethod = NativeMethod {
 
 fn enum_cases_handler(ctx: &mut Ctx, _this: Option<&Object>, _args: &mut [Value]) -> NativeResult {
     let cid = ctx.enum_method_class()?;
-    Ok(ctx.enum_cases_array(cid))
+    ctx.enum_cases_array(cid)
 }
 
 fn enum_from_handler(ctx: &mut Ctx, _this: Option<&Object>, args: &mut [Value]) -> NativeResult {
@@ -100,38 +102,88 @@ impl Interp {
                 String::from_utf8_lossy(name)
             )));
         };
-        Ok(self.enum_case_at(cid, idx))
+        self.enum_case_at(cid, idx)
+    }
+
+    /// Build the backed-enum lookup table the way php does — on first touch,
+    /// not at declaration: every case initializer runs, and two cases that
+    /// end up with the same value are php's `Error`. A pure enum has no
+    /// table and nothing to check.
+    fn ensure_enum_table(&mut self, cid: u32) -> Result<(), Unwind> {
+        let class = self.classes[cid as usize].clone();
+        if class.enum_table_built.get() || class.enum_backing == EnumBacking::None {
+            return Ok(());
+        }
+        // Set it first: an initializer that reaches back into the enum must
+        // not restart the build.
+        class.enum_table_built.set(true);
+        let mut seen: Vec<(Box<[u8]>, Value)> = Vec::new();
+        for i in 0..class.enum_cases.len() {
+            let Some(v) = self.enum_case_value(cid, i as u16)? else {
+                continue;
+            };
+            let name = class.enum_cases[i].name.clone();
+            if let Some((first, _)) = seen.iter().find(|(_, s)| s.identical(&v)) {
+                return Err(Unwind::error(format!(
+                    "Duplicate value in enum {} for cases {} and {}",
+                    class.name_str(),
+                    String::from_utf8_lossy(first),
+                    String::from_utf8_lossy(&name)
+                )));
+            }
+            seen.push((name, v));
+        }
+        Ok(())
+    }
+
+    /// The backing value of case `idx`, running its initializer the first
+    /// time it is asked for. php requires a constant *expression*, not a
+    /// literal, so `case A = 1 << 0;` arrives here as a thunk.
+    pub(crate) fn enum_case_value(&mut self, cid: u32, idx: u16) -> Result<Option<Value>, Unwind> {
+        let info = self.classes[cid as usize].enum_cases[idx as usize].clone();
+        let state = info.value.borrow().clone();
+        match state {
+            EnumCaseValue::None => Ok(None),
+            EnumCaseValue::Ready(v) => Ok(Some(v)),
+            EnumCaseValue::Pending(fid) => {
+                let v = self.run_thunk(fid, None, Some(cid))?;
+                *info.value.borrow_mut() = EnumCaseValue::Ready(v.clone());
+                Ok(Some(v))
+            }
+        }
     }
 
     /// The singleton object of case `idx`, materialized on first use.
-    fn enum_case_at(&mut self, cid: u32, idx: u16) -> Value {
+    fn enum_case_at(&mut self, cid: u32, idx: u16) -> Result<Value, Unwind> {
         let info = self.classes[cid as usize].enum_cases[idx as usize].clone();
         let cached = info.instance.borrow().clone();
         if let Some(v) = cached {
-            return v;
+            return Ok(v);
         }
+        self.ensure_enum_table(cid)?;
+        let value = self.enum_case_value(cid, idx)?;
         let obj = self.instantiate(cid);
         // The formatters and `clone` recognise a case by this flag, so they
         // never have to consult the class table (`ObjFlags::ENUM_CASE`).
         obj.add_flags(rphp_value::ObjFlags::ENUM_CASE);
         obj.set(b"name", Value::string(&info.name));
-        if let Some(v) = &info.value {
-            obj.set(b"value", v.clone());
+        if let Some(v) = value {
+            obj.set(b"value", v);
         }
         let v = Value::Object(obj);
         *info.instance.borrow_mut() = Some(v.clone());
-        v
+        Ok(v)
     }
 
     /// `E::cases()` — every case, in declaration order.
-    pub(crate) fn enum_cases_array(&mut self, cid: u32) -> Value {
+    pub(crate) fn enum_cases_array(&mut self, cid: u32) -> Result<Value, Unwind> {
         let n = self.classes[cid as usize].enum_cases.len();
         let mut arr = Array::new();
         for i in 0..n {
-            let case = self.enum_case_at(cid, i as u16);
+            let case = self.enum_case_at(cid, i as u16)?;
             arr.push(case);
         }
-        Value::Array(arr)
+        Ok(Value::Array(arr))
     }
 
     /// `E::from($v)` / `E::tryFrom($v)`.
@@ -145,12 +197,19 @@ impl Interp {
         let class = self.classes[cid as usize].clone();
         let backing = class.enum_backing;
         let value = self.enum_arg(cid, value, method, backing)?;
-        let found = class.enum_cases.iter().position(|c| match &c.value {
-            Some(v) => v.identical(&value),
-            None => false,
-        });
+        self.ensure_enum_table(cid)?;
+        let mut found = None;
+        for i in 0..class.enum_cases.len() {
+            if self
+                .enum_case_value(cid, i as u16)?
+                .is_some_and(|v| v.identical(&value))
+            {
+                found = Some(i);
+                break;
+            }
+        }
         match found {
-            Some(i) => Ok(self.enum_case_at(cid, i as u16)),
+            Some(i) => self.enum_case_at(cid, i as u16),
             None if try_from => Ok(Value::Null),
             None => Err(Unwind::value_error(format!(
                 "{} is not a valid backing value for enum {}",

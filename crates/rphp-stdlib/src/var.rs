@@ -365,6 +365,17 @@ fn ser(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, st: &mut SerState) -> Result
         }
         Value::Object(o) => {
             let class = o.layout().class_name().to_vec();
+            // An anonymous class cannot be named again on the way back in, so
+            // php refuses it the way it refuses a closure.
+            if class.contains(&0) {
+                return Err(Unwind::exception(
+                    "Exception",
+                    format!(
+                        "Serialization of '{}' is not allowed",
+                        String::from_utf8_lossy(rphp_value::display_class_name(&class))
+                    ),
+                ));
+            }
             // `__serialize()` replaces the property set outright: its array is
             // written as the object's payload, keys and all.
             if class_has_method(ctx, o.class_id(), b"__serialize") {

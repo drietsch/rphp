@@ -30,6 +30,7 @@ mod string;
 
 pub use array::{array_key, Array, ArrayKey};
 pub use closure::Closure;
+pub use object::display_class_name;
 pub use object::{
     has_pending_destructors, take_pending_destructors, DynProps, Layout, ObjFlags, Object,
     ObjectData, ObjectIdAllocator, Payload, PropEntry, PropMeta, Vis, WeakObject,

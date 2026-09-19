@@ -73,6 +73,8 @@ pub(crate) struct ModuleCtx<'a> {
     pub(crate) class_map: &'a HashMap<Box<[u8]>, ClassId>,
     /// Every class-like declaration of the unit by pointer identity → its id.
     pub(crate) class_ids: &'a HashMap<*const rphp_ast::v2::ClassLike, ClassId>,
+    /// The name the pre-pass synthesized for each anonymous class.
+    pub(crate) anon_names: &'a HashMap<*const rphp_ast::v2::ClassLike, rphp_intern::IdentId>,
     /// Byte offset → 1-based line, when line tables are wanted.
     pub(crate) line_of: Option<&'a dyn Fn(u32) -> u32>,
     /// `__FILE__`.
@@ -90,42 +92,48 @@ pub(crate) struct ModuleCtx<'a> {
     pub(crate) hoisted_classes: std::collections::HashSet<*const rphp_ast::v2::ClassLike>,
 }
 
+/// `__FILE__` and `__DIR__` for the unit. The class pre-pass needs the file
+/// before there is a [`ModuleCtx`], because an anonymous class is named after
+/// where it was declared.
+pub(crate) fn unit_file(opts: &CompileOptions<'_>) -> (Box<[u8]>, Box<[u8]>) {
+    match &opts.file {
+        Some(p) => {
+            let file = p.to_string_lossy().into_owned();
+            let dir = p
+                .parent()
+                .map(|d| d.to_string_lossy().into_owned())
+                .filter(|d| !d.is_empty())
+                .unwrap_or_else(|| ".".to_string());
+            (file.into_bytes().into(), dir.into_bytes().into())
+        }
+        None => {
+            // php -r: `__FILE__` is the unit name and `__DIR__` the cwd.
+            let dir = std::env::current_dir()
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".to_string());
+            (Box::from(&b"Command line code"[..]), dir.into_bytes().into())
+        }
+    }
+}
+
 impl<'a> ModuleCtx<'a> {
     /// Build the context from the compile options and the class pre-pass.
     pub(crate) fn new(
         interner: &'a Interner,
         class_map: &'a HashMap<Box<[u8]>, ClassId>,
         class_ids: &'a HashMap<*const rphp_ast::v2::ClassLike, ClassId>,
+        anon_names: &'a HashMap<*const rphp_ast::v2::ClassLike, rphp_intern::IdentId>,
         n_classes: usize,
         strict_types: bool,
         opts: &CompileOptions<'a>,
     ) -> Self {
-        let (file, dir): (Box<[u8]>, Box<[u8]>) = match &opts.file {
-            Some(p) => {
-                let file = p.to_string_lossy().into_owned();
-                let dir = p
-                    .parent()
-                    .map(|d| d.to_string_lossy().into_owned())
-                    .filter(|d| !d.is_empty())
-                    .unwrap_or_else(|| ".".to_string());
-                (file.into_bytes().into(), dir.into_bytes().into())
-            }
-            None => {
-                // php -r: `__FILE__` is the unit name and `__DIR__` the cwd.
-                let dir = std::env::current_dir()
-                    .map(|d| d.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| ".".to_string());
-                (
-                    Box::from(&b"Command line code"[..]),
-                    dir.into_bytes().into(),
-                )
-            }
-        };
+        let (file, dir) = unit_file(opts);
         ModuleCtx {
             hoisted_classes: std::collections::HashSet::new(),
             interner,
             class_map,
             class_ids,
+            anon_names,
             line_of: opts.line_of,
             file,
             dir,

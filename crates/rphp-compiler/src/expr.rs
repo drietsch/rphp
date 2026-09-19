@@ -214,7 +214,29 @@ impl FnCompiler<'_> {
                     self.emit(Op::DoCall { dst });
                     dst
                 }
-                NewTarget::Anon(_) => self.unsupported_expr(*span, "anonymous class"),
+                NewTarget::Anon(c) => {
+                    // php declares the class when the expression runs, and
+                    // reuses that one entry every time the site runs again.
+                    let Some(idx) = crate::class::compile_class(self.mx, self.diags, c) else {
+                        return self.null_temp();
+                    };
+                    self.emit(Op::DeclareClass { idx });
+                    let name = *self
+                        .mx
+                        .anon_names
+                        .get(&(c.as_ref() as *const rphp_ast::v2::ClassLike))
+                        .expect("anonymous class named by the pre-pass");
+                    let k = self.sym_const(self.interner().resolve(name));
+                    let ic = self.ic();
+                    self.emit(Op::InitNew {
+                        class: ClassRef::named(k),
+                        ic,
+                    });
+                    self.compile_sends(args);
+                    let dst = self.alloc_temp();
+                    self.emit(Op::DoCall { dst });
+                    dst
+                }
             },
             Expr::Prop {
                 obj,

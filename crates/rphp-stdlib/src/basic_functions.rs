@@ -323,7 +323,9 @@ fn class_arg(ctx: &Ctx, func: &str, pos: usize, v: &Value, allow_string: bool) -
 pub(crate) fn get_class(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     match args.first() {
         Some(v) => match &*v.deref() {
-            Value::Object(o) => Ok(Value::string(ctx.class_name_of(o).as_bytes())),
+            // `get_class()` is one of the few places php answers with the
+            // string's real length, so an anonymous class's whole name.
+            Value::Object(o) => Ok(Value::string(&ctx.class_full_name_of(o))),
             Value::Closure(_) => Ok(Value::string(b"Closure")),
             other => Err(Unwind::type_error(format!(
                 "get_class(): Argument #1 ($object) must be of type object, {} given",

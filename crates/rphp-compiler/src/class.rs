@@ -22,13 +22,19 @@
 //! is added here, from the constructor's parameter list, and the assignment to
 //! `$this->x` is emitted by [`crate::func::FnCompiler::compile_params`].
 //!
-//! Anonymous classes (`new class { ... }`) are the one class-like form still
-//! reported as `RPHP_E0300`; they are numbered and instantiated from the
-//! expression side.
+//! Anonymous classes (`new class { ... }`) are lowered like any other
+//! declaration, under the name php gives them:
+//! `<prefix>@anonymous\0<file>:<line>$<n>`, where the prefix is the parent
+//! class, else the first interface, else `class`, and the NUL keeps the
+//! synthesized part out of every message php formats with `%s` (which is why
+//! `var_dump` shows a bare `class@anonymous` while `get_class()` returns the
+//! whole thing). They are numbered by the same pre-pass, and the `new`
+//! expression declares the class before instantiating it — idempotently, so
+//! the same site in a loop reuses one class entry, as php does.
 
 use std::collections::HashMap;
 
-use rphp_ast::v2::visit::{walk_expr, walk_stmt, Visitor};
+use rphp_ast::v2::visit::{walk_class_like, Visitor};
 use rphp_ast::v2::{
     Adaptation, ArrayItem, Builtin, ClassKind, ClassLike, ConstMember, EnumCase, Expr, Hook,
     HookKind, Member, MethodDecl, Param, Program, PropMember, Stmt, TraitUse, Type, TypeKind, UnOp,
@@ -53,43 +59,76 @@ use crate::{unsupported, NON_CONST_PROP_DEFAULT, REDECLARED_CLASS};
 pub(crate) type ClassMap = HashMap<Box<[u8]>, ClassId>;
 /// Class-like declaration node (by address) → pre-assigned id.
 pub(crate) type ClassIds = HashMap<*const ClassLike, ClassId>;
+/// Anonymous class-like node (by address) → the name synthesized for it.
+pub(crate) type AnonNames = HashMap<*const ClassLike, IdentId>;
 
-/// Assign a [`ClassId`] to every named class-like declaration in the unit,
-/// wherever it appears (top level, blocks, function bodies, conditionals),
-/// in source order. Returns the lowercased-name map (first declaration wins
-/// for a name declared twice conditionally) and the per-node id map.
-pub(crate) fn collect_class_ids(program: &Program, interner: &Interner) -> (ClassMap, ClassIds) {
+/// Assign a [`ClassId`] to every class-like declaration in the unit, wherever
+/// it appears (top level, blocks, function bodies, conditionals, and inside a
+/// `new class` expression), in source order. Returns the lowercased-name map
+/// (first declaration wins for a name declared twice conditionally), the
+/// per-node id map, and the synthesized name of each anonymous class.
+pub(crate) fn collect_class_ids(
+    program: &Program,
+    interner: &mut Interner,
+    file: &[u8],
+    line_of: Option<&dyn Fn(u32) -> u32>,
+) -> (ClassMap, ClassIds, AnonNames) {
     let mut v = ClassCollector {
         interner,
+        file,
+        line_of,
         map: HashMap::new(),
         ids: HashMap::new(),
+        anon: HashMap::new(),
     };
     v.visit_program(program);
-    (v.map, v.ids)
+    (v.map, v.ids, v.anon)
 }
 
 struct ClassCollector<'a> {
-    interner: &'a Interner,
+    interner: &'a mut Interner,
+    file: &'a [u8],
+    line_of: Option<&'a dyn Fn(u32) -> u32>,
     map: HashMap<Box<[u8]>, ClassId>,
     ids: HashMap<*const ClassLike, ClassId>,
+    anon: HashMap<*const ClassLike, IdentId>,
+}
+
+impl ClassCollector<'_> {
+    /// php's name for an anonymous class: the parent (else the first
+    /// interface, else `class`), `@anonymous`, then — after a NUL, so it does
+    /// not show up in a message — where it was declared and a counter.
+    fn anon_name(&mut self, c: &ClassLike) -> IdentId {
+        let prefix = c
+            .extends
+            .first()
+            .or_else(|| c.implements.first())
+            .map_or_else(|| b"class".to_vec(), |n| class_fqn(n, self.interner));
+        let line = self.line_of.map_or(0, |f| f(c.span.lo));
+        let n = self.anon.len();
+        let mut name = prefix;
+        name.extend_from_slice(b"@anonymous\0");
+        name.extend_from_slice(self.file);
+        name.extend_from_slice(format!(":{line}${n:x}").as_bytes());
+        self.interner.intern(&name)
+    }
 }
 
 impl Visitor for ClassCollector<'_> {
-    fn visit_stmt(&mut self, s: &Stmt) {
-        if let Stmt::ClassLike(c) = s {
-            if let Some(name) = c.name {
-                let id = self.ids.len() as ClassId;
-                self.ids.insert(c as *const ClassLike, id);
+    fn visit_class_like(&mut self, c: &ClassLike) {
+        let id = self.ids.len() as ClassId;
+        self.ids.insert(c as *const ClassLike, id);
+        match c.name {
+            Some(name) => {
                 let key: Box<[u8]> = self.interner.resolve(name).to_ascii_lowercase().into();
                 self.map.entry(key).or_insert(id);
             }
+            None => {
+                let name = self.anon_name(c);
+                self.anon.insert(c as *const ClassLike, name);
+            }
         }
-        walk_stmt(self, s);
-    }
-
-    fn visit_expr(&mut self, e: &Expr) {
-        // Anonymous classes are not lowered; nothing to number inside them.
-        walk_expr(self, e);
+        walk_class_like(self, c);
     }
 }
 
@@ -102,9 +141,13 @@ pub(crate) fn compile_class(
     c: &ClassLike,
 ) -> Option<ClassId> {
     let interner = mx.interner;
-    let Some(name) = c.name else {
-        unsupported(diags, c.span, "anonymous class");
-        return None;
+    let name = match c.name {
+        Some(name) => name,
+        // An anonymous class carries the name the pre-pass synthesized.
+        None => *mx
+            .anon_names
+            .get(&(c as *const ClassLike))
+            .expect("anonymous class named by the pre-pass"),
     };
     let id = *mx
         .class_ids
@@ -112,6 +155,12 @@ pub(crate) fn compile_class(
         .expect("class numbered by the pre-pass");
 
     let mut flags = ClassFlags::NONE;
+    if c.name.is_none() {
+        // php reuses one class entry per `new class` site, so the runtime
+        // must treat a second `DeclareClass` there as a no-op rather than a
+        // redeclaration.
+        flags |= ClassFlags::ANONYMOUS;
+    }
     if c.modifiers.abstract_ {
         flags |= ClassFlags::ABSTRACT;
     }
@@ -126,15 +175,11 @@ pub(crate) fn compile_class(
     }
     let (kind, enum_backing) = match c.kind {
         ClassKind::Class => (BcClassKind::Class, EnumBackingType::None),
-        ClassKind::Interface => {
-            // Not instantiable, like the native interfaces the registry builds.
-            flags |= ClassFlags::ABSTRACT;
-            (BcClassKind::Interface, EnumBackingType::None)
-        }
-        ClassKind::Trait => {
-            flags |= ClassFlags::ABSTRACT;
-            (BcClassKind::Trait, EnumBackingType::None)
-        }
+        // An interface or a trait is uninstantiable by *kind*
+        // ([`ClassDef::is_instantiable`]); php does not call either one
+        // abstract, and Reflection says so.
+        ClassKind::Interface => (BcClassKind::Interface, EnumBackingType::None),
+        ClassKind::Trait => (BcClassKind::Trait, EnumBackingType::None),
         ClassKind::Enum => {
             // php makes every enum final: `class X extends E` is a fatal.
             flags |= ClassFlags::FINAL;
@@ -402,22 +447,24 @@ impl<'m> MemberLower<'_, 'm> {
     /// `case NAME [= value];`.
     fn enum_case(&mut self, e: &EnumCase) {
         let it = self.interner();
-        let value = match &e.value {
-            None => None,
+        let (value, thunk) = match &e.value {
+            None => (None, None),
             Some(v) => match const_default(v, it) {
-                Some(val) => Some(val),
+                Some(val) => (Some(val), None),
+                // A constant *expression* (`1 << 0`, `self::X`) becomes a
+                // thunk run in the enum's own scope, as a class constant's
+                // initializer does.
                 None => {
-                    // `EnumCaseDef::value` is an eager `Value`: a case backed
-                    // by a constant *expression* (`1 << 0`, `self::X`) has
-                    // nowhere to put a thunk yet.
-                    unsupported(self.diags, v.span(), "non-literal enum case value");
-                    None
+                    let scope = self.scope;
+                    let t = compile_thunk_in(self.mx, self.diags, v, Some(scope));
+                    (None, Some(t))
                 }
             },
         };
         self.enum_cases.push(EnumCaseDef {
             name: it.resolve(e.name).into(),
             value,
+            thunk,
         });
     }
 

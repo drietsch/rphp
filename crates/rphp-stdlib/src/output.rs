@@ -8,7 +8,7 @@
 //! [`php_gcvt`], the `serialize_precision` form shared with
 //! `var_export`/`serialize` (`var.rs`). Closures keep a placeholder shape
 //! until they become `Closure` objects (plan E6).
-use rphp_value::{ArrayKey, ObjectData, PhpRef, PropEntry, Str, Value, Vis};
+use rphp_value::{display_class_name, ArrayKey, ObjectData, PhpRef, PropEntry, Str, Value, Vis};
 
 use rphp_runtime::{Ctx, NativeFn, NativeResult, nf};
 
@@ -247,7 +247,7 @@ fn dump_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen, p
     // property list.
     if d.flags().contains(rphp_value::ObjFlags::ENUM_CASE) {
         out.extend_from_slice(b"enum(");
-        out.extend_from_slice(d.layout().class_name());
+        out.extend_from_slice(display_class_name(d.layout().class_name()));
         out.extend_from_slice(b"::");
         if let Some(p) = d.props_in_order().find(|p| p.name == b"name") {
             out.extend_from_slice(&p.value.to_php_bytes());
@@ -256,7 +256,7 @@ fn dump_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen, p
         return;
     }
     out.extend_from_slice(b"object(");
-    out.extend_from_slice(d.layout().class_name());
+    out.extend_from_slice(display_class_name(d.layout().class_name()));
     out.extend_from_slice(format!(")#{} ({}) {{\n", d.id(), d.prop_count()).as_bytes());
     seen.objects.push(d.id());
     for p in d.props_in_order().filter(|p| !p.value.is_uninit()) {
@@ -341,7 +341,7 @@ fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
 
 /// `Class Object ( [name(:protected | :Decl:private)] => value … )`
 fn print_r_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen) {
-    out.extend_from_slice(d.layout().class_name());
+    out.extend_from_slice(display_class_name(d.layout().class_name()));
     // php heads an enum case with `Enum` (pure) or `Enum:int`/`Enum:string`
     // (backed) instead of `Object`, then lists its properties as usual.
     if d.flags().contains(rphp_value::ObjFlags::ENUM_CASE) {

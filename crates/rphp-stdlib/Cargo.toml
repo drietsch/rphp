@@ -24,3 +24,8 @@ encoding_rs.workspace = true
 
 # date extension (S6).
 jiff.workspace = true
+
+# password / crypt (S9).
+pwhash.workspace = true
+argon2.workspace = true
+password-hash.workspace = true

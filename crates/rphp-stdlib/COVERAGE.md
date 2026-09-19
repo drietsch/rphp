@@ -199,16 +199,32 @@ keeps the sign of the partial product; `Value::pow` does not) — `pow_basiclong
   existing native registrations; php's reflection reports `isAbstract()` as
   `false` for both. Unobservable until Reflection (E10) lands.
 
-**Still unlowered (compile-time `RPHP_E0300`).**
+**Anonymous classes.** Implemented: a `new class { … }` site is numbered and
+lowered by the same class pre-pass as every other declaration, under the name
+php gives it (`<parent|interface|class>@anonymous\0<file>:<line>$<n>`), and the
+expression declares it before instantiating — idempotently, so a site inside a
+loop reuses one class entry as php does. The NUL is what keeps the synthesized
+tail out of `var_dump`, `print_r`, `get_debug_type` and every error message
+(php formats a class name with `%s`), while `get_class()`, `::class`,
+`var_export` and Reflection answer with the whole name; `serialize()` refuses
+an anonymous class the way it refuses a closure. **Divergence:** php's counter
+runs across a whole request, rphp's across a compilation unit, so the `$<n>`
+suffix can differ in a multi-file program — visible only through the full name.
 
-- A non-literal enum case value (`case A = 1 << 0;`, `case B = self::X;`):
-  `EnumCaseDef.value` is an eager `Option<Value>` with nowhere to put a
-  thunk. Literal-backed cases — the overwhelming majority — work.
-- `unset(C::$p)` on a static property, and `C::$p = &$x`: both need ops the
-  ISA does not have (`UnsetStaticProp`, `AssignRefStaticProp`). php's unset
-  error names the *resolved* class, which the compiler cannot compute for
-  `static::`/`parent::`/`$cls::`.
-- Anonymous classes (`new class { … }`).
+**Enum case values.** A case backed by a constant *expression*
+(`case A = 1 << 0;`, `case B = self::X;`, `case C = 'a' . self::S;`) is lowered
+to an initializer thunk run in the enum's own scope, like a class constant's.
+php builds a backed enum's lookup table on **first touch of a case**, not at
+declaration — which is where it evaluates those initializers and where
+`Error: Duplicate value in enum E for cases A and B` comes from, naming the
+*use* site's line. rphp does the same, so the fatal lands on php's line.
+
+**Still unlowered (compile-time `RPHP_E0300`).** The syntax the ladder has not
+needed yet: `__halt_compiler`, backtick shell execution, the 8.5 pipe operator
+(`|>`) and `clone with` property list, `declare()` of anything but
+`strict_types`, `goto` out of a `try` that has a `finally`, and a handful of
+by-reference targets php itself rejects. Everything else the compiler refuses
+is invalid php.
 
 **eval / autoload (E7).**
 

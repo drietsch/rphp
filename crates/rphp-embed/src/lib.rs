@@ -585,9 +585,10 @@ mod tests {
             other => panic!("expected a parse error, got {other:?}"),
         }
         // An unsupported construct is a compile rejection, not a parse error.
-        // (`yield` used to sit here; it lowers as of E8, so this uses a
-        // construct that is still unlowered.)
-        match engine.compile(&interp, b"<?php enum E: string { case A = 1 << 0; }", "t.php") {
+        // (`yield` used to sit here; it lowers as of E8, and an enum case
+        // initializer as of the P4 tail, so this uses one that is still
+        // unlowered.)
+        match engine.compile(&interp, b"<?php $x = `ls`;", "t.php") {
             Err(CompileError::Compile(lines)) => {
                 assert!(lines[0].contains("RPHP_E0300"), "{lines:?}")
             }

@@ -73,8 +73,13 @@ pub struct ClassConstDef {
 #[derive(Clone, Debug)]
 pub struct EnumCaseDef {
     pub name: Box<[u8]>,
-    /// The backing value (`None` for a pure enum).
+    /// The backing value, when the initializer folds to a literal (`None` for
+    /// a pure enum, and for a case whose value is a constant *expression*).
     pub value: Option<Value>,
+    /// The initializer thunk, when the value is a constant expression
+    /// (`case A = 1 << 0;`, `case B = self::X;`) — run in the enum's scope on
+    /// first use, like a class constant's.
+    pub thunk: Option<FuncId>,
 }
 
 /// E6: what an enum's cases are backed by.

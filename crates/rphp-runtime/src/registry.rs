@@ -352,10 +352,11 @@ impl Registry<'_> {
     }
 
     /// Declare a native interface (no members needed for `instanceof`).
+    /// Uninstantiable by kind, not by an `abstract` flag — php reports
+    /// `ReflectionClass::isAbstract()` as `false` for an interface.
     pub fn interface(&mut self, name: &str) -> ClassBuilder<'_> {
         let mut b = self.class(name);
         b.kind = ClassKind::Interface;
-        b.flags |= ClassFlags::ABSTRACT;
         b
     }
 }
@@ -488,10 +489,6 @@ impl ClassBuilder<'_> {
         };
         let parent = parent.map(|p| lookup(interp, &p));
         let interfaces: Vec<u32> = interfaces.iter().map(|i| lookup(interp, i)).collect();
-        let mut flags = flags;
-        if kind != ClassKind::Class {
-            flags |= ClassFlags::ABSTRACT;
-        }
         let spec = ClassSpec {
             name: Box::from(name.as_bytes()),
             kind,

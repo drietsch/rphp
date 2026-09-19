@@ -295,6 +295,12 @@ impl Interp {
             .declared_at
             .clone()
             .unwrap_or((Rc::from("Unknown"), 0));
+        // php gives every `new class` site one class entry, whatever happens
+        // to run it again — a loop, a function called twice — so declaring it
+        // a second time is a no-op rather than a redeclaration.
+        if stub.flags.contains(rphp_bytecode::ClassFlags::ANONYMOUS) && stub.linked {
+            return Ok(());
+        }
         if let Some(&prev) = self.class_index.get(&stub.lname) {
             let p = self.classes[prev as usize].clone();
             let msg = match &p.declared_at {
@@ -411,7 +417,14 @@ impl Interp {
         let enum_cases = decl
             .enum_cases
             .iter()
-            .map(|c| (c.name.clone(), c.value.clone()))
+            .map(|c| {
+                let init = match (c.thunk, &c.value) {
+                    (Some(t), _) => crate::class::EnumCaseValue::Pending(unit.func_base + t),
+                    (None, Some(v)) => crate::class::EnumCaseValue::Ready(v.clone()),
+                    (None, None) => crate::class::EnumCaseValue::None,
+                };
+                (c.name.clone(), init)
+            })
             .collect();
         let enum_backing = match decl.enum_backing {
             rphp_bytecode::EnumBackingType::Int => crate::class::EnumBacking::Int,
@@ -566,8 +579,18 @@ impl Interp {
         Ok(obj)
     }
 
-    /// The class name of an object (its runtime class).
+    /// The object's class name for a *message*: php formats one with `%s`,
+    /// so an anonymous class shows as a bare `class@anonymous`.
     pub fn class_name_of(&self, o: &rphp_value::Object) -> String {
-        self.classes[o.class_id() as usize].name_str()
+        let name = &self.classes[o.class_id() as usize].name;
+        String::from_utf8_lossy(rphp_value::display_class_name(name)).into_owned()
+    }
+
+    /// The object's class name **as php stores it** — the whole thing,
+    /// including the part of an anonymous class's name that sits after the
+    /// NUL. This is what `get_class()`, `::class` and Reflection answer;
+    /// everything that formats a message wants [`Interp::class_name_of`].
+    pub fn class_full_name_of(&self, o: &rphp_value::Object) -> Vec<u8> {
+        self.classes[o.class_id() as usize].name.to_vec()
     }
 }

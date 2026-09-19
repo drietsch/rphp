@@ -510,10 +510,11 @@ fn misc_expressions_lower() {
 #[test]
 fn unsupported_constructs_report_e0300_with_a_description() {
     // E6 lowered class declarations, static access and first-class
-    // callables; E7 lowered `eval`; E8 lowered `yield`. What is left is the
-    // genuinely unlowered tail.
-    let msgs = unsupported_messages("<?php enum E: string { case A = 1 << 0; }");
-    assert!(msgs.iter().any(|m| m.contains("non-literal enum case value")), "{msgs:?}");
+    // callables; E7 lowered `eval`; E8 lowered `yield`; the P4 tail lowered
+    // anonymous classes and enum case initializers. What is left is the
+    // syntax the ladder has not reached.
+    let msgs = unsupported_messages("<?php $x = `ls`;");
+    assert!(msgs.iter().any(|m| m.contains("shell execution")), "{msgs:?}");
     assert!(msgs
         .iter()
         .all(|m| m.starts_with("unsupported construct: ") && m.ends_with(" (not lowered yet)")));
@@ -521,6 +522,12 @@ fn unsupported_constructs_report_e0300_with_a_description() {
     // `unset(C::$p)` and `C::$p = &$x` lower as of the P4 trunk: php resolves
     // both at run time, so the compiler only has to emit the op.
     compile_ok("<?php class C { public static $p; } unset(C::$p); $x = 1; C::$p = &$x;");
+
+    // An enum case backed by a constant expression is an initializer thunk,
+    // and `new class { … }` is a declaration like any other.
+    compile_ok("<?php enum E: int { const B = 2; case A = 1 << 0; case C = self::B; }");
+    let m = compile_ok("<?php $o = new class(1) extends ArrayObject { public $p = 2; };");
+    assert_eq!(m.classes.len(), 1, "the anonymous class is a class of the unit");
 }
 
 #[test]

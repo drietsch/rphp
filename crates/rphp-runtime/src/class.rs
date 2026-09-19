@@ -404,10 +404,25 @@ pub enum EnumBacking {
 pub struct EnumCaseInfo {
     /// Case name.
     pub name: Box<[u8]>,
-    /// The backing value (`None` for a pure enum).
-    pub value: Option<Value>,
+    /// The backing value: absent for a pure enum, a folded literal, or an
+    /// initializer expression not yet run (see [`EnumCaseValue`]).
+    pub value: RefCell<EnumCaseValue>,
     /// The singleton instance, once materialized.
     pub instance: RefCell<Option<Value>>,
+}
+
+/// An enum case's backing value, which php requires to be a constant
+/// expression but not a literal: `case A = 1 << 0;` and `case B = self::X;`
+/// are initializers, evaluated in the enum's own scope the first time
+/// anything asks for the case.
+#[derive(Clone)]
+pub enum EnumCaseValue {
+    /// A pure enum's case has none.
+    None,
+    /// An initializer thunk (process-wide function id), not run yet.
+    Pending(u32),
+    /// Evaluated, or a literal from the start.
+    Ready(Value),
 }
 
 /// A class as the runtime holds it (user or native), linked: parent and
@@ -468,6 +483,10 @@ pub struct ClassDef {
     pub enum_cases: Vec<Rc<EnumCaseInfo>>,
     /// Enum case name → index into `enum_cases`.
     pub enum_index: HashMap<Box<[u8]>, u16>,
+    /// Whether the backed-enum lookup table has been built. php builds it the
+    /// first time anything touches a case, which is when it evaluates the
+    /// case initializers and rejects a duplicate value — not at declaration.
+    pub enum_table_built: std::cell::Cell<bool>,
     /// What the enum's cases are backed by (`None` for non-enums too).
     pub enum_backing: EnumBacking,
 }
@@ -500,14 +519,18 @@ impl ClassDef {
             consts: HashMap::new(),
             const_order: Vec::new(),
             enum_cases: Vec::new(),
+            enum_table_built: std::cell::Cell::new(false),
             enum_index: HashMap::new(),
             enum_backing: EnumBacking::None,
         }
     }
 
-    /// The name as a `String` (lossy) for messages.
+    /// The class name as a message shows it: php formats one with `%s`, so an
+    /// anonymous class is a bare `class@anonymous` everywhere but in
+    /// `get_class()`, `::class`, `var_export` and Reflection, which read
+    /// [`ClassDef::name`] itself.
     pub fn name_str(&self) -> String {
-        String::from_utf8_lossy(&self.name).into_owned()
+        String::from_utf8_lossy(rphp_value::display_class_name(&self.name)).into_owned()
     }
 
     /// The method with this (case-insensitive) name, own or inherited.
@@ -582,8 +605,8 @@ pub struct ClassSpec {
     pub static_props: Vec<(Box<[u8]>, Visibility, Option<TypeDecl>, Option<PropDefault>)>,
     /// Own class constants, in declaration order.
     pub consts: Vec<ConstSpec>,
-    /// Own enum cases, in declaration order (name, backing value).
-    pub enum_cases: Vec<(Box<[u8]>, Option<Value>)>,
+    /// Own enum cases, in declaration order (name, backing initializer).
+    pub enum_cases: Vec<(Box<[u8]>, EnumCaseValue)>,
     /// What this enum's cases are backed by.
     pub enum_backing: EnumBacking,
 }
@@ -809,7 +832,7 @@ impl Interp {
             def.enum_index.insert(cname.clone(), slot);
             def.enum_cases.push(Rc::new(EnumCaseInfo {
                 name: cname,
-                value,
+                value: RefCell::new(value),
                 instance: RefCell::new(None),
             }));
         }

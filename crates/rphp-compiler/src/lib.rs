@@ -238,16 +238,22 @@ pub fn compile(
     if diags.iter().any(Diagnostic::is_error) {
         return Err(diags);
     }
-    let interner: &Interner = interner;
     let program = hir.program();
 
+    // The class pre-pass interns the names of the anonymous classes, so it
+    // runs while the interner is still mutable.
+    let (unit_file, _) = crate::func::unit_file(opts);
+    let (class_map, class_ids, anon_names) =
+        class::collect_class_ids(program, interner, &unit_file, opts.line_of);
+
+    let interner: &Interner = interner;
     let (func_decls, class_decls) = hoisted(&hir, interner);
 
-    let (class_map, class_ids) = class::collect_class_ids(program, interner);
     let mut mx = ModuleCtx::new(
         interner,
         &class_map,
         &class_ids,
+        &anon_names,
         class_ids.len(),
         program.strict_types,
         opts,

@@ -747,6 +747,21 @@ impl fmt::Debug for WeakObject {
     }
 }
 
+/// The part of a class name php shows.
+///
+/// An anonymous class is named `class@anonymous\0<file>:<line>$<n>`, and php
+/// formats a class name with `%s` nearly everywhere — in `var_dump`, in
+/// `print_r`, in every error message — so the synthesized tail after the NUL
+/// never appears. The places that use the string's real length instead
+/// (`get_class()`, `::class`, `var_export`, Reflection) keep the whole name,
+/// which is what makes two anonymous classes distinguishable.
+pub fn display_class_name(name: &[u8]) -> &[u8] {
+    match name.iter().position(|&b| b == 0) {
+        Some(i) => &name[..i],
+        None => name,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

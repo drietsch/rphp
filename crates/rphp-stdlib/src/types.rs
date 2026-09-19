@@ -202,7 +202,9 @@ pub(crate) fn get_debug_type(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Value::Str(_) => b"string".to_vec(),
         Value::Array(_) => b"array".to_vec(),
         Value::Closure(_) => b"Closure".to_vec(),
-        Value::Object(o) => o.layout().class_name().to_vec(),
+        // `get_debug_type` is a message-shaped answer: php's `%s` stops at
+        // the NUL of an anonymous class's name.
+        Value::Object(o) => rphp_value::display_class_name(o.layout().class_name()).to_vec(),
         Value::Resource(r) => {
             if r.is_closed() {
                 b"resource (closed)".to_vec()

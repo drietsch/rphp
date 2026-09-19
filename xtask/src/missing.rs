@@ -1890,7 +1890,11 @@ mod tests {
         assert!(report.symbols.iter().any(|s| s.symbol == "strlen" && s.implemented));
         let text = render_text(&report, &opts);
         assert!(text.contains("internal functions used:"));
-        assert!(text.contains("== SPL:") || text.contains("== Core:"));
+        // A per-extension section exists exactly when that extension still
+        // has a gap — which shrinks as the burn-down proceeds, so the
+        // assertion is about the *rendering*, not about a particular name.
+        let any_missing = report.symbols.iter().any(|s| !s.implemented);
+        assert_eq!(text.contains("== "), any_missing, "{text}");
         let md = render_md(&report, &opts);
         assert!(md.contains("| Symbol | Kind | Extension |"));
         // The skipped test file's exclusive symbol never shows up.

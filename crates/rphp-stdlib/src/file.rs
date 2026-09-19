@@ -91,6 +91,14 @@ pub(crate) enum Sink {
 }
 
 impl Stream {
+    /// `ftruncate`: cut the buffer to `size`, or extend it with NUL bytes.
+    /// The cursor stays where it was, as php leaves it.
+    pub(crate) fn truncate_to(&mut self, size: usize) {
+        self.buf.resize(size, 0);
+        self.dirty = true;
+        self.fill_end = self.fill_end.min(self.buf.len());
+    }
+
     /// php's `SEEK_*` applied to the cursor.
     fn seek(&mut self, offset: i64, whence: i64) -> i64 {
         let base = match whence {
@@ -337,6 +345,23 @@ pub(crate) fn register_constants(r: &mut rphp_runtime::Registry) {
     ] {
         r.constant(name, Value::Int(v));
     }
+    // The CLI SAPI's three standard handles, in php's order — which is why
+    // they are resources 1, 2 and 3 and the first `fopen()` of a script is 5.
+    for (name, sink, uri, mode) in [
+        ("STDIN", Sink::Buffer, "php://stdin", "r"),
+        ("STDOUT", Sink::Stdout, "php://stdout", "w"),
+        ("STDERR", Sink::Stderr, "php://stderr", "w"),
+    ] {
+        let res = r
+            .interp()
+            .resources
+            .add("stream", Box::new(std_stream(sink, uri, mode)));
+        r.constant(name, res);
+    }
+    // php's CLI holds a fourth resource of its own, so a script's first
+    // `fopen()` is id 5 and every dumped handle counts from there. Reserving
+    // one keeps `var_dump($handle)` identical.
+    r.interp().resources.reserve_id();
 }
 
 // ---- streams ---------------------------------------------------------------
@@ -441,6 +466,55 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         }
     };
     Ok(ctx.resources.add("stream", Box::new(stream)))
+}
+
+/// Run `f` on the stream behind `v` — the same access `file.rs`'s own
+/// functions have, for the handle functions that live in `file2.rs`.
+pub(crate) fn with_stream_mut<R>(
+    ctx: &mut Ctx,
+    v: &Value,
+    func: &str,
+    f: impl FnOnce(&mut Stream) -> R,
+) -> Result<R, Unwind> {
+    with_stream(ctx, v, func, f)
+}
+
+/// Open `path` the way `fopen` would and hand back the resource — what
+/// `tmpfile()` and the CLI's standard handles are built from.
+pub(crate) fn open_resource(ctx: &mut Ctx, path: &std::path::Path, mode: &str) -> Value {
+    let stream = Stream {
+        buf: Vec::new(),
+        pos: 0,
+        path: Some(path.to_path_buf()),
+        append: false,
+        sink: Sink::Buffer,
+        readable: true,
+        writable: true,
+        eof: false,
+        dirty: true,
+        mode: mode.into(),
+        uri: path.to_string_lossy().into_owned().into(),
+        fill_end: 0,
+    };
+    ctx.resources.add("stream", Box::new(stream))
+}
+
+/// A `php://` handle for one of the process's standard streams.
+fn std_stream(sink: Sink, uri: &str, mode: &str) -> Stream {
+    Stream {
+        buf: Vec::new(),
+        pos: 0,
+        path: None,
+        append: false,
+        sink,
+        readable: sink == Sink::Buffer,
+        writable: sink != Sink::Buffer,
+        eof: false,
+        dirty: false,
+        mode: mode.into(),
+        uri: uri.into(),
+        fill_end: 0,
+    }
 }
 
 /// Write a stream's buffer back to its file, if it has one.

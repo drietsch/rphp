@@ -260,6 +260,13 @@ impl Interp {
             .class("stdClass")
             .flags(rphp_bytecode::ClassFlags::ALLOW_DYNAMIC)
             .finish();
+        // What `unserialize()` builds for a class the program does not
+        // declare: the original name in a property, then whatever the data
+        // held. php refuses to touch it afterwards.
+        crate::Registry(&mut it)
+            .class("__PHP_Incomplete_Class")
+            .flags(rphp_bytecode::ClassFlags::ALLOW_DYNAMIC)
+            .finish();
         it
     }
 

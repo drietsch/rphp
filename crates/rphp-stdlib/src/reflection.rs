@@ -91,12 +91,54 @@ pub(crate) fn register_classes(r: &mut Registry) {
 
     r.class("ReflectionException").extends("Exception").finish();
 
+    // `Reflection` itself is just the modifier-name helper, and
+    // `SensitiveParameter` is the attribute php marks arguments with so a
+    // backtrace redacts them (the engine drops attributes, so the class only
+    // has to exist and be final).
+    r.class("Reflection")
+        .method(
+            "getModifierNames",
+            common::snm(1, Some(1), get_modifier_names),
+        )
+        .finish();
+    r.class("SensitiveParameter")
+        .flags(rphp_runtime::ClassFlags::FINAL)
+        .finish();
+
     types::register_classes(r);
     class::register_classes(r);
     func::register_classes(r);
     prop::register_classes(r);
     attrs::register_classes(r);
     reference::register_classes(r);
+}
+
+/// `Reflection::getModifierNames(int $modifiers): array` — php's spelling of
+/// each bit, in php's order (abstract, final, then the visibility pair, then
+/// static and readonly).
+fn get_modifier_names(
+    _: &mut rphp_runtime::Ctx,
+    _: Option<&rphp_value::Object>,
+    args: &mut [rphp_value::Value],
+) -> rphp_runtime::NativeResult {
+    let m = args[0].deref().to_int();
+    let mut out = rphp_value::Array::new();
+    for (bit, name) in [
+        (common::IS_ABSTRACT, "abstract"),
+        (common::IS_FINAL, "final"),
+        (common::IS_PUBLIC, "public"),
+        (common::IS_PROTECTED, "protected"),
+        (common::IS_PRIVATE, "private"),
+        (common::IS_PROTECTED_SET, "protected(set)"),
+        (common::IS_PRIVATE_SET, "private(set)"),
+        (common::IS_STATIC, "static"),
+        (common::IS_READONLY, "readonly"),
+    ] {
+        if m & bit != 0 {
+            out.push(rphp_value::Value::string(name.as_bytes()));
+        }
+    }
+    Ok(rphp_value::Value::Array(out))
 }
 
 #[cfg(test)]

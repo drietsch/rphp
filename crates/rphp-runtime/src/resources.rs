@@ -35,6 +35,13 @@ impl ResourceTable {
         Value::Resource(r)
     }
 
+    /// Skip an id without creating a resource: php's CLI holds one of its
+    /// own between the standard handles and the first a script opens, and a
+    /// resource id shows in every `var_dump` of a handle.
+    pub fn reserve_id(&mut self) {
+        self.next += 1;
+    }
+
     /// The live resource with this id.
     pub fn get(&self, id: u32) -> Option<Resource> {
         self.live.get(&id).cloned()

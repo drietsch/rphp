@@ -75,6 +75,8 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     // `$would_block` is the only by-reference parameter in this module.
     nf_ref!("flock", 2, Some(3), 0b100, flock),
     nf!("fpassthru", 1, Some(1), fpassthru),
+    nf!("ftruncate", 2, Some(2), ftruncate),
+    nf!("tmpfile", 0, Some(0), tmpfile),
     nf!("fsync", 1, Some(1), fsync),
     nf!("fdatasync", 1, Some(1), fdatasync),
     // `fscanf($stream, $format, &...$vars)`: every position from #2 on is
@@ -1435,4 +1437,55 @@ mod tests {
         assert_eq!(basename_bytes(b"pre"), b"pre".to_vec());
         assert_eq!(basename_bytes(b"a/b/"), b"b".to_vec());
     }
+}
+
+/// `ftruncate(resource $stream, int $size): bool` — cut the file to `size`,
+/// or extend it with NUL bytes. The cursor does not move, which is why php
+/// leaves `ftell()` where it was even when the file is now shorter.
+fn ftruncate(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let size = args[1].to_int();
+    if size < 0 {
+        return Err(Unwind::value_error(
+            "ftruncate(): Argument #2 ($size) must be greater than or equal to 0",
+        ));
+    }
+    let stream = args[0].clone();
+    crate::file::with_stream_mut(ctx, &stream, "ftruncate", |s| {
+        s.truncate_to(size as usize);
+        Value::Bool(true)
+    })
+}
+
+/// `tmpfile(): resource|false` — a file in the temporary directory, opened
+/// read/write and removed when it is closed. php reports it as an ordinary
+/// `plainfile`/`STDIO` stream, not a `php://` one.
+fn tmpfile(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
+    let dir = std::env::temp_dir();
+    for _ in 0..64 {
+        let name = format!("php{:x}", fastrand_u32());
+        let path = dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        if fs::write(&path, b"").is_err() {
+            break;
+        }
+        let res = crate::file::open_resource(ctx, &path, "r+");
+        // php unlinks it immediately: the handle keeps it alive and the name
+        // is gone, so nothing outlives the process.
+        let _ = fs::remove_file(&path);
+        return Ok(res);
+    }
+    Ok(Value::Bool(false))
+}
+
+/// A non-cryptographic name source for the temporary file, seeded from the
+/// clock and the process (php uses `mkstemp`, which rphp cannot reach
+/// without an `unsafe` call).
+fn fastrand_u32() -> u32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    nanos ^ std::process::id().rotate_left(13)
 }

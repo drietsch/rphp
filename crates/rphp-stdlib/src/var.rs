@@ -904,18 +904,27 @@ impl<'a> Unserializer<'a> {
                 // Only classes the running program declares can be
                 // instantiated; `stdClass`, `__PHP_Incomplete_Class` and
                 // disallowed classes land with the class model (E6).
-                let class_id = if self.allowed.allows(&class) {
-                    ctx.class_by_name(&class)
-                } else {
-                    None
-                };
-                let Some(class_id) = class_id else {
-                    return Err(UErr::At(start));
+                // A class the program does not declare — or one the
+                // `allowed_classes` option rules out — becomes php's
+                // `__PHP_Incomplete_Class`, whose first property is the name
+                // that could not be resolved.
+                let allowed = self.allowed.allows(&class);
+                let resolved = if allowed { ctx.class_by_name(&class) } else { None };
+                let incomplete = resolved.is_none();
+                let class_id = match resolved {
+                    Some(id) => id,
+                    None => match ctx.class_by_name(b"__PHP_Incomplete_Class") {
+                        Some(id) => id,
+                        None => return Err(UErr::At(start)),
+                    },
                 };
                 // Build the instance the way the engine's `new` does: the
                 // class's parent-first property set with its defaults, under
                 // the next object id. The constructor never runs.
                 let obj = ctx.instantiate(class_id);
+                if incomplete {
+                    obj.set(b"__PHP_Incomplete_Class_Name", Value::string(&class));
+                }
                 if let Some(s) = slot {
                     self.slots[s].object = Some(obj.clone());
                 }
@@ -1144,7 +1153,11 @@ impl<'a> Unserializer<'a> {
                 let declared = obj.layout().slot_of(&name).is_some();
                 if !declared && obj.get(&name).is_none() {
                     let class = obj.layout().class_name().to_vec();
-                    if !class.eq_ignore_ascii_case(b"stdClass") {
+                    // Any class php lets grow properties silently —
+                    // `stdClass`, `__PHP_Incomplete_Class`, one marked
+                    // `#[AllowDynamicProperties]`.
+                    let allows = ctx.class(obj.class_id()).allows_dynamic_props();
+                    if !allows {
                         ctx.deprecated(&format!(
                             "Creation of dynamic property {}::${} is deprecated",
                             String::from_utf8_lossy(&class),
@@ -1395,12 +1408,25 @@ mod tests {
             ("s:3:\"abc\"", "Error at offset 9 of 9 bytes"),
             ("a:1:{i:0;i:1;", "Error at offset 13 of 13 bytes"),
             ("a:1:{d:1.5;i:1;}", "Error at offset 11 of 16 bytes"),
-            ("O:3:\"Nop\":0:{}", "Error at offset 0 of 14 bytes"),
         ] {
             assert_eq!(it.call_function(b"unserialize", &[s(text)]).unwrap(), Value::Bool(false));
             let out = String::from_utf8(it.take_test_output()).unwrap();
             assert!(out.contains(expected), "{text}: {out}");
         }
+        // An undeclared class is not an error: php builds
+        // `__PHP_Incomplete_Class` and keeps the data.
+        let incomplete = it
+            .call_function(b"unserialize", &[s("O:3:\"Nop\":1:{s:1:\"a\";i:7;}")])
+            .unwrap();
+        let Value::Object(o) = &incomplete else { panic!("{incomplete:?}") };
+        assert_eq!(o.layout().class_name(), b"__PHP_Incomplete_Class");
+        assert_eq!(
+            o.get_deref(b"__PHP_Incomplete_Class_Name"),
+            Some(Value::string(b"Nop"))
+        );
+        assert_eq!(o.get_deref(b"a"), Some(Value::Int(7)));
+        it.take_test_output();
+
         assert_eq!(it.call_function(b"unserialize", &[s("i:42;junk")]).unwrap(), Value::Int(42));
         let out = String::from_utf8(it.take_test_output()).unwrap();
         assert!(out.contains("Extra data starting at offset 5 of 9 bytes"), "{out}");

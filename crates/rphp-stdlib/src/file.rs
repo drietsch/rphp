@@ -10,7 +10,7 @@
 use std::fs;
 use std::io::Write;
 
-use rphp_runtime::{nf, Ctx, NativeFn, NativeResult};
+use rphp_runtime::{nf, Ctx, NativeFn, NativeResult, Unwind};
 use rphp_value::{Array, Str, Value};
 
 use crate::filestat::{arg_path, invalidate};
@@ -25,7 +25,85 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("copy", 2, Some(3), copy),
     nf!("rename", 2, Some(3), rename),
     nf!("stream_resolve_include_path", 1, Some(1), stream_resolve_include_path),
+    nf!("fopen", 2, Some(4), fopen),
+    nf!("fclose", 1, Some(1), fclose),
+    nf!("fwrite", 2, Some(3), fwrite),
+    nf!("fputs", 2, Some(3), fwrite),
+    nf!("fread", 2, Some(2), fread),
+    nf!("fgets", 1, Some(2), fgets),
+    nf!("fgetc", 1, Some(1), fgetc),
+    nf!("feof", 1, Some(1), feof),
+    nf!("ftell", 1, Some(1), ftell),
+    nf!("fseek", 2, Some(3), fseek),
+    nf!("rewind", 1, Some(1), rewind),
+    nf!("fflush", 1, Some(1), fflush),
+    nf!("stream_get_contents", 1, Some(3), stream_get_contents),
 ];
+
+/// An open stream: a byte buffer plus a cursor, and where writes ultimately
+/// go. php's `php://memory` and `php://temp` are pure buffers; a real file is
+/// read into the buffer on open and written back on flush/close, which keeps
+/// the whole implementation one code path. `php://stdout`/`stderr`/`output`
+/// forward writes to the engine's output channel instead.
+pub(crate) struct Stream {
+    buf: Vec<u8>,
+    pos: usize,
+    /// The file to write back to on flush, when this is a real file opened
+    /// for writing.
+    path: Option<std::path::PathBuf>,
+    /// Appending: writes always go to the end and the file is not truncated.
+    append: bool,
+    /// Where writes go when this is a php:// output stream.
+    sink: Sink,
+    readable: bool,
+    writable: bool,
+    /// php's end-of-file flag, which is **not** "the cursor is at the end":
+    /// it is set by a read that came back short of what it asked for, and
+    /// cleared by a seek. A fresh handle on an empty file reports `false`
+    /// until something tries to read it.
+    eof: bool,
+    dirty: bool,
+}
+
+/// Where a stream's writes end up.
+#[derive(PartialEq, Clone, Copy)]
+pub(crate) enum Sink {
+    /// A buffer (memory streams and real files).
+    Buffer,
+    /// The engine's output channel (`php://stdout`, `php://output`).
+    Stdout,
+    /// The process's stderr (`php://stderr`).
+    Stderr,
+}
+
+impl Stream {
+    /// php's `SEEK_*` applied to the cursor.
+    fn seek(&mut self, offset: i64, whence: i64) -> i64 {
+        let base = match whence {
+            1 => self.pos as i64,          // SEEK_CUR
+            2 => self.buf.len() as i64,    // SEEK_END
+            _ => 0,                        // SEEK_SET
+        };
+        self.pos = (base + offset).max(0) as usize;
+        self.eof = false;
+        0
+    }
+
+    /// Write `data` at the cursor, extending the buffer as php does.
+    fn write(&mut self, data: &[u8]) -> usize {
+        if self.append {
+            self.pos = self.buf.len();
+        }
+        let end = self.pos + data.len();
+        if self.buf.len() < end {
+            self.buf.resize(end, 0);
+        }
+        self.buf[self.pos..end].copy_from_slice(data);
+        self.pos = end;
+        self.dirty = true;
+        data.len()
+    }
+}
 
 /// php's `FILE_*` flags that these functions honour.
 const FILE_IGNORE_NEW_LINES: i64 = 2;
@@ -229,7 +307,300 @@ pub(crate) fn register_constants(r: &mut rphp_runtime::Registry) {
         ("PATHINFO_BASENAME", 2),
         ("PATHINFO_EXTENSION", 4),
         ("PATHINFO_FILENAME", 8),
+        ("SEEK_SET", 0),
+        ("SEEK_CUR", 1),
+        ("SEEK_END", 2),
     ] {
         r.constant(name, Value::Int(v));
     }
+}
+
+// ---- streams ---------------------------------------------------------------
+
+/// Resolve a stream argument to its resource, or php's TypeError.
+fn stream_arg(ctx: &mut Ctx, v: &Value, func: &str) -> Result<rphp_value::Resource, Unwind> {
+    match &*v.deref() {
+        Value::Resource(r) if r.kind() == "stream" => Ok(r.clone()),
+        other => {
+            let _ = ctx;
+            Err(Unwind::type_error(format!(
+                "{func}(): Argument #1 ($stream) must be of type resource, {} given",
+                other.type_name()
+            )))
+        }
+    }
+}
+
+/// Run `f` over the stream behind a resource.
+fn with_stream<R>(
+    ctx: &mut Ctx,
+    v: &Value,
+    func: &str,
+    f: impl FnOnce(&mut Stream) -> R,
+) -> Result<R, Unwind> {
+    let r = stream_arg(ctx, v, func)?;
+    let mut payload = r.payload_mut();
+    let Some(any) = payload.as_mut() else {
+        return Err(Unwind::error(format!("{func}(): supplied resource is not a valid stream")));
+    };
+    let Some(s) = any.downcast_mut::<Stream>() else {
+        return Err(Unwind::error(format!("{func}(): supplied resource is not a valid stream")));
+    };
+    Ok(f(s))
+}
+
+/// `fopen(string $filename, string $mode, ...): resource|false`
+fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let name = args[0].to_php_bytes().to_vec();
+    let mode = args[1].to_php_bytes().to_vec();
+    let m = String::from_utf8_lossy(&mode).into_owned();
+    let readable = m.contains('r') || m.contains('+');
+    let writable = m.contains('w') || m.contains('a') || m.contains('x') || m.contains('c') || m.contains('+');
+    let append = m.starts_with('a');
+    let truncate = m.starts_with('w');
+
+    let path_str = String::from_utf8_lossy(&name).into_owned();
+    // php:// wrappers: memory and temp are buffers, the rest are output.
+    let stream = if let Some(rest) = path_str.strip_prefix("php://") {
+        let sink = match rest {
+            "stdout" | "output" => Sink::Stdout,
+            "stderr" => Sink::Stderr,
+            _ => Sink::Buffer,
+        };
+        Stream {
+            buf: Vec::new(),
+            pos: 0,
+            path: None,
+            append,
+            sink,
+            readable: sink == Sink::Buffer,
+            writable: sink != Sink::Buffer || writable,
+            eof: false,
+            dirty: false,
+        }
+    } else {
+        let p = arg_path(ctx, &args[0]);
+        let existing = if truncate { Ok(Vec::new()) } else { fs::read(&p) };
+        let buf = match existing {
+            Ok(b) => b,
+            Err(_) if writable => Vec::new(),
+            Err(_) => {
+                ctx.warn(&format!(
+                    "fopen({path_str}): Failed to open stream: No such file or directory"
+                ))?;
+                return Ok(Value::Bool(false));
+            }
+        };
+        let pos = if append { buf.len() } else { 0 };
+        Stream {
+            buf,
+            pos,
+            path: Some(p),
+            append,
+            sink: Sink::Buffer,
+            readable,
+            writable,
+            eof: false,
+            // A `w`/`a` open creates the file even with nothing written.
+            dirty: writable && (truncate || append),
+        }
+    };
+    Ok(ctx.resources.add("stream", Box::new(stream)))
+}
+
+/// Write a stream's buffer back to its file, if it has one.
+fn flush_stream(s: &Stream) {
+    if let (Some(p), true) = (&s.path, s.dirty) {
+        let _ = fs::write(p, &s.buf);
+    }
+}
+
+/// `fclose(resource $stream): bool`
+fn fclose(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    with_stream(ctx, &args[0].clone(), "fclose", |s| flush_stream(s))?;
+    ctx.resources.close_value(&args[0]);
+    Ok(Value::Bool(true))
+}
+
+/// `fwrite(resource $stream, string $data, ?int $length = null): int|false`
+fn fwrite(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let mut data = args[1].to_php_bytes().to_vec();
+    if let Some(len) = args.get(2).filter(|v| !matches!(v, Value::Null)).map(Value::to_int) {
+        data.truncate(len.max(0) as usize);
+    }
+    let stream = args[0].clone();
+    let sink = with_stream(ctx, &stream, "fwrite", |s| {
+        if !s.writable {
+            return Err((s.path.is_some(), data.len()));
+        }
+        if s.sink == Sink::Buffer {
+            s.write(&data);
+        }
+        Ok(s.sink)
+    })?;
+    match sink {
+        // A write of nothing never reaches the fd, so php answers `0` without
+        // a diagnostic even on a read-only handle.
+        Err((_, 0)) => Ok(Value::Int(0)),
+        Err((real, n)) => {
+            if real {
+                ctx.notice(&format!(
+                    "fwrite(): Write of {n} bytes failed with errno=9 Bad file descriptor"
+                ))?;
+            }
+            Ok(Value::Bool(false))
+        }
+        Ok(Sink::Stdout) => {
+            ctx.echo(&data);
+            Ok(Value::Int(data.len() as i64))
+        }
+        Ok(Sink::Stderr) => {
+            eprint!("{}", String::from_utf8_lossy(&data));
+            Ok(Value::Int(data.len() as i64))
+        }
+        Ok(Sink::Buffer) => Ok(Value::Int(data.len() as i64)),
+    }
+}
+
+/// `fread(resource $stream, int $length): string|false`
+/// php reads through the fd in `chunk_size` (8192) pieces, so a handle opened
+/// write-only fails there and every read function reports the same notice —
+/// naming 8192 bytes whatever length was asked for. A memory stream has no fd
+/// and just answers nothing.
+fn read_denied(ctx: &mut Ctx, v: &Value, func: &str) -> Result<bool, Unwind> {
+    let denied = with_stream(ctx, v, func, |s| !s.readable && s.path.is_some())?;
+    if denied {
+        ctx.notice(&format!(
+            "{func}(): Read of 8192 bytes failed with errno=9 Bad file descriptor"
+        ))?;
+    }
+    Ok(denied)
+}
+
+fn fread(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let len = args[1].to_int().max(0) as usize;
+    let stream = args[0].clone();
+    if read_denied(ctx, &stream, "fread")? {
+        return Ok(Value::Bool(false));
+    }
+    with_stream(ctx, &stream, "fread", |s| {
+        let end = (s.pos + len).min(s.buf.len());
+        let out = s.buf[s.pos.min(s.buf.len())..end].to_vec();
+        s.pos = end;
+        // Short of the length asked for means the read hit the end.
+        s.eof = out.len() < len;
+        Value::Str(Str::from_vec(out))
+    })
+}
+
+/// `fgets(resource $stream, ?int $length = null): string|false` — a line
+/// *including* its newline, `false` at end of stream.
+fn fgets(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    if read_denied(ctx, &stream, "fgets")? {
+        return Ok(Value::Bool(false));
+    }
+    with_stream(ctx, &stream, "fgets", |s| {
+        if s.pos >= s.buf.len() {
+            s.eof = true;
+            return Value::Bool(false);
+        }
+        let start = s.pos;
+        // A line that ends at the end of the data, rather than at a newline,
+        // only got there by reading past the end — php flags that.
+        let end = match s.buf[start..].iter().position(|&b| b == b'\n') {
+            Some(i) => start + i + 1,
+            None => {
+                s.eof = true;
+                s.buf.len()
+            }
+        };
+        s.pos = end;
+        Value::Str(Str::from_vec(s.buf[start..end].to_vec()))
+    })
+}
+
+/// `fgetc(resource $stream): string|false`
+fn fgetc(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    if read_denied(ctx, &stream, "fgetc")? {
+        return Ok(Value::Bool(false));
+    }
+    with_stream(ctx, &stream, "fgetc", |s| {
+        if s.pos >= s.buf.len() {
+            s.eof = true;
+            return Value::Bool(false);
+        }
+        let b = s.buf[s.pos];
+        s.pos += 1;
+        Value::Str(Str::from_vec(vec![b]))
+    })
+}
+
+/// `feof(resource $stream): bool`
+fn feof(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    with_stream(ctx, &stream, "feof", |s| Value::Bool(s.eof))
+}
+
+/// `ftell(resource $stream): int|false`
+fn ftell(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    with_stream(ctx, &stream, "ftell", |s| Value::Int(s.pos as i64))
+}
+
+/// `fseek(resource $stream, int $offset, int $whence = SEEK_SET): int`
+fn fseek(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let offset = args[1].to_int();
+    let whence = args.get(2).map_or(0, Value::to_int);
+    let stream = args[0].clone();
+    with_stream(ctx, &stream, "fseek", |s| Value::Int(s.seek(offset, whence)))
+}
+
+/// `rewind(resource $stream): bool`
+fn rewind(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    with_stream(ctx, &stream, "rewind", |s| {
+        s.seek(0, 0);
+        Value::Bool(true)
+    })
+}
+
+/// `fflush(resource $stream): bool`
+fn fflush(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    with_stream(ctx, &stream, "fflush", |s| {
+        flush_stream(s);
+        Value::Bool(true)
+    })
+}
+
+/// `stream_get_contents(resource $stream, ?int $maxLength = null, int $offset = -1): string|false`
+///
+/// Reads from the **current position** unless `$offset` is given.
+fn stream_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let max = args.get(1).filter(|v| !matches!(v, Value::Null)).map(Value::to_int);
+    let offset = args.get(2).map_or(-1, Value::to_int);
+    let stream = args[0].clone();
+    if read_denied(ctx, &stream, "stream_get_contents")? {
+        return Ok(Value::Str(Str::new(b"")));
+    }
+    with_stream(ctx, &stream, "stream_get_contents", |s| {
+        if offset >= 0 {
+            s.pos = (offset as usize).min(s.buf.len());
+        }
+        let start = s.pos.min(s.buf.len());
+        let end = match max {
+            Some(n) if n >= 0 => (start + n as usize).min(s.buf.len()),
+            _ => s.buf.len(),
+        };
+        s.pos = end;
+        // Without a length it reads until the end; with one, only a short
+        // answer means the end was reached.
+        s.eof = match max {
+            Some(n) if n >= 0 => end - start < n as usize,
+            _ => true,
+        };
+        Value::Str(Str::from_vec(s.buf[start..end].to_vec()))
+    })
 }

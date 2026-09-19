@@ -38,6 +38,11 @@ mod pack;
 mod pcre;
 mod random;
 mod spl_containers;
+mod date;
+mod filter;
+mod reflection;
+mod spl_containers2;
+mod password;
 mod spl_autoload;
 mod spl_iterators;
 mod spl_exceptions;
@@ -54,6 +59,11 @@ mod zend_exceptions;
 
 /// Every module's `FUNCTIONS` slice, in registration order.
 const MODULES: &[&[NativeFn]] = &[
+    filter::FUNCTIONS,
+    date::FUNCTIONS,
+    reflection::FUNCTIONS,
+    spl_containers2::FUNCTIONS,
+    password::FUNCTIONS,
     spl_iterators::FUNCTIONS,
     spl_autoload::FUNCTIONS,
     output::FUNCTIONS,
@@ -99,6 +109,9 @@ pub fn register(r: &mut Registry) {
     closure_class::register_classes(r);
     weak::register_classes(r);
     spl_containers::register_classes(r);
+    spl_containers2::register_classes(r);
+    date::register_classes(r);
+    reflection::register_classes(r);
     math::register_constants(r);
     pcre::register_constants(r);
     json::register_constants(r);
@@ -113,6 +126,11 @@ pub fn register(r: &mut Registry) {
     iconv::register_constants(r);
     pack::register_constants(r);
     file::register_constants(r);
+    date::register_constants(r);
+    filter::register_constants(r);
+    reflection::register_constants(r);
+    spl_containers2::register_constants(r);
+    password::register_constants(r);
     filestat::register_constants(r);
     dir::register_constants(r);
 }

@@ -167,7 +167,7 @@ fn class_like_exists(
     let name = args[0].to_php_bytes();
     // `$autoload` defaults to true: an unknown name goes to the autoloader
     // stack before the answer is `false` (E7).
-    let autoload = args.get(1).map_or(true, Value::to_bool);
+    let autoload = args.get(1).is_none_or(Value::to_bool);
     let id = if autoload {
         ctx.lookup_class(&name)?
     } else {

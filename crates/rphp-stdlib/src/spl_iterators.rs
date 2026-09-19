@@ -35,7 +35,7 @@ fn pairs(ctx: &mut Ctx, v: &Value) -> Result<Vec<(Value, Value)>, Unwind> {
 
 /// `iterator_to_array(Traversable|array $iterator, bool $preserve_keys = true): array`
 fn iterator_to_array(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let preserve = args.get(1).map_or(true, Value::to_bool);
+    let preserve = args.get(1).is_none_or(Value::to_bool);
     let items = pairs(ctx, &args[0])?;
     let mut out = Array::new();
     for (k, v) in items {

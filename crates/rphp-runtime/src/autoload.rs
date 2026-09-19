@@ -34,7 +34,7 @@ impl Interp {
             return Ok(None);
         }
         let key: Box<[u8]> = name.to_ascii_lowercase().into();
-        if self.autoloading.iter().any(|n| *n == key) {
+        if self.autoloading.contains(&key) {
             return Ok(None);
         }
         self.autoloading.push(key);
@@ -105,7 +105,7 @@ impl Interp {
     /// `spl_autoload_call($name)` — run the stack unconditionally.
     pub fn autoload_call(&mut self, name: &[u8]) -> Result<(), Unwind> {
         let key: Box<[u8]> = name.to_ascii_lowercase().into();
-        if self.autoloading.iter().any(|n| *n == key) {
+        if self.autoloading.contains(&key) {
             return Ok(());
         }
         self.autoloading.push(key);

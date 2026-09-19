@@ -796,6 +796,15 @@ pub enum Op {
         class: ClassRef,
         name: NameRef,
     },
+    /// `[..., ...$src, ...]`: append `src`'s elements to the array being built
+    /// in `arr`. php **renumbers integer keys** (so two spreads never collide)
+    /// and **preserves string keys** (8.1+), with a later one overwriting an
+    /// earlier. `src` may be any array or `Traversable`, including a
+    /// `Generator`; anything else is a `TypeError`.
+    ArrayUnpack {
+        arr: Reg,
+        src: Reg,
+    },
     /// `Class::$name = &src`: bind the static property's slot to the reference
     /// cell in `src`, so both names share one value afterwards.
     AssignRefStaticProp {

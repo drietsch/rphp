@@ -2014,7 +2014,13 @@ impl FnCompiler<'_> {
         let mark = self.temp_top;
         for item in items {
             if item.spread {
-                unsupported(self.diags, item.span, "array spread");
+                // `...$x` merges at this position; the runtime does the
+                // key renumbering (`Op::ArrayUnpack`).
+                if let Some(value) = &item.value {
+                    let src = self.compile_expr(value);
+                    self.emit(Op::ArrayUnpack { arr: dst, src });
+                    self.free_to(mark);
+                }
                 continue;
             }
             let Some(value) = &item.value else {

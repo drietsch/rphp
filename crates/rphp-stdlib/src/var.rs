@@ -365,30 +365,71 @@ fn ser(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, st: &mut SerState) -> Result
         }
         Value::Object(o) => {
             let class = o.layout().class_name().to_vec();
-            for magic in [&b"__serialize"[..], b"__sleep"] {
-                if class_has_method(ctx, o.class_id(), magic) {
-                    return Err(Unwind::error(format!(
-                        "serialize(): {}::{}() cannot be invoked yet (magic methods land with plan E6)",
-                        String::from_utf8_lossy(&class),
-                        String::from_utf8_lossy(magic)
+            // `__serialize()` replaces the property set outright: its array is
+            // written as the object's payload, keys and all.
+            if class_has_method(ctx, o.class_id(), b"__serialize") {
+                let ret = ctx.call_method(o, b"__serialize", &[])?;
+                let Value::Array(a) = &*ret.deref() else {
+                    return Err(Unwind::type_error(format!(
+                        "{}::__serialize() must return an array",
+                        String::from_utf8_lossy(&class)
                     )));
+                };
+                let a = a.clone();
+                out.extend_from_slice(format!("O:{}:\"", class.len()).as_bytes());
+                out.extend_from_slice(&class);
+                out.extend_from_slice(format!("\":{}:{{", a.len()).as_bytes());
+                for (k, val) in a.iter() {
+                    match k {
+                        ArrayKey::Int(i) => out.extend_from_slice(format!("i:{i};").as_bytes()),
+                        ArrayKey::Str(k) => ser_len_str(out, k),
+                    }
+                    ser(ctx, out, val, st)?;
                 }
+                out.push(b'}');
+                return Ok(());
             }
-            out.extend_from_slice(format!("O:{}:\"", class.len()).as_bytes());
-            out.extend_from_slice(&class);
-            out.extend_from_slice(format!("\":{}:{{", o.prop_count()).as_bytes());
             // Snapshot first: a property may hold a handle back onto `o`, and
             // the recursion must not hold the RefCell borrow.
-            let props: Vec<(Vec<u8>, Value)> = o.with_data(|d| {
+            let mut props: Vec<(Vec<u8>, Vec<u8>, Value)> = o.with_data(|d| {
                 d.props_in_order()
                     .filter(|p| !p.value.is_uninit())
                     .map(|p| {
                         let decl = p.meta.map_or(&b""[..], |m| &m.decl_class_name);
-                        (mangled_name(p.name, p.vis, decl), p.value.clone())
+                        (p.name.to_vec(), mangled_name(p.name, p.vis, decl), p.value.clone())
                     })
                     .collect()
             });
-            for (name, val) in &props {
+            // `__sleep()` names the properties to keep, in its own order; php
+            // warns about a name that is not a property and drops it.
+            if class_has_method(ctx, o.class_id(), b"__sleep") {
+                let ret = ctx.call_method(o, b"__sleep", &[])?;
+                let Value::Array(names) = &*ret.deref() else {
+                    ctx.warn(&format!(
+                        "serialize(): {}::__sleep() should return an array only containing the names of instance-variables to serialize",
+                        String::from_utf8_lossy(&class)
+                    ))?;
+                    out.extend_from_slice(b"N;");
+                    return Ok(());
+                };
+                let names = names.clone();
+                let mut kept: Vec<(Vec<u8>, Vec<u8>, Value)> = Vec::new();
+                for (_, name) in names.iter() {
+                    let name = name.deref().to_php_bytes().to_vec();
+                    match props.iter().find(|(n, _, _)| *n == name) {
+                        Some(p) => kept.push(p.clone()),
+                        None => ctx.warn(&format!(
+                            "serialize(): \"{}\" returned as member variable from __sleep() but does not exist",
+                            String::from_utf8_lossy(&name)
+                        ))?,
+                    }
+                }
+                props = kept;
+            }
+            out.extend_from_slice(format!("O:{}:\"", class.len()).as_bytes());
+            out.extend_from_slice(&class);
+            out.extend_from_slice(format!("\":{}:{{", props.len()).as_bytes());
+            for (_, name, val) in &props {
                 ser_len_str(out, name);
                 ser(ctx, out, val, st)?;
             }
@@ -860,27 +901,37 @@ impl<'a> Unserializer<'a> {
                 let Some(class_id) = class_id else {
                     return Err(UErr::At(start));
                 };
-                for magic in [&b"__unserialize"[..], b"__wakeup"] {
-                    if ctx.resolve_method(class_id, magic).is_some() {
-                        return Err(UErr::Unwind(Unwind::error(format!(
-                            "unserialize(): {}::{}() cannot be invoked yet (magic methods land with plan E6)",
-                            String::from_utf8_lossy(&ctx.class(class_id).name),
-                            String::from_utf8_lossy(magic)
-                        ))));
-                    }
-                }
                 // Build the instance the way the engine's `new` does: the
                 // class's parent-first property set with its defaults, under
-                // the next object id.
+                // the next object id. The constructor never runs.
                 let obj = ctx.instantiate(class_id);
                 if let Some(s) = slot {
                     self.slots[s].object = Some(obj.clone());
+                }
+                // `__unserialize()` owns the payload: php reads it as a plain
+                // array, hands it over and leaves the properties alone (and
+                // `__wakeup()` is then not called).
+                if ctx.resolve_method(class_id, b"__unserialize").is_some() {
+                    self.chain.push(Open::new(Pending::Arr(Array::new()), key));
+                    let r = self.array_elements(ctx, cur, elements as usize);
+                    let open = self.chain.pop().expect("pushed above");
+                    let cur = r?;
+                    let cur = self.finish_nested(cur)?;
+                    let Open { container: Pending::Arr(a), cell, .. } = open else { unreachable!() };
+                    ctx.call_method(&obj, b"__unserialize", &[Value::Array(a)])
+                        .map_err(UErr::Unwind)?;
+                    return Ok((finish_value(cell, Value::Object(obj)), cur));
                 }
                 self.chain.push(Open::new(Pending::Obj(obj.clone()), key));
                 let r = self.object_props(ctx, cur, elements as usize, &obj);
                 let open = self.chain.pop().expect("pushed above");
                 let cur = r?;
                 let cur = self.finish_nested(cur)?;
+                // php wakes each object as soon as its own data is restored,
+                // so a nested object wakes before the one holding it.
+                if ctx.resolve_method(class_id, b"__wakeup").is_some() {
+                    ctx.call_method(&obj, b"__wakeup", &[]).map_err(UErr::Unwind)?;
+                }
                 Ok((finish_value(open.cell, Value::Object(obj)), cur))
             }
             b'r' | b'R' if colon => {

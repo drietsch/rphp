@@ -1148,7 +1148,15 @@ impl Interp {
                         Value::Ref(self.elem_ref(base, arr, Some(&k))?)
                     } else {
                         let container = self.rd(base, arr);
-                        self.array_get(&container, &k)?
+                        // `f($o[$k])` reads through `ArrayAccess` like any
+                        // other element read (`Op::ArrayGet`).
+                        match &*container.deref() {
+                            Value::Object(o) if self.is_array_access(o) => {
+                                let o = o.clone();
+                                self.offset_get(&o, &k)?
+                            }
+                            _ => self.array_get(&container, &k)?,
+                        }
                     };
                     self.send(fi, v);
                 }
@@ -1590,6 +1598,55 @@ impl Interp {
                     // `$r = &A::$p; $r = 5;` is visible as `A::$p`.
                     let cell = self.ref_static_prop(cid, &n, scope)?;
                     self.set(base, dst, Value::Ref(cell));
+                }
+                Op::ArrayUnpack { arr, src } => {
+                    let v = self.rd(base, src);
+                    // Integer keys are renumbered, string keys preserved.
+                    let items: Vec<(Value, Value)> = match &*v.deref() {
+                        Value::Array(a) => a
+                            .iter()
+                            .map(|(k, val)| (k.to_value(), val.deref().into_owned()))
+                            .collect(),
+                        // Only a `Traversable` unpacks; a plain object is a
+                        // TypeError naming its class, as php has it.
+                        Value::Object(o)
+                            if self.generator_id(o).is_some()
+                                || self
+                                    .well_known
+                                    .traversable
+                                    .is_some_and(|t| self.object_instanceof(o, t)) =>
+                        {
+                            let o = o.clone();
+                            self.iterate_traversable(&o)?
+                        }
+                        Value::Object(o) => {
+                            let name = self.class_name_of(o);
+                            return Err(Unwind::type_error(format!(
+                                "Only arrays and Traversables can be unpacked, {name} given"
+                            )));
+                        }
+                        other => {
+                            return Err(Unwind::type_error(format!(
+                                "Only arrays and Traversables can be unpacked, {} given",
+                                other.type_name()
+                            )))
+                        }
+                    };
+                    self.with_slot(base, arr, |slot| {
+                        let Value::Array(a) = slot else {
+                            return Err(Unwind::error("internal error: unpack into a non-array"));
+                        };
+                        for (k, val) in items {
+                            match k {
+                                Value::Str(_) => match rphp_value::array_key(&k) {
+                                    Some(key) => a.set(key, val),
+                                    None => a.push(val),
+                                },
+                                _ => a.push(val),
+                            }
+                        }
+                        Ok(())
+                    })?;
                 }
                 Op::AssignRefStaticProp { class, name, src } => {
                     let cid = self.resolve_class_ref(&func, base, class)?;

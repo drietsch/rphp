@@ -6,9 +6,10 @@ The oracle is differential testing against stock **PHP 8.5**: each extension shi
 and `php` by `crates/rphp-sapi-cli/tests/differential.rs` and required to match
 byte-for-byte (must-not-regress).
 
-**Registry size: 218 rows** (wave 1: ~103 distinct functions; wave 2: +11 by-reference
+**Registry size: 493 rows** (wave 1: ~103 distinct functions; wave 2: +11 by-reference
 builtins; wave 3: +9 higher-order/callable builtins; E1: +36 engine-facing builtins —
-`ob_*`, ini/constants, error handling). Plus aliases and the initial slice.
+`ob_*`, ini/constants, error handling; S2 the string/array/var/url/info halves; S3
+filesystem + streams; S8 mbstring/iconv; S10 filter). Plus aliases and the initial slice.
 
 ## Engine gaps that bound the burn-down
 
@@ -60,6 +61,8 @@ Functions needing a missing language feature are **cataloged, not faked** (decis
 | json      | 2  | `json_encode` (incl. `JSON_PRETTY_PRINT`/`UNESCAPED_SLASHES`/`UNESCAPED_UNICODE`; objects → public-property objects), `json_decode` |
 | hash      | 5  | `md5`, `sha1`, `crc32`, `hash` (md5/sha1/sha256/sha384/sha512/crc32b), `hash_algos` |
 | pcre      | 5 + 1 | `preg_quote`, `preg_match` (incl. by-ref `$matches`), `preg_replace`, **`preg_replace_callback`**, `preg_split`, `preg_grep` — over PCRE2 |
+| file (`file.rs`) | 34 | S3: the path functions (`file_get_contents`/`file_put_contents`/`file`/`copy`/`rename`/`unlink`/`readfile`/`tempnam`/`realpath`…) plus the **stream handle family** — `fopen` (real files, `php://memory`/`temp`/`stdout`/`stderr`/`output`), `fread`/`fgets`/`fgetc`/`fwrite`/`fputs`/`stream_get_contents`, `fseek`/`ftell`/`rewind`/`fflush`/`fclose`, and `feof` over php's *end-of-file flag* (set by a read that came back short, cleared by a seek — not "the cursor is at the end"). The mode is enforced the way php's fd does: a read on a write-only file, or a write on a read-only one, is the `Notice: … failed with errno=9 Bad file descriptor` and `false`. S3 tier-a: `file/streams.php` |
+| filter (`filter.rs`) | 5 | S10: `filter_var`, `filter_var_array`, `filter_has_var`, `filter_list`, `filter_id` — the validators (int/bool/float/regexp/domain/url/email/ip/mac) and sanitizers with php's flag set, and the three-way failure outcome (`false` / the `default` option / `null` under `FILTER_NULL_ON_FAILURE`) Symfony's `ParameterBag` leans on. S10 tier-a: `filter/basics.php` |
 
 ## Deferred (cataloged, by blocker)
 
@@ -111,11 +114,15 @@ string conversion" once per element here, php once per comparison of its sort-me
 
 ## Deferred by S2 (var / type / url / info half)
 
-**magic serialization hooks (E6 — magic methods):** `__sleep`, `__serialize`, `__wakeup`,
-`__unserialize`, `Serializable` cannot be invoked; `serialize`/`unserialize` of a class
-declaring one throws an `Error` naming the hook rather than silently producing the wrong
-bytes. `C:` (custom data) yields php's "has no unserializer" warning + a bare instance for
-a declared class.
+**magic serialization hooks:** ✅ `__serialize`/`__sleep` and `__unserialize`/`__wakeup`
+are invoked exactly as php invokes them — `__serialize`'s array becomes the `O:` payload
+keys and all, `__sleep`'s names are looked up and mangled (with php's warning for a name
+that is not a property, and its "should return an array" warning + `N;` for a non-array
+return), `__unserialize` receives the payload as an array and suppresses `__wakeup`, and
+`__wakeup` runs as soon as an object's own properties are restored (so a nested object
+wakes first). **Still deferred:** the `Serializable` interface's `C:` (custom data) form,
+which yields php's "has no unserializer" warning + a bare instance for a declared class —
+it needs a consumed-length out-param from the `unserialize` native.
 
 **classes the program does not declare (E6 — class model):** `unserialize` of `stdClass`,
 `__PHP_Incomplete_Class` (unknown / disallowed classes), enum cases (`E:`) returns `false`
@@ -179,14 +186,15 @@ keeps the sign of the partial product; `Value::pow` does not) — `pow_basiclong
   shares the backing array; `WeakMap::getIterator()` likewise. A fault inside
   a container sort names the builtin (`uasort(): …`) where php names the
   method (`ArrayObject::uasort(): …`).
-- `SplFixedArray` is not implemented: its `var_dump` is a synthesized numeric
-  property list the object model cannot express. `SplDoublyLinkedList` /
-  `SplStack` / `SplQueue` wait on class constants for the native class
-  builder (`ClassBuilder` cannot declare them yet), which their
-  `IT_MODE_*` flags need.
-- `serialize()`/`unserialize()` of the SPL containers are not implemented
-  (php's `x:i:0;a:…;m:a:0:{}` needs a consumed-length from the `unserialize`
-  native); `__serialize`/`__unserialize` are exact.
+- `SplDoublyLinkedList` / `SplStack` / `SplQueue` are implemented
+  (`spl_containers2.rs`), elements and mode word in the two private slots php
+  dumps, with the frozen LIFO/FIFO direction, `IT_MODE_DELETE` consumption and
+  both serialization shapes: `examples/tier-a/spl/dllist.php` matches php
+  byte for byte. `SplFixedArray`, the heaps and the iterator decorators are
+  the next slice.
+- The legacy `Serializable` pair (`serialize()`/`unserialize()` *methods*, the
+  `C:` wire form) is not implemented for the SPL containers; php's modern
+  `__serialize`/`__unserialize` path is exact.
 - `ClassFlags::ABSTRACT` is set on interfaces and traits, matching the
   existing native registrations; php's reflection reports `isAbstract()` as
   `false` for both. Unobservable until Reflection (E10) lands.

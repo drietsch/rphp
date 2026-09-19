@@ -67,7 +67,7 @@ fn spl_autoload_call(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 fn class_alias(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let original = args[0].to_php_bytes();
     let alias = args[1].to_php_bytes();
-    let autoload = args.get(2).map_or(true, Value::to_bool);
+    let autoload = args.get(2).is_none_or(Value::to_bool);
     let id = if autoload {
         ctx.lookup_class(&original)?
     } else {

@@ -6,8 +6,8 @@ The oracle is differential testing against stock **PHP 8.5**: each extension shi
 and `php` by `crates/rphp-sapi-cli/tests/differential.rs` and required to match
 byte-for-byte (must-not-regress).
 
-**Registry size: 562 functions and 96 classes/interfaces** (what a fresh CLI
-interpreter answers with, which `cargo xtask missing` now reads directly
+**Registry size: 621 functions and 106 classes + 16 interfaces** (what a fresh
+CLI interpreter answers with, which `cargo xtask missing` now reads directly
 instead of reporting every internal class and constant as absent). The waves so
 far: the S2 string/array/var/url/info halves, S3 filesystem + streams, S4 SPL,
 S5 Reflection, S6 date, S8 mbstring/iconv, S9 password/crypt, S10 filter.
@@ -403,3 +403,25 @@ is invalid php.
   deprecated` is not emitted; the syntax is accepted silently. This is the
   only difference when running Composer's generated autoloader over a real
   Symfony vendor tree.
+
+## The object wave (date, SPL filesystem, hash contexts, iconv)
+
+`ext/date`'s object half (`DateTime`, `DateTimeImmutable`, `DateTimeZone`,
+`DateInterval`, `DatePeriod`, the nine-class exception tree, the procedural
+aliases), SPL's seven filesystem classes, `HashContext`, and `ext/iconv`
+whole. Their per-module headers carry the full divergence lists; the ones
+worth knowing:
+
+- A `createFromDateString` interval derives its fields from the string it
+  kept, so `$i->from_string` and `$i->date_string` are *readable* here where
+  php's read handler hides them, and writing a field (`$i->d = 9`) lands in
+  a dynamic property rather than the hidden struct. Reads, `format()` and
+  `add()` all agree with php either way.
+- `SplFileInfo`'s debug view is one member short on `DirectoryIterator`,
+  `FilesystemIterator` and `GlobIterator` (php shows a `subPathName` slot
+  declared by a class they do not extend), `(array)` casts yield the mangled
+  private keys where php yields `[]`, and `serialize()` succeeds where php
+  refuses an internal class without a serializer.
+- `iconv` reports itself as GNU libiconv 1.11, the implementation whose
+  `//TRANSLIT` answers were measured into its table; an empty charset name
+  is UTF-8 here where libiconv would ask the locale.

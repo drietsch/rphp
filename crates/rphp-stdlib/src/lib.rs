@@ -44,6 +44,7 @@ mod pack;
 mod password;
 mod pcre;
 mod random;
+mod session;
 mod reflection;
 mod spl_autoload;
 mod spl_containers;
@@ -88,6 +89,7 @@ const MODULES: &[&[NativeFn]] = &[
     arrays::FUNCTIONS,
     math::FUNCTIONS,
     net::FUNCTIONS,
+    session::FUNCTIONS,
     ctype::FUNCTIONS,
     funcs::FUNCTIONS,
     hash::FUNCTIONS,
@@ -132,10 +134,12 @@ pub fn register(r: &mut Registry) {
     spl_heaps::register_classes(r);
     spl_decorators::register_classes(r);
     spl_directory::register_classes(r);
+    session::register_classes(r);
     date::register_classes(r);
     reflection::register_classes(r);
     math::register_constants(r);
     net::register_constants(r);
+    session::register_constants(r);
     pcre::register_constants(r);
     json::register_constants(r);
     hash::register_constants(r);

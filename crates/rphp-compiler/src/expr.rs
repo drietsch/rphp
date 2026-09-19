@@ -204,15 +204,14 @@ impl FnCompiler<'_> {
             }
             Expr::New { class, args, span } => match class {
                 NewTarget::Ref(class) => {
+                    let line = self.cur_line;
                     let Some(class) = self.class_ref(class, *span) else {
                         return self.null_temp();
                     };
                     let ic = self.ic();
                     self.emit(Op::InitNew { class, ic });
                     self.compile_sends(args);
-                    let dst = self.alloc_temp();
-                    self.emit(Op::DoCall { dst });
-                    dst
+                    self.emit_do_call(line)
                 }
                 NewTarget::Anon(c) => {
                     // php declares the class when the expression runs, and
@@ -228,14 +227,13 @@ impl FnCompiler<'_> {
                         .expect("anonymous class named by the pre-pass");
                     let k = self.sym_const(self.interner().resolve(name));
                     let ic = self.ic();
+                    let line = self.cur_line;
                     self.emit(Op::InitNew {
                         class: ClassRef::named(k),
                         ic,
                     });
                     self.compile_sends(args);
-                    let dst = self.alloc_temp();
-                    self.emit(Op::DoCall { dst });
-                    dst
+                    self.emit_do_call(line)
                 }
             },
             Expr::Prop {
@@ -291,6 +289,7 @@ impl FnCompiler<'_> {
                 }
                 let name = self.member_name_ref(name);
                 let ic = self.ic();
+                let line = self.cur_line;
                 self.emit(Op::InitMethodCall {
                     obj: obj_reg,
                     name,
@@ -298,9 +297,7 @@ impl FnCompiler<'_> {
                 });
                 self.free_to(mark);
                 self.compile_sends(args);
-                let dst = self.alloc_temp();
-                self.emit(Op::DoCall { dst });
-                dst
+                self.emit_do_call(line)
             }
             Expr::StaticCall {
                 class,
@@ -314,12 +311,11 @@ impl FnCompiler<'_> {
                 };
                 let name = self.member_name_ref(name);
                 let ic = self.ic();
+                let line = self.cur_line;
                 self.emit(Op::InitStaticCall { class, name, ic });
                 self.free_to(mark);
                 self.compile_sends(args);
-                let dst = self.alloc_temp();
-                self.emit(Op::DoCall { dst });
-                dst
+                self.emit_do_call(line)
             }
             Expr::InstanceOf { expr, class, span } => {
                 let mark = self.temp_top;
@@ -471,6 +467,17 @@ impl FnCompiler<'_> {
             }
             Expr::Error(span) => self.unsupported_expr(*span, "parse-error placeholder"),
         }
+    }
+
+    /// Finish a call: the arguments have each marked their own line, so the
+    /// line of the call itself goes back before the op that runs it. php
+    /// reports a call at the line its *name* is on — a call spread over
+    /// several lines is not reported at its closing paren.
+    fn emit_do_call(&mut self, line: u32) -> Reg {
+        self.cur_line = line;
+        let dst = self.alloc_temp();
+        self.emit(Op::DoCall { dst });
+        dst
     }
 
     /// Compile an expression whose value is not needed (an expression
@@ -2651,7 +2658,7 @@ impl FnCompiler<'_> {
     /// `name(args...)`: late-bound through the runtime's function table,
     /// with php's two-step lookup for an unqualified name in a namespace.
     fn compile_call(&mut self, name: &Name, args: &[Arg], span: Span) -> Reg {
-        let _ = span;
+        let line = self.cur_line;
         // `assert()` is the one call php decides about at compile time: with
         // `zend.assertions=-1` it is not compiled at all, so its argument is
         // never even evaluated.
@@ -2675,9 +2682,7 @@ impl FnCompiler<'_> {
                 self.emit(Op::SendVal { pos: 1, src: reg });
             }
         }
-        let dst = self.alloc_temp();
-        self.emit(Op::DoCall { dst });
-        dst
+        self.emit_do_call(line)
     }
 
     /// The call as written, for `assert()`'s message. php prints its own
@@ -2721,6 +2726,7 @@ impl FnCompiler<'_> {
 
     /// `callee(args...)` where the callee is a runtime value.
     fn compile_dynamic_call(&mut self, callee: &Expr, args: &[Arg]) -> Reg {
+        let line = self.cur_line;
         let mark = self.temp_top;
         let callee_reg = self.compile_chain_obj(callee);
         let ic = self.ic();
@@ -2730,9 +2736,7 @@ impl FnCompiler<'_> {
         });
         self.free_to(mark);
         self.compile_sends(args);
-        let dst = self.alloc_temp();
-        self.emit(Op::DoCall { dst });
-        dst
+        self.emit_do_call(line)
     }
 }
 

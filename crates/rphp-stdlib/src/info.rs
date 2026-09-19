@@ -522,10 +522,27 @@ pub(crate) fn zend_version(_: &mut Ctx, _: &mut [Value]) -> NativeResult {
 /// `errorfunc.rs` / `info.rs`; [`CORE_FUNCTIONS`] tells them apart.
 const EXTENSIONS: &[(&str, &[&[NativeFn]])] = &[
     ("Core", &[crate::basic_functions::FUNCTIONS, crate::errorfunc::FUNCTIONS, FUNCTIONS]),
+    ("date", &[crate::date::FUNCTIONS, crate::date::CLASS_FUNCTIONS]),
     ("pcre", &[crate::pcre::FUNCTIONS]),
     ("ctype", &[crate::ctype::FUNCTIONS]),
     ("json", &[crate::json::FUNCTIONS]),
+    ("mbstring", &[crate::mbstring::FUNCTIONS]),
+    (
+        "SPL",
+        &[
+            crate::spl_autoload::FUNCTIONS,
+            crate::spl_containers2::FUNCTIONS,
+            crate::spl_decorators::FUNCTIONS,
+            crate::spl_directory::FUNCTIONS,
+            crate::spl_fixedarray::FUNCTIONS,
+            crate::spl_heaps::FUNCTIONS,
+            crate::spl_iterators::FUNCTIONS,
+        ],
+    ),
+    ("filter", &[crate::filter::FUNCTIONS]),
     ("hash", &[crate::hash::FUNCTIONS]),
+    ("iconv", &[crate::iconv::FUNCTIONS]),
+    ("session", &[crate::session::FUNCTIONS]),
     (
         "standard",
         &[
@@ -549,9 +566,18 @@ const EXTENSIONS: &[(&str, &[&[NativeFn]])] = &[
             crate::base64::FUNCTIONS,
             crate::uniqid::FUNCTIONS,
             crate::random::FUNCTIONS,
+            crate::net::FUNCTIONS,
+            crate::file::FUNCTIONS,
+            crate::file2::FUNCTIONS,
+            crate::filestat::FUNCTIONS,
+            crate::dir::FUNCTIONS,
+            crate::exec::FUNCTIONS,
+            crate::head::FUNCTIONS,
+            crate::password::FUNCTIONS,
         ],
     ),
     ("random", &[crate::random::FUNCTIONS]),
+    ("Reflection", &[crate::reflection::FUNCTIONS]),
 ];
 
 /// Functions php attributes to `Core` (`Zend/zend_builtin_functions.c`,

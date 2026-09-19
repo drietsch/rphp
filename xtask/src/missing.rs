@@ -106,6 +106,26 @@ fn implemented_functions<'a>(_candidates: impl IntoIterator<Item = &'a str>) -> 
         .collect()
 }
 
+/// The classes and constants a real engine has once the runtime and the stdlib
+/// bundle have registered theirs — built by standing an interpreter up, which
+/// is the only honest source (native classes come from three places: the
+/// engine, the stdlib modules, and `rphp-embed`'s own constants).
+fn implemented_classes_and_constants() -> (BTreeSet<String>, BTreeSet<String>) {
+    let engine = rphp_embed::Engine::new(rphp_embed::EngineConfig::cli());
+    let interp = engine.new_interp(Box::new(rphp_runtime::NullSink));
+    let classes = interp
+        .classes()
+        .iter()
+        .filter(|c| c.internal)
+        .map(|c| String::from_utf8_lossy(&c.name).to_ascii_lowercase())
+        .collect();
+    let constants = interp
+        .constants()
+        .map(|(name, _)| String::from_utf8_lossy(name).into_owned())
+        .collect();
+    (classes, constants)
+}
+
 /// What rphp implements, keyed the same way as the manifest lookups
 /// (functions and classes lower-cased, constants exact).
 #[derive(Debug, Default)]
@@ -137,12 +157,13 @@ impl Registry {
             .into_iter()
             .map(|n| n.to_ascii_lowercase())
             .collect();
+        let (classes, constants) = implemented_classes_and_constants();
         Registry {
-            label: "live rphp-stdlib registry (functions); classes/constants: no native registry yet, every internal class/constant used is reported missing".into(),
+            label: "live registry: rphp-stdlib functions, plus the classes and constants a fresh CLI interpreter has".into(),
             functions,
-            classes: BTreeSet::new(),
-            constants: BTreeSet::new(),
-            classes_constants_unavailable: true,
+            classes,
+            constants,
+            classes_constants_unavailable: false,
         }
     }
 
@@ -1697,7 +1718,12 @@ mod tests {
         let r = Registry::live(&m);
         assert!(r.implements(Kind::Function, "strlen"));
         assert!(!r.implements(Kind::Function, "no_such_function_xyz"));
-        assert!(r.classes_constants_unavailable);
+        // Native classes and constants exist now, so the report counts them
+        // instead of calling every one of them missing.
+        assert!(!r.classes_constants_unavailable);
+        assert!(r.implements(Kind::Class, "arrayobject"));
+        assert!(r.implements(Kind::Constant, "PHP_EOL"));
+        assert!(!r.implements(Kind::Class, "domdocument"));
     }
 
     #[test]

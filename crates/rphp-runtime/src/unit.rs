@@ -120,6 +120,16 @@ impl Interp {
         self.class_order.iter().map(|&id| &self.classes[id as usize])
     }
 
+    /// Every declared user function's lowercased name, in declaration order
+    /// (`get_defined_functions()['user']`). Ids are handed out as units load
+    /// and compile, so id order *is* declaration order.
+    pub fn user_function_names(&self) -> Vec<Box<[u8]>> {
+        let mut v: Vec<(u32, Box<[u8]>)> =
+            self.func_index.iter().map(|(n, &id)| (id, n.clone())).collect();
+        v.sort_by_key(|(id, _)| *id);
+        v.into_iter().map(|(_, n)| n).collect()
+    }
+
     /// Look a (case-insensitive) function name up in the user function table.
     pub fn user_function(&self, name: &[u8]) -> Option<u32> {
         let key = name.to_ascii_lowercase();
@@ -459,6 +469,7 @@ impl Interp {
             })
             .collect();
         let spec = ClassSpec {
+            used_traits: Vec::new(),
             name: stub.name.clone(),
             kind: decl.kind,
             flags: decl.flags,

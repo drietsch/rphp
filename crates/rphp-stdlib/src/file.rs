@@ -11,7 +11,7 @@ use std::fs;
 use std::io::Write;
 
 use rphp_runtime::{nf, Ctx, NativeFn, NativeResult, Unwind};
-use rphp_value::{Array, Str, Value};
+use rphp_value::{Array, ArrayKey, Str, Value};
 
 use crate::filestat::{arg_path, invalidate};
 
@@ -38,6 +38,10 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("rewind", 1, Some(1), rewind),
     nf!("fflush", 1, Some(1), fflush),
     nf!("stream_get_contents", 1, Some(3), stream_get_contents),
+    nf!("stream_get_meta_data", 1, Some(1), stream_get_meta_data),
+    nf!("stream_set_blocking", 2, Some(2), stream_set_blocking),
+    nf!("stream_isatty", 1, Some(1), stream_isatty),
+    nf!("stream_copy_to_stream", 2, Some(4), stream_copy_to_stream),
 ];
 
 /// An open stream: a byte buffer plus a cursor, and where writes ultimately
@@ -63,6 +67,16 @@ pub(crate) struct Stream {
     /// until something tries to read it.
     eof: bool,
     dirty: bool,
+    /// The mode string `fopen` was called with, which
+    /// `stream_get_meta_data()` reports back.
+    mode: Box<str>,
+    /// The name the stream was opened under (`uri`): a real path, or the
+    /// `php://…` spelling.
+    uri: Box<str>,
+    /// How far php's read buffer was filled by the last read. `unread_bytes`
+    /// is what is left of that fill, so it is `0` on a fresh handle and after
+    /// a seek, and up to one 8192-byte chunk after a read.
+    fill_end: usize,
 }
 
 /// Where a stream's writes end up.
@@ -86,6 +100,8 @@ impl Stream {
         };
         self.pos = (base + offset).max(0) as usize;
         self.eof = false;
+        // A seek throws php's read buffer away.
+        self.fill_end = self.pos;
         0
     }
 
@@ -243,7 +259,7 @@ fn unlink(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
             let shown = String::from_utf8_lossy(&args[0].to_php_bytes()).into_owned();
-            ctx.warn(&format!("unlink({shown}): {e}"))?;
+            ctx.warn(&format!("unlink({shown}): {}", crate::filestat::io_text(&e)))?;
             Ok(Value::Bool(false))
         }
     }
@@ -259,7 +275,10 @@ fn copy(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Ok(_) => Ok(Value::Bool(true)),
         Err(e) => {
             let shown = String::from_utf8_lossy(&args[0].to_php_bytes()).into_owned();
-            ctx.warn(&format!("copy({shown}): {e}"))?;
+            ctx.warn(&format!(
+                "copy({shown}): Failed to open stream: {}",
+                crate::filestat::io_text(&e)
+            ))?;
             Ok(Value::Bool(false))
         }
     }
@@ -275,8 +294,13 @@ fn rename(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     match r {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
-            let shown = String::from_utf8_lossy(&args[0].to_php_bytes()).into_owned();
-            ctx.warn(&format!("rename({shown}): {e}"))?;
+            // php names both paths here.
+            let src = String::from_utf8_lossy(&args[0].to_php_bytes()).into_owned();
+            let dst = String::from_utf8_lossy(&args[1].to_php_bytes()).into_owned();
+            ctx.warn(&format!(
+                "rename({src},{dst}): {}",
+                crate::filestat::io_text(&e)
+            ))?;
             Ok(Value::Bool(false))
         }
     }
@@ -377,6 +401,14 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             writable: sink != Sink::Buffer || writable,
             eof: false,
             dirty: false,
+            // php's memory streams are always binary.
+            mode: if sink == Sink::Buffer && !m.contains('b') {
+                format!("{m}b").into()
+            } else {
+                m.clone().into()
+            },
+            uri: path_str.clone().into(),
+            fill_end: 0,
         }
     } else {
         let p = arg_path(ctx, &args[0]);
@@ -395,7 +427,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Stream {
             buf,
             pos,
-            path: Some(p),
+            path: Some(p.clone()),
             append,
             sink: Sink::Buffer,
             readable,
@@ -403,6 +435,9 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             eof: false,
             // A `w`/`a` open creates the file even with nothing written.
             dirty: writable && (truncate || append),
+            mode: m.clone().into(),
+            uri: p.to_string_lossy().into_owned().into(),
+            fill_end: pos,
         }
     };
     Ok(ctx.resources.add("stream", Box::new(stream)))
@@ -463,6 +498,17 @@ fn fwrite(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 }
 
 /// `fread(resource $stream, int $length): string|false`
+/// php's read buffer is filled a chunk (8192 bytes) at a time from the
+/// current position; `unread_bytes` reports what is left of that fill. A
+/// memory stream has no buffer and always answers `0`.
+const CHUNK: usize = 8192;
+
+fn record_fill(s: &mut Stream) {
+    if s.path.is_some() {
+        s.fill_end = (s.pos + CHUNK).min(s.buf.len());
+    }
+}
+
 /// php reads through the fd in `chunk_size` (8192) pieces, so a handle opened
 /// write-only fails there and every read function reports the same notice —
 /// naming 8192 bytes whatever length was asked for. A memory stream has no fd
@@ -484,6 +530,7 @@ fn fread(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         return Ok(Value::Bool(false));
     }
     with_stream(ctx, &stream, "fread", |s| {
+        record_fill(s);
         let end = (s.pos + len).min(s.buf.len());
         let out = s.buf[s.pos.min(s.buf.len())..end].to_vec();
         s.pos = end;
@@ -501,6 +548,7 @@ fn fgets(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         return Ok(Value::Bool(false));
     }
     with_stream(ctx, &stream, "fgets", |s| {
+        record_fill(s);
         if s.pos >= s.buf.len() {
             s.eof = true;
             return Value::Bool(false);
@@ -527,6 +575,7 @@ fn fgetc(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         return Ok(Value::Bool(false));
     }
     with_stream(ctx, &stream, "fgetc", |s| {
+        record_fill(s);
         if s.pos >= s.buf.len() {
             s.eof = true;
             return Value::Bool(false);
@@ -586,6 +635,7 @@ fn stream_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         return Ok(Value::Str(Str::new(b"")));
     }
     with_stream(ctx, &stream, "stream_get_contents", |s| {
+        record_fill(s);
         if offset >= 0 {
             s.pos = (offset as usize).min(s.buf.len());
         }
@@ -603,4 +653,97 @@ fn stream_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         };
         Value::Str(Str::from_vec(s.buf[start..end].to_vec()))
     })
+}
+
+/// `stream_get_meta_data(resource $stream): array` — php's nine keys, in
+/// php's order. `stream_type`/`wrapper_type` name the implementation behind
+/// the handle: a real file is `plainfile`/`STDIO`, `php://memory` is
+/// `PHP`/`MEMORY`, `php://temp` `PHP`/`TEMP`, and the three output handles
+/// `PHP`/`STDIO` (and are not seekable).
+fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    with_stream(ctx, &stream, "stream_get_meta_data", |s| {
+        let php_stream = s.path.is_none();
+        let (wrapper, kind, seekable) = if !php_stream {
+            ("plainfile", "STDIO".to_string(), true)
+        } else if s.sink != Sink::Buffer {
+            ("PHP", "STDIO".to_string(), false)
+        } else if s.uri.ends_with("temp") || s.uri.starts_with("php://temp/") {
+            ("PHP", "TEMP".to_string(), true)
+        } else {
+            ("PHP", "MEMORY".to_string(), true)
+        };
+        let mut out = Array::new();
+        let mut set = |k: &str, v: Value| out.set(ArrayKey::Str(Box::from(k.as_bytes())), v);
+        set("timed_out", Value::Bool(false));
+        set("blocked", Value::Bool(true));
+        set("eof", Value::Bool(s.eof));
+        set("wrapper_type", Value::string(wrapper.as_bytes()));
+        set("stream_type", Value::string(kind.as_bytes()));
+        set("mode", Value::string(s.mode.as_bytes()));
+        set(
+            "unread_bytes",
+            Value::Int(s.fill_end.saturating_sub(s.pos) as i64),
+        );
+        set("seekable", Value::Bool(seekable));
+        set("uri", Value::string(s.uri.as_bytes()));
+        Value::Array(out)
+    })
+}
+
+/// `stream_set_blocking(resource $stream, bool $enable): bool` — every stream
+/// rphp has is a buffer or an ordinary file, so it is always blocking and the
+/// call only has to report success.
+fn stream_set_blocking(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    with_stream(ctx, &stream, "stream_set_blocking", |_| Value::Bool(true))
+}
+
+/// `stream_isatty(resource $stream): bool` — true only for the process's own
+/// standard handles, and only when they really are a terminal.
+fn stream_isatty(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    let sink = with_stream(ctx, &stream, "stream_isatty", |s| s.sink)?;
+    Ok(Value::Bool(match sink {
+        Sink::Buffer => false,
+        Sink::Stdout => rustix::termios::isatty(std::io::stdout()),
+        Sink::Stderr => rustix::termios::isatty(std::io::stderr()),
+    }))
+}
+
+/// `stream_copy_to_stream(resource $from, resource $to, ?int $length = null, int $offset = 0): int|false`
+fn stream_copy_to_stream(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let length = args
+        .get(2)
+        .map(|v| v.deref().into_owned())
+        .filter(|v| !matches!(v, Value::Null | Value::Uninit))
+        .map(|v| v.to_int());
+    let offset = args.get(3).map_or(0, Value::to_int);
+    let from = args[0].clone();
+    let data = with_stream(ctx, &from, "stream_copy_to_stream", |s| {
+        if offset > 0 {
+            s.seek(offset, 0);
+        }
+        let start = s.pos.min(s.buf.len());
+        let end = match length {
+            Some(n) if n >= 0 => (start + n as usize).min(s.buf.len()),
+            _ => s.buf.len(),
+        };
+        s.pos = end;
+        s.eof = length.is_none_or(|n| end - start < n as usize);
+        s.buf[start..end].to_vec()
+    })?;
+    let to = args[1].clone();
+    let sink = with_stream(ctx, &to, "stream_copy_to_stream", |s| {
+        if s.sink == Sink::Buffer {
+            s.write(&data);
+        }
+        s.sink
+    })?;
+    match sink {
+        Sink::Stdout => ctx.echo(&data),
+        Sink::Stderr => eprint!("{}", String::from_utf8_lossy(&data)),
+        Sink::Buffer => {}
+    }
+    Ok(Value::Int(data.len() as i64))
 }

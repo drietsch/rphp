@@ -346,6 +346,7 @@ fn compile_main(
     fc.is_main = true;
     fc.flags |= rphp_bytecode::FnFlags::NEEDS_SYMTAB;
     fc.emit(Op::BindSymtab);
+    fc.bind_auto_globals();
     fc.compile_stmts(&program.items);
     let k = fc.push_const(Const::Int(1));
     let one = fc.alloc_temp();

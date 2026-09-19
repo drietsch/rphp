@@ -18,6 +18,10 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("php_sapi_name", 0, Some(0), php_sapi_name),
     nf!("phpversion", 0, Some(1), phpversion),
     nf!("function_exists", 1, Some(1), function_exists),
+    nf!("class_uses", 1, Some(2), class_uses),
+    nf!("get_resource_type", 1, Some(1), get_resource_type),
+    nf!("get_defined_constants", 0, Some(1), get_defined_constants),
+    nf!("get_defined_functions", 0, Some(1), get_defined_functions),
     nf!("set_time_limit", 1, Some(1), set_time_limit),
     // --- class introspection over the engine's class table ---
     nf!("class_exists", 1, Some(2), class_exists),
@@ -277,6 +281,102 @@ pub(crate) fn class_implements(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
 }
 
 /// `class_parents(object|string $object_or_class, bool $autoload = true): array|false`
+/// `class_uses(object|string $object_or_class, bool $autoload = true): array|false`
+/// — `name => name` for the traits the class uses **itself**; a parent's
+/// traits are not reported.
+pub(crate) fn class_uses(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let class = match &*args[0].deref() {
+        Value::Object(o) => Some(o.class_id()),
+        Value::Str(s) => ctx.class_by_name(s.as_bytes()),
+        other => {
+            return Err(Unwind::type_error(format!(
+                "class_uses(): Argument #1 ($object_or_class) must be of type object|string, {} given",
+                other.type_name()
+            )))
+        }
+    };
+    let Some(cid) = class else {
+        ctx.warn(&format!(
+            "class_uses(): Class {} does not exist and could not be loaded",
+            String::from_utf8_lossy(&args[0].to_php_bytes())
+        ))?;
+        return Ok(Value::Bool(false));
+    };
+    let mut out = rphp_value::Array::new();
+    for &tid in &ctx.class(cid).used_traits.clone() {
+        let n = ctx.class(tid).name.clone();
+        out.set(rphp_value::ArrayKey::str(&n), Value::string(&n));
+    }
+    Ok(Value::Array(out))
+}
+
+/// `get_resource_type(resource $resource): string` — the kind the engine
+/// registered the resource under (`stream`, …), or `Unknown` once closed.
+pub(crate) fn get_resource_type(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    match &*args[0].deref() {
+        Value::Resource(r) => Ok(Value::string(r.kind().as_bytes())),
+        other => Err(Unwind::type_error(format!(
+            "get_resource_type(): Argument #1 ($resource) must be of type resource, {} given",
+            other.type_name()
+        ))),
+    }
+}
+
+/// `get_defined_constants(bool $categorize = false): array`. The categorized
+/// form needs each constant's extension, which rphp does not record: the
+/// engine's own land under `Core` and everything `define()` added under
+/// `user`, which is php's split for those two groups.
+pub(crate) fn get_defined_constants(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let categorize = args.first().is_some_and(|v| v.deref().to_bool());
+    let mut all: Vec<(Box<[u8]>, Value)> = ctx
+        .constants()
+        .map(|(k, v)| (Box::from(k), v.clone()))
+        .collect();
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    if !categorize {
+        let mut out = rphp_value::Array::new();
+        for (k, v) in all {
+            out.set(rphp_value::ArrayKey::str(&k), v);
+        }
+        return Ok(Value::Array(out));
+    }
+    let user: std::collections::HashSet<Box<[u8]>> =
+        ctx.user_constant_names().iter().cloned().collect();
+    let mut core = rphp_value::Array::new();
+    let mut theirs = rphp_value::Array::new();
+    for (k, v) in all {
+        if user.contains(&k) {
+            theirs.set(rphp_value::ArrayKey::str(&k), v);
+        } else {
+            core.set(rphp_value::ArrayKey::str(&k), v);
+        }
+    }
+    let mut out = rphp_value::Array::new();
+    out.set(rphp_value::ArrayKey::str(b"Core"), Value::Array(core));
+    if !theirs.is_empty() {
+        out.set(rphp_value::ArrayKey::str(b"user"), Value::Array(theirs));
+    }
+    Ok(Value::Array(out))
+}
+
+/// `get_defined_functions(bool $exclude_disabled = true): array` — php's
+/// `['internal' => …, 'user' => …]`, both lower-cased, user functions in
+/// declaration order.
+pub(crate) fn get_defined_functions(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
+    let mut internal = rphp_value::Array::new();
+    for f in ctx.natives() {
+        internal.push(Value::string(f.name.to_ascii_lowercase().as_bytes()));
+    }
+    let mut user = rphp_value::Array::new();
+    for name in ctx.user_function_names() {
+        user.push(Value::string(&name));
+    }
+    let mut out = rphp_value::Array::new();
+    out.set(rphp_value::ArrayKey::str(b"internal"), Value::Array(internal));
+    out.set(rphp_value::ArrayKey::str(b"user"), Value::Array(user));
+    Ok(Value::Array(out))
+}
+
 pub(crate) fn class_parents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
@@ -435,9 +535,12 @@ pub(crate) fn get_class_methods(ctx: &mut Ctx, args: &mut [Value]) -> NativeResu
 /// `is_a(mixed $object_or_class, string $class, bool $allow_string = false): bool`
 pub(crate) fn is_a(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let allow_string = args.get(2).is_some_and(Value::to_bool);
+    // php autoloads the *subject* when it is a name (that is what makes
+    // `is_a(A::class, $type, true)` work before anything touched `A`), and
+    // then matches the target by name up the chain without loading it.
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
-        Value::Str(s) if allow_string => ctx.class_by_name(s.as_bytes()),
+        Value::Str(s) if allow_string => ctx.lookup_class(s.as_bytes())?,
         _ => None,
     };
     let target = ctx.class_by_name(&args[1].to_php_bytes());
@@ -452,7 +555,7 @@ pub(crate) fn is_subclass_of(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult 
     let allow_string = args.get(2).is_none_or(Value::to_bool);
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
-        Value::Str(s) if allow_string => ctx.class_by_name(s.as_bytes()),
+        Value::Str(s) if allow_string => ctx.lookup_class(s.as_bytes())?,
         _ => None,
     };
     let target = ctx.class_by_name(&args[1].to_php_bytes());

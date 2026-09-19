@@ -197,6 +197,9 @@ impl Interp {
         self.copy_trait_methods(spec, &tids, &excludes, &aliases, &class_name, &file, line)?;
         self.copy_trait_props(spec, &tids, &class_name, &file, line)?;
         self.copy_trait_consts(spec, &tids, &class_name, &file, line)?;
+        // Keep them for `class_uses()`, which reports the names a class used
+        // itself — not what its parent used.
+        spec.used_traits = tids;
         Ok(())
     }
 
@@ -212,9 +215,10 @@ impl Interp {
         let mut tids: Vec<u32> = Vec::new();
         for u in uses {
             for name in &u.names {
-                // Same resolution path as `extends`/`implements`: the
-                // process-wide class table, which only holds linked classes.
-                let tid = match self.class_by_name(name) {
+                // Same resolution path as `extends`/`implements`, autoload
+                // included: a trait in another file is how Composer-managed
+                // code ships one (`use LoggerTrait;` in `AbstractLogger`).
+                let tid = match self.lookup_class(name)? {
                     Some(tid) if self.classes[tid as usize].linked => tid,
                     _ => {
                         let msg =

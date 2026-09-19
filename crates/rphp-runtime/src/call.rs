@@ -228,7 +228,10 @@ impl Interp {
             Vec::new()
         };
         let num_regs = func.f.num_regs as usize;
-        self.stack.resize(args_base + num_regs, Value::Null);
+        // A register starts *uninitialized*, not null: php's symbol table has
+        // no entry for a variable that was never assigned, so
+        // `get_defined_vars()` and `$GLOBALS` must not show one either.
+        self.stack.resize(args_base + num_regs, Value::Uninit);
         if let Some(c) = &closure {
             self.bind_closure(&func, args_base, c);
         }

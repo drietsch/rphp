@@ -214,10 +214,18 @@ impl Engine {
         server.set(ArrayKey::str(b"REQUEST_TIME"), Value::Int(now as i64));
         server.set(ArrayKey::str(b"argv"), Value::Array(argv.clone()));
         server.set(ArrayKey::str(b"argc"), argc.clone());
-        it.globals
-            .insert(b"_SERVER", PhpRef::new(Value::Array(server)));
+        // php's CLI creates these seven up front, in this order — which is
+        // the order `array_keys($GLOBALS)` shows. `$_ENV` and `$_REQUEST` are
+        // *not* here: php fills them the first time a script touches one
+        // (`Interp::auto_global_cell`).
         it.globals.insert(b"argv", PhpRef::new(Value::Array(argv)));
         it.globals.insert(b"argc", PhpRef::new(argc));
+        for name in [&b"_GET"[..], b"_POST", b"_COOKIE", b"_FILES"] {
+            it.globals
+                .insert(name, PhpRef::new(Value::Array(Array::new())));
+        }
+        it.globals
+            .insert(b"_SERVER", PhpRef::new(Value::Array(server)));
     }
 
     /// Parse and compile `src` (named `name` in diagnostics) against

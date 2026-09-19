@@ -105,7 +105,14 @@ impl Interp {
             return false;
         }
         self.constants.insert(Box::from(name), value);
+        self.user_constants.push(Box::from(name));
         true
+    }
+
+    /// The names `define()` added, in definition order — php's `user`
+    /// category in `get_defined_constants(true)`.
+    pub fn user_constant_names(&self) -> &[Box<[u8]>] {
+        &self.user_constants
     }
 
     /// Every defined constant (`get_defined_constants()`), unordered.

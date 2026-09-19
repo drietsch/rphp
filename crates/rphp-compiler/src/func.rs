@@ -447,7 +447,7 @@ impl<'a> FnCompiler<'a> {
     ///
     /// `$GLOBALS` is not in the list: it is not a variable but a view of the
     /// table, lowered on its own ([`FnCompiler::is_globals`]).
-    fn bind_auto_globals(&mut self) {
+    pub(crate) fn bind_auto_globals(&mut self) {
         let mut names: Vec<(Box<[u8]>, IdentId, Reg)> = self
             .vars
             .iter()
@@ -507,12 +507,14 @@ impl<'a> FnCompiler<'a> {
         dst
     }
 
-    /// The `var_names` table: every named variable (excluding `$this`).
+    /// The `var_names` table: every named variable (excluding `$this` and
+    /// `$GLOBALS`, which is a view of the table rather than an entry in it —
+    /// php's `array_keys($GLOBALS)` never contains `GLOBALS`).
     fn var_names(&self) -> Vec<(Box<[u8]>, Reg)> {
         let mut names: Vec<(Box<[u8]>, Reg)> = self
             .vars
             .iter()
-            .filter(|(id, _)| !self.is_this(**id))
+            .filter(|(id, _)| !self.is_this(**id) && !self.is_globals(**id))
             .map(|(id, r)| (self.mx.interner.resolve(*id).into(), *r))
             .collect();
         names.sort_by_key(|(_, r)| *r);

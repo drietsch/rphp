@@ -38,6 +38,10 @@ mod pack;
 mod pcre;
 mod random;
 mod spl_containers;
+mod file2;
+mod spl_decorators;
+mod spl_fixedarray;
+mod spl_heaps;
 mod date;
 mod filter;
 mod reflection;
@@ -64,6 +68,10 @@ const MODULES: &[&[NativeFn]] = &[
     reflection::FUNCTIONS,
     spl_containers2::FUNCTIONS,
     password::FUNCTIONS,
+    file2::FUNCTIONS,
+    spl_decorators::FUNCTIONS,
+    spl_fixedarray::FUNCTIONS,
+    spl_heaps::FUNCTIONS,
     spl_iterators::FUNCTIONS,
     spl_autoload::FUNCTIONS,
     output::FUNCTIONS,
@@ -110,6 +118,9 @@ pub fn register(r: &mut Registry) {
     weak::register_classes(r);
     spl_containers::register_classes(r);
     spl_containers2::register_classes(r);
+    spl_fixedarray::register_classes(r);
+    spl_heaps::register_classes(r);
+    spl_decorators::register_classes(r);
     date::register_classes(r);
     reflection::register_classes(r);
     math::register_constants(r);
@@ -126,10 +137,14 @@ pub fn register(r: &mut Registry) {
     iconv::register_constants(r);
     pack::register_constants(r);
     file::register_constants(r);
+    file2::register_constants(r);
     date::register_constants(r);
     filter::register_constants(r);
     reflection::register_constants(r);
     spl_containers2::register_constants(r);
+    spl_fixedarray::register_constants(r);
+    spl_heaps::register_constants(r);
+    spl_decorators::register_constants(r);
     password::register_constants(r);
     filestat::register_constants(r);
     dir::register_constants(r);

@@ -36,6 +36,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("touch", 1, Some(3), touch),
     nf!("clearstatcache", 0, Some(2), clearstatcache),
     nf!("umask", 0, Some(1), umask),
+    nf!("chmod", 2, Some(2), chmod),
 ];
 
 /// Look `path` up through php's per-request stat cache
@@ -277,4 +278,51 @@ fn set_umask(mask: Option<i64>) -> i64 {
 #[cfg(not(unix))]
 fn set_umask(_mask: Option<i64>) -> i64 {
     0
+}
+
+/// `chmod(string $filename, int $permissions): bool` — php reports the
+/// failure reason through the warning channel and answers `false`.
+fn chmod(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let path = arg_path(ctx, &args[0]);
+    let mode = args[1].to_int();
+    match rustix::fs::chmod(&path, rustix::fs::Mode::from_bits_retain(mode as u16)) {
+        Ok(()) => {
+            invalidate(ctx, &path);
+            Ok(Value::Bool(true))
+        }
+        Err(e) => {
+            ctx.warn(&format!("chmod(): {}", errno_text(e.raw_os_error())))?;
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+/// php prints the C `strerror` text for a failed syscall, where Rust's
+/// `io::Error` renders `No such file or directory (os error 2)` and `rustix`
+/// hands back a bare errno. Every filesystem function that reports a failure
+/// goes through here so the message is php's.
+pub(crate) fn errno_text(code: i32) -> &'static str {
+    match code {
+        1 => "Operation not permitted",
+        2 => "No such file or directory",
+        13 => "Permission denied",
+        17 => "File exists",
+        20 => "Not a directory",
+        21 => "Is a directory",
+        22 => "Invalid argument",
+        28 => "No space left on device",
+        30 => "Read-only file system",
+        62 => "Too many levels of symbolic links",
+        63 => "File name too long",
+        66 => "Directory not empty",
+        _ => "Operation failed",
+    }
+}
+
+/// The text php shows for a failed `std::fs` call.
+pub(crate) fn io_text(e: &std::io::Error) -> &'static str {
+    match e.raw_os_error() {
+        Some(code) => errno_text(code),
+        None => "Operation failed",
+    }
 }

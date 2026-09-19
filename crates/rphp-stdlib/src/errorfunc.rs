@@ -14,6 +14,8 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("restore_error_handler", 0, Some(0), restore_error_handler),
     nf!("set_exception_handler", 1, Some(1), set_exception_handler),
     nf!("restore_exception_handler", 0, Some(0), restore_exception_handler),
+    nf!("get_error_handler", 0, Some(0), get_error_handler),
+    nf!("get_exception_handler", 0, Some(0), get_exception_handler),
     nf!("error_reporting", 0, Some(1), error_reporting),
     nf!("trigger_error", 1, Some(2), trigger_error),
     nf!("user_error", 1, Some(2), trigger_error),
@@ -44,6 +46,17 @@ pub(crate) fn set_exception_handler(ctx: &mut Ctx, args: &mut [Value]) -> Native
     let prev = ctx.exception_handler.last().cloned().unwrap_or(Value::Null);
     ctx.exception_handler.push(args[0].deref().into_owned());
     Ok(prev)
+}
+
+/// `get_error_handler(): ?callable` (8.5) — the handler on top of the stack,
+/// which is what a later `set_error_handler()` would replace.
+pub(crate) fn get_error_handler(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
+    Ok(ctx.current_error_handler().map_or(Value::Null, |(h, _)| h))
+}
+
+/// `get_exception_handler(): ?callable` (8.5).
+pub(crate) fn get_exception_handler(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
+    Ok(ctx.exception_handler.last().cloned().unwrap_or(Value::Null))
 }
 
 /// `restore_exception_handler(): true`

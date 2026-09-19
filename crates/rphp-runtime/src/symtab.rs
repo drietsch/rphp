@@ -131,6 +131,47 @@ impl Symtab {
     }
 }
 
+impl crate::Interp {
+    /// The global cell for `name`, created if it is not there yet.
+    ///
+    /// php fills two of its auto-globals **lazily**: `$_ENV` and `$_REQUEST`
+    /// do not exist until something touches them (which is why
+    /// `array_keys($GLOBALS)` does not list them in a fresh script, and does
+    /// once it has). `$_ENV` is then the process environment and `$_REQUEST`
+    /// an empty array, while the eager ones (`$_SERVER`, `$_GET`, `$_POST`,
+    /// `$_COOKIE`, `$_FILES`, `$argv`, `$argc`) are seeded by the SAPI at
+    /// startup. Everything else — `$_SESSION` before `session_start()`, an
+    /// ordinary `global $x;` — starts as an undefined variable, exactly as
+    /// php has it.
+    pub(crate) fn auto_global_cell(&mut self, name: &[u8]) -> rphp_value::PhpRef {
+        // An entry may exist and still be uninitialized — `BindSymtab` binds
+        // `{main}`'s variables to the globals table before the auto-global
+        // ops run — so "already there" means "already has a value".
+        if let Some(cell) = self.globals.with(|t| t.get(name)) {
+            if !cell.get().is_uninit() {
+                return cell;
+            }
+        }
+        let seed = match name {
+            b"_ENV" => {
+                let mut env = rphp_value::Array::new();
+                for (k, v) in std::env::vars_os() {
+                    env.set(
+                        rphp_value::ArrayKey::str(k.to_string_lossy().as_bytes()),
+                        Value::string(v.to_string_lossy().as_bytes()),
+                    );
+                }
+                Value::Array(env)
+            }
+            b"_REQUEST" => Value::empty_array(),
+            _ => return self.globals.get_or_create(name),
+        };
+        let cell = self.globals.get_or_create(name);
+        cell.set(seed);
+        cell
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

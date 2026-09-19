@@ -66,7 +66,9 @@ fn mkdir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
             let shown = String::from_utf8_lossy(&args[0].to_php_bytes()).into_owned();
-            ctx.warn(&format!("mkdir({shown}): {e}"))?;
+            // php names no path in `mkdir()`'s message.
+            let _ = shown;
+            ctx.warn(&format!("mkdir(): {}", crate::filestat::io_text(&e)))?;
             Ok(Value::Bool(false))
         }
     }
@@ -81,7 +83,7 @@ fn rmdir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
             let shown = String::from_utf8_lossy(&args[0].to_php_bytes()).into_owned();
-            ctx.warn(&format!("rmdir({shown}): {e}"))?;
+            ctx.warn(&format!("rmdir({shown}): {}", crate::filestat::io_text(&e)))?;
             Ok(Value::Bool(false))
         }
     }

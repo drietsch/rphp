@@ -93,6 +93,9 @@ pub struct Interp {
     /// Lowercased name → id.
     pub(crate) native_index: HashMap<Box<[u8]>, NativeId>,
     pub(crate) constants: HashMap<Box<[u8]>, Value>,
+    /// The names `define()` added, so `get_defined_constants(true)` can put
+    /// them under php's `user` category (the engine's own are `Core`).
+    pub(crate) user_constants: Vec<Box<[u8]>>,
     /// Every loaded unit.
     pub(crate) units: Vec<Rc<UnitRt>>,
     /// Every function of every loaded unit, by process-wide id.
@@ -193,6 +196,7 @@ impl Interp {
             natives: Vec::new(),
             native_index: HashMap::new(),
             constants: HashMap::new(),
+            user_constants: Vec::new(),
             units: Vec::new(),
             funcs: Vec::new(),
             func_index: HashMap::new(),

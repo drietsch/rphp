@@ -27,4 +27,6 @@ rphp-ast.workspace = true
 rphp-parser.workspace = true
 rphp-tokenizer.workspace = true
 rphp-stdlib.workspace = true
+rphp-runtime.workspace = true
+rphp-embed.workspace = true
 rphp-value.workspace = true

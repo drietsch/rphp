@@ -1,0 +1,734 @@
+//! `ReflectionProperty`, `ReflectionClassConstant` and the two enum-case
+//! reflectors (php-src `ext/reflection/php_reflection.c`).
+//!
+//! **What an instance holds.** Both families declare the public `$name` and
+//! `$class` slots php dumps; the payload keeps the declaring class id and the
+//! member name, so the reflector re-resolves the member on every call rather
+//! than caching a descriptor that inheritance could invalidate.
+//!
+//! **Visibility is not enforced.** `getValue`/`setValue` read and write the
+//! instance slot (or the static cell) directly, which is what makes
+//! Reflection the escape hatch php documents.
+//!
+//! **Known divergences**, all upstream of this module:
+//!
+//! * `getAttributes()` is always empty and `getDocComment()` always `false`:
+//!   the runtime's compiled property and class-constant declarations
+//!   (`rphp_bytecode::PropDef` / `ClassConstDef`) carry neither.
+//! * php refuses `setValue()` on an initialized `readonly` property with
+//!   `Cannot modify readonly property C::$p`; the write path used here goes
+//!   straight to the slot and does not raise it.
+
+use rphp_runtime::{nm, Ctx, NativeResult, PropDefault, Registry, Unwind, Visibility};
+use rphp_value::{Object, Value};
+
+use super::class;
+use super::common::{
+    class_arg, declared_prop, list, obj_arg, refl_error, state, static_prop_value, store, str_arg,
+    this, vis_bit, ConstState, PropState, IS_FINAL, IS_PRIVATE, IS_PRIVATE_SET, IS_PROTECTED,
+    IS_PROTECTED_SET, IS_PUBLIC, IS_READONLY, IS_STATIC,
+};
+use super::types;
+
+// ---- ReflectionProperty ----------------------------------------------------
+
+/// Where a property is declared and what shape it has. The two kinds are kept
+/// apart because the runtime stores instance and static properties in
+/// separate tables.
+enum Decl {
+    /// An instance property: its index in the class's `props`.
+    Instance(usize),
+    /// A static property: its index in the class's `static_props`.
+    Static(usize),
+    /// A property the instance grew at run time.
+    Dynamic,
+}
+
+/// Locate a property on its declaring class.
+fn locate(ctx: &Ctx, s: &PropState) -> Decl {
+    if s.dynamic {
+        return Decl::Dynamic;
+    }
+    let def = ctx.class(s.cid);
+    if let Some(&i) = def.prop_index.get(&s.name) {
+        return Decl::Instance(i as usize);
+    }
+    if let Some(&i) = def.static_index.get(&s.name) {
+        return Decl::Static(i as usize);
+    }
+    Decl::Dynamic
+}
+
+/// A `ReflectionProperty` over `name` as declared in `decl`.
+pub(crate) fn make_property(
+    ctx: &mut Ctx,
+    decl: u32,
+    name: &[u8],
+    dynamic: bool,
+) -> Result<Value, Unwind> {
+    let st = PropState {
+        cid: decl,
+        name: Box::from(name),
+        dynamic,
+    };
+    let o = super::common::new_reflector(ctx, "ReflectionProperty", st)?;
+    o.set(b"name", Value::string(name));
+    let class = ctx.class(decl).name.clone();
+    o.set(b"class", Value::string(&class));
+    Ok(Value::Object(o))
+}
+
+/// `ReflectionProperty::getModifiers()` for a property of `cid`, as php's
+/// `getProperties($filter)` needs it before the reflector exists.
+pub(crate) fn modifiers(ctx: &Ctx, cid: u32, name: &[u8]) -> i64 {
+    let s = PropState {
+        cid,
+        name: Box::from(name),
+        dynamic: false,
+    };
+    prop_modifiers(ctx, &s)
+}
+
+/// The modifier bits of a located property.
+fn prop_modifiers(ctx: &Ctx, s: &PropState) -> i64 {
+    let def = ctx.class(s.cid);
+    match locate(ctx, s) {
+        Decl::Instance(i) => {
+            let p = &def.props[i];
+            let mut bits = vis_bit(p.vis);
+            // `readonly` *is* `protected(set)`, and php reports that bit when
+            // the read visibility is wider than it — so `public readonly` is
+            // 2177 while `protected readonly` is 130.
+            if p.readonly {
+                bits |= IS_READONLY;
+                if p.vis == Visibility::Public {
+                    bits |= IS_PROTECTED_SET;
+                }
+            }
+            match p.set_vis {
+                Some(Visibility::Protected) => bits |= IS_PROTECTED_SET,
+                // A `private(set)` property cannot be redeclared, so php
+                // marks it final as well.
+                Some(Visibility::Private) => bits |= IS_PRIVATE_SET | IS_FINAL,
+                _ => {}
+            }
+            bits
+        }
+        Decl::Static(i) => vis_bit(def.static_props[i].vis) | IS_STATIC,
+        // A dynamic property is public and nothing else.
+        Decl::Dynamic => IS_PUBLIC,
+    }
+}
+
+/// `ReflectionProperty::__construct(object|string $class, string $property)`
+fn prop_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let recv = this(o)?;
+    let cid = class_arg(ctx, &args[0])?;
+    let name = str_arg(&args[1]);
+    let Some(decl) = declared_prop(ctx, cid, &name) else {
+        return Err(refl_error(format!(
+            "Property {}::${} does not exist",
+            ctx.class(cid).name_str(),
+            String::from_utf8_lossy(&name)
+        )));
+    };
+    recv.set(b"name", Value::string(&name));
+    let class = ctx.class(decl).name.clone();
+    recv.set(b"class", Value::string(&class));
+    store(
+        recv,
+        PropState {
+            cid: decl,
+            name: Box::from(&name[..]),
+            dynamic: false,
+        },
+    );
+    Ok(Value::Null)
+}
+
+/// `ReflectionProperty::getName(): string`
+fn prop_get_name(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    Ok(Value::string(&s.name))
+}
+
+/// `ReflectionProperty::getDeclaringClass(): ReflectionClass`
+fn prop_declaring_class(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    class::make_class(ctx, "ReflectionClass", s.cid)
+}
+
+/// `ReflectionProperty::getModifiers(): int`
+fn prop_get_modifiers(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    Ok(Value::Int(prop_modifiers(ctx, &s)))
+}
+
+/// One modifier predicate.
+fn prop_flag(ctx: &mut Ctx, o: Option<&Object>, bit: i64) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    Ok(Value::Bool(prop_modifiers(ctx, &s) & bit != 0))
+}
+
+/// `ReflectionProperty::isPublic(): bool`
+fn prop_is_public(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    prop_flag(ctx, o, IS_PUBLIC)
+}
+
+/// `ReflectionProperty::isProtected(): bool`
+fn prop_is_protected(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    prop_flag(ctx, o, IS_PROTECTED)
+}
+
+/// `ReflectionProperty::isPrivate(): bool`
+fn prop_is_private(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    prop_flag(ctx, o, IS_PRIVATE)
+}
+
+/// `ReflectionProperty::isStatic(): bool`
+fn prop_is_static(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    prop_flag(ctx, o, IS_STATIC)
+}
+
+/// `ReflectionProperty::isReadOnly(): bool`
+fn prop_is_readonly(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    prop_flag(ctx, o, IS_READONLY)
+}
+
+/// `ReflectionProperty::isDefault(): bool` — declared, as opposed to grown at
+/// run time.
+fn prop_is_default(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    Ok(Value::Bool(!s.dynamic))
+}
+
+/// `ReflectionProperty::isPromoted(): bool`
+///
+/// The runtime's `PropInfo` has no promotion flag — the compiler emits a
+/// promoted parameter as an ordinary property — so this asks the declaring
+/// class's constructor whether a parameter of the same name promotes.
+/// `ReflectionProperty::isVirtual(): bool` (8.4) — true for a hooked property
+/// whose hooks never touch the backing store, so php gives it no storage.
+///
+/// **Divergence:** rphp lays out a slot for every declared property and does
+/// not record whether a hook reads or writes it, so this is always `false`.
+/// The answer is right for a property without hooks, which is nearly all of
+/// them; a genuinely virtual one is reported as backed.
+fn prop_is_virtual(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let _: PropState = state(this(o)?)?;
+    Ok(Value::Bool(false))
+}
+
+fn prop_is_promoted(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let Some(m) = ctx.resolve_method(s.cid, b"__construct") else {
+        return Ok(Value::Bool(false));
+    };
+    if m.decl != s.cid {
+        return Ok(Value::Bool(false));
+    }
+    let Some(f) = m.user_func() else {
+        return Ok(Value::Bool(false));
+    };
+    let promoted =
+        f.f.params
+            .iter()
+            .any(|p| p.promoted.is_some() && p.name == s.name);
+    Ok(Value::Bool(promoted))
+}
+
+/// `ReflectionProperty::hasType(): bool`
+fn prop_has_type(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    Ok(Value::Bool(prop_type_string(ctx, &s).is_some()))
+}
+
+/// `ReflectionProperty::getType(): ?ReflectionType`
+fn prop_get_type(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let ty = prop_type_string(ctx, &s);
+    match ty {
+        Some(t) => types::from_string(ctx, &t, Some(s.cid)),
+        None => Ok(Value::Null),
+    }
+}
+
+/// The canonical spelling of a property's declared type.
+fn prop_type_string(ctx: &Ctx, s: &PropState) -> Option<String> {
+    let def = ctx.class(s.cid);
+    match locate(ctx, s) {
+        Decl::Instance(i) => def.props[i].ty.as_ref().map(ToString::to_string),
+        Decl::Static(i) => def.static_props[i].ty.as_ref().map(ToString::to_string),
+        Decl::Dynamic => None,
+    }
+}
+
+/// `ReflectionProperty::hasDefaultValue(): bool` — a typed property without
+/// an initializer starts `Uninit` and has none.
+fn prop_has_default(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    Ok(Value::Bool(prop_default(ctx, &s).is_some()))
+}
+
+/// The declared default of a property, when it has one.
+fn prop_default(ctx: &Ctx, s: &PropState) -> Option<PropDefault> {
+    let def = ctx.class(s.cid);
+    let d = match locate(ctx, s) {
+        Decl::Instance(i) => def.props[i].default.clone(),
+        Decl::Static(i) => def.static_props[i].init.clone()?,
+        Decl::Dynamic => return None,
+    };
+    match &d {
+        PropDefault::Value(v) if v.is_uninit() => None,
+        _ => Some(d),
+    }
+}
+
+/// `ReflectionProperty::getDefaultValue(): mixed`
+fn prop_get_default(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let d = prop_default(ctx, &s);
+    match d {
+        Some(PropDefault::Value(v)) => Ok(v),
+        Some(PropDefault::Thunk(fid)) => super::common::run_thunk(ctx, fid, Some(s.cid)),
+        None => {
+            ctx.deprecated(
+                "ReflectionProperty::getDefaultValue() for a property without a default value is deprecated, use ReflectionProperty::hasDefaultValue() to check if the default value exists",
+            )?;
+            Ok(Value::Null)
+        }
+    }
+}
+
+/// `ReflectionProperty::getValue(?object $object = null): mixed`
+fn prop_get_value(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let where_ = locate(ctx, &s);
+    if let Decl::Static(i) = where_ {
+        let v = static_prop_value(ctx, s.cid, i)?;
+        if v.is_uninit() {
+            return Err(uninit_error(ctx, &s));
+        }
+        return Ok(v);
+    }
+    let obj = instance_arg(ctx, &s, args, "getValue")?;
+    match obj.get_deref(&s.name) {
+        Some(v) if !v.is_uninit() => Ok(v),
+        Some(_) => Err(uninit_error(ctx, &s)),
+        None => Ok(Value::Null),
+    }
+}
+
+/// `ReflectionProperty::setValue(mixed $objectOrValue, mixed $value = ?): void`
+fn prop_set_value(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let where_ = locate(ctx, &s);
+    if let Decl::Static(i) = where_ {
+        // php accepts both `setValue($value)` and `setValue(null, $value)`
+        // for a static property.
+        let v = match args.len() {
+            0 => Value::Null,
+            1 => args[0].deref().into_owned(),
+            _ => args[1].deref().into_owned(),
+        };
+        super::common::set_static_prop(ctx, s.cid, i, v);
+        return Ok(Value::Null);
+    }
+    let obj = instance_arg(ctx, &s, args, "setValue")?;
+    let v = match args.get(1) {
+        Some(v) => v.deref().into_owned(),
+        None => Value::Null,
+    };
+    obj.set(&s.name, v);
+    Ok(Value::Null)
+}
+
+/// `ReflectionProperty::isInitialized(?object $object = null): bool`
+fn prop_is_initialized(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let where_ = locate(ctx, &s);
+    if let Decl::Static(i) = where_ {
+        let v = static_prop_value(ctx, s.cid, i)?;
+        return Ok(Value::Bool(!v.is_uninit()));
+    }
+    let obj = instance_arg(ctx, &s, args, "isInitialized")?;
+    let set = obj.get(&s.name).is_some_and(|v| !v.is_uninit());
+    Ok(Value::Bool(set))
+}
+
+/// The `$object` argument of an instance-property operation, with php's two
+/// errors.
+fn instance_arg(ctx: &Ctx, s: &PropState, args: &[Value], method: &str) -> Result<Object, Unwind> {
+    let Some(obj) = args.first().and_then(obj_arg) else {
+        return Err(Unwind::type_error(format!(
+            "ReflectionProperty::{method}(): Argument #1 ($object) must be provided for instance properties"
+        )));
+    };
+    if !ctx.object_instanceof(&obj, s.cid) {
+        return Err(refl_error(
+            "Given object is not an instance of the class this property was declared in",
+        ));
+    }
+    Ok(obj)
+}
+
+/// php's error for reading a typed property that was never written.
+fn uninit_error(ctx: &Ctx, s: &PropState) -> Unwind {
+    Unwind::error(format!(
+        "Typed property {}::${} must not be accessed before initialization",
+        ctx.class(s.cid).name_str(),
+        String::from_utf8_lossy(&s.name)
+    ))
+}
+
+/// `ReflectionProperty::setAccessible(bool $accessible): void` — a no-op
+/// since 8.1 and deprecated in 8.5.
+fn prop_set_accessible(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    this(o)?;
+    ctx.deprecated(
+        "Method ReflectionProperty::setAccessible() is deprecated since 8.5, as it has no effect",
+    )?;
+    Ok(Value::Null)
+}
+
+/// `ReflectionProperty::getDocComment(): string|false` and
+/// `ReflectionProperty::getAttributes(): array` — see the module header.
+fn prop_doc_comment(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let _: PropState = state(this(o)?)?;
+    Ok(Value::Bool(false))
+}
+
+/// `ReflectionProperty::getAttributes(?string $name = null, int $flags = 0): array`
+fn prop_get_attributes(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let _: PropState = state(this(o)?)?;
+    Ok(list(Vec::new()))
+}
+
+// ---- ReflectionClassConstant and the enum cases ----------------------------
+
+/// A class-constant reflector of class `class` (php uses
+/// `ReflectionClassConstant` for `getReflectionConstants()` even on an enum,
+/// and the two `ReflectionEnum*Case` classes for `ReflectionEnum::getCases`).
+pub(crate) fn make_class_const(
+    ctx: &mut Ctx,
+    cid: u32,
+    name: &[u8],
+    class: &str,
+) -> Result<Value, Unwind> {
+    let decl = const_decl(ctx, cid, name);
+    let case = ctx.class(cid).enum_index.contains_key(name);
+    let st = ConstState {
+        cid: decl,
+        name: Box::from(name),
+        case,
+    };
+    let o = super::common::new_reflector(ctx, class, st)?;
+    o.set(b"name", Value::string(name));
+    let cname = ctx.class(decl).name.clone();
+    o.set(b"class", Value::string(&cname));
+    Ok(Value::Object(o))
+}
+
+/// The class a constant (or enum case) is declared in.
+fn const_decl(ctx: &Ctx, cid: u32, name: &[u8]) -> u32 {
+    let def = ctx.class(cid);
+    if def.enum_index.contains_key(name) {
+        return cid;
+    }
+    def.consts.get(name).map_or(cid, |k| k.decl)
+}
+
+/// The modifier bits php reports for a class constant. An enum case is
+/// public and nothing else.
+pub(crate) fn const_modifiers(ctx: &Ctx, cid: u32, name: &[u8]) -> i64 {
+    let def = ctx.class(cid);
+    if def.enum_index.contains_key(name) {
+        return IS_PUBLIC;
+    }
+    match def.consts.get(name) {
+        Some(k) => {
+            let mut bits = vis_bit(k.vis);
+            if k.is_final {
+                bits |= IS_FINAL;
+            }
+            bits
+        }
+        None => IS_PUBLIC,
+    }
+}
+
+/// The value of a class constant, or the singleton object of an enum case.
+///
+/// An enum case is not a class constant in the runtime's model, so the case
+/// object is fetched the only way an extension can: through the enum's own
+/// `cases()`, which returns the singletons in declaration order.
+pub(crate) fn const_value(ctx: &mut Ctx, cid: u32, name: &[u8]) -> Result<Value, Unwind> {
+    if ctx.class(cid).enum_index.contains_key(name) {
+        let cases = ctx.call_static_method(cid, b"cases", &[])?;
+        if let Value::Array(a) = cases {
+            for v in a.values() {
+                if let Value::Object(o) = &*v.deref() {
+                    if o.get_deref(b"name")
+                        .is_some_and(|n| n.to_php_bytes() == name)
+                    {
+                        return Ok(Value::Object(o.clone()));
+                    }
+                }
+            }
+        }
+        return Err(refl_error(format!(
+            "Case {}::{} does not exist",
+            ctx.class(cid).name_str(),
+            String::from_utf8_lossy(name)
+        )));
+    }
+    let decl = const_decl(ctx, cid, name);
+    ctx.class_const(decl, name, Some(decl))
+}
+
+/// `ReflectionClassConstant::__construct(object|string $class, string $constant)`
+fn const_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let recv = this(o)?;
+    let cid = class_arg(ctx, &args[0])?;
+    let name = str_arg(&args[1]);
+    let def = ctx.class(cid).clone();
+    let known = def.enum_index.contains_key(name.as_slice())
+        || def
+            .consts
+            .get(name.as_slice())
+            .is_some_and(|k| !(k.vis == Visibility::Private && k.decl != cid));
+    if !known {
+        return Err(refl_error(format!(
+            "Constant {}::{} does not exist",
+            def.name_str(),
+            String::from_utf8_lossy(&name)
+        )));
+    }
+    let decl = const_decl(ctx, cid, &name);
+    recv.set(b"name", Value::string(&name));
+    let cname = ctx.class(decl).name.clone();
+    recv.set(b"class", Value::string(&cname));
+    store(
+        recv,
+        ConstState {
+            cid: decl,
+            name: Box::from(&name[..]),
+            case: def.enum_index.contains_key(name.as_slice()),
+        },
+    );
+    Ok(Value::Null)
+}
+
+/// `ReflectionClassConstant::getName(): string`
+fn const_get_name(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: ConstState = state(this(o)?)?;
+    Ok(Value::string(&s.name))
+}
+
+/// `ReflectionClassConstant::getValue(): mixed`
+fn const_get_value(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: ConstState = state(this(o)?)?;
+    const_value(ctx, s.cid, &s.name)
+}
+
+/// `ReflectionClassConstant::getDeclaringClass(): ReflectionClass`
+fn const_declaring_class(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: ConstState = state(this(o)?)?;
+    class::make_class(ctx, "ReflectionClass", s.cid)
+}
+
+/// `ReflectionClassConstant::getModifiers(): int`
+fn const_get_modifiers(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: ConstState = state(this(o)?)?;
+    Ok(Value::Int(const_modifiers(ctx, s.cid, &s.name)))
+}
+
+/// One modifier predicate.
+fn const_flag(ctx: &mut Ctx, o: Option<&Object>, bit: i64) -> NativeResult {
+    let s: ConstState = state(this(o)?)?;
+    Ok(Value::Bool(const_modifiers(ctx, s.cid, &s.name) & bit != 0))
+}
+
+/// `ReflectionClassConstant::isPublic(): bool`
+fn const_is_public(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    const_flag(ctx, o, IS_PUBLIC)
+}
+
+/// `ReflectionClassConstant::isProtected(): bool`
+fn const_is_protected(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    const_flag(ctx, o, IS_PROTECTED)
+}
+
+/// `ReflectionClassConstant::isPrivate(): bool`
+fn const_is_private(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    const_flag(ctx, o, IS_PRIVATE)
+}
+
+/// `ReflectionClassConstant::isFinal(): bool`
+fn const_is_final(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    const_flag(ctx, o, IS_FINAL)
+}
+
+/// `ReflectionClassConstant::isEnumCase(): bool`
+fn const_is_enum_case(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: ConstState = state(this(o)?)?;
+    Ok(Value::Bool(s.case))
+}
+
+/// `ReflectionClassConstant::hasType(): bool`
+fn const_has_type(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: ConstState = state(this(o)?)?;
+    Ok(Value::Bool(const_type_string(ctx, &s).is_some()))
+}
+
+/// `ReflectionClassConstant::getType(): ?ReflectionType`
+fn const_get_type(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: ConstState = state(this(o)?)?;
+    let ty = const_type_string(ctx, &s);
+    match ty {
+        Some(t) => types::from_string(ctx, &t, Some(s.cid)),
+        None => Ok(Value::Null),
+    }
+}
+
+/// The canonical spelling of a typed class constant's type (php 8.3).
+fn const_type_string(ctx: &Ctx, s: &ConstState) -> Option<String> {
+    ctx.class(s.cid)
+        .consts
+        .get(&s.name)?
+        .ty
+        .as_ref()
+        .map(ToString::to_string)
+}
+
+/// `ReflectionClassConstant::getDocComment(): string|false`
+fn const_doc_comment(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let _: ConstState = state(this(o)?)?;
+    Ok(Value::Bool(false))
+}
+
+/// `ReflectionClassConstant::getAttributes(?string $name = null, int $flags = 0): array`
+fn const_get_attributes(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let _: ConstState = state(this(o)?)?;
+    Ok(list(Vec::new()))
+}
+
+/// `ReflectionEnumUnitCase::getEnum(): ReflectionEnum`
+fn case_get_enum(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: ConstState = state(this(o)?)?;
+    class::make_class(ctx, "ReflectionEnum", s.cid)
+}
+
+/// `ReflectionEnumBackedCase::getBackingValue(): string|int`
+fn case_backing_value(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: ConstState = state(this(o)?)?;
+    let case = const_value(ctx, s.cid, &s.name)?;
+    match &case {
+        Value::Object(obj) => Ok(obj.get_deref(b"value").unwrap_or(Value::Null)),
+        _ => Ok(Value::Null),
+    }
+}
+
+/// `ReflectionEnumUnitCase::__construct(object|string $class, string $constant)`
+fn case_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let recv = this(o)?;
+    let cid = class_arg(ctx, &args[0])?;
+    let name = str_arg(&args[1]);
+    if !ctx.class(cid).enum_index.contains_key(name.as_slice()) {
+        return Err(refl_error(format!(
+            "Case {}::{} does not exist",
+            ctx.class(cid).name_str(),
+            String::from_utf8_lossy(&name)
+        )));
+    }
+    recv.set(b"name", Value::string(&name));
+    let cname = ctx.class(cid).name.clone();
+    recv.set(b"class", Value::string(&cname));
+    store(
+        recv,
+        ConstState {
+            cid,
+            name: Box::from(&name[..]),
+            case: true,
+        },
+    );
+    Ok(Value::Null)
+}
+
+// ---- registration ----------------------------------------------------------
+
+/// Register the property and class-constant reflectors.
+pub(crate) fn register_classes(r: &mut Registry) {
+    r.class("ReflectionProperty")
+        .implements(&["Reflector"])
+        .prop("name", Visibility::Public, Value::string(b""))
+        .prop("class", Visibility::Public, Value::string(b""))
+        .class_const("IS_STATIC", Value::Int(IS_STATIC))
+        .class_const("IS_READONLY", Value::Int(IS_READONLY))
+        .class_const("IS_PUBLIC", Value::Int(IS_PUBLIC))
+        .class_const("IS_PROTECTED", Value::Int(IS_PROTECTED))
+        .class_const("IS_PRIVATE", Value::Int(IS_PRIVATE))
+        .class_const("IS_ABSTRACT", Value::Int(super::common::IS_ABSTRACT))
+        .class_const("IS_PROTECTED_SET", Value::Int(IS_PROTECTED_SET))
+        .class_const("IS_PRIVATE_SET", Value::Int(IS_PRIVATE_SET))
+        .class_const("IS_VIRTUAL", Value::Int(super::common::IS_VIRTUAL))
+        .class_const("IS_FINAL", Value::Int(IS_FINAL))
+        .method("__construct", nm!(2, Some(2), prop_construct))
+        .method("getName", nm!(0, Some(0), prop_get_name))
+        .method("getValue", nm!(0, Some(1), prop_get_value))
+        .method("setValue", nm!(1, Some(2), prop_set_value))
+        .method("isInitialized", nm!(0, Some(1), prop_is_initialized))
+        .method("isPublic", nm!(0, Some(0), prop_is_public))
+        .method("isProtected", nm!(0, Some(0), prop_is_protected))
+        .method("isPrivate", nm!(0, Some(0), prop_is_private))
+        .method("isStatic", nm!(0, Some(0), prop_is_static))
+        .method("isReadOnly", nm!(0, Some(0), prop_is_readonly))
+        .method("isDefault", nm!(0, Some(0), prop_is_default))
+        .method("isPromoted", nm!(0, Some(0), prop_is_promoted))
+        .method("isVirtual", nm!(0, Some(0), prop_is_virtual))
+        .method("hasType", nm!(0, Some(0), prop_has_type))
+        .method("getType", nm!(0, Some(0), prop_get_type))
+        .method("hasDefaultValue", nm!(0, Some(0), prop_has_default))
+        .method("getDefaultValue", nm!(0, Some(0), prop_get_default))
+        .method("getDeclaringClass", nm!(0, Some(0), prop_declaring_class))
+        .method("getModifiers", nm!(0, Some(0), prop_get_modifiers))
+        .method("setAccessible", nm!(1, Some(1), prop_set_accessible))
+        .method("getDocComment", nm!(0, Some(0), prop_doc_comment))
+        .method("getAttributes", nm!(0, Some(2), prop_get_attributes))
+        .finish();
+
+    r.class("ReflectionClassConstant")
+        .implements(&["Reflector"])
+        .prop("name", Visibility::Public, Value::string(b""))
+        .prop("class", Visibility::Public, Value::string(b""))
+        .class_const("IS_PUBLIC", Value::Int(IS_PUBLIC))
+        .class_const("IS_PROTECTED", Value::Int(IS_PROTECTED))
+        .class_const("IS_PRIVATE", Value::Int(IS_PRIVATE))
+        .class_const("IS_FINAL", Value::Int(IS_FINAL))
+        .method("__construct", nm!(2, Some(2), const_construct))
+        .method("getName", nm!(0, Some(0), const_get_name))
+        .method("getValue", nm!(0, Some(0), const_get_value))
+        .method("getDeclaringClass", nm!(0, Some(0), const_declaring_class))
+        .method("getModifiers", nm!(0, Some(0), const_get_modifiers))
+        .method("isPublic", nm!(0, Some(0), const_is_public))
+        .method("isProtected", nm!(0, Some(0), const_is_protected))
+        .method("isPrivate", nm!(0, Some(0), const_is_private))
+        .method("isFinal", nm!(0, Some(0), const_is_final))
+        .method("isEnumCase", nm!(0, Some(0), const_is_enum_case))
+        .method("hasType", nm!(0, Some(0), const_has_type))
+        .method("getType", nm!(0, Some(0), const_get_type))
+        .method("getDocComment", nm!(0, Some(0), const_doc_comment))
+        .method("getAttributes", nm!(0, Some(2), const_get_attributes))
+        .finish();
+
+    r.class("ReflectionEnumUnitCase")
+        .extends("ReflectionClassConstant")
+        .method("__construct", nm!(2, Some(2), case_construct))
+        .method("getEnum", nm!(0, Some(0), case_get_enum))
+        .finish();
+
+    r.class("ReflectionEnumBackedCase")
+        .extends("ReflectionEnumUnitCase")
+        .method("getBackingValue", nm!(0, Some(0), case_backing_value))
+        .finish();
+}

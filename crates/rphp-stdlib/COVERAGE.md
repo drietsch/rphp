@@ -6,10 +6,11 @@ The oracle is differential testing against stock **PHP 8.5**: each extension shi
 and `php` by `crates/rphp-sapi-cli/tests/differential.rs` and required to match
 byte-for-byte (must-not-regress).
 
-**Registry size: 493 rows** (wave 1: ~103 distinct functions; wave 2: +11 by-reference
-builtins; wave 3: +9 higher-order/callable builtins; E1: +36 engine-facing builtins —
-`ob_*`, ini/constants, error handling; S2 the string/array/var/url/info halves; S3
-filesystem + streams; S8 mbstring/iconv; S10 filter). Plus aliases and the initial slice.
+**Registry size: 562 functions and 96 classes/interfaces** (what a fresh CLI
+interpreter answers with, which `cargo xtask missing` now reads directly
+instead of reporting every internal class and constant as absent). The waves so
+far: the S2 string/array/var/url/info halves, S3 filesystem + streams, S4 SPL,
+S5 Reflection, S6 date, S8 mbstring/iconv, S9 password/crypt, S10 filter.
 
 ## Engine gaps that bound the burn-down
 
@@ -199,6 +200,108 @@ keeps the sign of the partial product; `Value::pow` does not) — `pow_basiclong
 - `ClassFlags::ABSTRACT` is set on interfaces and traits, matching the
   existing native registrations; php's reflection reports `isAbstract()` as
   `false` for both. Unobservable until Reflection (E10) lands.
+
+**date (S6), the procedural half.** `date`/`gmdate`/`idate`, `mktime`/
+`gmmktime`, `checkdate`, `strtotime`, `getdate`/`localtime`, `date_parse`/
+`date_parse_from_format`, `date_default_timezone_get`/`set`,
+`timezone_identifiers_list`/`timezone_abbreviations_list`, `date_sun_info`.
+The parser is the hard part and is a port of timelib's scanner: ISO 8601 in its
+shapes, textual and numeric dates, times with fractions and meridiem, timezone
+ids, abbreviations and offsets, `@<ts>`, and the relative grammar (`+1 week
+2 days`, `next monday`, `first day of next month`, `last day of february 2021`,
+`tomorrow`, `midnight`, `ago`, …), with php's DST resolution rule across a
+gap and an overlap. **The `DateTime` family is the next wave**, so the
+procedural functions that return one (`date_create`, `timezone_open`,
+`date_diff`, the `date_interval_*` pair) are not registered yet. `time`,
+`microtime`, `hrtime` and `sleep` stay in `uniqid.rs`, where they already
+lived.
+
+**The filesystem tail (S3).** `tempnam`/`tmpfile`, `glob` with its flag set,
+`link`/`symlink`/`readlink`/`linkinfo`, `stat`/`lstat`/`fstat` (php's 26-entry
+array — thirteen numeric keys and the thirteen named ones, in php's order),
+`chown`/`chgrp`/`fileowner`/`filegroup`, `disk_free_space`/`disk_total_space`/
+`diskfreespace`, and the handle functions `flock`, `ftruncate`, `fpassthru`,
+`fsync`/`fdatasync`, `fscanf`, `fgetcsv`/`fputcsv` (with php 8.4's `$escape`
+deprecation).
+
+**password / crypt (S9).** `password_hash`/`verify`/`needs_rehash`/`get_info`/
+`algos` and `crypt()` over the whole scheme table php still answers for —
+bcrypt (`$2y$`/`$2a$`/`$2b$`), MD5 (`$1$`), SHA-256/512 (`$5$`/`$6$`, with
+php's `strtoul` reading of `rounds=` and its rejection, not clamping, of a
+count outside `1000..=999999999`), traditional and extended DES — plus
+argon2i/argon2id, byte-compatible with the libargon2 php links (a hash made
+here verifies there and the reverse). php's failure convention is exact: an
+unusable setting is `*0`, or `*1` when the setting itself began with `*0`.
+**Divergences:** a `$1$`/`$5$`/`$6$` salt containing a byte outside crypt's
+`./0-9A-Za-z` alphabet answers `*0` where php hashes it verbatim (the backend
+refuses it; reachable only through a pathological setting such as
+`$6$rounds=abc$`, where php's `strtoul` rule makes `rounds=abc` the salt), and
+`$2a$`/`$2x$` are the corrected bcrypt implementation, so the handful of 8-bit
+passwords where crypt_blowfish's compatibility bugs bite answer `*0` rather
+than a wrong hash.
+
+**Reflection (S5).** `ReflectionClass`/`Object`/`Enum`, `ReflectionMethod`/
+`Function`/`FunctionAbstract`, `ReflectionParameter`, `ReflectionProperty`,
+`ReflectionClassConstant`, `ReflectionEnum{Unit,Backed}Case`, the three
+`ReflectionType` shapes, `ReflectionAttribute`, `ReflectionReference`,
+`ReflectionException`, `Reflector` and `Attribute` — every reflector an
+ordinary native class whose php-visible property (`$name`, `$class`) is a real
+slot, with the rest hidden in the instance payload. Five tier-a snippets under
+`examples/tier-a/reflection/` match php byte for byte, and the L1 Composer gate
+is green again with them. **Deferred:** the `__toString()` dump formats (php's
+multi-line `Class [ <user> class Foo ] { … }`), `ReflectionGenerator`,
+`ReflectionFiber`, `ReflectionExtension`, lazy objects, and
+`ReflectionParameter::isDefaultValueConstant` (a compiled default is an opaque
+initializer; the constant's *name* is not recorded). **Engine gaps it found,
+each blocking a real method:** the compiler drops attributes (`attrs: vec![]`)
+and doc comments (`doc: None`), a class records no end line, native functions
+carry no arginfo, and `ReflectionProperty::isVirtual()` cannot tell a hooked
+property with a backing slot from one without.
+
+**SPL containers and iterators (S4).** `SplFixedArray`, the heap family
+(`SplHeap`/`SplMinHeap`/`SplMaxHeap`/`SplPriorityQueue`, php's exact sift
+order and corruption latching) and the whole decorator set
+(`IteratorIterator`, `FilterIterator`/`CallbackFilterIterator`,
+`LimitIterator`, `CachingIterator`, `NoRewindIterator`, `InfiniteIterator`,
+`AppendIterator`, `EmptyIterator`, `RegexIterator`, `MultipleIterator`,
+`RecursiveIteratorIterator` and the recursive wrappers). The call *pattern*
+matters as much as the result — php's `RecursiveIteratorIterator` calls
+`callHasChildren`/`callGetChildren` at particular moments and `CachingIterator`
+reads one element ahead — so each is pinned by a snippet that drives the
+decorator over a user iterator which echoes every call. **Deferred:**
+`RecursiveTreeIterator` (a presentation layer needing its own probe round) and
+the `spl_directory.c` family (`DirectoryIterator`, `SplFileInfo`,
+`SplFileObject`).
+
+**Undefined variables are silent.** php's `Warning: Undefined variable $x` is
+not emitted: a variable read lowers to "use this register", with no op to hang
+the check on, so the compiler would have to emit a guard (or the consuming ops
+learn the variable's name). The *value* is right — an unassigned variable reads
+as `null` — and since registers now start `Uninit` rather than `Null`, the
+symbol table matches php exactly: `get_defined_vars()` and `$GLOBALS` list only
+what was actually assigned, and `isset()` on an unassigned variable is `false`.
+
+**Auto-globals are created the way php creates them.** `$argv`, `$argc`,
+`$_GET`, `$_POST`, `$_COOKIE`, `$_FILES` and `$_SERVER` are seeded by the SAPI
+at startup, in php's order, so `array_keys($GLOBALS)` matches on a fresh
+script. `$_ENV` (the process environment) and `$_REQUEST` (an empty array) are
+filled **on first touch**, which is why php does not list them until something
+reads one — and does afterwards. `$_SESSION` starts undefined and springs into
+existence on write, as php has it. `$GLOBALS` itself is never an entry in the
+table.
+
+**`is_a()` / `is_subclass_of()` autoload their subject.** php loads the class
+named by the first argument when `$allow_string` is on (the target is then
+matched by name up the chain, without loading it), which is what makes
+Symfony's `is_a(ContainerConfigurator::class, $type, true)` — the test that
+decides how a micro-kernel's `configureContainer()` is called — answer `true`.
+rphp looked in the class table only, so it answered `false` for a class nothing
+had touched yet.
+
+**Traits autoload.** `use LoggerTrait;` resolved through the class table
+without the autoload stack, so a trait that ships in its own file (every
+Composer-managed one) was `Trait "X" not found`. It now takes the same path as
+`extends`/`implements`.
 
 **Superglobals in every scope.** php's auto-globals (`$_SERVER`, `$_ENV`,
 `$_GET`, `$_POST`, `$_COOKIE`, `$_FILES`, `$_REQUEST`, `$_SESSION`) are one

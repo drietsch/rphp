@@ -1450,7 +1450,7 @@ impl Interp {
                 }
                 Op::BindGlobal { reg, name } => {
                     let name = self.name_bytes(&func, name);
-                    let cell = self.globals.get_or_create(&name);
+                    let cell = self.auto_global_cell(&name);
                     self.rebind(base, reg, cell);
                 }
                 Op::BindSymtab => {
@@ -1467,9 +1467,12 @@ impl Interp {
                         match symtab.get(name) {
                             Some(cell) => *slot = Value::Ref(cell),
                             None => {
-                                if slot.is_uninit() {
-                                    *slot = Value::Null;
-                                }
+                                // A variable that has not been assigned stays
+                                // *uninitialized*: php's symbol table has no
+                                // entry for it at all, so `$GLOBALS`,
+                                // `get_defined_vars()` and `isset()` must not
+                                // see it. The cell is bound so a later write
+                                // lands in the table.
                                 let cell = Value::make_ref(slot);
                                 symtab.insert(name, cell);
                             }

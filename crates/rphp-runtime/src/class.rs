@@ -489,6 +489,9 @@ pub struct ClassDef {
     pub enum_table_built: std::cell::Cell<bool>,
     /// What the enum's cases are backed by (`None` for non-enums too).
     pub enum_backing: EnumBacking,
+    /// The traits this class itself `use`s, in declaration order. php's
+    /// `class_uses()` reports a class's *own* traits only.
+    pub used_traits: Vec<u32>,
 }
 
 impl ClassDef {
@@ -522,6 +525,7 @@ impl ClassDef {
             enum_table_built: std::cell::Cell::new(false),
             enum_index: HashMap::new(),
             enum_backing: EnumBacking::None,
+            used_traits: Vec::new(),
         }
     }
 
@@ -609,6 +613,9 @@ pub struct ClassSpec {
     pub enum_cases: Vec<(Box<[u8]>, EnumCaseValue)>,
     /// What this enum's cases are backed by.
     pub enum_backing: EnumBacking,
+    /// The traits the declaration `use`s, resolved to ids by
+    /// [`Interp::apply_trait_uses`] before linking (`class_uses()`).
+    pub used_traits: Vec<u32>,
 }
 
 /// One own class constant of a [`ClassSpec`].
@@ -650,6 +657,7 @@ impl Interp {
     /// the class table.
     pub(crate) fn link_class(&self, id: u32, spec: ClassSpec) -> Result<ClassDef, Unwind> {
         let ClassSpec {
+            used_traits,
             name,
             kind,
             flags,
@@ -827,6 +835,7 @@ impl Interp {
         own_consts.extend(std::mem::take(&mut def.const_order));
         def.const_order = own_consts;
         def.enum_backing = enum_backing;
+        def.used_traits = used_traits;
         for (cname, value) in enum_cases {
             let slot = def.enum_cases.len() as u16;
             def.enum_index.insert(cname.clone(), slot);

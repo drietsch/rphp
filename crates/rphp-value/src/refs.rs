@@ -57,6 +57,14 @@ impl PhpRef {
     }
 
     /// Whether two handles share one cell.
+    /// A stable identity for the cell: the address of the shared box. Two
+    /// handles to one reference answer the same number, which is what
+    /// `ReflectionReference::getId()` is built on. Valid only while the cell
+    /// is alive, so a caller that publishes an id keeps its handle.
+    pub fn id(&self) -> usize {
+        std::rc::Rc::as_ptr(&self.0) as *const () as usize
+    }
+
     pub fn ptr_eq(&self, other: &PhpRef) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }

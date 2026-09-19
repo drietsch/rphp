@@ -37,6 +37,7 @@ mod json;
 mod libmbfl;
 mod math;
 mod mbstring;
+mod net;
 mod output;
 mod output_buffering;
 mod pack;
@@ -86,6 +87,7 @@ const MODULES: &[&[NativeFn]] = &[
     strings::FUNCTIONS,
     arrays::FUNCTIONS,
     math::FUNCTIONS,
+    net::FUNCTIONS,
     ctype::FUNCTIONS,
     funcs::FUNCTIONS,
     hash::FUNCTIONS,
@@ -133,6 +135,7 @@ pub fn register(r: &mut Registry) {
     date::register_classes(r);
     reflection::register_classes(r);
     math::register_constants(r);
+    net::register_constants(r);
     pcre::register_constants(r);
     json::register_constants(r);
     hash::register_constants(r);

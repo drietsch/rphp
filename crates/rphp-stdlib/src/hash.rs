@@ -14,15 +14,29 @@
 //! digest. A context that has been finalized is spent: php's
 //! `HashContext` cannot be reused, and using one raises.
 //!
-//! **Algorithms.** php lists 60; this is the 17 that need no further
-//! dependency — the MD5/SHA-1/SHA-2 families, both CRC-32 variants,
-//! Adler-32, the four FNV-1 forms and joaat. `hash("sha3-256", …)` and the
-//! murmur/xxHash family are cataloged, not faked: an unknown name is php's
-//! `ValueError`.
+//! **Algorithms.** php lists 60; this is the 33 that a pure-Rust crate or a
+//! few lines of arithmetic can answer exactly — the MD2/MD4/MD5, SHA-1,
+//! SHA-2 and SHA-3 families, RIPEMD, Whirlpool, all four xxHash variants,
+//! three CRC-32s, Adler-32, the four FNV-1 forms and joaat. The rest —
+//! tiger, gost, snefru, haval and the murmur3 trio — are cataloged, not
+//! faked: an unknown name is php's `ValueError`.
+//!
+//! **xxHash is little-endian on the way out.** php writes the 32- and
+//! 64-bit variants big-endian but XXH3's 128-bit state high half first,
+//! which is what makes `hash('xxh128', …)` agree with `XXH128` the C
+//! function.
 use crc32fast::Hasher as Crc32;
+use md2::Md2;
+use md4::Md4;
 use md5::{Digest, Md5};
+use ripemd::{Ripemd128, Ripemd160, Ripemd256, Ripemd320};
 use sha1::Sha1;
 use sha2::{Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256};
+use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
+use whirlpool::Whirlpool;
+use xxhash_rust::xxh32::Xxh32;
+use xxhash_rust::xxh3::Xxh3;
+use xxhash_rust::xxh64::Xxh64;
 
 use rphp_value::{Array, Object, Payload, Str, Value};
 
@@ -502,6 +516,8 @@ fn read_file(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<Vec<u8>>, Un
 /// The algorithm names `hash()` accepts, in php's own `hash_algos()` order
 /// for the ones it has. A strict subset of stock php's 60 (see the header).
 const SUPPORTED_ALGOS: &[&str] = &[
+    "md2",
+    "md4",
     "md5",
     "sha1",
     "sha224",
@@ -510,20 +526,36 @@ const SUPPORTED_ALGOS: &[&str] = &[
     "sha512/224",
     "sha512/256",
     "sha512",
+    "sha3-224",
+    "sha3-256",
+    "sha3-384",
+    "sha3-512",
+    "ripemd128",
+    "ripemd160",
+    "ripemd256",
+    "ripemd320",
+    "whirlpool",
+    "adler32",
     "crc32",
     "crc32b",
-    "adler32",
+    "crc32c",
     "fnv132",
     "fnv1a32",
     "fnv164",
     "fnv1a64",
     "joaat",
+    "xxh32",
+    "xxh64",
+    "xxh3",
+    "xxh128",
 ];
 
 /// A running digest. One variant per algorithm rather than a boxed trait
 /// object, because `hash_copy()` has to clone it.
 #[derive(Clone)]
 enum State {
+    Md2(Md2),
+    Md4(Md4),
     Md5(Md5),
     Sha1(Sha1),
     Sha224(Sha224),
@@ -532,6 +564,15 @@ enum State {
     Sha512(Sha512),
     Sha512_224(Sha512_224),
     Sha512_256(Sha512_256),
+    Sha3_224(Sha3_224),
+    Sha3_256(Sha3_256),
+    Sha3_384(Sha3_384),
+    Sha3_512(Sha3_512),
+    Ripemd128(Ripemd128),
+    Ripemd160(Ripemd160),
+    Ripemd256(Ripemd256),
+    Ripemd320(Ripemd320),
+    Whirlpool(Whirlpool),
     /// php's `crc32`: the non-reflected CRC-32/BZIP2 polynomial.
     Crc32(u32),
     /// php's `crc32b`: the reflected IEEE CRC-32 every other language calls
@@ -543,6 +584,14 @@ enum State {
     Fnv164(u64),
     Fnv1a64(u64),
     Joaat(u32),
+    /// php's `crc32c`: the Castagnoli polynomial, reflected.
+    Crc32c(u32),
+    Xxh32(Xxh32),
+    Xxh64(Xxh64),
+    /// XXH3, 64 bits out.
+    Xxh3(Box<Xxh3>),
+    /// The same state, 128 bits out.
+    Xxh128(Box<Xxh3>),
 }
 
 impl State {
@@ -550,6 +599,8 @@ impl State {
     /// it), or `None` when nothing here implements it.
     fn new(algo: &[u8]) -> Option<State> {
         Some(match algo.to_ascii_lowercase().as_slice() {
+            b"md2" => State::Md2(Md2::new()),
+            b"md4" => State::Md4(Md4::new()),
             b"md5" => State::Md5(Md5::new()),
             b"sha1" => State::Sha1(Sha1::new()),
             b"sha224" => State::Sha224(Sha224::new()),
@@ -558,6 +609,15 @@ impl State {
             b"sha512" => State::Sha512(Sha512::new()),
             b"sha512/224" => State::Sha512_224(Sha512_224::new()),
             b"sha512/256" => State::Sha512_256(Sha512_256::new()),
+            b"sha3-224" => State::Sha3_224(Sha3_224::new()),
+            b"sha3-256" => State::Sha3_256(Sha3_256::new()),
+            b"sha3-384" => State::Sha3_384(Sha3_384::new()),
+            b"sha3-512" => State::Sha3_512(Sha3_512::new()),
+            b"ripemd128" => State::Ripemd128(Ripemd128::new()),
+            b"ripemd160" => State::Ripemd160(Ripemd160::new()),
+            b"ripemd256" => State::Ripemd256(Ripemd256::new()),
+            b"ripemd320" => State::Ripemd320(Ripemd320::new()),
+            b"whirlpool" => State::Whirlpool(Whirlpool::new()),
             b"crc32" => State::Crc32(0xFFFF_FFFF),
             b"crc32b" => State::Crc32b(Crc32::new()),
             b"adler32" => State::Adler(1, 0),
@@ -566,6 +626,11 @@ impl State {
             b"fnv164" => State::Fnv164(FNV64_OFFSET),
             b"fnv1a64" => State::Fnv1a64(FNV64_OFFSET),
             b"joaat" => State::Joaat(0),
+            b"crc32c" => State::Crc32c(0),
+            b"xxh32" => State::Xxh32(Xxh32::new(0)),
+            b"xxh64" => State::Xxh64(Xxh64::new(0)),
+            b"xxh3" => State::Xxh3(Box::new(Xxh3::new())),
+            b"xxh128" => State::Xxh128(Box::new(Xxh3::new())),
             _ => return None,
         })
     }
@@ -573,16 +638,32 @@ impl State {
     /// The HMAC block size, or `None` for a checksum php refuses to key.
     fn block_size(&self) -> Option<usize> {
         Some(match self {
-            State::Md5(_) | State::Sha1(_) | State::Sha224(_) | State::Sha256(_) => 64,
+            State::Md2(_) => 16,
+            State::Md4(_)
+            | State::Md5(_)
+            | State::Sha1(_)
+            | State::Sha224(_)
+            | State::Sha256(_)
+            | State::Ripemd128(_)
+            | State::Ripemd160(_)
+            | State::Ripemd256(_)
+            | State::Ripemd320(_) => 64,
             State::Sha384(_) | State::Sha512(_) | State::Sha512_224(_) | State::Sha512_256(_) => {
                 128
             }
+            State::Sha3_224(_) => 144,
+            State::Sha3_256(_) => 136,
+            State::Sha3_384(_) => 104,
+            State::Sha3_512(_) => 72,
+            State::Whirlpool(_) => 64,
             _ => return None,
         })
     }
 
     fn update(&mut self, data: &[u8]) {
         match self {
+            State::Md2(h) => h.update(data),
+            State::Md4(h) => h.update(data),
             State::Md5(h) => h.update(data),
             State::Sha1(h) => h.update(data),
             State::Sha224(h) => h.update(data),
@@ -591,7 +672,20 @@ impl State {
             State::Sha512(h) => h.update(data),
             State::Sha512_224(h) => h.update(data),
             State::Sha512_256(h) => h.update(data),
+            State::Sha3_224(h) => h.update(data),
+            State::Sha3_256(h) => h.update(data),
+            State::Sha3_384(h) => h.update(data),
+            State::Sha3_512(h) => h.update(data),
+            State::Ripemd128(h) => h.update(data),
+            State::Ripemd160(h) => h.update(data),
+            State::Ripemd256(h) => h.update(data),
+            State::Ripemd320(h) => h.update(data),
+            State::Whirlpool(h) => h.update(data),
             State::Crc32(c) => *c = crc32_bzip2_update(*c, data),
+            State::Crc32c(c) => *c = crc32c::crc32c_append(*c, data),
+            State::Xxh32(h) => h.update(data),
+            State::Xxh64(h) => h.update(data),
+            State::Xxh3(h) | State::Xxh128(h) => h.update(data),
             State::Crc32b(h) => h.update(data),
             State::Adler(a, b) => {
                 for &byte in data {
@@ -633,6 +727,8 @@ impl State {
     /// php renders them.
     fn finish(self) -> Vec<u8> {
         match self {
+            State::Md2(h) => h.finalize().to_vec(),
+            State::Md4(h) => h.finalize().to_vec(),
             State::Md5(h) => h.finalize().to_vec(),
             State::Sha1(h) => h.finalize().to_vec(),
             State::Sha224(h) => h.finalize().to_vec(),
@@ -641,6 +737,15 @@ impl State {
             State::Sha512(h) => h.finalize().to_vec(),
             State::Sha512_224(h) => h.finalize().to_vec(),
             State::Sha512_256(h) => h.finalize().to_vec(),
+            State::Sha3_224(h) => h.finalize().to_vec(),
+            State::Sha3_256(h) => h.finalize().to_vec(),
+            State::Sha3_384(h) => h.finalize().to_vec(),
+            State::Sha3_512(h) => h.finalize().to_vec(),
+            State::Ripemd128(h) => h.finalize().to_vec(),
+            State::Ripemd160(h) => h.finalize().to_vec(),
+            State::Ripemd256(h) => h.finalize().to_vec(),
+            State::Ripemd320(h) => h.finalize().to_vec(),
+            State::Whirlpool(h) => h.finalize().to_vec(),
             // php writes this one's state out **little-endian**, which is why
             // `hash('crc32', …)` and `hash('crc32b', …)` of the same input
             // are byte-reversals of each other rather than equal.
@@ -656,6 +761,11 @@ impl State {
                 h = h.wrapping_add(h << 15);
                 h.to_be_bytes().to_vec()
             }
+            State::Crc32c(c) => c.to_be_bytes().to_vec(),
+            State::Xxh32(h) => h.digest().to_be_bytes().to_vec(),
+            State::Xxh64(h) => h.digest().to_be_bytes().to_vec(),
+            State::Xxh3(h) => h.digest().to_be_bytes().to_vec(),
+            State::Xxh128(h) => h.digest128().to_be_bytes().to_vec(),
         }
     }
 }

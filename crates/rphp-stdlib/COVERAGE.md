@@ -425,3 +425,31 @@ worth knowing:
 - `iconv` reports itself as GNU libiconv 1.11, the implementation whose
   `//TRANSLIT` answers were measured into its table; an empty charset name
   is UTF-8 here where libiconv would ask the locale.
+
+## The ladder's gaps (L3, `bin/console list`)
+
+Walking the L3 rung one fatal at a time found these, in this order — none of
+which a reading of php-src would have ranked first:
+
+- `stream_is_local()` (the YAML loader's first call), `fileinode()`, the
+  `SCANDIR_SORT_*` constants, and `ip2long`/`long2ip`/`inet_pton`/`inet_ntop`
+  (a new `net.rs`).
+- **xxHash**: Symfony hashes its container with `hash('xxh128', …)`. The hash
+  extension now answers 32 of php's 60 algorithms — MD2/MD4/MD5, SHA-1, the
+  SHA-2 and SHA-3 families, RIPEMD, Whirlpool, Whirlpool's neighbours in
+  spirit (Adler-32, three CRC-32s, the FNV-1 four, joaat) and all four xxHash
+  variants. **Still missing, cataloged:** `tiger{128,160,192},{3,4}`,
+  `gost`/`gost-crypto`, `snefru`/`snefru256`, the fifteen `haval*` and
+  `murmur3a`/`murmur3c`/`murmur3f`. Every one needs its own implementation;
+  none has a blocker beyond the writing.
+- **`[&$a[$k], &$o->p]`** — a by-reference element of an array *literal* was
+  lowered only for a plain variable. It now shares the whole reference-source
+  path with `$x = &…`, so an element, a property, a static property, a
+  variable variable and a `$GLOBALS` entry all bind their cell.
+- **`unserialize()` did not autoload.** php resolves the serialized class
+  name through the autoloader; without that, Symfony's "cast a Definition to
+  a ChildDefinition by patching the serialized bytes" trick produced a
+  `__PHP_Incomplete_Class`.
+
+The rung now reaches FrameworkExtension's `session` check, so **ext/session
+is what L3 wants next**.

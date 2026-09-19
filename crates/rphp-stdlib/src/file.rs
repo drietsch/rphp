@@ -42,6 +42,15 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("stream_set_blocking", 2, Some(2), stream_set_blocking),
     nf!("stream_isatty", 1, Some(1), stream_isatty),
     nf!("stream_copy_to_stream", 2, Some(4), stream_copy_to_stream),
+    nf!("stream_is_local", 1, Some(1), stream_is_local),
+];
+
+/// The wrappers php marks `is_url`: everything else — `file://`, `php://`,
+/// `compress.*://`, `phar://`, a plain path — is local. `data:` is the one
+/// that does not spell its scheme with `://`.
+const REMOTE_WRAPPERS: &[&str] = &[
+    "http", "https", "ftp", "ftps", "ssh2.shell", "ssh2.exec", "ssh2.tunnel", "ssh2.ftp",
+    "ssh2.scp", "ssh2.sftp", "ogg", "expect",
 ];
 
 /// An open stream: a byte buffer plus a cursor, and where writes ultimately
@@ -783,6 +792,37 @@ fn stream_isatty(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Sink::Stdout => rustix::termios::isatty(std::io::stdout()),
         Sink::Stderr => rustix::termios::isatty(std::io::stderr()),
     }))
+}
+
+/// `stream_is_local(resource|string $stream): bool`
+///
+/// php asks the *wrapper*, not the filesystem: a path with no scheme is
+/// local, and so is one whose scheme is a local wrapper, whatever is
+/// actually there. An open handle is local in the engine by construction —
+/// there is no remote wrapper to open one with.
+fn stream_is_local(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    if matches!(&*args[0].deref(), Value::Resource(_)) {
+        return with_stream(ctx, &args[0].clone(), "stream_is_local", |_| Value::Bool(true));
+    }
+    // The parameter is `resource|string`, and php's coercion — not a type
+    // error — is what an array meets here.
+    if matches!(&*args[0].deref(), Value::Array(_)) {
+        ctx.warn("Array to string conversion")?;
+    }
+    let name = args[0].to_php_bytes();
+    let lower = name.to_ascii_lowercase();
+    let scheme = match lower.windows(3).position(|w| w == b"://") {
+        Some(at) => &lower[..at],
+        // php's wrapper scan also matches `data:`, whose payload follows the
+        // colon directly.
+        None if lower.starts_with(b"data:") => b"data".as_slice(),
+        None => return Ok(Value::Bool(true)),
+    };
+    let remote = REMOTE_WRAPPERS
+        .iter()
+        .any(|w| w.as_bytes() == scheme)
+        || scheme == b"data";
+    Ok(Value::Bool(!remote))
 }
 
 /// `stream_copy_to_stream(resource $from, resource $to, ?int $length = null, int $offset = 0): int|false`

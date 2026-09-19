@@ -908,8 +908,16 @@ impl<'a> Unserializer<'a> {
                 // `allowed_classes` option rules out — becomes php's
                 // `__PHP_Incomplete_Class`, whose first property is the name
                 // that could not be resolved.
+                // php resolves the name through the **autoloader**, which is
+                // what lets `unserialize()` rebuild a class Composer has not
+                // had a reason to load yet — the whole DI container depends
+                // on it.
                 let allowed = self.allowed.allows(&class);
-                let resolved = if allowed { ctx.class_by_name(&class) } else { None };
+                let resolved = if allowed {
+                    ctx.lookup_class(&class)?
+                } else {
+                    None
+                };
                 let incomplete = resolved.is_none();
                 let class_id = match resolved {
                     Some(id) => id,
@@ -1029,7 +1037,11 @@ impl<'a> Unserializer<'a> {
                 // (interfaces are not lowered yet): a declared class gets
                 // php's "no unserializer" warning and a bare instance;
                 // anything else needs `__PHP_Incomplete_Class` (E6).
-                let class_id = if self.allowed.allows(&class) { ctx.class_by_name(&class) } else { None };
+                let class_id = if self.allowed.allows(&class) {
+                    ctx.lookup_class(&class)?
+                } else {
+                    None
+                };
                 let Some(class_id) = class_id else {
                     return Err(UErr::At(start));
                 };

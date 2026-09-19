@@ -32,6 +32,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("filectime", 1, Some(1), filectime),
     nf!("filetype", 1, Some(1), filetype),
     nf!("fileperms", 1, Some(1), fileperms),
+    nf!("fileinode", 1, Some(1), fileinode),
     nf!("realpath", 1, Some(1), realpath),
     nf!("touch", 1, Some(3), touch),
     nf!("clearstatcache", 0, Some(2), clearstatcache),
@@ -182,6 +183,20 @@ fn filectime(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 fn fileperms(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     stat_field(ctx, args, "fileperms", |m| Value::Int(i64::from(mode_of(m))))
+}
+
+/// `fileinode(string $filename): int|false`
+#[cfg(unix)]
+fn fileinode(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    use std::os::unix::fs::MetadataExt;
+    stat_field(ctx, args, "fileinode", |m| Value::Int(m.ino() as i64))
+}
+
+/// `fileinode()` where there are no inodes: php answers `0`, which is what
+/// its `stat` fills the field with.
+#[cfg(not(unix))]
+fn fileinode(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    stat_field(ctx, args, "fileinode", |_| Value::Int(0))
 }
 
 fn filetype(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {

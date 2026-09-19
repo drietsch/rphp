@@ -17,6 +17,8 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("chdir", 1, Some(1), chdir),
 ];
 
+/// php's `SCANDIR_SORT_ASCENDING`, the default.
+const SORT_ASCENDING: i64 = 0;
 /// php's `SCANDIR_SORT_DESCENDING`.
 const SORT_DESCENDING: i64 = 1;
 /// php's `SCANDIR_SORT_NONE`.
@@ -108,4 +110,8 @@ fn chdir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 }
 
 /// This module declares no constants yet.
-pub(crate) fn register_constants(_r: &mut rphp_runtime::Registry) {}
+pub(crate) fn register_constants(r: &mut rphp_runtime::Registry) {
+    r.constant("SCANDIR_SORT_ASCENDING", Value::Int(SORT_ASCENDING));
+    r.constant("SCANDIR_SORT_DESCENDING", Value::Int(SORT_DESCENDING));
+    r.constant("SCANDIR_SORT_NONE", Value::Int(SORT_NONE));
+}

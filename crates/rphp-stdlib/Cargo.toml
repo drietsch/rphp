@@ -11,9 +11,16 @@ rphp-runtime.workspace = true
 
 # hash extension — pure-Rust digests.
 md-5 = "0.10"
+md2 = "0.10"
+md4 = "0.10"
 sha1 = "0.10"
 sha2.workspace = true
+sha3 = "0.10"
+ripemd = "0.1"
+whirlpool = "0.10"
 crc32fast = "1.4"
+crc32c = "0.6"
+xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64", "xxh3"] }
 
 # pcre extension — PCRE2 (the engine php-src links) through the workspace's
 # minimal safe wrapper (ADR-032).

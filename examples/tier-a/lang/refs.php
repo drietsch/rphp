@@ -106,3 +106,48 @@ echo json_encode($o2->items), "\n";
 // reference to a reference collapses; identity checks
 $x = 1; $y = &$x; $z = &$y; $z = 7;
 var_dump($x === $y, $x, $z);
+
+// A by-reference element of an array literal binds the cell, whatever kind
+// of place it names — the pattern a deep-clone or a container builder uses
+// to keep a handle on what it is walking.
+$v = 1;
+$arr = ['k' => 10, 2 => 20];
+$obj = new stdClass();
+$obj->p = 100;
+class RefHolder
+{
+    public static $sp = 'x';
+}
+$pool = [&$v, &$arr['k'], &$arr[2], &$obj->p, &RefHolder::$sp];
+$pool[0] = 'V';
+$pool[1] = 'K';
+$pool[2] = 'T';
+$pool[3] = 'P';
+$pool[4] = 'S';
+var_dump($v, $arr, $obj->p, RefHolder::$sp);
+
+$name = 'dyn';
+$$name = 5;
+$indirect = [&$$name];
+$indirect[0] = 'D';
+var_dump($dyn);
+
+$glob = 7;
+$globals = [&$GLOBALS['glob']];
+$globals[0] = 'G';
+var_dump($glob);
+
+$x = 1;
+$y = 2;
+$mixed = ['a' => &$x, 'b' => [&$y]];
+$mixed['a'] = 'A';
+$mixed['b'][0] = 'B';
+var_dump($x, $y);
+
+$values = [1, 2, 3];
+$refs = [];
+foreach ($values as $k => $value) {
+    $refs[] = [&$values[$k], $value];
+}
+$refs[1][0] = 'two';
+var_dump($values);

@@ -82,3 +82,15 @@ var_dump(unserialize('O:3:"Foo":0'));
 var_dump(unserialize('a:1:{i:0;a:1:{i:0;a:1:{i:0;i:1;}}}', ['max_depth' => 2]));
 var_dump(unserialize('a:1:{i:0;a:1:{i:0;a:1:{i:0;i:1;}}}', ['max_depth' => 3]));
 var_dump(unserialize('a:1:{i:0;O:3:"Foo":0:{}}', ['max_depth' => 1]));
+
+// php resolves a serialized class name through the autoloader, which is what
+// lets `unserialize()` rebuild a class nothing has loaded yet.
+spl_autoload_register(function ($class) {
+    echo "autoload($class)\n";
+    if ($class === 'LateLoaded') {
+        eval('class LateLoaded { public $a = 0; }');
+    }
+});
+$late = unserialize('O:10:"LateLoaded":1:{s:1:"a";i:7;}');
+var_dump(get_class($late), $late->a);
+var_dump(unserialize('O:10:"NeverThere":0:{}'));

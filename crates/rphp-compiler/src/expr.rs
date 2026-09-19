@@ -1338,6 +1338,20 @@ impl FnCompiler<'_> {
         // The source must be a referenceable place; the register that will
         // hold (or be bound to) the shared cell.
         let mark = self.temp_top;
+        let Some(src) = self.compile_ref_source(value) else {
+            return self.null_temp();
+        };
+        self.bind_ref_target(target, src, span, mark)
+    }
+
+    /// The register holding the cell `&expr` names — a variable, an array
+    /// element, a property, a static property, a variable variable or a
+    /// `$GLOBALS` entry. `None` after reporting an expression php will not
+    /// take a reference to.
+    ///
+    /// Every place that writes a reference shares this: `$x = &…`, a
+    /// by-reference array element (`[&$a[$k], &$v]`) and the loops.
+    fn compile_ref_source(&mut self, value: &Expr) -> Option<Reg> {
         let src: Reg = match value {
             Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => self.var_reg(*id),
             Expr::Index {
@@ -1360,12 +1374,10 @@ impl FnCompiler<'_> {
                             });
                         }
                         // `&$GLOBALS['x']` is the global cell itself.
-                        return self.bind_ref_target(target, reg, span, mark);
+                        return Some(reg);
                     }
                     _ => {
-                        let Some(plan) = self.plan_chain(base) else {
-                            return self.null_temp();
-                        };
+                        let plan = self.plan_chain(base)?;
                         let key = self.compile_expr(index);
                         let (handle, wbs) = self.plan_fetch_w(&plan);
                         let dst = self.alloc_temp();
@@ -1392,9 +1404,7 @@ impl FnCompiler<'_> {
                 dst
             }
             Expr::StaticProp { class, name, span } => {
-                let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
-                    return self.null_temp();
-                };
+                let (class, name) = self.static_prop_ref(class, name, *span)?;
                 let dst = self.alloc_temp();
                 self.emit(Op::RefStaticProp { dst, class, name });
                 dst
@@ -1419,10 +1429,10 @@ impl FnCompiler<'_> {
             }
             other => {
                 unsupported(self.diags, other.span(), "reference to a non-variable");
-                return self.null_temp();
+                return None;
             }
         };
-        self.bind_ref_target(target, src, span, mark)
+        Some(src)
     }
 
     /// Bind `target` to the cell of `src` (making `src` a reference).
@@ -2054,13 +2064,12 @@ impl FnCompiler<'_> {
             };
             let key = item.key.as_ref().map(|k| self.compile_expr(k));
             if item.by_ref {
-                let src = match value {
-                    Expr::Var(id, _) if !self.is_this(*id) => self.var_reg(*id),
-                    other => {
-                        unsupported(self.diags, other.span(), "by-reference array element of a non-variable");
-                        self.free_to(mark);
-                        continue;
-                    }
+                // `[&$a[$k], &$o->p, &$v]`: the element is bound to the
+                // cell, not to a copy, so the same places `$x = &…` accepts
+                // are the places an element accepts.
+                let Some(src) = self.compile_ref_source(value) else {
+                    self.free_to(mark);
+                    continue;
                 };
                 self.emit(Op::AssignRefElem { arr: dst, key, src });
             } else {

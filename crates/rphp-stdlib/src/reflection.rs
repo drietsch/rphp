@@ -104,6 +104,14 @@ pub(crate) fn register_classes(r: &mut Registry) {
     r.class("SensitiveParameter")
         .flags(rphp_runtime::ClassFlags::FINAL)
         .finish();
+    // `ReturnTypeWillChange` is Zend's own attribute, the one that silences
+    // the "return type should be compatible" deprecation on an internal
+    // interface's method. It is declared here beside the other attribute
+    // class for the same reason: the engine drops attributes, so it only
+    // has to exist.
+    r.class("ReturnTypeWillChange")
+        .flags(rphp_runtime::ClassFlags::FINAL)
+        .finish();
 
     types::register_classes(r);
     class::register_classes(r);

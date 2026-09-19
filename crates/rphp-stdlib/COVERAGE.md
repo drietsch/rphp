@@ -273,13 +273,22 @@ decorator over a user iterator which echoes every call. **Deferred:**
 the `spl_directory.c` family (`DirectoryIterator`, `SplFileInfo`,
 `SplFileObject`).
 
-**Undefined variables are silent.** php's `Warning: Undefined variable $x` is
-not emitted: a variable read lowers to "use this register", with no op to hang
-the check on, so the compiler would have to emit a guard (or the consuming ops
-learn the variable's name). The *value* is right — an unassigned variable reads
-as `null` — and since registers now start `Uninit` rather than `Null`, the
-symbol table matches php exactly: `get_defined_vars()` and `$GLOBALS` list only
-what was actually assigned, and `isset()` on an unassigned variable is `false`.
+**Undefined variables warn like php's.** A register starts `Uninit` rather than
+`Null`, so the engine can tell "never assigned" from "assigned null" — which
+also makes `get_defined_vars()`, `$GLOBALS` and `isset()` list exactly what php
+lists. A *read* of a variable the compiler cannot prove assigned emits
+`Op::CheckVar`, which is php's `Warning: Undefined variable $x` at run time, on
+every read, with the value `null`. The compiler elides the check for a
+parameter, a `use` capture, a `global`/`static` binding and anything assigned
+earlier in the same straight-line stretch; anything that branches forgets what
+it knew, which only ever costs an extra comparison. A quiet read (`??`,
+`isset`, `empty`, `@`) never warns, and an argument sent to a *by-reference*
+parameter does not either — php creates the variable there — which the runtime
+decides at the send, since by-ref-ness is not known until the callee resolves.
+
+**Not yet:** php 8.5's `Deprecated: Using null as an array offset` (the key
+conversion happens at nine call sites, several behind a shared borrow that
+cannot reach the diagnostics channel).
 
 **Auto-globals are created the way php creates them.** `$argv`, `$argc`,
 `$_GET`, `$_POST`, `$_COOKIE`, `$_FILES` and `$_SERVER` are seeded by the SAPI

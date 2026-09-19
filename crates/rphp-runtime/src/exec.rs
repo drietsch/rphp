@@ -80,6 +80,33 @@ impl Interp {
         self.stack[base + r as usize].deref().into_owned()
     }
 
+    /// php's `Warning: Undefined variable $x` for a register that holds a
+    /// variable which was never assigned. The name comes from the function's
+    /// `var_names` table, so the op itself does not have to carry it.
+    fn warn_if_undefined(
+        &mut self,
+        func: &crate::unit::FuncRt,
+        base: usize,
+        reg: u16,
+    ) -> Result<(), Unwind> {
+        if !self.raw(base, reg).deref().is_uninit() {
+            return Ok(());
+        }
+        let name = func
+            .f
+            .var_names
+            .iter()
+            .find(|(_, r)| *r == reg)
+            .map(|(n, _)| n.clone());
+        if let Some(name) = name {
+            self.warn(&format!(
+                "Undefined variable ${}",
+                String::from_utf8_lossy(&name)
+            ))?;
+        }
+        Ok(())
+    }
+
     #[inline]
     fn raw(&self, base: usize, r: u16) -> &Value {
         &self.stack[base + r as usize]
@@ -117,8 +144,32 @@ impl Interp {
     }
 
     /// The `Ref` cell of register `r`, making it one in place.
+    /// Bind register `r` to a reference cell.
+    ///
+    /// Taking a reference to a variable that was never assigned *defines* it,
+    /// as `null` — which is why php says nothing about `$u` being undefined
+    /// after `f($u)` with a by-reference parameter. Binding a *symbol table*
+    /// entry is not that (`Op::BindSymtab` goes straight to
+    /// [`Value::make_ref`]), so an untouched variable stays uninitialized and
+    /// `get_defined_vars()` does not list it.
     fn make_ref(&mut self, base: usize, r: u16) -> PhpRef {
-        Value::make_ref(&mut self.stack[base + r as usize])
+        let slot = &mut self.stack[base + r as usize];
+        match slot {
+            // Already a cell (a symbol-table binding, an earlier `&`): define
+            // what it holds rather than rebinding it.
+            Value::Ref(cell) => {
+                if cell.get().is_uninit() {
+                    cell.set(Value::Null);
+                }
+                cell.clone()
+            }
+            _ => {
+                if slot.is_uninit() {
+                    *slot = Value::Null;
+                }
+                Value::make_ref(slot)
+            }
+        }
     }
 
     fn const_value(&self, func: &crate::unit::FuncRt, k: u32) -> Value {
@@ -1141,8 +1192,11 @@ impl Interp {
                 }
                 Op::SendVar { pos, var } => {
                     let v = if self.pending_by_ref(fi, pos as usize) {
+                        // A by-reference parameter *creates* the variable, so
+                        // php says nothing about it being undefined.
                         Value::Ref(self.make_ref(base, var))
                     } else {
+                        self.warn_if_undefined(&func, base, var)?;
                         self.rd(base, var)
                     };
                     self.send(fi, v);
@@ -1157,6 +1211,9 @@ impl Interp {
                     self.send(fi, v);
                 }
                 Op::SendRefElem { pos, arr, key } => {
+                    if !self.pending_by_ref(fi, pos as usize) {
+                        self.warn_if_undefined(&func, base, arr)?;
+                    }
                     let k = self.rd(base, key);
                     let v = if self.pending_by_ref(fi, pos as usize) {
                         Value::Ref(self.elem_ref(base, arr, Some(&k))?)
@@ -1446,6 +1503,15 @@ impl Interp {
                         self.rebind(base, reg, cell);
                         pc = target as usize;
                         continue;
+                    }
+                }
+                Op::CheckVar { reg, name } => {
+                    if self.raw(base, reg).deref().is_uninit() {
+                        let name = self.name_bytes(&func, name);
+                        self.warn(&format!(
+                            "Undefined variable ${}",
+                            String::from_utf8_lossy(&name)
+                        ))?;
                     }
                 }
                 Op::BindGlobal { reg, name } => {

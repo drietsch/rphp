@@ -124,7 +124,7 @@ impl FnCompiler<'_> {
                     self.emit(Op::FetchGlobals { dst });
                     dst
                 } else {
-                    self.var_reg(*id)
+                    self.read_var(*id)
                 }
             }
             Expr::VarVar { name, .. } => {
@@ -1151,6 +1151,9 @@ impl FnCompiler<'_> {
 
     /// Assign an already-computed register to a write target.
     pub(crate) fn assign_to_target(&mut self, target: &Expr, val: Reg) {
+        if let Expr::Var(id, _) = target {
+            self.mark_assigned(*id);
+        }
         self.compile_write(target, ValueSrc::Reg(val), false);
     }
 
@@ -2155,6 +2158,9 @@ impl FnCompiler<'_> {
                 self.quiet_static_prop_into(dst, class, name);
                 dst
             }
+            // A quiet read is exactly the place php does *not* warn about an
+            // undefined variable (`$x ?? 'd'`, `isset($x->p)`).
+            Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => self.var_reg(*id),
             _ => self.compile_expr(e),
         }
     }

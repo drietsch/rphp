@@ -736,6 +736,15 @@ pub enum Op {
         reg: Reg,
         idx: u16,
     },
+    /// Warn if the variable in `reg` has never been assigned: php's
+    /// `Warning: Undefined variable $name`, where `consts[name]` is a
+    /// `Const::Str`. Emitted before a *read* of a local the compiler cannot
+    /// prove assigned; the value stays uninitialized (and reads as `null`),
+    /// so a second read warns again, as php does.
+    CheckVar {
+        reg: Reg,
+        name: ConstIdx,
+    },
     /// `global $x;` — bind register `reg` to the global symbol table entry
     /// named `consts[name]` (a `Const::Str`), creating a null entry if absent.
     /// The register then holds a `Ref` to it.

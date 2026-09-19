@@ -72,6 +72,33 @@ impl FnCompiler<'_> {
 
     pub(crate) fn compile_stmt(&mut self, s: &Stmt) {
         self.mark_line(s.span());
+        // A statement that branches makes the linear walk say nothing about
+        // what ran, so what is known to be assigned is forgotten around it.
+        // Erring this way only costs a comparison at run time.
+        if matches!(
+            s,
+            Stmt::If { .. }
+                | Stmt::While { .. }
+                | Stmt::DoWhile { .. }
+                | Stmt::For { .. }
+                | Stmt::Foreach { .. }
+                | Stmt::Switch { .. }
+                | Stmt::Try { .. }
+                | Stmt::Goto { .. }
+                | Stmt::Label { .. }
+        ) {
+            self.forget_assigned();
+        }
+        let branching = matches!(
+            s,
+            Stmt::If { .. }
+                | Stmt::While { .. }
+                | Stmt::DoWhile { .. }
+                | Stmt::For { .. }
+                | Stmt::Foreach { .. }
+                | Stmt::Switch { .. }
+                | Stmt::Try { .. }
+        );
         match s {
             Stmt::Echo { args, .. } => {
                 for a in args {
@@ -281,6 +308,7 @@ impl FnCompiler<'_> {
                             let reg = self.var_reg(*id);
                             let name = self.name_const(*id);
                             self.emit(Op::BindGlobal { reg, name });
+                            self.mark_assigned(*id);
                         }
                         other => unsupported(self.diags, other.span(), "global with a variable variable"),
                     }
@@ -374,6 +402,10 @@ impl FnCompiler<'_> {
                 ..
             } => self.compile_try(body, catches, finally.as_deref()),
             Stmt::HaltCompiler { span } => unsupported(self.diags, *span, "__halt_compiler"),
+        }
+        // Whatever the body assigned was assigned *conditionally*.
+        if branching {
+            self.forget_assigned();
         }
     }
 

@@ -206,6 +206,11 @@ pub(crate) struct FnCompiler<'a> {
     /// (params first, then captured `use` vars, then locals); temporaries live
     /// above them.
     pub(crate) vars: HashMap<IdentId, Reg>,
+    /// Variables known to hold a value at the point being compiled, so a read
+    /// of one needs no `Op::CheckVar`. Assignments add to it; anything that
+    /// branches clears it, which is the conservative answer (an extra check
+    /// only costs a comparison, a missing one loses php's warning).
+    pub(crate) assigned: std::collections::HashSet<IdentId>,
     /// The register `$this` is loaded into, when the body reads it.
     pub(crate) this_reg: Option<Reg>,
     /// Current top of the temporary stack (next free temp register).
@@ -308,6 +313,8 @@ impl<'a> FnCompiler<'a> {
             at_top_level: false,
             is_main: false,
             vars,
+            // A captured variable holds its value before the body runs.
+            assigned: captures.iter().map(|&(c, _)| c).collect(),
             this_reg,
             temp_top: var_count,
             num_regs: var_count,
@@ -431,6 +438,30 @@ impl<'a> FnCompiler<'a> {
     /// Whether `id` is the variable `$this`.
     pub(crate) fn is_this(&self, id: IdentId) -> bool {
         self.mx.interner.resolve(id) == b"this"
+    }
+
+    /// The register of a variable being **read**, with php's
+    /// `Warning: Undefined variable $x` when the compiler cannot prove it has
+    /// a value by now. The check is a runtime one — the warning depends on
+    /// what actually ran — so eliding it is only ever an optimization.
+    pub(crate) fn read_var(&mut self, id: IdentId) -> Reg {
+        let reg = self.var_reg(id);
+        if !self.assigned.contains(&id) {
+            let name = self.name_const(id);
+            self.emit(Op::CheckVar { reg, name });
+        }
+        reg
+    }
+
+    /// Record that `id` now holds a value.
+    pub(crate) fn mark_assigned(&mut self, id: IdentId) {
+        self.assigned.insert(id);
+    }
+
+    /// Forget what is assigned: called around anything that branches, where
+    /// a linear walk of the source says nothing about what ran.
+    pub(crate) fn forget_assigned(&mut self) {
+        self.assigned.clear();
     }
 
     /// Whether `id` is the superglobal `$GLOBALS`.
@@ -606,6 +637,12 @@ impl<'a> FnCompiler<'a> {
     /// matching [`PropDef`](rphp_bytecode::PropDef) is added to the class by
     /// [`crate::class::compile_class`], which reads the same parameter list.
     pub(crate) fn compile_params(&mut self, params: &[Param]) -> Vec<ParamDef> {
+        // A parameter always holds a value by the time the body runs, and so
+        // does a captured variable.
+        for p in params {
+            self.mark_assigned(p.name);
+        }
+
         if self.flags.contains(FnFlags::NEEDS_SYMTAB) {
             self.emit(Op::BindSymtab);
         }

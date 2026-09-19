@@ -2643,11 +2643,55 @@ impl FnCompiler<'_> {
     /// with php's two-step lookup for an unqualified name in a namespace.
     fn compile_call(&mut self, name: &Name, args: &[Arg], span: Span) -> Reg {
         let _ = span;
+        // `assert()` is the one call php decides about at compile time: with
+        // `zend.assertions=-1` it is not compiled at all, so its argument is
+        // never even evaluated.
+        // `0` (compile but jump over it) and `-1` (do not compile) differ
+        // only in whether the code exists; neither evaluates the argument.
+        if self.mx.assertions <= 0 && self.is_global_assert(name) {
+            let dst = self.alloc_temp();
+            self.emit(Op::LoadBool { dst, val: true });
+            return dst;
+        }
         self.emit_init_fcall(name);
         self.compile_sends(args);
+        // php hands `assert()` the source of the call as a second argument,
+        // which is the text an `AssertionError` carries when the caller gave
+        // no description of its own.
+        if self.mx.assertions > 0 && self.is_global_assert(name) && args.len() == 1 {
+            if let Some(text) = self.assert_text(span) {
+                let k = self.str_const(&text);
+                let reg = self.alloc_temp();
+                self.emit(Op::LoadConst { dst: reg, k });
+                self.emit(Op::SendVal { pos: 1, src: reg });
+            }
+        }
         let dst = self.alloc_temp();
         self.emit(Op::DoCall { dst });
         dst
+    }
+
+    /// The call as written, for `assert()`'s message. php prints its own
+    /// decompilation of the expression; this is the source slice, which is
+    /// the same text whenever the source is already spaced php's way.
+    fn assert_text(&self, span: Span) -> Option<Vec<u8>> {
+        let src = self.mx.source?;
+        let (lo, hi) = (span.lo as usize, span.hi as usize);
+        if hi > src.len() || lo >= hi {
+            return None;
+        }
+        Some(src[lo..hi].to_vec())
+    }
+
+    /// Whether this call names the global `assert()` — the resolver marks an
+    /// unqualified name in a namespace with both keys, and only the global
+    /// one is php's builtin.
+    fn is_global_assert(&self, name: &Name) -> bool {
+        let text = match name.resolved {
+            Some(Resolved::Func { global_key, .. }) => global_key,
+            _ => name.text,
+        };
+        self.interner().resolve(text).eq_ignore_ascii_case(b"assert")
     }
 
     /// Begin a call to a written function name, with php's two-step lookup

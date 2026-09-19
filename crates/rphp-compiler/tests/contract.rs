@@ -92,6 +92,7 @@ fn compile_source(path: &Path, src: &[u8]) -> Result<Option<Vec<Reported>>, Stri
     let opts = CompileOptions {
         line_of: Some(&line_of),
         file: Some(path.to_path_buf()),
+        ..CompileOptions::new()
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         compile(parsed.program, &mut interner, &opts)

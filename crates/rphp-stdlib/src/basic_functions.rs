@@ -19,6 +19,9 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("phpversion", 0, Some(1), phpversion),
     nf!("function_exists", 1, Some(1), function_exists),
     nf!("class_uses", 1, Some(2), class_uses),
+    nf!("assert", 1, Some(2), assert_fn),
+    nf!("debug_backtrace", 0, Some(2), debug_backtrace),
+    nf!("debug_print_backtrace", 0, Some(2), debug_print_backtrace),
     nf!("get_resource_type", 1, Some(1), get_resource_type),
     nf!("get_defined_constants", 0, Some(1), get_defined_constants),
     nf!("get_defined_functions", 0, Some(1), get_defined_functions),
@@ -308,6 +311,62 @@ pub(crate) fn class_uses(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         out.set(rphp_value::ArrayKey::str(&n), Value::string(&n));
     }
     Ok(Value::Array(out))
+}
+
+/// `assert(mixed $assertion, Throwable|string|null $description = null): bool`
+///
+/// Only reached when `zend.assertions` is not `-1`: at `-1` the compiler does
+/// not lower the call at all, so its argument is never evaluated. A falsy
+/// assertion throws — the given `Throwable`, an `AssertionError` with the
+/// given description, or one carrying the text of the call, which the
+/// compiler passes as a hidden second argument.
+pub(crate) fn assert_fn(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    if args[0].deref().to_bool() {
+        return Ok(Value::Bool(true));
+    }
+    let description = args.get(1).map(|v| v.deref().into_owned());
+    match description {
+        Some(Value::Object(o)) if ctx.is_throwable(&o) => Err(Unwind::Throw(o)),
+        Some(Value::Str(s)) => Err(Unwind::exception(
+            "AssertionError",
+            String::from_utf8_lossy(s.as_bytes()).into_owned(),
+        )),
+        _ => Err(Unwind::exception("AssertionError", "assert(false)")),
+    }
+}
+
+/// The two `DEBUG_BACKTRACE_*` flags, read off the options argument.
+fn trace_opts(args: &[Value], skip: usize) -> rphp_runtime::TraceOpts {
+    // php's default is `DEBUG_BACKTRACE_PROVIDE_OBJECT`, so *no* options
+    // argument means objects are included and arguments are too.
+    let options = args.first().map_or(1, |v| v.deref().to_int());
+    let limit = args.get(1).map_or(0, |v| v.deref().to_int());
+    rphp_runtime::TraceOpts {
+        provide_object: options & 1 != 0,
+        ignore_args: options & 2 != 0,
+        limit: limit.max(0) as usize,
+        skip,
+    }
+}
+
+/// `debug_backtrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT, int $limit = 0): array`
+/// — the same frame walk the exception trace uses, from the caller of
+/// `debug_backtrace()` outwards.
+pub(crate) fn debug_backtrace(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // The `debug_backtrace()` call itself is not part of its own answer.
+    Ok(Value::Array(ctx.build_trace(trace_opts(args, 1))))
+}
+
+/// `debug_print_backtrace(int $options = 0, int $limit = 0): void` — the same
+/// trace in the `#0 file(line): f()` form php prints, and php's default here
+/// is *no* flags (unlike `debug_backtrace()`).
+pub(crate) fn debug_print_backtrace(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let mut opts = trace_opts(args, 1);
+    opts.provide_object = args.first().is_some_and(|v| v.deref().to_int() & 1 != 0);
+    let trace = ctx.build_trace(opts);
+    let text = ctx.trace_to_string_bare(&trace);
+    ctx.echo(text.as_bytes());
+    Ok(Value::Null)
 }
 
 /// `get_resource_type(resource $resource): string` — the kind the engine

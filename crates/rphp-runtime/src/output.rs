@@ -83,6 +83,10 @@ pub struct OutputStack {
     levels: Vec<ObLevel>,
     pending: Vec<u8>,
     sink: Box<dyn OutputSink>,
+    /// Whether anything has reached the SAPI: php's "headers already sent".
+    sent: bool,
+    /// Whether the interpreter has already recorded *where* that happened.
+    first_send_seen: bool,
 }
 
 impl OutputStack {
@@ -92,6 +96,8 @@ impl OutputStack {
             levels: Vec::new(),
             pending: Vec::new(),
             sink,
+            sent: false,
+            first_send_seen: false,
         }
     }
 
@@ -108,8 +114,25 @@ impl OutputStack {
             top.buf.extend_from_slice(bytes);
         } else {
             self.flush_pending();
+            self.sent = self.sent || !bytes.is_empty();
             self.sink.write(bytes);
         }
+    }
+
+    /// Whether anything has reached the SAPI yet — php's "headers already
+    /// sent". Output held in an `ob_*` level has *not* been sent.
+    pub fn sent(&self) -> bool {
+        self.sent
+    }
+
+    /// True exactly once: on the call after the first bytes reached the sink,
+    /// so the interpreter can record where they came from.
+    pub fn take_first_send(&mut self) -> bool {
+        if self.sent && !self.first_send_seen {
+            self.first_send_seen = true;
+            return true;
+        }
+        false
     }
 
     /// The buffer natives append to: the top level, or the level-0 staging
@@ -129,6 +152,7 @@ impl OutputStack {
             if let Some(top) = self.levels.last_mut() {
                 top.buf.extend_from_slice(&bytes);
             } else {
+                self.sent = self.sent || !bytes.is_empty();
                 self.sink.write(&bytes);
             }
         }

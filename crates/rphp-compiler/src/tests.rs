@@ -73,6 +73,7 @@ fn line_tables_follow_statements_and_calls() {
     let opts = CompileOptions {
         line_of: Some(&line_of),
         file: None,
+        ..CompileOptions::new()
     };
     let m = compile(program, &mut interner, &opts).unwrap();
     let main = m.func(0);
@@ -481,6 +482,7 @@ fn constants_and_magic_constants() {
     let opts = CompileOptions {
         line_of: Some(&line_of),
         file: Some(PathBuf::from("/tmp/dir/file.php")),
+        ..CompileOptions::new()
     };
     let m = compile(program, &mut interner, &opts).unwrap();
     let main = m.func(0);

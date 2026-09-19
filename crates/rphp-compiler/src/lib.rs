@@ -107,7 +107,6 @@ pub(crate) fn unsupported(diags: &mut Vec<Diagnostic>, span: Span, what: &str) {
 }
 
 /// What [`compile`] needs besides the program.
-#[derive(Default)]
 pub struct CompileOptions<'a> {
     /// Maps a byte offset in the source to its 1-based line, for
     /// `Function::lines` and `__LINE__`; `None` leaves the line tables empty
@@ -116,6 +115,26 @@ pub struct CompileOptions<'a> {
     /// The script's path as php reports it (`__FILE__`; `__DIR__` is its
     /// parent). `None` for `-r`/eval code (`Command line code`, cwd).
     pub file: Option<PathBuf>,
+    /// `zend.assertions`, read when the unit is compiled the way php reads
+    /// it: `1` compiles and runs an `assert()`, `0` compiles it but jumps
+    /// over it, and `-1` (the production setting) does not compile it at all
+    /// — which is why its argument is not even evaluated.
+    pub assertions: i8,
+    /// The unit's source, used only to reconstruct the text php puts in an
+    /// `AssertionError` when `assert()` is given no description.
+    pub source: Option<&'a [u8]>,
+}
+
+impl Default for CompileOptions<'_> {
+    fn default() -> Self {
+        CompileOptions {
+            line_of: None,
+            file: None,
+            // php's own default when no php.ini says otherwise.
+            assertions: 1,
+            source: None,
+        }
+    }
 }
 
 impl CompileOptions<'_> {

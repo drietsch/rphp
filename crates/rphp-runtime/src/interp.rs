@@ -152,6 +152,19 @@ pub struct Interp {
     /// The `set_error_handler` stack: `(callback, level mask)`; a `Null`
     /// callback entry means "no handler" (`set_error_handler(null)`).
     pub error_handler: Vec<(Value, i64)>,
+    /// Where the first output that reached the SAPI came from, which php
+    /// names in `Cannot modify header information - headers already sent by
+    /// (output started at FILE:LINE)`.
+    pub output_started: Option<(String, u32)>,
+    /// Where the output *currently being produced* comes from, kept only
+    /// until the first bytes reach the SAPI (after that php never asks
+    /// again).
+    pub(crate) pending_site: Option<(String, u32)>,
+    /// The response headers a SAPI would send, in php's order (`headers_list`).
+    pub headers: Vec<(String, String)>,
+    /// `http_response_code()`: 0 until something sets it, which in the CLI
+    /// means php answers `false`.
+    pub response_code: i64,
     /// The `set_exception_handler` stack (`Null` = none).
     pub exception_handler: Vec<Value>,
     /// `register_shutdown_function` callbacks with their bound arguments.
@@ -222,6 +235,10 @@ impl Interp {
             ini: IniTable::with_core_defaults(),
             error_reporting: E_ALL,
             error_handler: Vec::new(),
+            output_started: None,
+            pending_site: None,
+            headers: Vec::new(),
+            response_code: 0,
             exception_handler: Vec::new(),
             shutdown: Vec::new(),
             last_error: None,

@@ -420,6 +420,13 @@ fn compile_unit(interp: &Interp, src: &[u8], name: &str) -> Result<Module, Compi
     let opts = CompileOptions {
         line_of: Some(&line_of),
         file: path.is_absolute().then(|| path.to_path_buf()),
+        // php reads `zend.assertions` when it *compiles* a unit, which is why
+        // changing it at run time does nothing.
+        assertions: interp
+            .ini_get("zend.assertions")
+            .and_then(|v| v.parse::<i8>().ok())
+            .unwrap_or(1),
+        source: Some(src),
     };
     // `compile` runs the HIR pass (resolution, validation, desugaring) and
     // then lowers; a resolution/validation error is php's compile-time

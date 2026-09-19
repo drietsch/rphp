@@ -110,8 +110,16 @@ pub fn php_command(php: &Path, script: &Path, args: &[String], cwd: &Path) -> Co
 }
 
 /// The command that runs `script` under `rphp` in `cwd`.
+///
+/// The same [`PHP_INI`] settings are pinned on this side: an oracle that runs
+/// the two engines under different ini values is not comparing the same
+/// program (`zend.assertions` alone decides whether an `assert()` is compiled
+/// at all).
 pub fn rphp_command(rphp: &Path, script: &Path, args: &[String], cwd: &Path) -> Command {
     let mut cmd = Command::new(rphp);
+    for (k, v) in PHP_INI {
+        cmd.arg("-d").arg(format!("{k}={v}"));
+    }
     cmd.arg(script).args(args).current_dir(cwd);
     scrub_env(&mut cmd);
     cmd

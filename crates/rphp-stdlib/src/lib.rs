@@ -38,7 +38,9 @@ mod pack;
 mod pcre;
 mod random;
 mod spl_containers;
+mod exec;
 mod file2;
+mod head;
 mod spl_decorators;
 mod spl_fixedarray;
 mod spl_heaps;
@@ -68,7 +70,9 @@ const MODULES: &[&[NativeFn]] = &[
     reflection::FUNCTIONS,
     spl_containers2::FUNCTIONS,
     password::FUNCTIONS,
+    exec::FUNCTIONS,
     file2::FUNCTIONS,
+    head::FUNCTIONS,
     spl_decorators::FUNCTIONS,
     spl_fixedarray::FUNCTIONS,
     spl_heaps::FUNCTIONS,
@@ -137,7 +141,9 @@ pub fn register(r: &mut Registry) {
     iconv::register_constants(r);
     pack::register_constants(r);
     file::register_constants(r);
+    exec::register_constants(r);
     file2::register_constants(r);
+    head::register_constants(r);
     date::register_constants(r);
     filter::register_constants(r);
     reflection::register_constants(r);

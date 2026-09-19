@@ -422,6 +422,18 @@ impl Interp {
     /// Render a backtrace array as php's `Stack trace:` body /
     /// `getTraceAsString()`: `#0 file(line): callee(args)` per entry, then
     /// `#N {main}`.
+    /// The same rendering without the closing `#N {main}` line, which
+    /// `debug_print_backtrace()` does not print (an exception's
+    /// `getTraceAsString()` does).
+    pub fn trace_to_string_bare(&self, trace: &Array) -> String {
+        let full = self.trace_to_string(trace);
+        match full.rfind("\n#") {
+            Some(i) => full[..=i].to_string(),
+            // A single entry: everything before the `#0 {main}` line.
+            None => String::new(),
+        }
+    }
+
     pub fn trace_to_string(&self, trace: &Array) -> String {
         let mut out = String::new();
         let mut n = 0;

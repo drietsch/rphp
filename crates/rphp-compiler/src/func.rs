@@ -83,6 +83,10 @@ pub(crate) struct ModuleCtx<'a> {
     pub(crate) dir: Box<[u8]>,
     /// `declare(strict_types=1)` at the top of the unit.
     pub(crate) strict_types: bool,
+    /// `zend.assertions` as it was when this unit started compiling.
+    pub(crate) assertions: i8,
+    /// The unit's source, for `assert()`'s reconstructed text.
+    pub(crate) source: Option<&'a [u8]>,
     /// The function/class sinks.
     pub(crate) sink: RefCell<FnSink>,
     /// The top-level class-likes the unit hoists (declared before `{main}`
@@ -129,6 +133,8 @@ impl<'a> ModuleCtx<'a> {
     ) -> Self {
         let (file, dir) = unit_file(opts);
         ModuleCtx {
+            assertions: opts.assertions,
+            source: opts.source,
             hoisted_classes: std::collections::HashSet::new(),
             interner,
             class_map,

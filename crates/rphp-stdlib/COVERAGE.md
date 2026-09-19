@@ -240,6 +240,12 @@ refuses it; reachable only through a pathological setting such as
 passwords where crypt_blowfish's compatibility bugs bite answer `*0` rather
 than a wrong hash.
 
+**`debug_backtrace()` / `debug_print_backtrace()`.** The same frame walk an
+exception's trace uses, with php's `DEBUG_BACKTRACE_*` flags and `$limit`, and
+without the `debug_backtrace()` frame itself. `debug_print_backtrace()` prints
+the `#0 file(line): f()` form and, unlike `getTraceAsString()`, no closing
+`#N {main}` line.
+
 **Reflection (S5).** `ReflectionClass`/`Object`/`Enum`, `ReflectionMethod`/
 `Function`/`FunctionAbstract`, `ReflectionParameter`, `ReflectionProperty`,
 `ReflectionClassConstant`, `ReflectionEnum{Unit,Backed}Case`, the three
@@ -285,6 +291,26 @@ it knew, which only ever costs an extra comparison. A quiet read (`??`,
 `isset`, `empty`, `@`) never warns, and an argument sent to a *by-reference*
 parameter does not either — php creates the variable there — which the runtime
 decides at the send, since by-ref-ness is not known until the callee resolves.
+
+**Response headers, `assert()` and the shell-escaping pair.** The CLI keeps a
+header list the way php does — `header`, `header_remove`, `headers_list`,
+`headers_sent` (with its two out-parameters) and `http_response_code`, all
+refusing once output has reached the SAPI and naming where that output
+started, while anything held in an `ob_*` level is not yet sent.
+`escapeshellarg`/`escapeshellcmd` are byte-exact, including the two rules that
+surprise people: a *paired* quote is left alone and a `0xFF` byte is dropped
+rather than escaped. `assert()` follows php's compile-time rule: at
+`zend.assertions=-1` the call is not lowered at all, so its argument is never
+evaluated; above that it throws the given `Throwable`, or an `AssertionError`
+carrying the description — or, with none, the text of the call, which the
+compiler passes as a hidden second argument the way php does. **Divergence:**
+that text is the source slice where php prints its own decompilation, so
+unusual spacing shows through.
+
+The differential oracle now pins the same ini on **both** sides: it used to
+pass `-d zend.assertions=-1` (and eleven others) to php only, while rphp ran
+on its own defaults — which for `short_open_tag` and `zend.assertions` were
+not the same values.
 
 **Not yet:** php 8.5's `Deprecated: Using null as an array offset` (the key
 conversion happens at nine call sites, several behind a shared borrow that

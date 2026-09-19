@@ -20,19 +20,44 @@ impl Interp {
     /// level-0 staging buffer that is flushed to the sink when the native
     /// returns.
     pub fn out(&mut self) -> &mut Vec<u8> {
+        self.mark_output_site();
         self.out.buf()
+    }
+
+    /// Remember where the output about to be produced comes from. Only while
+    /// nothing has reached the SAPI yet — that is the only window in which
+    /// php still cares, and it keeps this off the hot path afterwards.
+    pub fn mark_output_site(&mut self) {
+        if !self.out.sent() {
+            self.pending_site = Some((self.current_file(), self.current_line()));
+        }
     }
 
     /// `echo`: to the top `ob_*` level, or straight to the sink.
     pub fn echo(&mut self, bytes: &[u8]) {
+        self.mark_output_site();
         self.out.write(bytes);
+        self.note_output();
+    }
+
+    /// Record where the output that reached the SAPI came from, the first
+    /// time any does — php quotes it back in "headers already sent by".
+    pub fn note_output(&mut self) {
+        if self.out.take_first_send() {
+            self.output_started = self
+                .pending_site
+                .take()
+                .or_else(|| Some((self.current_file(), self.current_line())));
+        }
     }
 
     /// `echo $value` (the string conversion is the caller's job for arrays /
     /// objects, which warn / throw).
     pub fn echo_value(&mut self, v: &Value) {
+        self.mark_output_site();
         v.append_php_bytes(self.out.buf());
         self.out.flush_pending();
+        self.note_output();
     }
 
     // ---- diagnostics -----------------------------------------------------

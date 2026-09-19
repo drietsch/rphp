@@ -438,6 +438,34 @@ impl<'a> FnCompiler<'a> {
         self.mx.interner.resolve(id) == b"GLOBALS"
     }
 
+    /// php's auto-globals are one variable in every scope: `$_SERVER` inside a
+    /// function is the *global* `$_SERVER`, with no `global` statement and no
+    /// capture. So a body that mentions one binds its register to the global
+    /// cell in the prologue — which is what `global $_SERVER;` would do, and
+    /// creates the entry the way php's auto-global handler does (writing
+    /// `$_SESSION` inside a function makes it a global).
+    ///
+    /// `$GLOBALS` is not in the list: it is not a variable but a view of the
+    /// table, lowered on its own ([`FnCompiler::is_globals`]).
+    fn bind_auto_globals(&mut self) {
+        let mut names: Vec<(Box<[u8]>, IdentId, Reg)> = self
+            .vars
+            .iter()
+            .filter_map(|(&id, &reg)| {
+                let name = self.mx.interner.resolve(id);
+                (name != b"GLOBALS" && rphp_hir::scope::is_auto_global(name))
+                    .then(|| (Box::from(name), id, reg))
+            })
+            .collect();
+        // `vars` is a hash map; the bytecode has to come out the same every
+        // time, so bind in name order.
+        names.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, id, reg) in names {
+            let name = self.name_const(id);
+            self.emit(Op::BindGlobal { reg, name });
+        }
+    }
+
     /// The register holding `$this` for a read: emits `LoadThis` into the
     /// dedicated register.
     pub(crate) fn load_this(&mut self) -> Reg {
@@ -579,6 +607,7 @@ impl<'a> FnCompiler<'a> {
         if self.flags.contains(FnFlags::NEEDS_SYMTAB) {
             self.emit(Op::BindSymtab);
         }
+        self.bind_auto_globals();
         let mut defs = Vec::with_capacity(params.len());
         // (register, property name) of every promoted parameter, in order.
         let mut promoted: Vec<(Reg, Box<[u8]>)> = Vec::new();

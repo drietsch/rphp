@@ -35,6 +35,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("realpath", 1, Some(1), realpath),
     nf!("touch", 1, Some(3), touch),
     nf!("clearstatcache", 0, Some(2), clearstatcache),
+    nf!("umask", 0, Some(1), umask),
 ];
 
 /// Look `path` up through php's per-request stat cache
@@ -241,3 +242,39 @@ fn clearstatcache(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// This module declares no constants yet.
 pub(crate) fn register_constants(_r: &mut rphp_runtime::Registry) {}
+
+/// `umask(?int $mask = null): int` — set the process's file-creation mask and
+/// answer the previous one; with no mask (or `null`), just answer the current
+/// one, which is read the only way the C API allows: set it to `0`, then put
+/// it back. Symfony's `GenericRuntime` calls `umask(0o000)` in debug mode.
+fn umask(_ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let mask = args
+        .first()
+        .map(|v| v.deref().into_owned())
+        .filter(|v| !matches!(v, Value::Null | Value::Uninit))
+        .map(|v| v.to_int());
+    Ok(Value::Int(set_umask(mask)))
+}
+
+#[cfg(unix)]
+fn set_umask(mask: Option<i64>) -> i64 {
+    use rustix::fs::Mode;
+    use rustix::process::umask;
+    match mask {
+        Some(m) => umask(Mode::from_bits_retain(m as u16)).bits().into(),
+        // The C API has no "read" call: setting it to `0` answers the old
+        // mask, which is then put back — what php's own `umask()` does.
+        None => {
+            let old = umask(Mode::empty());
+            umask(old);
+            old.bits().into()
+        }
+    }
+}
+
+/// Where there is no `umask(2)`, php's Windows build keeps the mask itself;
+/// rphp has no Windows target yet, so this only keeps the code compiling.
+#[cfg(not(unix))]
+fn set_umask(_mask: Option<i64>) -> i64 {
+    0
+}

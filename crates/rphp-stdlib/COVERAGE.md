@@ -62,6 +62,7 @@ Functions needing a missing language feature are **cataloged, not faked** (decis
 | hash      | 5  | `md5`, `sha1`, `crc32`, `hash` (md5/sha1/sha256/sha384/sha512/crc32b), `hash_algos` |
 | pcre      | 5 + 1 | `preg_quote`, `preg_match` (incl. by-ref `$matches`), `preg_replace`, **`preg_replace_callback`**, `preg_split`, `preg_grep` — over PCRE2 |
 | file (`file.rs`) | 34 | S3: the path functions (`file_get_contents`/`file_put_contents`/`file`/`copy`/`rename`/`unlink`/`readfile`/`tempnam`/`realpath`…) plus the **stream handle family** — `fopen` (real files, `php://memory`/`temp`/`stdout`/`stderr`/`output`), `fread`/`fgets`/`fgetc`/`fwrite`/`fputs`/`stream_get_contents`, `fseek`/`ftell`/`rewind`/`fflush`/`fclose`, and `feof` over php's *end-of-file flag* (set by a read that came back short, cleared by a seek — not "the cursor is at the end"). The mode is enforced the way php's fd does: a read on a write-only file, or a write on a read-only one, is the `Notice: … failed with errno=9 Bad file descriptor` and `false`. S3 tier-a: `file/streams.php` |
+| filestat (`filestat.rs`) | 18 | S3: the stat predicates over php's per-request stat cache (`file_exists`, `is_file`/`is_dir`/`is_link`/`is_readable`/`is_writable`/`is_executable`, `filesize`, `filemtime`/`fileatime`/`filectime`, `filetype`, `fileperms`, `realpath`, `touch`, `clearstatcache`) plus **`umask`** (through `rustix`, so `#![forbid(unsafe_code)]` holds): php answers the previous mask, and with no argument reads the current one the only way the C API allows — set to `0`, then put back. Symfony's `GenericRuntime` calls `umask(0o000)` in debug mode. tier-a: `file/umask.php` |
 | filter (`filter.rs`) | 5 | S10: `filter_var`, `filter_var_array`, `filter_has_var`, `filter_list`, `filter_id` — the validators (int/bool/float/regexp/domain/url/email/ip/mac) and sanitizers with php's flag set, and the three-way failure outcome (`false` / the `default` option / `null` under `FILTER_NULL_ON_FAILURE`) Symfony's `ParameterBag` leans on. S10 tier-a: `filter/basics.php` |
 
 ## Deferred (cataloged, by blocker)
@@ -198,6 +199,22 @@ keeps the sign of the partial product; `Value::pow` does not) — `pow_basiclong
 - `ClassFlags::ABSTRACT` is set on interfaces and traits, matching the
   existing native registrations; php's reflection reports `isAbstract()` as
   `false` for both. Unobservable until Reflection (E10) lands.
+
+**Superglobals in every scope.** php's auto-globals (`$_SERVER`, `$_ENV`,
+`$_GET`, `$_POST`, `$_COOKIE`, `$_FILES`, `$_REQUEST`, `$_SESSION`) are one
+variable in every scope — no `global` statement, no closure capture. A function
+body that mentions one now binds its register to the global cell in the
+prologue, creating the entry on first write as php's auto-global handler does.
+Found by running Symfony's Dotenv, where `$_SERVER += $_ENV;` inside a method
+was reading `null`. `$GLOBALS` stays what it was: a view of the table, not a
+variable.
+
+**`new $cls` autoloads.** A class name in a register went through the class
+table without the autoload stack, so every `new $_SERVER['APP_RUNTIME']`-shaped
+call in Symfony's Runtime failed with `Class "…" not found` although the loader
+would have found it. php looks the name up with a leading `\` stripped (the
+loader is called with `Foo`, never `\Foo`) and keeps the caller's spelling in
+the error; `$x instanceof $name` still never autoloads.
 
 **Anonymous classes.** Implemented: a `new class { … }` site is numbered and
 lowered by the same class pre-pass as every other declaration, under the name

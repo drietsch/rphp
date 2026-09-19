@@ -177,12 +177,21 @@ impl Interp {
                 .ok_or_else(|| Unwind::error("Cannot use \"static\" when no class scope is active")),
             ClassRefKind::Reg(r) => match self.rd(base, r) {
                 Value::Object(o) => Ok(o.class_id()),
-                Value::Str(s) => self.class_by_name(s.as_bytes()).ok_or_else(|| {
-                    Unwind::error(format!(
-                        "Class \"{}\" not found",
-                        String::from_utf8_lossy(s.as_bytes())
-                    ))
-                }),
+                // `new $cls` autoloads like `new A` does. php looks the name
+                // up with a leading `\` stripped — the loader is called with
+                // `Foo`, never `\Foo` — but keeps the caller's spelling in
+                // the error.
+                Value::Str(s) => {
+                    let raw = s.as_bytes().to_vec();
+                    let name = raw.strip_prefix(b"\\").unwrap_or(&raw).to_vec();
+                    match self.lookup_class(&name)? {
+                        Some(id) => Ok(id),
+                        None => Err(Unwind::error(format!(
+                            "Class \"{}\" not found",
+                            String::from_utf8_lossy(&raw)
+                        ))),
+                    }
+                }
                 other => Err(Unwind::error(format!(
                     "Cannot use value of type {} as class name",
                     value_name(&other)
@@ -217,7 +226,12 @@ impl Interp {
             }
             ClassRefKind::Reg(r) => match self.rd(base, r) {
                 Value::Object(o) => Ok(Some(o.class_id())),
-                Value::Str(s) => Ok(self.class_by_name(s.as_bytes())),
+                // `$x instanceof $name` never autoloads: an unknown class
+                // simply does not match.
+                Value::Str(s) => {
+                    let raw = s.as_bytes();
+                    Ok(self.class_by_name(raw.strip_prefix(b"\\").unwrap_or(raw)))
+                }
                 _ => Err(Unwind::error("Class name must be a valid object or a string")),
             },
             _ => self.resolve_class_ref(func, base, class).map(Some),

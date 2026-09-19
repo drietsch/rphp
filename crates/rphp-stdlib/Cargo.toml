@@ -25,6 +25,9 @@ encoding_rs.workspace = true
 # date extension (S6).
 jiff.workspace = true
 
+# `umask()` (ext/standard/filestat.c) — no std equivalent.
+rustix.workspace = true
+
 # password / crypt (S9).
 pwhash.workspace = true
 argon2.workspace = true

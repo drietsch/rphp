@@ -1277,6 +1277,7 @@ dependencies = [
  "rphp-pcre2",
  "rphp-runtime",
  "rphp-value",
+ "rustix",
  "sha1",
  "sha2 0.10.9",
 ]

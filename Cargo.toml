@@ -85,6 +85,9 @@ pcre2-sys = "0.2.10"
 # password / crypt (S9): `pwhash` carries the traditional unix schemes php's
 # `crypt()` still answers for (DES, `$1$`, `$5$`, `$6$`, bcrypt); `argon2` is
 # RustCrypto's, byte-compatible with the libargon2 php links.
+# The one platform boundary the stdlib needs so far: `umask()` has no std API.
+# `rustix` wraps it safely, which keeps `#![forbid(unsafe_code)]` intact.
+rustix = { version = "1", features = ["process"] }
 pwhash = "1"
 argon2 = "0.5"
 password-hash = "0.5"

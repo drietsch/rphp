@@ -451,5 +451,32 @@ which a reading of php-src would have ranked first:
   a ChildDefinition by patching the serialized bytes" trick produced a
   `__PHP_Incomplete_Class`.
 
-The rung now reaches FrameworkExtension's `session` check, so **ext/session
-is what L3 wants next**.
+Then, in order: **ext/session** (FrameworkExtension refuses to configure a
+session without it — the extension is implemented whole, files handler and
+user handlers alike), the **php 8.4 Reflection surface** the deep-clone
+polyfill reads (`isPrivateSet`, `getMangledName`, `getHooks`,
+`getClosureUsedVariables`, `hasPrototype`, `ReflectionParameter::__toString`
+— twenty-nine methods), and **doc comments**, which the parser had always
+read and the compiler had always dropped.
+
+The rung now compiles the whole container and stops on a Symfony-level
+complaint — `http_kernel` depending on a missing `event_dispatcher` — rather
+than on an engine gap. **That is where the walk resumes.**
+
+Cataloged along the way, none of them blocking:
+
+- `PropertyHookType` (a native *enum*, which the class registry cannot
+  declare yet), `ReflectionExtension`, and the lazy-object family
+  (`newLazyGhost`, `resetAsLazyProxy`, …).
+- `ReflectionFunctionAbstract::getStaticVariables()` and `returnsReference()`
+  — the runtime keeps a function's `static` cells keyed per function and
+  exposes neither them nor `FnFlags::RETURNS_REF` to the stdlib.
+- A native function's parameter *names* (`nf!` carries them only where a
+  module bothered), so `ReflectionFunction('str_repeat')->getParameters()` is
+  empty where php names `$string` and `$times`.
+- php 8.4's compile-time `Implicitly marking parameter $x as nullable is
+  deprecated` — Reflection reports the implicit `?` now, but the deprecation
+  is not emitted.
+- php's scanner gives the last docblock it saw to the next declaration it
+  opens (`/** … */ $f = function () {};`); the parser here wants it directly
+  before the `function` keyword.

@@ -125,13 +125,24 @@ fn prop_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nati
     let recv = this(o)?;
     let cid = class_arg(ctx, &args[0])?;
     let name = str_arg(&args[1]);
-    let Some(decl) = declared_prop(ctx, cid, &name) else {
-        return Err(refl_error(format!(
-            "Property {}::${} does not exist",
-            ctx.class(cid).name_str(),
-            String::from_utf8_lossy(&name)
-        )));
+    // Reflecting an *instance* also finds a property it grew at run time,
+    // which is the only way to reach one — a class knows nothing about it.
+    let dynamic = match &*args[0].deref() {
+        Value::Object(obj) => obj.get_deref(&name).is_some(),
+        _ => false,
     };
+    let decl = match declared_prop(ctx, cid, &name) {
+        Some(decl) => decl,
+        None if dynamic => cid,
+        None => {
+            return Err(refl_error(format!(
+                "Property {}::${} does not exist",
+                ctx.class(cid).name_str(),
+                String::from_utf8_lossy(&name)
+            )))
+        }
+    };
+    let dynamic = dynamic && declared_prop(ctx, cid, &name).is_none();
     recv.set(b"name", Value::string(&name));
     let class = ctx.class(decl).name.clone();
     recv.set(b"class", Value::string(&class));
@@ -140,7 +151,7 @@ fn prop_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nati
         PropState {
             cid: decl,
             name: Box::from(&name[..]),
-            dynamic: false,
+            dynamic,
         },
     );
     Ok(Value::Null)
@@ -156,6 +167,118 @@ fn prop_get_name(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResu
 fn prop_declaring_class(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let s: PropState = state(this(o)?)?;
     class::make_class(ctx, "ReflectionClass", s.cid)
+}
+
+/// `ReflectionProperty::isPrivateSet(): bool` — php 8.4's asymmetric
+/// visibility, which `readonly` also implies (as `protected(set)`).
+fn prop_is_private_set(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    prop_flag(ctx, o, IS_PRIVATE_SET)
+}
+
+/// `ReflectionProperty::isProtectedSet(): bool`
+fn prop_is_protected_set(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    prop_flag(ctx, o, IS_PROTECTED_SET)
+}
+
+/// `ReflectionProperty::isFinal(): bool` — a `private(set)` property is
+/// final as well, since nothing may redeclare it.
+fn prop_is_final(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    prop_flag(ctx, o, IS_FINAL)
+}
+
+/// `ReflectionProperty::isAbstract(): bool` — only a hooked property can be
+/// abstract, and hooks are not lowered, so this is always false.
+fn prop_is_abstract(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    prop_flag(ctx, o, super::common::IS_ABSTRACT)
+}
+
+/// `ReflectionProperty::isDynamic(): bool` — grown at run time rather than
+/// declared, the inverse of `isDefault()`.
+fn prop_is_dynamic(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    Ok(Value::Bool(s.dynamic))
+}
+
+/// `ReflectionProperty::getMangledName(): string` — the key the property
+/// really lives under: `"\0Class\0name"` for a private one, `"\0*\0name"`
+/// for a protected one, the plain name for everything else.
+fn prop_mangled_name(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let bits = prop_modifiers(ctx, &s);
+    let mut out = Vec::new();
+    if bits & IS_PRIVATE != 0 {
+        out.push(0);
+        out.extend_from_slice(&ctx.class(s.cid).name);
+        out.push(0);
+    } else if bits & IS_PROTECTED != 0 {
+        out.extend_from_slice(b"\0*\0");
+    }
+    out.extend_from_slice(&s.name);
+    Ok(Value::string(&out))
+}
+
+/// `ReflectionProperty::hasHooks(): bool` / `getHooks(): array` /
+/// `hasHook(PropertyHookType $type): bool` / `getHook(…): ?ReflectionMethod`
+///
+/// Property hooks are not lowered by the compiler (see `props.rs`), so no
+/// property this engine can run has one and the four answers are the empty
+/// ones php gives for a plain property.
+fn prop_has_hooks(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    this(o)?;
+    Ok(Value::Bool(false))
+}
+
+fn prop_get_hooks(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    this(o)?;
+    Ok(Value::empty_array())
+}
+
+fn prop_has_hook(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    this(o)?;
+    Ok(Value::Bool(false))
+}
+
+fn prop_get_hook(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    this(o)?;
+    Ok(Value::Null)
+}
+
+/// `ReflectionProperty::getSettableType(): ?ReflectionType` — the type a
+/// write must satisfy. Without hooks that is the declared type, and a
+/// property with no type accepts anything, which php spells `null`.
+fn prop_settable_type(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    prop_get_type(ctx, o, args)
+}
+
+/// `ReflectionProperty::getRawValue(object $object): mixed` — the value
+/// behind the hooks, which is the value itself while there are none.
+fn prop_get_raw_value(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    prop_get_value(ctx, o, args)
+}
+
+/// `ReflectionProperty::setRawValue(object $object, mixed $value): void`
+fn prop_set_raw_value(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    prop_set_value(ctx, o, args)
+}
+
+/// `ReflectionProperty::setRawValueWithoutLazyInitialization(object $object, mixed $value): void`
+/// — there are no lazy objects here, so the write is the ordinary one.
+fn prop_set_raw_value_no_lazy(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    prop_set_value(ctx, o, args)
+}
+
+/// `ReflectionProperty::isLazy(object $object): bool` — no object this
+/// engine builds is lazy.
+fn prop_is_lazy(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    this(o)?;
+    Ok(Value::Bool(false))
+}
+
+/// `ReflectionProperty::skipLazyInitialization(object $object): void` —
+/// nothing to skip.
+fn prop_skip_lazy_init(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    this(o)?;
+    Ok(Value::Null)
 }
 
 /// `ReflectionProperty::getModifiers(): int`
@@ -686,6 +809,25 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .method("isDefault", nm!(0, Some(0), prop_is_default))
         .method("isPromoted", nm!(0, Some(0), prop_is_promoted))
         .method("isVirtual", nm!(0, Some(0), prop_is_virtual))
+        .method("isPrivateSet", nm!(0, Some(0), prop_is_private_set))
+        .method("isProtectedSet", nm!(0, Some(0), prop_is_protected_set))
+        .method("isFinal", nm!(0, Some(0), prop_is_final))
+        .method("isAbstract", nm!(0, Some(0), prop_is_abstract))
+        .method("isDynamic", nm!(0, Some(0), prop_is_dynamic))
+        .method("getMangledName", nm!(0, Some(0), prop_mangled_name))
+        .method("hasHooks", nm!(0, Some(0), prop_has_hooks))
+        .method("getHooks", nm!(0, Some(0), prop_get_hooks))
+        .method("hasHook", nm!(1, Some(1), prop_has_hook))
+        .method("getHook", nm!(1, Some(1), prop_get_hook))
+        .method("getSettableType", nm!(0, Some(0), prop_settable_type))
+        .method("getRawValue", nm!(1, Some(1), prop_get_raw_value))
+        .method("setRawValue", nm!(2, Some(2), prop_set_raw_value))
+        .method(
+            "setRawValueWithoutLazyInitialization",
+            nm!(2, Some(2), prop_set_raw_value_no_lazy),
+        )
+        .method("isLazy", nm!(1, Some(1), prop_is_lazy))
+        .method("skipLazyInitialization", nm!(1, Some(1), prop_skip_lazy_init))
         .method("hasType", nm!(0, Some(0), prop_has_type))
         .method("getType", nm!(0, Some(0), prop_get_type))
         .method("hasDefaultValue", nm!(0, Some(0), prop_has_default))

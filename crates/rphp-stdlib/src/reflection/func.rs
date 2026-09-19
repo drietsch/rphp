@@ -536,6 +536,159 @@ fn get_closure_scope_class(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -
     }
 }
 
+/// `ReflectionFunctionAbstract::getClosureCalledClass(): ?ReflectionClass`
+/// — the `static::` class a bound closure carries, which is the one php
+/// answers `get_called_class()` with inside it.
+fn get_closure_called_class(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let i = recv(ctx, o)?;
+    let called = i.closure.as_ref().and_then(|c| ctx.closure_called_class(c));
+    match called {
+        Some(cid) => class::make_class(ctx, "ReflectionClass", cid),
+        None => Ok(Value::Null),
+    }
+}
+
+/// `ReflectionFunctionAbstract::getClosureUsedVariables(): array` — what a
+/// closure captured, by name. The compiled body records a capture by the
+/// register it lands in, and the same body's variable table gives that
+/// register its name.
+fn get_closure_used_variables(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let i = recv(ctx, o)?;
+    let (Some(c), Some(f)) = (i.closure.clone(), i.func.clone()) else {
+        return Ok(Value::empty_array());
+    };
+    let mut a = rphp_value::Array::new();
+    for (idx, cap) in f.f.captures.iter().enumerate() {
+        let Some(value) = c.captures().get(idx) else {
+            break;
+        };
+        let Some((name, _)) = f.f.var_names.iter().find(|(_, reg)| *reg == cap.dst) else {
+            continue;
+        };
+        // **Known divergence.** php marks a `use (&$x)` capture as the
+        // reference it is (`&int(1)` in a dump); the value that comes back
+        // here is the one behind the cell.
+        a.set(rphp_value::ArrayKey::str(name), value.clone());
+    }
+    Ok(Value::Array(a))
+}
+
+/// `ReflectionFunctionAbstract::getExtensionName(): string|false` — the
+/// extension a function comes from, `false` for one the program declares.
+fn get_extension_name(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let i = recv(ctx, o)?;
+    if i.func.is_some() {
+        return Ok(Value::Bool(false));
+    }
+    let name = String::from_utf8_lossy(&i.name).into_owned();
+    Ok(Value::string(crate::info::extension_of(&name).as_bytes()))
+}
+
+/// `ReflectionFunctionAbstract::getExtension(): ?ReflectionExtension` —
+/// `ReflectionExtension` is not implemented, so only the answer for a
+/// function that belongs to no extension is exact.
+fn get_extension(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let i = recv(ctx, o)?;
+    if i.func.is_none() {
+        return Err(super::common::refl_error(
+            "ReflectionFunctionAbstract::getExtension() needs ReflectionExtension, which is not implemented",
+        ));
+    }
+    Ok(Value::Null)
+}
+
+/// `ReflectionFunctionAbstract::isDeprecated(): bool` — php marks an
+/// internal function deprecated in its own table; nothing here is.
+fn is_deprecated(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    recv(ctx, o)?;
+    Ok(Value::Bool(false))
+}
+
+/// `ReflectionFunctionAbstract::hasTentativeReturnType(): bool` /
+/// `getTentativeReturnType(): ?ReflectionType` — a tentative return type is
+/// an internal-function annotation this engine does not carry.
+fn has_tentative_return_type(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    recv(ctx, o)?;
+    Ok(Value::Bool(false))
+}
+
+fn get_tentative_return_type(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    recv(ctx, o)?;
+    Ok(Value::Null)
+}
+
+/// `ReflectionFunction::isAnonymous(): bool` — true for a closure, which is
+/// the only function php gives no name of its own.
+fn is_anonymous(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let i = recv(ctx, o)?;
+    Ok(Value::Bool(i.closure.is_some()))
+}
+
+/// `ReflectionFunction::isDisabled(): bool` — `disable_functions` is not
+/// implemented, so nothing is disabled.
+fn is_disabled(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    recv(ctx, o)?;
+    ctx.deprecated(
+        "Method ReflectionFunction::isDisabled() is deprecated since 8.0, as ReflectionFunction can no longer be constructed for disabled functions",
+    )?;
+    Ok(Value::Bool(false))
+}
+
+/// The method of the same name an ancestor declares — php's *prototype*.
+/// An interface's method wins over a parent class's, which is the order php
+/// walks.
+fn prototype_of(ctx: &Ctx, cid: u32, name: &[u8]) -> Option<Rc<MethodDef>> {
+    let def = ctx.class(cid);
+    let lower = name.to_ascii_lowercase();
+    for iid in def.interfaces.clone() {
+        if let Some(m) = ctx.class(iid).methods.get(lower.as_slice()) {
+            return Some(m.clone());
+        }
+    }
+    let mut cur = def.parent;
+    while let Some(pid) = cur {
+        let p = ctx.class(pid);
+        if let Some(m) = p.methods.get(lower.as_slice()) {
+            return Some(m.clone());
+        }
+        cur = p.parent;
+    }
+    None
+}
+
+/// `ReflectionMethod::hasPrototype(): bool`
+fn has_prototype(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let i = recv(ctx, o)?;
+    let (Some(cid), name) = (i.class, i.name.clone()) else {
+        return Ok(Value::Bool(false));
+    };
+    Ok(Value::Bool(prototype_of(ctx, cid, &name).is_some()))
+}
+
+/// `ReflectionMethod::getPrototype(): ReflectionMethod`
+fn get_prototype(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let i = recv(ctx, o)?;
+    let proto = i
+        .class
+        .and_then(|cid| prototype_of(ctx, cid, &i.name));
+    match proto {
+        Some(m) => make_method(ctx, &m),
+        None => Err(super::common::refl_error(format!(
+            "Method {}::{} does not have a prototype",
+            i.class
+                .map(|cid| ctx.class(cid).name_str().to_string())
+                .unwrap_or_default(),
+            String::from_utf8_lossy(&i.name)
+        ))),
+    }
+}
+
+/// `ReflectionMethod::isClosure(): bool` — a method is never one.
+fn method_is_closure(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    recv(ctx, o)?;
+    Ok(Value::Bool(false))
+}
+
 // ---- ReflectionMethod ------------------------------------------------------
 
 /// `ReflectionMethod::isPublic(): bool`
@@ -847,9 +1000,17 @@ fn parameter_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
             (idx >= 0 && (idx as usize) < names.len()).then_some(idx as usize)
         }
     };
+    // A negative offset is php's `ValueError` before it is a lookup at all.
+    if let Value::Int(n) = &wanted {
+        if *n < 0 {
+            return Err(Unwind::value_error(
+                "ReflectionParameter::__construct(): Argument #2 ($param) must be greater than or equal to 0",
+            ));
+        }
+    }
     let Some(index) = index else {
         return Err(refl_error(format!(
-            "The parameter specified by its {} is invalid",
+            "The parameter specified by its {} could not be found",
             if matches!(wanted, Value::Str(_)) {
                 "name"
             } else {
@@ -860,6 +1021,88 @@ fn parameter_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
     recv_obj.set(b"name", Value::string(&names[index]));
     store(recv_obj, ParamState { owner, index });
     Ok(Value::Null)
+}
+
+/// php's rendering of a default value inside `__toString()`: `NULL`,
+/// `true`, `'text'`, `[0 => 1, 'k' => 2]`, a number as written.
+fn export_default(v: &Value) -> String {
+    match &*v.deref() {
+        Value::Null | Value::Uninit => "NULL".to_string(),
+        Value::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
+        Value::Int(n) => n.to_string(),
+        Value::Float(f) => {
+            let s = f.to_string();
+            if s.contains(['.', 'e', 'E', 'n', 'i']) {
+                s
+            } else {
+                format!("{s}.0")
+            }
+        }
+        Value::Str(st) => format!("'{}'", String::from_utf8_lossy(st.as_bytes())),
+        Value::Array(a) => {
+            let parts: Vec<String> = a
+                .iter()
+                .map(|(k, v)| {
+                    let key = match &k {
+                        rphp_value::ArrayKey::Int(n) => n.to_string(),
+                        rphp_value::ArrayKey::Str(s) => {
+                            format!("'{}'", String::from_utf8_lossy(s))
+                        }
+                    };
+                    format!("{key} => {}", export_default(&v))
+                })
+                .collect();
+            format!("[{}]", parts.join(", "))
+        }
+        Value::Object(o) => format!(
+            "new \\{}()",
+            String::from_utf8_lossy(o.layout().class_name())
+        ),
+        other => other.to_php_string(),
+    }
+}
+
+/// `ReflectionParameter::__toString(): string` — php's one-line
+/// description, which code in the wild parses:
+///
+/// ```text
+/// Parameter #1 [ <optional> ?string $b = NULL ]
+/// ```
+///
+/// **Known divergence.** php keeps the default *expression* and prints a
+/// constant default by name (`$c = MYC`); the compiled parameter here keeps
+/// the value, so the value is what is printed.
+fn param_to_string(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let recv_obj = this(o)?;
+    let index = param_get_position(ctx, o, &mut [])?.to_int();
+    let name = recv_obj
+        .get_deref(b"name")
+        .map(|v| v.to_php_bytes().to_vec())
+        .unwrap_or_default();
+    let mut out = format!("Parameter #{index} [ ");
+    let optional = param_is_optional(ctx, o, &mut [])?.to_bool();
+    out.push_str(if optional { "<optional> " } else { "<required> " });
+    let ty = param_get_type(ctx, o, &mut [])?;
+    if let Value::Object(t) = &ty {
+        let text = ctx.call_method(t, b"__toString", &[])?;
+        out.push_str(&String::from_utf8_lossy(&text.to_php_bytes()));
+        out.push(' ');
+    }
+    if param_by_ref(ctx, o, &mut [])?.to_bool() {
+        out.push('&');
+    }
+    if param_is_variadic(ctx, o, &mut [])?.to_bool() {
+        out.push_str("...");
+    }
+    out.push('$');
+    out.push_str(&String::from_utf8_lossy(&name));
+    if param_has_default(ctx, o, &mut [])?.to_bool() {
+        let d = param_get_default(ctx, o, &mut [])?;
+        out.push_str(" = ");
+        out.push_str(&export_default(&d));
+    }
+    out.push_str(" ]");
+    Ok(Value::string(out.as_bytes()))
 }
 
 /// A `callable` argument as a target: a plain name, `[$obj, 'm']`,
@@ -936,10 +1179,39 @@ fn param_get_position(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Nat
 
 /// The canonical spelling of a parameter's declared type, if it has one.
 fn param_type_string(i: &Info, index: usize) -> Option<String> {
-    i.func
-        .as_ref()
-        .and_then(|f| f.f.params.get(index))
-        .and_then(|p| p.ty.as_ref().map(ToString::to_string))
+    let p = i.func.as_ref().and_then(|f| f.f.params.get(index))?;
+    let ty = p.ty.as_ref().map(ToString::to_string)?;
+    // php's *implicitly nullable* parameter: a single declared type with a
+    // literal `null` default accepts null as well, and Reflection shows the
+    // `?`. A composite type already spells its own null, so it is left as
+    // written.
+    let composite = ty.contains('|') || ty.contains('&');
+    if !composite
+        && !ty.starts_with('?')
+        && !ty.eq_ignore_ascii_case("mixed")
+        && !ty.eq_ignore_ascii_case("null")
+        && default_is_null(i, index)
+    {
+        return Some(format!("?{ty}"));
+    }
+    Some(ty)
+}
+
+/// Whether the parameter's default is the literal `null` — the only shape
+/// php's implicit nullability keys on.
+fn default_is_null(i: &Info, index: usize) -> bool {
+    let Some(f) = i.func.as_ref() else {
+        return false;
+    };
+    match param_default(i, index) {
+        Some(InitKey::Const(idx)) => f
+            .f
+            .consts
+            .get(idx as usize)
+            .and_then(|c| c.try_to_value())
+            .is_some_and(|v| matches!(v, Value::Null)),
+        _ => false,
+    }
 }
 
 /// `ReflectionParameter::hasType(): bool`
@@ -1133,6 +1405,25 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .method("getAttributes", nm!(0, Some(2), get_attributes))
         .method("getClosureThis", nm!(0, Some(0), get_closure_this))
         .method(
+            "getClosureCalledClass",
+            nm!(0, Some(0), get_closure_called_class),
+        )
+        .method(
+            "getClosureUsedVariables",
+            nm!(0, Some(0), get_closure_used_variables),
+        )
+        .method("isDeprecated", nm!(0, Some(0), is_deprecated))
+        .method("getExtensionName", nm!(0, Some(0), get_extension_name))
+        .method("getExtension", nm!(0, Some(0), get_extension))
+        .method(
+            "hasTentativeReturnType",
+            nm!(0, Some(0), has_tentative_return_type),
+        )
+        .method(
+            "getTentativeReturnType",
+            nm!(0, Some(0), get_tentative_return_type),
+        )
+        .method(
             "getClosureScopeClass",
             nm!(0, Some(0), get_closure_scope_class),
         )
@@ -1143,6 +1434,8 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .class_const("IS_DEPRECATED", Value::Int(2048))
         .method("__construct", nm!(1, Some(1), function_construct))
         .method("isClosure", nm!(0, Some(0), is_closure))
+        .method("isAnonymous", nm!(0, Some(0), is_anonymous))
+        .method("isDisabled", nm!(0, Some(0), is_disabled))
         .method("invoke", nm!(0, None, function_invoke))
         .method("invokeArgs", nm!(1, Some(1), function_invoke_args))
         .method("getClosure", nm!(0, Some(0), function_get_closure))
@@ -1167,6 +1460,9 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .method("isPrivate", nm!(0, Some(0), is_private))
         .method("isAbstract", nm!(0, Some(0), is_abstract))
         .method("isFinal", nm!(0, Some(0), is_final))
+        .method("isClosure", nm!(0, Some(0), method_is_closure))
+        .method("hasPrototype", nm!(0, Some(0), has_prototype))
+        .method("getPrototype", nm!(0, Some(0), get_prototype))
         .method("isConstructor", nm!(0, Some(0), is_constructor))
         .method("isDestructor", nm!(0, Some(0), is_destructor))
         .method("getModifiers", nm!(0, Some(0), get_modifiers))
@@ -1202,5 +1498,6 @@ pub(crate) fn register_classes(r: &mut Registry) {
         )
         .method("getDeclaringClass", nm!(0, Some(0), param_declaring_class))
         .method("getAttributes", nm!(0, Some(2), param_get_attributes))
+        .method("__toString", nm!(0, Some(0), param_to_string))
         .finish();
 }

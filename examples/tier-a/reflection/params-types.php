@@ -132,3 +132,16 @@ echo '  LIMIT has=', var_export($k2->hasType(), true), ' ', show($k2->getType())
 echo "-- ReflectionType shape --\n";
 $t = (new \ReflectionMethod(Holder::class, 'ret'))->getReturnType();
 var_dump($t instanceof \ReflectionType, $t instanceof \Stringable);
+
+// `__toString()`, which code in the wild parses for `= NULL`.
+function tostring_shapes(int $a, ?string $b = null, int|float $d = 5,
+    bool $t = true, array $arr = [1, 'k' => 2], string ...$rest) {}
+foreach ((new \ReflectionFunction(__NAMESPACE__ . '\\tostring_shapes'))->getParameters() as $p) {
+    printf("%-2s %-12s allowsNull=%d %s\n", $p->getName(),
+        $p->hasType() ? (string) $p->getType() : '-', (int) $p->allowsNull(),
+        (string) $p);
+}
+function by_ref_param(&$x, $plain) {}
+foreach ((new \ReflectionFunction(__NAMESPACE__ . '\\by_ref_param'))->getParameters() as $p) {
+    echo (string) $p, "\n";
+}

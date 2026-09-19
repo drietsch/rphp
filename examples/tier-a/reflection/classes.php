@@ -136,3 +136,75 @@ foreach ([
     try { $f(); echo "no error\n"; }
     catch (\Throwable $e) { echo get_class($e), ': ', $e->getMessage(), "\n"; }
 }
+
+// The 8.4 surface: asymmetric visibility, the mangled key a property really
+// lives under, hooks (there are none), lazy objects (there are none), and
+// the extension a class comes from.
+class Aviz
+{
+    public int $plain = 1;
+    protected string $prot = 'p';
+    private array $priv = [];
+    public readonly int $ro;
+    public private(set) int $ps = 2;
+    public protected(set) string $prots = 'x';
+    public static $stat = 1;
+
+    public function __construct()
+    {
+        $this->ro = 5;
+    }
+}
+$avizObject = new Aviz();
+foreach (['plain', 'prot', 'priv', 'ro', 'ps', 'prots', 'stat'] as $n) {
+    $p = new \ReflectionProperty(__NAMESPACE__ . '\\Aviz', $n);
+    printf("%-6s privset=%d protset=%d final=%d abstract=%d dynamic=%d hooks=%d mangled=%s mods=%d settable=%s\n",
+        $n, (int) $p->isPrivateSet(), (int) $p->isProtectedSet(), (int) $p->isFinal(),
+        (int) $p->isAbstract(), (int) $p->isDynamic(), (int) $p->hasHooks(),
+        json_encode($p->getMangledName()), $p->getModifiers(),
+        json_encode($p->getSettableType()?->getName()));
+    var_dump($p->getHooks());
+}
+$rc = new \ReflectionClass(__NAMESPACE__ . '\\Aviz');
+var_dump($rc->getDefaultProperties(), $rc->getTraitAliases(),
+    $rc->isUninitializedLazyObject($avizObject), $rc->getExtensionName());
+var_dump((new \ReflectionClass('ArrayObject'))->getExtensionName(),
+    (new \ReflectionClass('DateTime'))->getExtensionName(),
+    (new \ReflectionClass('ReflectionClass'))->getExtensionName(),
+    (new \ReflectionClass('stdClass'))->getExtensionName());
+
+$priv = new \ReflectionProperty(__NAMESPACE__ . '\\Aviz', 'priv');
+var_dump($priv->getRawValue($avizObject), $priv->isLazy($avizObject));
+$priv->setRawValue($avizObject, ['z']);
+var_dump($priv->getValue($avizObject));
+$avizObject->grown = 'g';
+$grown = new \ReflectionProperty($avizObject, 'grown');
+var_dump($grown->isDynamic(), $grown->isDefault(), $grown->getMangledName());
+
+// A closure's captures and the class it was bound to, and a method's
+// prototype.
+$captured = 'c';
+$alsoCaptured = 1;
+$closure = function () use ($captured, $alsoCaptured) { return $captured; };
+$rf = new \ReflectionFunction($closure);
+var_dump($rf->getClosureUsedVariables(), $rf->getClosureCalledClass(),
+    $rf->isAnonymous(), $rf->isDisabled(), $rf->isDeprecated(),
+    $rf->getExtensionName(), $rf->hasTentativeReturnType());
+var_dump((new \ReflectionFunction('strlen'))->getExtensionName(),
+    (new \ReflectionFunction('array_map'))->getExtensionName(),
+    (new \ReflectionFunction('preg_match'))->getExtensionName());
+
+interface ProtoBase { public function run(): void; }
+class ProtoParent { public function run(): void {} public function own(): void {} }
+class ProtoChild extends ProtoParent implements ProtoBase { public function run(): void {} }
+foreach ([['ProtoChild', 'run'], ['ProtoChild', 'own'], ['ProtoParent', 'own']] as [$c, $m]) {
+    $rm = new \ReflectionMethod(__NAMESPACE__ . '\\' . $c, $m);
+    printf("%s::%s prototype=%d %s closure=%d\n", $c, $m, (int) $rm->hasPrototype(),
+        $rm->hasPrototype() ? $rm->getPrototype()->getDeclaringClass()->getShortName() : '-',
+        (int) $rm->isClosure());
+}
+try {
+    (new \ReflectionMethod(__NAMESPACE__ . '\\ProtoParent', 'own'))->getPrototype();
+} catch (\Throwable $e) {
+    echo get_class($e), ': ', $e->getMessage(), "\n";
+}

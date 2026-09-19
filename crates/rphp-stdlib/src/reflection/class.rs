@@ -210,6 +210,77 @@ fn is_cloneable(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRes
     Ok(Value::Bool(ok))
 }
 
+/// `ReflectionClass::getDefaultProperties(): array` — every declared
+/// property's default, static ones first, in php's order.
+fn get_default_properties(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let cid = cid_of(this(o)?)?;
+    let def = ctx.class(cid);
+    let statics: Vec<(Vec<u8>, Option<rphp_runtime::PropDefault>)> = def
+        .static_props
+        .iter()
+        .map(|p| (p.name.to_vec(), p.init.clone()))
+        .collect();
+    let instance: Vec<(Vec<u8>, Option<rphp_runtime::PropDefault>)> = def
+        .props
+        .iter()
+        .map(|p| (p.name.to_vec(), Some(p.default.clone())))
+        .collect();
+    let mut a = Array::new();
+    for (name, d) in statics.into_iter().chain(instance) {
+        let v = match d {
+            Some(rphp_runtime::PropDefault::Value(v)) if v.is_uninit() => continue,
+            Some(rphp_runtime::PropDefault::Value(v)) => v,
+            Some(rphp_runtime::PropDefault::Thunk(fid)) => {
+                super::common::run_thunk(ctx, fid, Some(cid))?
+            }
+            None => continue,
+        };
+        a.set(rphp_value::ArrayKey::str(&name), v);
+    }
+    Ok(Value::Array(a))
+}
+
+/// `ReflectionClass::getTraitAliases(): array` — `as` renamings, which the
+/// class model records as ordinary methods, so nothing is left to report.
+fn get_trait_aliases(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    cid_of(this(o)?)?;
+    let _ = ctx;
+    Ok(Value::empty_array())
+}
+
+/// `ReflectionClass::getExtensionName(): string|false` — the extension a
+/// class comes from, `false` for one the program declares.
+fn get_extension_name(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let cid = cid_of(this(o)?)?;
+    if !ctx.class(cid).internal {
+        return Ok(Value::Bool(false));
+    }
+    let name = ctx.class(cid).name.clone();
+    Ok(Value::string(
+        crate::info::extension_of_class(&name).as_bytes(),
+    ))
+}
+
+/// `ReflectionClass::getExtension(): ?ReflectionExtension` — the class it
+/// would answer with is not implemented, so a class that belongs to no
+/// extension is the only case this can be exact about.
+fn get_extension(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let cid = cid_of(this(o)?)?;
+    if ctx.class(cid).internal {
+        return Err(super::common::refl_error(
+            "ReflectionClass::getExtension() needs ReflectionExtension, which is not implemented",
+        ));
+    }
+    Ok(Value::Null)
+}
+
+/// `ReflectionClass::isUninitializedLazyObject(object $object): bool` —
+/// there are no lazy objects in this engine, so no object is one.
+fn is_uninitialized_lazy_object(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    this(o)?;
+    Ok(Value::Bool(false))
+}
+
 /// `ReflectionClass::isInternal(): bool`
 fn is_internal(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let cid = cid_of(this(o)?)?;
@@ -869,6 +940,14 @@ fn class_methods(b: rphp_runtime::ClassBuilder<'_>) -> rphp_runtime::ClassBuilde
         .method("isInstantiable", nm!(0, Some(0), is_instantiable))
         .method("isCloneable", nm!(0, Some(0), is_cloneable))
         .method("isInternal", nm!(0, Some(0), is_internal))
+        .method("getDefaultProperties", nm!(0, Some(0), get_default_properties))
+        .method("getTraitAliases", nm!(0, Some(0), get_trait_aliases))
+        .method("getExtensionName", nm!(0, Some(0), get_extension_name))
+        .method("getExtension", nm!(0, Some(0), get_extension))
+        .method(
+            "isUninitializedLazyObject",
+            nm!(1, Some(1), is_uninitialized_lazy_object),
+        )
         .method("isUserDefined", nm!(0, Some(0), is_user_defined))
         .method("isIterable", nm!(0, Some(0), is_iterable))
         .method("isIterateable", nm!(0, Some(0), is_iterable))

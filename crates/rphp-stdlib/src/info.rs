@@ -515,6 +515,69 @@ pub(crate) fn zend_version(_: &mut Ctx, _: &mut [Value]) -> NativeResult {
     Ok(Value::string(ZEND_VERSION.as_bytes()))
 }
 
+/// Which extension declares an internal class, as php's own
+/// `ReflectionClass::getExtensionName()` answers it. The rows were measured
+/// against php 8.5 for every class this engine declares; a class that is
+/// not listed belongs to `Core`, which is where php puts everything the
+/// engine itself declares.
+pub(crate) fn extension_of_class(name: &[u8]) -> &'static str {
+    const BY_EXTENSION: &[(&str, &[&str])] = &[
+        (
+            "standard",
+            &["__PHP_Incomplete_Class", "AssertionError"],
+        ),
+        ("json", &["JsonException", "JsonSerializable"]),
+        ("hash", &["HashContext"]),
+        (
+            "session",
+            &[
+                "SessionHandler",
+                "SessionHandlerInterface",
+                "SessionIdInterface",
+                "SessionUpdateTimestampHandlerInterface",
+            ],
+        ),
+        (
+            "SPL",
+            &[
+                "LogicException", "BadFunctionCallException", "BadMethodCallException",
+                "DomainException", "InvalidArgumentException", "LengthException",
+                "OutOfRangeException", "RuntimeException", "OutOfBoundsException",
+                "OverflowException", "RangeException", "UnderflowException",
+                "UnexpectedValueException", "ArrayIterator", "ArrayObject",
+                "SplObjectStorage", "SplDoublyLinkedList", "SplStack", "SplQueue",
+                "SplFixedArray", "SplHeap", "SplMinHeap", "SplMaxHeap",
+                "SplPriorityQueue", "SplSubject", "SplObserver", "IteratorIterator",
+                "FilterIterator", "CallbackFilterIterator", "RecursiveFilterIterator",
+                "RecursiveCallbackFilterIterator", "ParentIterator", "LimitIterator",
+                "CachingIterator", "RecursiveCachingIterator", "NoRewindIterator",
+                "InfiniteIterator", "EmptyIterator", "AppendIterator", "RegexIterator",
+                "RecursiveRegexIterator", "RecursiveIteratorIterator",
+                "RecursiveArrayIterator", "MultipleIterator", "SplFileInfo",
+                "DirectoryIterator", "FilesystemIterator", "RecursiveDirectoryIterator",
+                "GlobIterator", "SplFileObject", "SplTempFileObject", "SeekableIterator",
+                "OuterIterator", "RecursiveIterator",
+            ],
+        ),
+    ];
+    for (ext, names) in BY_EXTENSION {
+        if names.iter().any(|n| n.as_bytes().eq_ignore_ascii_case(name)) {
+            return ext;
+        }
+    }
+    // The three families php names after their extension, whole.
+    for (prefix, ext) in [
+        (&b"Reflect"[..], "Reflection"),
+        (b"Date", "date"),
+        (b"Random\\", "random"),
+    ] {
+        if name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix) {
+            return ext;
+        }
+    }
+    "Core"
+}
+
 // ---- extensions -------------------------------------------------------------
 
 /// The bundled extensions in php's module order, with the registry slices
@@ -613,7 +676,7 @@ const RANDOM_FUNCTIONS: &[&str] = &[
 ];
 
 /// Which of the bundled extensions `name` belongs to.
-fn extension_of(name: &str) -> &'static str {
+pub(crate) fn extension_of(name: &str) -> &'static str {
     if CORE_FUNCTIONS.iter().any(|f| f.eq_ignore_ascii_case(name)) {
         return "Core";
     }

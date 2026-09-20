@@ -519,6 +519,11 @@ impl Function {
     pub fn is_generator(&self) -> bool {
         self.flags.contains(FnFlags::GENERATOR)
     }
+
+    /// `function &f()`: declared to return by reference.
+    pub fn returns_ref(&self) -> bool {
+        self.flags.contains(FnFlags::RETURNS_REF)
+    }
 }
 
 #[cfg(test)]

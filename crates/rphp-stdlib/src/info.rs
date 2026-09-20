@@ -641,6 +641,7 @@ const EXTENSIONS: &[(&str, &[&[NativeFn]])] = &[
     ),
     ("random", &[crate::random::FUNCTIONS]),
     ("Reflection", &[crate::reflection::FUNCTIONS]),
+    ("tokenizer", &[crate::tokenizer::FUNCTIONS]),
 ];
 
 /// Functions php attributes to `Core` (`Zend/zend_builtin_functions.c`,

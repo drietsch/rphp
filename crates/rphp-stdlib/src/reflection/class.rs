@@ -518,7 +518,7 @@ fn construct(
 fn get_constructor(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let cid = cid_of(this(o)?)?;
     match ctx.resolve_method(cid, b"__construct") {
-        Some(m) => func::make_method(ctx, &m),
+        Some(m) => func::make_method(ctx, &m, cid),
         None => Ok(Value::Null),
     }
 }
@@ -535,7 +535,7 @@ fn get_method(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeRe
     let cid = cid_of(this(o)?)?;
     let name = str_arg(&args[0]);
     match ctx.resolve_method(cid, &name) {
-        Some(m) => func::make_method(ctx, &m),
+        Some(m) => func::make_method(ctx, &m, cid),
         None => Err(refl_error(format!(
             "Method {}::{}() does not exist",
             ctx.class(cid).name_str(),
@@ -556,7 +556,7 @@ fn get_methods(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeR
                 continue;
             }
         }
-        out.push(func::make_method(ctx, &m)?);
+        out.push(func::make_method(ctx, &m, cid)?);
     }
     Ok(list(out))
 }

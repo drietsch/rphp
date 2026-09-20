@@ -1325,6 +1325,7 @@ dependencies = [
  "ripemd",
  "rphp-pcre2",
  "rphp-runtime",
+ "rphp-tokenizer",
  "rphp-value",
  "rustix",
  "sha1",

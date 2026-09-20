@@ -22,6 +22,9 @@ crc32fast = "1.4"
 crc32c = "0.6"
 xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64", "xxh3"] }
 
+# tokenizer extension — the workspace's byte-exact scanner (ADR-007).
+rphp-tokenizer.workspace = true
+
 # pcre extension — PCRE2 (the engine php-src links) through the workspace's
 # minimal safe wrapper (ADR-032).
 rphp-pcre2.workspace = true

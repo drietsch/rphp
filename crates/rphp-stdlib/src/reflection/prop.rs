@@ -540,6 +540,117 @@ fn prop_get_attributes(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
     super::attrs::filtered(ctx, infos, args)
 }
 
+/// The text of one `ReflectionType`, or `None` for an untyped declaration.
+fn type_text(ctx: &mut Ctx, t: &Value) -> Result<Option<String>, Unwind> {
+    match t {
+        Value::Object(o) => {
+            let s = ctx.call_method(o, b"__toString", &[])?;
+            Ok(Some(String::from_utf8_lossy(&s.to_php_bytes()).into_owned()))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// `ReflectionProperty::__toString(): string` —
+/// `Property [ <dynamic> final public private(set) readonly static int $p = 1 ]`,
+/// with each part only when it applies. A typed property with no default
+/// shows none; an untyped one without a default shows `= NULL`, which is
+/// what it holds.
+fn prop_to_string(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let bits = prop_modifiers(ctx, &s);
+    let mut out = String::from("Property [ ");
+    if s.dynamic {
+        out.push_str("<dynamic> ");
+    }
+    if bits & IS_FINAL != 0 {
+        out.push_str("final ");
+    }
+    out.push_str(if bits & IS_PRIVATE != 0 {
+        "private "
+    } else if bits & IS_PROTECTED != 0 {
+        "protected "
+    } else {
+        "public "
+    });
+    if bits & IS_PRIVATE_SET != 0 {
+        out.push_str("private(set) ");
+    } else if bits & IS_PROTECTED_SET != 0 && bits & IS_PRIVATE == 0 {
+        out.push_str("protected(set) ");
+    }
+    if bits & IS_READONLY != 0 {
+        out.push_str("readonly ");
+    }
+    if bits & IS_STATIC != 0 {
+        out.push_str("static ");
+    }
+    let ty = prop_get_type(ctx, o, &mut [])?;
+    let typed = if let Some(t) = type_text(ctx, &ty)? {
+        out.push_str(&t);
+        out.push(' ');
+        true
+    } else {
+        false
+    };
+    out.push('$');
+    out.push_str(&String::from_utf8_lossy(&s.name));
+    if !s.dynamic {
+        match prop_default(ctx, &s) {
+            Some(d) => {
+                let v = match d {
+                    PropDefault::Value(v) => v,
+                    PropDefault::Thunk(fid) => super::common::run_thunk(ctx, fid, Some(s.cid))?,
+                };
+                out.push_str(" = ");
+                out.push_str(&super::func::export_default(&v));
+            }
+            None if !typed && bits & IS_STATIC == 0 => out.push_str(" = NULL"),
+            None => {}
+        }
+    }
+    out.push_str(" ]\n");
+    Ok(Value::string(out.as_bytes()))
+}
+
+/// `ReflectionClassConstant::__toString(): string` —
+/// `Constant [ final protected int D ] { 2 }`. The type shown is the
+/// declared one, else the value's own; an object value prints as `Object`.
+fn const_to_string(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: ConstState = state(this(o)?)?;
+    let bits = const_modifiers(ctx, s.cid, &s.name);
+    let value = const_value(ctx, s.cid, &s.name)?;
+    let mut out = String::from("Constant [ ");
+    if bits & IS_FINAL != 0 {
+        out.push_str("final ");
+    }
+    out.push_str(if bits & IS_PRIVATE != 0 {
+        "private "
+    } else if bits & IS_PROTECTED != 0 {
+        "protected "
+    } else {
+        "public "
+    });
+    let declared = const_get_type(ctx, o, &mut [])?;
+    let ty = match type_text(ctx, &declared)? {
+        Some(t) => t,
+        None => match &value {
+            Value::Object(obj) => String::from_utf8_lossy(obj.layout().class_name()).into_owned(),
+            other => other.type_name().to_string(),
+        },
+    };
+    out.push_str(&ty);
+    out.push(' ');
+    out.push_str(&String::from_utf8_lossy(&s.name));
+    out.push_str(" ] { ");
+    out.push_str(&match &value {
+        Value::Object(_) => "Object".to_string(),
+        Value::Array(_) => "Array".to_string(),
+        other => other.to_php_string(),
+    });
+    out.push_str(" }\n");
+    Ok(Value::string(out.as_bytes()))
+}
+
 // ---- ReflectionClassConstant and the enum cases ----------------------------
 
 /// A class-constant reflector of class `class` (php uses
@@ -850,6 +961,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .method("setAccessible", nm!(1, Some(1), prop_set_accessible))
         .method("getDocComment", nm!(0, Some(0), prop_doc_comment))
         .method("getAttributes", nm!(0, Some(2), prop_get_attributes))
+        .method("__toString", nm!(0, Some(0), prop_to_string))
         .finish();
 
     r.class("ReflectionClassConstant")
@@ -873,6 +985,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .method("hasType", nm!(0, Some(0), const_has_type))
         .method("getType", nm!(0, Some(0), const_get_type))
         .method("getDocComment", nm!(0, Some(0), const_doc_comment))
+        .method("__toString", nm!(0, Some(0), const_to_string))
         .method("getAttributes", nm!(0, Some(2), const_get_attributes))
         .finish();
 

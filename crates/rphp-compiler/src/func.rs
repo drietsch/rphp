@@ -151,6 +151,20 @@ impl<'a> ModuleCtx<'a> {
     }
 
     /// The 1-based line of a byte offset (0 without line information).
+    /// The line a declaration *starts* on for Reflection: php counts from
+    /// the first keyword, so the attributes (and the docblock) before it do
+    /// not move it. `after_attrs` is the end of the last attribute group,
+    /// or the declaration's start when there is none.
+    pub(crate) fn decl_line(&self, after_attrs: u32) -> u32 {
+        let mut at = after_attrs as usize;
+        if let Some(src) = self.source {
+            while at < src.len() && src[at].is_ascii_whitespace() {
+                at += 1;
+            }
+        }
+        self.line(at as u32)
+    }
+
     pub(crate) fn line(&self, offset: u32) -> u32 {
         self.line_of.map_or(0, |f| f(offset))
     }
@@ -865,9 +879,10 @@ impl<'a> FnCompiler<'a> {
             }
         }
         fc.emit(Op::Ret { src: None });
-        let attrs = fc.compile_attrs(attrs, AttrTarget::Function);
+        let lowered_attrs = fc.compile_attrs(attrs, AttrTarget::Function);
         let mut f = fc.finish(name.into(), defs, span);
-        f.attrs = attrs;
+        f.decl_line = self.mx.decl_line(attrs.last().map_or(span.lo, |g| g.span.hi));
+        f.attrs = lowered_attrs;
         f.doc = doc.map(|d| Box::from(self.interner().resolve(d)));
         self.mx.sink.borrow_mut().fill(id, f);
         let dst = self.alloc_temp();
@@ -922,7 +937,7 @@ pub(crate) fn compile_function(
     // Always terminate with a fall-through return so every code path (and every
     // branch target that lands at the textual end) has a valid `Ret`.
     fc.emit(Op::Ret { src: None });
-    let attrs = fc.compile_attrs(
+    let lowered_attrs = fc.compile_attrs(
         attrs,
         if cur_class.is_some() {
             AttrTarget::Method
@@ -931,7 +946,8 @@ pub(crate) fn compile_function(
         },
     );
     let mut f = fc.finish(name_bytes, defs, span);
-    f.attrs = attrs;
+    f.decl_line = mx.decl_line(attrs.last().map_or(span.lo, |g| g.span.hi));
+    f.attrs = lowered_attrs;
     f.doc = doc.map(|d| Box::from(mx.interner.resolve(d)));
     mx.sink.borrow_mut().fill(id, f);
     id

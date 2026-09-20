@@ -147,6 +147,44 @@ fn get_arguments(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRe
     Ok(Value::Array(out))
 }
 
+/// `ReflectionAttribute::__toString(): string`:
+///
+/// ```text
+/// Attribute [ Tag ] {
+///   - Arguments [2] {
+///     Argument #0 [ 'm' ]
+///     Argument #1 [ list = [0 => 1, 'k' => 'v'] ]
+///   }
+/// }
+/// ```
+///
+/// and just `Attribute [ Tag ]` when there are no arguments.
+fn attr_to_string(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let a: AttrInfo = state(this(o)?)?;
+    let mut out = format!("Attribute [ {} ]", String::from_utf8_lossy(&a.name));
+    if a.args.is_empty() {
+        out.push('\n');
+        return Ok(Value::string(out.as_bytes()));
+    }
+    let (pos, named) = arguments(ctx, &a)?;
+    out.push_str(&format!(" {{\n  - Arguments [{}] {{\n", pos.len() + named.len()));
+    let mut n = 0;
+    for v in &pos {
+        out.push_str(&format!("    Argument #{n} [ {} ]\n", func::export_default(v)));
+        n += 1;
+    }
+    for (k, v) in &named {
+        out.push_str(&format!(
+            "    Argument #{n} [ {} = {} ]\n",
+            String::from_utf8_lossy(k),
+            func::export_default(v)
+        ));
+        n += 1;
+    }
+    out.push_str("  }\n}\n");
+    Ok(Value::string(out.as_bytes()))
+}
+
 /// Evaluate an attribute's argument initializers against its owner's
 /// constant pool.
 fn arguments(ctx: &mut Ctx, a: &AttrInfo) -> Result<(Vec<Value>, Vec<(Box<[u8]>, Value)>), Unwind> {
@@ -329,6 +367,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .method("getTarget", nm!(0, Some(0), get_target))
         .method("isRepeated", nm!(0, Some(0), is_repeated))
         .method("getArguments", nm!(0, Some(0), get_arguments))
+        .method("__toString", nm!(0, Some(0), attr_to_string))
         .method("newInstance", nm!(0, Some(0), new_instance))
         .finish();
 }

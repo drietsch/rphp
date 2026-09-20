@@ -174,10 +174,12 @@ fn recv(ctx: &Ctx, o: Option<&Object>) -> Result<Info, Unwind> {
 // ---- building reflectors ---------------------------------------------------
 
 /// A `ReflectionMethod` over `m`, with php's `$name` / `$class` slots.
-pub(crate) fn make_method(ctx: &mut Ctx, m: &Rc<MethodDef>) -> Result<Value, Unwind> {
+pub(crate) fn make_method(ctx: &mut Ctx, m: &Rc<MethodDef>, on: u32) -> Result<Value, Unwind> {
+    // The target keeps the class the reflector was *built on*; the method's
+    // declaring class is `$class` and comes from the resolved `MethodDef`.
     let st = FnState {
         target: FnTarget::Method {
-            cid: m.decl,
+            cid: on,
             name: m.name.clone(),
         },
         this: None,
@@ -286,7 +288,7 @@ fn method_from_name(ctx: &mut Ctx, _: Option<&Object>, args: &mut [Value]) -> Na
             String::from_utf8_lossy(&mname)
         ))
     })?;
-    make_method(ctx, &m)
+    make_method(ctx, &m, cid)
 }
 
 /// `"Class::method"` split into its two halves.
@@ -319,7 +321,7 @@ fn seed_method(ctx: &mut Ctx, recv: &Object, cid: u32, mname: &[u8]) -> NativeRe
         recv,
         FnState {
             target: FnTarget::Method {
-                cid: m.decl,
+                cid,
                 name: m.name.clone(),
             },
             this: None,
@@ -606,6 +608,12 @@ fn get_extension(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRe
     Ok(Value::Null)
 }
 
+/// `ReflectionFunctionAbstract::returnsReference(): bool`
+fn returns_reference(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let i = recv(ctx, o)?;
+    Ok(Value::Bool(i.func.as_ref().is_some_and(|f| f.f.returns_ref())))
+}
+
 /// `ReflectionFunctionAbstract::isDeprecated(): bool` — php marks an
 /// internal function deprecated in its own table; nothing here is.
 fn is_deprecated(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
@@ -668,10 +676,10 @@ fn prototype_of(ctx: &Ctx, cid: u32, name: &[u8]) -> Option<Rc<MethodDef>> {
 /// `ReflectionMethod::hasPrototype(): bool`
 fn has_prototype(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let i = recv(ctx, o)?;
-    let (Some(cid), name) = (i.class, i.name.clone()) else {
+    let (Some(decl), name) = (i.class, i.name.clone()) else {
         return Ok(Value::Bool(false));
     };
-    Ok(Value::Bool(prototype_of(ctx, cid, &name).is_some()))
+    Ok(Value::Bool(prototype_of(ctx, decl, &name).is_some()))
 }
 
 /// `ReflectionMethod::getPrototype(): ReflectionMethod`
@@ -681,7 +689,7 @@ fn get_prototype(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRe
         .class
         .and_then(|cid| prototype_of(ctx, cid, &i.name));
     match proto {
-        Some(m) => make_method(ctx, &m),
+        Some(m) => make_method(ctx, &m, m.decl),
         None => Err(super::common::refl_error(format!(
             "Method {}::{} does not have a prototype",
             i.class
@@ -1034,7 +1042,7 @@ fn parameter_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
 
 /// php's rendering of a default value inside `__toString()`: `NULL`,
 /// `true`, `'text'`, `[0 => 1, 'k' => 2]`, a number as written.
-fn export_default(v: &Value) -> String {
+pub(crate) fn export_default(v: &Value) -> String {
     match &*v.deref() {
         Value::Null | Value::Uninit => "NULL".to_string(),
         Value::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
@@ -1111,6 +1119,176 @@ fn param_to_string(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Native
         out.push_str(&export_default(&d));
     }
     out.push_str(" ]");
+    Ok(Value::string(out.as_bytes()))
+}
+
+/// The text of one `ReflectionType`, or `None` for an untyped declaration.
+fn type_text(ctx: &mut Ctx, t: &Value) -> Result<Option<String>, Unwind> {
+    match t {
+        Value::Object(o) => {
+            let s = ctx.call_method(o, b"__toString", &[])?;
+            Ok(Some(String::from_utf8_lossy(&s.to_php_bytes()).into_owned()))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// `ReflectionFunctionAbstract::__toString(): string` — php's
+/// `_function_string`, the description a Symfony resource signature hashes:
+///
+/// ```text
+/// /** doc */
+/// Method [ <user, inherits P, prototype I> final public method f ] {
+///   @@ /path/file.php 8 - 8
+///
+///   - Parameters [1] {
+///     Parameter #0 [ <required> int $a ]
+///   }
+///   - Return [ void ]
+/// }
+/// ```
+///
+/// The `Parameters` block appears when the function declares a parameter
+/// *or* a return type — php prints it off the arg-info table, which exists
+/// in either case and not otherwise.
+fn function_to_string(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let recv_obj = this(o)?;
+    let t = target(recv_obj)?;
+    let i = info(ctx, &t)?;
+    let mut out = String::new();
+
+    if let Some(Value::Str(doc)) = i.func.as_ref().and_then(|f| f.f.doc.as_ref()).map(|d| Value::string(d)) {
+        out.push_str(&String::from_utf8_lossy(doc.as_bytes()));
+        out.push('\n');
+    }
+
+    // The header: kind, provenance, modifiers, name.
+    let is_closure = i.closure.is_some();
+    let is_method = i.method.is_some();
+    out.push_str(if is_closure {
+        "Closure [ "
+    } else if is_method {
+        "Method [ "
+    } else {
+        "Function [ "
+    });
+    let mut tags: Vec<String> = Vec::new();
+    if i.func.is_some() {
+        tags.push("user".to_string());
+    } else {
+        let ext = match i.class {
+            Some(cid) => crate::info::extension_of_class(&ctx.class(cid).name).to_string(),
+            None => crate::info::extension_of(&String::from_utf8_lossy(&i.name)).to_string(),
+        };
+        tags.push(format!("internal:{ext}"));
+    }
+    let reflected = match &t {
+        FnTarget::Method { cid, .. } => Some(*cid),
+        _ => i.class,
+    };
+    if let (Some(m), Some(reflected)) = (i.method.as_ref(), reflected) {
+        let decl = m.decl;
+        let lower = i.name.to_ascii_lowercase();
+        if decl != reflected {
+            tags.push(format!("inherits {}", ctx.class(decl).name_str()));
+        }
+        // `overwrites`: the declaring class's own ancestor declares it.
+        let mut cur = ctx.class(decl).parent;
+        while let Some(pid) = cur {
+            if ctx.class(pid).methods.contains_key(lower.as_slice()) {
+                tags.push(format!("overwrites {}", ctx.class(pid).name_str()));
+                break;
+            }
+            cur = ctx.class(pid).parent;
+        }
+        if let Some(proto) = prototype_of(ctx, decl, &i.name) {
+            tags.push(format!("prototype {}", ctx.class(proto.decl).name_str()));
+        }
+        if lower.as_slice() == b"__construct" {
+            tags.push("ctor".to_string());
+        }
+    }
+    out.push('<');
+    out.push_str(&tags.join(", "));
+    out.push_str("> ");
+    if let Some(m) = i.method.as_ref() {
+        if m.is_abstract {
+            out.push_str("abstract ");
+        }
+        if m.is_final {
+            out.push_str("final ");
+        }
+        if m.is_static {
+            out.push_str("static ");
+        }
+        out.push_str(match m.vis {
+            Visibility::Public => "public ",
+            Visibility::Protected => "protected ",
+            Visibility::Private => "private ",
+        });
+        out.push_str("method ");
+    } else {
+        out.push_str("function ");
+    }
+    if i.func.as_ref().is_some_and(|f| f.f.returns_ref()) {
+        out.push('&');
+    }
+    out.push_str(&String::from_utf8_lossy(&i.name));
+    out.push_str(" ] {\n");
+
+    // Where it lives.
+    if let Some(f) = i.func.as_ref() {
+        let file = f.unit.file.clone();
+        out.push_str(&format!(
+            "  @@ {} {} - {}\n",
+            String::from_utf8_lossy(file.as_bytes()),
+            f.f.decl_line,
+            f.f.end_line
+        ));
+    }
+
+    // A closure's `use` list.
+    if let (Some(c), Some(f)) = (i.closure.as_ref(), i.func.as_ref()) {
+        let mut names: Vec<String> = Vec::new();
+        for cap in &f.f.captures {
+            if let Some((name, _)) = f.f.var_names.iter().find(|(_, reg)| *reg == cap.dst) {
+                names.push(String::from_utf8_lossy(name).into_owned());
+            }
+        }
+        let _ = c;
+        if !names.is_empty() {
+            out.push_str(&format!("\n  - Bound Variables [{}] {{\n", names.len()));
+            for (n, name) in names.iter().enumerate() {
+                out.push_str(&format!("      Variable #{n} [ ${name} ]\n"));
+            }
+            out.push_str("  }\n");
+        }
+    }
+
+    // Parameters and the return type.
+    let names: Vec<Vec<u8>> = match &i.func {
+        Some(f) => f.f.params.iter().map(|p| p.name.to_vec()).collect(),
+        None => native_param_names(&i).iter().map(|n| n.as_bytes().to_vec()).collect(),
+    };
+    let ret_value = get_return_type(ctx, o, &mut [])?;
+    let ret = type_text(ctx, &ret_value)?;
+    if !names.is_empty() || ret.is_some() {
+        out.push_str(&format!("\n  - Parameters [{}] {{\n", names.len()));
+        for (idx, name) in names.iter().enumerate() {
+            let p = make_parameter(ctx, &t, idx, name)?;
+            let Value::Object(po) = &p else { continue };
+            let line = param_to_string(ctx, Some(po), &mut [])?;
+            out.push_str("    ");
+            out.push_str(&String::from_utf8_lossy(&line.to_php_bytes()));
+            out.push('\n');
+        }
+        out.push_str("  }\n");
+    }
+    if let Some(r) = ret {
+        out.push_str(&format!("  - Return [ {r} ]\n"));
+    }
+    out.push('}');
+    out.push('\n');
     Ok(Value::string(out.as_bytes()))
 }
 
@@ -1356,7 +1534,7 @@ fn param_declaring_function(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) 
             let m = ctx.resolve_method(*cid, name).ok_or_else(|| {
                 refl_error("Internal error: Failed to retrieve the reflection object")
             })?;
-            make_method(ctx, &m)
+            make_method(ctx, &m, *cid)
         }
         other => make_function(ctx, other.clone()),
     }
@@ -1422,8 +1600,10 @@ pub(crate) fn register_classes(r: &mut Registry) {
             nm!(0, Some(0), get_closure_used_variables),
         )
         .method("isDeprecated", nm!(0, Some(0), is_deprecated))
+        .method("returnsReference", nm!(0, Some(0), returns_reference))
         .method("getExtensionName", nm!(0, Some(0), get_extension_name))
         .method("getExtension", nm!(0, Some(0), get_extension))
+        .method("__toString", nm!(0, Some(0), function_to_string))
         .method(
             "hasTentativeReturnType",
             nm!(0, Some(0), has_tentative_return_type),

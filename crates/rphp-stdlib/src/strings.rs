@@ -341,10 +341,16 @@ pub(crate) fn implode(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         if i > 0 {
             out.extend_from_slice(&glue);
         }
-        if matches!(&*v.deref(), Value::Array(_)) {
-            ctx.warn("Array to string conversion")?;
+        match &*v.deref() {
+            Value::Array(_) => {
+                ctx.warn("Array to string conversion")?;
+                v.append_php_bytes(&mut out);
+            }
+            // A `Stringable` element is its `__toString()`; any other object
+            // is php's "could not be converted to string" error.
+            Value::Object(_) => out.extend_from_slice(ctx.to_string(&v)?.as_bytes()),
+            _ => v.append_php_bytes(&mut out),
         }
-        v.append_php_bytes(&mut out);
     }
     Ok(str_value(out))
 }

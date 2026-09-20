@@ -412,7 +412,11 @@ fn do_sprintf(
 
         match conv {
             b's' => {
-                let mut b = arg.to_php_bytes();
+                // `%s` of an object is its `__toString()`, as `(string)` is.
+                let mut b = match &*arg.deref() {
+                    Value::Object(_) => ctx.to_string(&arg)?.as_bytes().to_vec(),
+                    _ => arg.to_php_bytes(),
+                };
                 if let Some(p) = precision {
                     if b.len() > p {
                         b.truncate(p);

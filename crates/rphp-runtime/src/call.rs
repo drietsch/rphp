@@ -402,6 +402,7 @@ impl Interp {
         if !f.accepts(args.len()) {
             return Err(Unwind::argument_count_error(f.arity_message(args.len())));
         }
+        self.coerce_string_params(f.name, args)?;
         let mut cells: Vec<(usize, PhpRef)> = Vec::new();
         for (i, a) in args.iter_mut().enumerate() {
             if let Value::Ref(r) = a {
@@ -425,6 +426,56 @@ impl Interp {
         }
         self.out.flush_pending();
         r
+    }
+
+    /// php's argument parser calls `__toString()` when an object reaches a
+    /// parameter declared `string` — `sprintf('%s', $alias)`,
+    /// `strlen($stringable)` — and leaves it alone for `mixed`, `array|string`
+    /// and every other type. Which positions those are, per native, is the
+    /// generated [`crate::string_params::STRING_PARAMS`] table; this applies
+    /// it before the handler runs, so a handler's own `string` conversion
+    /// never meets an object. An object without `__toString` is left for the
+    /// handler to refuse with its own `TypeError`.
+    ///
+    /// `key` is the native's name, or `class::method` for a method; the
+    /// lookup only happens when an argument is an object at all.
+    pub(crate) fn coerce_string_params(&mut self, key: &str, args: &mut [Value]) -> Result<(), Unwind> {
+        if !args.iter().any(|a| matches!(&*a.deref(), Value::Object(_))) {
+            return Ok(());
+        }
+        let lower = key.to_ascii_lowercase();
+        let Ok(at) = crate::string_params::STRING_PARAMS.binary_search_by(|(n, _, _)| (*n).cmp(lower.as_str())) else {
+            return Ok(());
+        };
+        let (_, mask, params) = crate::string_params::STRING_PARAMS[at];
+        let variadic_from = (mask >> 56) as usize; // index + 1, 0 = none
+        for (i, a) in args.iter_mut().enumerate() {
+            let flagged = (i < 48 && mask & (1 << i) != 0) || (variadic_from != 0 && i + 1 >= variadic_from);
+            if !flagged {
+                continue;
+            }
+            let Value::Object(o) = &*a.deref() else {
+                continue;
+            };
+            let o = o.clone();
+            if !self.class_of(&o).magic.contains(crate::class::MagicFlags::TOSTRING) {
+                // php's own refusal, with the parameter as it is declared. A
+                // variadic position takes the variadic parameter's name.
+                let (name, ty) = params
+                    .iter()
+                    .find(|(pos, _, _)| usize::from(*pos) == i)
+                    .or_else(|| params.last())
+                    .map(|(_, n, t)| (*n, *t))
+                    .unwrap_or(("value", "string"));
+                return Err(Unwind::type_error(format!(
+                    "{key}(): Argument #{} (${name}) must be of type {ty}, {} given",
+                    i + 1,
+                    self.class_of(&o).name_str()
+                )));
+            }
+            *a = Value::Str(self.object_to_string(&o)?);
+        }
+        Ok(())
     }
 
     /// Invoke a native method over a staged window (`DoCall` on a
@@ -523,6 +574,14 @@ impl Interp {
                 String::from_utf8_lossy(&m.name)
             );
             return Err(Unwind::argument_count_error(nm.arity_message(&display, args.len())));
+        }
+        if args.iter().any(|a| matches!(&*a.deref(), Value::Object(_))) {
+            let key = format!(
+                "{}::{}",
+                self.classes[m.decl as usize].name_str(),
+                String::from_utf8_lossy(&m.name)
+            );
+            self.coerce_string_params(&key, args)?;
         }
         let mut cells: Vec<(usize, PhpRef)> = Vec::new();
         for (i, a) in args.iter_mut().enumerate() {

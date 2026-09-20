@@ -19,6 +19,7 @@
 mod api;
 mod autoload;
 mod call;
+mod string_params;
 mod class;
 mod enums;
 mod errors;

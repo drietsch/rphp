@@ -114,6 +114,16 @@ impl Interp {
         let (obj, as_float) = match (&*v.deref(), &*other.deref()) {
             (Value::Object(o), Value::Int(_)) => (o.clone(), false),
             (Value::Object(o), Value::Float(_)) => (o.clone(), true),
+            // Beside a string, a `Stringable` object compares as its
+            // `__toString()`; any other object stays an object (and is then
+            // simply unequal).
+            (Value::Object(o), Value::Str(_)) => {
+                let o = o.clone();
+                if self.class_of(&o).magic.contains(crate::class::MagicFlags::TOSTRING) {
+                    return Ok(Value::Str(self.object_to_string(&o)?));
+                }
+                return Ok(v.deref().into_owned());
+            }
             _ => return Ok(v.deref().into_owned()),
         };
         let class = String::from_utf8_lossy(obj.layout().class_name()).into_owned();

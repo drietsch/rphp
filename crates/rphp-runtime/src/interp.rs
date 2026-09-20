@@ -96,6 +96,11 @@ pub enum CompileFailure {
 /// reports it → a module.
 pub type CompileHook = Box<dyn Fn(&Interp, &[u8], &str) -> Result<Module, CompileFailure>>;
 
+/// The embedder's compiled-unit cache, asked by name (the canonical path)
+/// before an included file is read: `Some` is the module compiled for the
+/// file as it is on disk now.
+pub type CachedUnitHook = Box<dyn Fn(&Interp, &str) -> Option<Module>>;
+
 /// The maximum nesting of native→PHP re-entries (`run_until` on the Rust
 /// stack) before the engine gives up, so the host stack cannot overflow.
 pub const MAX_REENTRY_DEPTH: usize = 512;
@@ -174,6 +179,8 @@ pub struct Interp {
     pub(crate) autoloading: Vec<Box<[u8]>>,
     /// The compile hook for `include`/`require`.
     pub compile_hook: Option<CompileHook>,
+    /// See [`CachedUnitHook`].
+    pub cached_unit_hook: Option<CachedUnitHook>,
     /// The output stack (`echo`, `ob_*`) over the SAPI's sink.
     pub out: OutputStack,
     /// The ini table.
@@ -280,6 +287,7 @@ impl Interp {
             autoloaders: Vec::new(),
             autoloading: Vec::new(),
             compile_hook: None,
+            cached_unit_hook: None,
             out: OutputStack::new(sink),
             ini: IniTable::with_core_defaults(),
             error_reporting: E_ALL,

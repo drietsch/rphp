@@ -23,7 +23,7 @@ use crate::Interp;
 /// One loaded module.
 pub struct UnitRt {
     /// The file the unit was compiled from (`__FILE__`), or the unit name.
-    pub file: Rc<str>,
+    pub file: std::sync::Arc<str>,
     /// The process-wide id of the unit's `funcs[0]`.
     pub func_base: u32,
     /// The process-wide id of the unit's `classes[0]`.
@@ -304,7 +304,7 @@ impl Interp {
         let (here_file, here_line) = stub
             .declared_at
             .clone()
-            .unwrap_or((Rc::from("Unknown"), 0));
+            .unwrap_or((std::sync::Arc::from("Unknown"), 0));
         // php gives every `new class` site one class entry, whatever happens
         // to run it again — a loop, a function called twice — so declaring it
         // a second time is a no-op rather than a redeclaration.

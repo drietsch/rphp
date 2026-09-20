@@ -2500,6 +2500,17 @@ impl Interp {
             self.stack[dst_abs] = Value::Bool(true);
             return Ok(false);
         }
+        // A unit the embedder still has compiled for this file skips the
+        // read and the compile.
+        if let Some(hook) = self.cached_unit_hook.take() {
+            let name = canonical.to_string_lossy().into_owned();
+            let cached = hook(self, &name);
+            self.cached_unit_hook = Some(hook);
+            if let Some(module) = cached {
+                self.included.insert(canonical);
+                return self.enter_included_unit(module, dst_abs, kind);
+            }
+        }
         let bytes = match std::fs::read(&resolved) {
             Ok(b) => b,
             Err(_) => {
@@ -2534,6 +2545,12 @@ impl Interp {
             }
         };
         self.included.insert(canonical);
+        self.enter_included_unit(module, dst_abs, kind)
+    }
+
+    /// Load a compiled included unit and push its `{main}` as an `Include`
+    /// frame sharing the includer's `$this`, scope and symbol table.
+    fn enter_included_unit(&mut self, module: rphp_bytecode::Module, dst_abs: usize, kind: IncludeKind) -> Result<bool, Unwind> {
         let main = self.load_unit(module)?;
         let func = self.funcs[main as usize].clone();
         let fi = self.frames.len() - 1;

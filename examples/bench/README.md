@@ -16,4 +16,7 @@ Measured 2026-09-20 (release build, M-series Mac; php 8.5 without opcache):
 ×20000 6 ms (php 0), typed `array $a` the same; the baseline is 15–65×
 php's (arithmetic loop 26×, user calls 17×, method calls 50×, native calls
 65×, `new` 13×) — the interpreter's dispatch, register reads that clone,
-and the native call path are the next performance wave.
+and the native call path are the next performance wave. symfony/demo's
+`/en/blog/` under `rphp -S`: 2.2 s → 0.48 s warm over the day (php 75 ms);
+the compiled-unit cache took it from 0.84 s (every request had parsed and
+compiled ~1500 files, then read them again) to 0.48 s.

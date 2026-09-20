@@ -2,7 +2,7 @@
 //! time) and the v2 [`CompiledUnit`] (one file or `eval` string, declared
 //! incrementally into the interpreter, plan E7).
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use rphp_value::{Value, Vis};
 
@@ -28,7 +28,7 @@ pub struct Module {
     pub hoist_classes: Vec<ClassId>,
     /// The file the module was compiled from (`__FILE__`), or the unit name
     /// (`Command line code`) for `-r` / eval.
-    pub file: Rc<str>,
+    pub file: Arc<str>,
 }
 
 impl Module {
@@ -43,7 +43,7 @@ impl Module {
             main,
             hoist_funcs,
             hoist_classes,
-            file: Rc::from("Command line code"),
+            file: Arc::from("Command line code"),
         }
     }
 }
@@ -175,7 +175,7 @@ impl Module {
 pub struct CompiledUnit {
     /// The file path as PHP reports it (`__FILE__`; for eval,
     /// `<file>(<line>) : eval()'d code`).
-    pub file: Rc<str>,
+    pub file: Arc<str>,
     /// Every function in the unit: `{main}`, named functions, methods, closures,
     /// hooks and thunks. [`FuncId`]s are indices into this vector.
     pub funcs: Vec<Function>,
@@ -213,7 +213,7 @@ impl CompiledUnit {
     /// function), for struct-update construction.
     pub fn new_empty(file: &str) -> CompiledUnit {
         CompiledUnit {
-            file: Rc::from(file),
+            file: Arc::from(file),
             funcs: vec![Function::default()],
             classes: Vec::new(),
             main: 0,

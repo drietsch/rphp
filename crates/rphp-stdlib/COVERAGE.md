@@ -864,7 +864,9 @@ JSON-escaped port, the `Install the curl extension` log row php's own
 **Cataloged, not done:** `ext/curl` (the demo's `HttpClient` falls back to
 the native client with a notice), `ReflectionClass::__toString()`, the
 `Tentative return`/`<internal:ext>` labels, `RoundingMode`, FastCGI
-(SAPI-4), and performance: the release build serves `/en/blog/` in ~2.2 s
-warm (the debug build in ~7 s) against `php -S`'s 75 ms — every request
-recompiles the ~1500 files the demo loads, so a compiled-unit cache comes
-first, then the interpreter's hot paths.
+(SAPI-4), and performance: the release build served `/en/blog/` in ~2.2 s
+warm against `php -S`'s 75 ms; packed arrays, three accidental
+copy-on-write copies and a per-worker compiled-unit cache (opcache's role:
+`rphp -S` keeps one long-lived thread per worker, so the cache lives across
+requests; a changed file recompiles by size and mtime) brought it to
+0.48 s, which is the interpreter's own per-op cost (`examples/bench`).

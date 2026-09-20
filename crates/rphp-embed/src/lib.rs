@@ -12,6 +12,8 @@
 mod constants;
 mod sink;
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rphp_bytecode::Module;
@@ -178,10 +180,79 @@ pub struct Engine {
     config: EngineConfig,
 }
 
+thread_local! {
+    /// Compiled units by file — opcache's role. Per thread, because a
+    /// compiled module holds `Rc`-counted string constants: the built-in
+    /// server keeps one long-lived thread per worker and serves its
+    /// requests on it, so the cache lives across requests there; a CLI
+    /// run compiles each file once anyway.
+    static UNITS: RefCell<HashMap<String, CachedUnit>> = RefCell::new(HashMap::new());
+}
+
+/// A compiled file and what it was compiled under: the file's size and
+/// mtime (a change recompiles, as opcache's `validate_timestamps` does)
+/// and the two ini settings that shape compilation.
+struct CachedUnit {
+    size: u64,
+    mtime: Option<std::time::SystemTime>,
+    short_open_tag: bool,
+    assertions: i8,
+    module: Module,
+}
+
 impl Engine {
     /// An engine with `config`.
     pub fn new(config: EngineConfig) -> Engine {
         Engine { config }
+    }
+
+    /// Compile a file's source through the thread's unit cache: a hit
+    /// (same size, mtime and compile-time ini) hands out a copy of the
+    /// compiled module without parsing; a miss compiles and remembers the
+    /// result. Only real files are cached (`-r` code and `eval` have no
+    /// path).
+    fn compile_cached(interp: &Interp, src: &[u8], name: &str) -> Result<Module, CompileError> {
+        if !Path::new(name).is_absolute() {
+            return compile_unit(interp, src, name);
+        }
+        let (short_open_tag, assertions) = Engine::compile_ini(interp);
+        let mtime = std::fs::metadata(name).ok().and_then(|m| m.modified().ok());
+        let size = src.len() as u64;
+        if let Some(module) = Engine::cached_unit(name, size, mtime, short_open_tag, assertions) {
+            return Ok(module);
+        }
+        let module = compile_unit(interp, src, name)?;
+        UNITS.with(|units| {
+            units.borrow_mut().insert(name.to_string(), CachedUnit { size, mtime, short_open_tag, assertions, module: module.clone() });
+        });
+        Ok(module)
+    }
+
+    /// The two ini settings a compiled unit depends on.
+    fn compile_ini(interp: &Interp) -> (bool, i8) {
+        let short_open_tag = interp.ini_get("short_open_tag").is_some_and(rphp_runtime::parse_bool);
+        let assertions = interp.ini_get("zend.assertions").and_then(|v| v.parse::<i8>().ok()).unwrap_or(1);
+        (short_open_tag, assertions)
+    }
+
+    /// The cached module for `name` if it was compiled for a file of this
+    /// size and mtime under these ini settings.
+    fn cached_unit(name: &str, size: u64, mtime: Option<std::time::SystemTime>, short_open_tag: bool, assertions: i8) -> Option<Module> {
+        UNITS.with(|units| {
+            let units = units.borrow();
+            units
+                .get(name)
+                .filter(|u| u.size == size && u.mtime == mtime && u.short_open_tag == short_open_tag && u.assertions == assertions)
+                .map(|u| u.module.clone())
+        })
+    }
+
+    /// The include path's cache probe: one `stat` decides whether the file
+    /// needs reading at all.
+    fn cached_unit_for_file(interp: &Interp, name: &str) -> Option<Module> {
+        let meta = std::fs::metadata(name).ok()?;
+        let (short_open_tag, assertions) = Engine::compile_ini(interp);
+        Engine::cached_unit(name, meta.len(), meta.modified().ok(), short_open_tag, assertions)
     }
 
     /// The configuration.
@@ -238,8 +309,9 @@ impl Engine {
             }
             Err(e) => debug_assert!(false, "prelude does not compile: {e:?}"),
         }
+        it.cached_unit_hook = Some(Box::new(Engine::cached_unit_for_file));
         it.compile_hook = Some(Box::new(|interp: &Interp, src: &[u8], name: &str| {
-            compile_unit(interp, src, name).map_err(|e| match e {
+            Engine::compile_cached(interp, src, name).map_err(|e| match e {
                 CompileError::Parse { message, line, .. } => {
                     CompileFailure::Parse { message, line }
                 }
@@ -435,6 +507,15 @@ pub const REQUEST_STACK_SIZE: usize = 512 << 20;
 /// Run `f` on a thread with [`REQUEST_STACK_SIZE`] of stack, blocking until
 /// it finishes. Falls back to the current thread if no thread can be
 /// spawned.
+/// A long-lived thread with the engine's stack reservation (the built-in
+/// server's workers): `f` runs on it and the handle joins it.
+pub fn request_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> std::io::Result<std::thread::JoinHandle<T>> {
+    std::thread::Builder::new()
+        .name("rphp-request".into())
+        .stack_size(REQUEST_STACK_SIZE)
+        .spawn(f)
+}
+
 pub fn on_request_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| {
         match std::thread::Builder::new()

@@ -517,7 +517,7 @@ pub struct ClassDef {
     /// The unit that declared the class and the declaration line, for
     /// `Cannot redeclare class X (previously declared in file:line)`;
     /// `None` for native classes.
-    pub declared_at: Option<(Rc<str>, u32)>,
+    pub declared_at: Option<(std::sync::Arc<str>, u32)>,
     /// Whether the class is linked (declared). A stub for a not-yet-declared
     /// class of a loaded unit has this `false` and no members.
     pub linked: bool,
@@ -556,7 +556,7 @@ pub struct ClassDef {
 
 impl ClassDef {
     /// A stub for a class that a unit declares later (`DeclareClass`).
-    pub(crate) fn stub(id: u32, name: &[u8], kind: ClassKind, flags: ClassFlags, declared_at: Option<(Rc<str>, u32)>) -> ClassDef {
+    pub(crate) fn stub(id: u32, name: &[u8], kind: ClassKind, flags: ClassFlags, declared_at: Option<(std::sync::Arc<str>, u32)>) -> ClassDef {
         ClassDef {
             id,
             name: Box::from(name),
@@ -667,7 +667,7 @@ pub struct ClassSpec {
     /// The native computed properties (own).
     pub native_props: Option<NativeProps>,
     /// Where it was declared.
-    pub declared_at: Option<(Rc<str>, u32)>,
+    pub declared_at: Option<(std::sync::Arc<str>, u32)>,
     /// Registered by the engine / an extension.
     pub internal: bool,
     /// Own static properties: name, visibility, type, initializer.

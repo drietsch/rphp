@@ -59,7 +59,6 @@ mod tryfin;
 mod tests;
 
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use std::collections::HashSet;
 
@@ -309,7 +308,7 @@ pub fn compile(
         .into_iter()
         .map(|c| c.unwrap_or_else(|| rphp_bytecode::Class::new_minimal(rphp_intern::IdentId(0), b"")))
         .collect();
-    let file: Rc<str> = Rc::from(String::from_utf8_lossy(&mx.file).as_ref());
+    let file: std::sync::Arc<str> = std::sync::Arc::from(String::from_utf8_lossy(&mx.file).as_ref());
     Ok(Module {
         funcs,
         classes,

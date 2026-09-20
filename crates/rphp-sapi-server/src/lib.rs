@@ -110,16 +110,27 @@ pub fn run(opts: ServerOptions) -> i32 {
         .and_then(|w| w.parse().ok())
         .filter(|w| *w >= 1)
         .unwrap_or(1);
+    // Every worker is one long-lived thread with the engine's stack
+    // reservation, serving its connections in turn: the thread keeps the
+    // compiled-unit cache warm across requests (opcache's role).
     let mut handles = Vec::new();
-    for _ in 1..workers {
+    for _ in 0..workers {
         let l = match listener.try_clone() {
             Ok(l) => l,
             Err(_) => break,
         };
         let s = Arc::clone(&server);
-        handles.push(std::thread::spawn(move || accept_loop(&s, &l)));
+        match rphp_embed::request_thread(move || accept_loop(&s, &l)) {
+            Ok(h) => handles.push(h),
+            Err(e) => {
+                log(&format!("Failed to start a worker: {e}"));
+                break;
+            }
+        }
     }
-    accept_loop(&server, &listener);
+    if handles.is_empty() {
+        accept_loop(&server, &listener);
+    }
     for h in handles {
         let _ = h.join();
     }
@@ -163,8 +174,7 @@ fn accept_loop(server: &Server, listener: &TcpListener) {
         };
         let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(60)));
         let _ = stream.set_nodelay(true);
-        // Every request runs on a thread with the engine's stack reservation.
-        rphp_embed::on_request_stack(|| handle_connection(server, stream, remote));
+        handle_connection(server, stream, remote);
     }
 }
 

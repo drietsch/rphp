@@ -138,6 +138,10 @@ pub const LAZY_SKIP_INITIALIZATION_ON_SERIALIZE: i64 = 8;
 /// destructor on the state it discards.
 pub const LAZY_SKIP_DESTRUCTOR: i64 = 16;
 
+/// One property as `props_through_hooks` lists it: name, value, visibility
+/// and declaring class (`None` for a dynamic property).
+pub type PropEntry = (Box<[u8]>, Value, rphp_value::Vis, Option<u32>);
+
 impl Interp {
     // ---- php 8.4 property hooks, for Reflection ------------------------------
 
@@ -178,10 +182,7 @@ impl Interp {
     /// `get` hook (virtual ones included), the rest from their slots
     /// (uninitialized ones skipped) — then the dynamic ones. Each with its
     /// visibility and declaring class (`None` for a dynamic property).
-    pub fn props_through_hooks(
-        &mut self,
-        o: &Object,
-    ) -> Result<Vec<(Box<[u8]>, Value, rphp_value::Vis, Option<u32>)>, Unwind> {
+    pub fn props_through_hooks(&mut self, o: &Object) -> Result<Vec<PropEntry>, Unwind> {
         let class = self.class_of(o).clone();
         let mut out = Vec::new();
         // Each slot with its own value: two same-named private slots (an
@@ -218,6 +219,24 @@ impl Interp {
         });
         for (n, v) in dyns {
             out.push((n, v, rphp_value::Vis::Public, None));
+        }
+        // A native class's computed table (php's `get_properties`) comes
+        // first, as the engine's own handlers run before the slots.
+        if let Some(table) = self.native_property_table(o) {
+            let mut native: Vec<PropEntry> = table
+                .into_iter()
+                .map(|(k, v)| {
+                    let name: Box<[u8]> = match k {
+                        rphp_value::ArrayKey::Int(i) => {
+                            i.to_string().into_bytes().into_boxed_slice()
+                        }
+                        rphp_value::ArrayKey::Str(s) => s,
+                    };
+                    (name, v, rphp_value::Vis::Public, None)
+                })
+                .collect();
+            native.extend(out);
+            out = native;
         }
         Ok(out)
     }
@@ -448,7 +467,19 @@ impl Interp {
         match self.stored_prop(&o, name) {
             Stored::Present(v) => Ok(!matches!(*v.deref(), Value::Null | Value::Uninit)),
             Stored::NotSet => Ok(false),
-            Stored::Absent => Ok(self.magic_isset(&o, name)?),
+            Stored::Absent => {
+                if let Some(np) = self.class_of(&o).native_props {
+                    if let Some(f) = np.isset {
+                        if let Some(b) = f(self, &o, name) {
+                            return Ok(b);
+                        }
+                    }
+                    if let Some(r) = (np.get)(self, &o, name) {
+                        return Ok(!matches!(r?, Value::Null));
+                    }
+                }
+                Ok(self.magic_isset(&o, name)?)
+            }
         }
     }
 
@@ -467,6 +498,16 @@ impl Interp {
             Stored::Present(v) => Ok(!v.deref().to_bool()),
             Stored::NotSet => Ok(true),
             Stored::Absent => {
+                if let Some(np) = self.class_of(&o).native_props {
+                    if let Some(f) = np.isset {
+                        if f(self, &o, name) == Some(false) {
+                            return Ok(true);
+                        }
+                    }
+                    if let Some(r) = (np.get)(self, &o, name) {
+                        return Ok(!r?.to_bool());
+                    }
+                }
                 if !self.magic_isset(&o, name)? {
                     return Ok(true);
                 }
@@ -490,6 +531,11 @@ impl Interp {
         let key = self.prop_key(&class, name, scope);
         let name: &[u8] = &key;
         let Some(p) = class.prop(name) else {
+            if let Some(f) = class.native_props.and_then(|np| np.unset) {
+                if let Some(r) = f(self, &o, name) {
+                    return r;
+                }
+            }
             return self.unset_dynamic(&o, name);
         };
         match self.access_of(&class, p, scope) {
@@ -570,6 +616,37 @@ impl Interp {
         )))
     }
 
+    /// A native class's computed property table (php's `get_properties`),
+    /// for the paths that walk an object's properties: `None` when the
+    /// class computes none.
+    pub fn native_property_table(
+        &mut self,
+        o: &Object,
+    ) -> Option<Vec<(rphp_value::ArrayKey, Value)>> {
+        let np = self.class_of(o).native_props?;
+        let list = np.list?;
+        Some(list(self, o))
+    }
+
+    /// What a dump shows for a native class (php's `get_debug_info`): the
+    /// `debug` hook, else the property table, else the declared names.
+    pub fn native_debug_table(&mut self, o: &Object) -> Option<Vec<(rphp_value::ArrayKey, Value)>> {
+        let np = self.class_of(o).native_props?;
+        if let Some(debug) = np.debug {
+            return Some(debug(self, o));
+        }
+        if let Some(list) = np.list {
+            return Some(list(self, o));
+        }
+        let mut out = Vec::new();
+        for name in np.names {
+            if let Some(Ok(v)) = (np.get)(self, o, name.as_bytes()) {
+                out.push((rphp_value::ArrayKey::str(name.as_bytes()), v));
+            }
+        }
+        Some(out)
+    }
+
     pub(crate) fn prop_holder(&mut self, obj: &Value, name: &[u8]) -> Result<Object, Unwind> {
         match &*obj.deref() {
             Value::Object(o) => self.lazy_target(&o.clone(), Some(name)),
@@ -646,6 +723,12 @@ impl Interp {
                 }
             },
             None => {
+                // A native class's computed property (`$node->nodeName`).
+                if let Some(np) = class.native_props {
+                    if let Some(r) = (np.get)(self, o, name) {
+                        return r;
+                    }
+                }
                 if let Some(v) = o.dyn_get(name) {
                     return Ok(v.deref().into_owned());
                 }
@@ -682,6 +765,11 @@ impl Interp {
         let key = self.prop_key(&class, name, scope);
         let name: &[u8] = &key;
         let Some(p) = class.prop(name) else {
+            if let Some(np) = class.native_props {
+                if let Some(r) = (np.set)(self, o, name, v.clone()) {
+                    return r;
+                }
+            }
             return self.write_dynamic(o, name, v);
         };
         match self.access_of(&class, p, scope) {

@@ -142,6 +142,15 @@ impl Interp {
             }
             _ => return Ok(v.deref().into_owned()),
         };
+        // A class with its own cast rule compares as that number.
+        let target = if as_float {
+            rphp_value::CastTarget::Float
+        } else {
+            rphp_value::CastTarget::Int
+        };
+        if let Some(c) = obj.cast_via_handler(target) {
+            return Ok(c);
+        }
         let class = String::from_utf8_lossy(obj.layout().class_name()).into_owned();
         self.notice(&format!(
             "Object of class {class} could not be converted to {}",
@@ -434,6 +443,9 @@ impl Interp {
         Ok(match kind {
             CastKind::Int => match &v {
                 Value::Object(o) => {
+                    if let Some(c) = o.cast_via_handler(rphp_value::CastTarget::Int) {
+                        return Ok(c);
+                    }
                     self.warn(&format!(
                         "Object of class {} could not be converted to int",
                         self.class_name_of(o)
@@ -444,6 +456,9 @@ impl Interp {
             },
             CastKind::Float => match &v {
                 Value::Object(o) => {
+                    if let Some(c) = o.cast_via_handler(rphp_value::CastTarget::Float) {
+                        return Ok(c);
+                    }
                     self.warn(&format!(
                         "Object of class {} could not be converted to float",
                         self.class_name_of(o)
@@ -496,8 +511,14 @@ impl Interp {
     /// `(array) $object`: declared and dynamic properties in order, with
     /// php's mangled keys for private (`\0Class\0name`) and protected
     /// (`\0*\0name`) properties.
-    pub fn object_to_array(&self, o: &Object) -> Array {
+    pub fn object_to_array(&mut self, o: &Object) -> Array {
         let mut out = Array::new();
+        // A native class's computed table (`(array) $simpleXml`).
+        if let Some(table) = self.native_property_table(o) {
+            for (k, v) in table {
+                out.set(k, v);
+            }
+        }
         // An initialized proxy casts as its real instance; an uninitialized
         // lazy object casts to nothing at all (php does not initialize it).
         let real = o.lazy_real();

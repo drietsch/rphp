@@ -16,6 +16,7 @@ members = [
     "crates/rphp-sapi-cli",
     "crates/rphp-sapi-server",
     "crates/rphp-ext-pdo",
+    "crates/rphp-ext-dom",
     "crates/rphp-ext-api",
     "crates/rphp-test",
     "crates/rphp-tokenizer",
@@ -52,6 +53,7 @@ rphp-runtime = { path = "crates/rphp-runtime" }
 rphp-sapi-cli = { path = "crates/rphp-sapi-cli" }
 rphp-sapi-server = { path = "crates/rphp-sapi-server" }
 rphp-ext-pdo = { path = "crates/rphp-ext-pdo" }
+rphp-ext-dom = { path = "crates/rphp-ext-dom" }
 rphp-ext-api = { path = "crates/rphp-ext-api" }
 rphp-test = { path = "crates/rphp-test" }
 rphp-tokenizer = { path = "crates/rphp-tokenizer" }

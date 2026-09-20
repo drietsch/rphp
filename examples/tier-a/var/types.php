@@ -50,3 +50,11 @@ var_dump(strval(1.0), strval(1e25), strval(true), strval(null), strval(0.1 + 0.2
 var_dump(1.0, -0.0, 0.1 + 0.2, 1e15, 1e17, 1e25, 1e-7, 0.0001, 123456789012345678.0, 1.5e300, 2.0 ** 63);
 var_dump(fdiv(1, 0), fdiv(-1, 0), fdiv(0, 0));
 var_dump(1, "two", [3.0]);
+
+// Objects count as iterable when Traversable, countable when Countable.
+var_dump(is_iterable(new ArrayIterator([1])), is_iterable(new stdClass), is_iterable((function () { yield 1; })()), is_countable(new ArrayObject([])), is_countable(new stdClass));
+
+// settype() is the cast: an array becomes a stdClass, a scalar its `scalar`
+// property, and `resource` is refused.
+$arr = [1, 'b' => 2]; settype($arr, 'object'); var_dump(get_class($arr), get_object_vars($arr)); $num = 5; settype($num, 'object'); var_dump(get_object_vars($num));
+$lead = '12abc'; settype($lead, 'int'); var_dump($lead); try { settype($lead, 'resource'); } catch (ValueError $e) { echo $e->getMessage(), "\n"; }

@@ -116,3 +116,10 @@ $p2 = clone $p1;
 $p2->n = 2;
 echo $p1->n, ' ', $p2->n, "\n";                // 1 2
 var_dump($p1 === $p2);                          // false
+
+// A property holding a reference nobody else holds (what a by-reference
+// call such as `end($this->items)` leaves behind) is copied as a value by
+// `clone`; a reference someone else still holds stays shared.
+class Stack { private array $items = []; function push($x) { $this->items[] = $x; } function cur() { return end($this->items) ?: null; } function pop() { return array_pop($this->items); } function n() { return count($this->items); } }
+$st = new Stack; $st->push(1); $st->cur(); $cp = clone $st; $cp->pop(); var_dump($st->n(), $cp->n());
+$dyn = new stdClass; $dyn->list = [1, 2]; $ref = &$dyn->list; $shared = clone $dyn; $shared->list[] = 3; var_dump(count($dyn->list), count($shared->list)); unset($ref); $again = clone $dyn; $again->list[] = 4; var_dump(count($dyn->list), count($again->list));

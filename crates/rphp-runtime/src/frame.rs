@@ -323,14 +323,25 @@ impl Interp {
                 None => (None, None, "[internal]".to_string()),
             },
             FrameKind::Internal => (None, None, "[internal]".to_string()),
-            // A generator body shows under the function that declared it.
+            // A generator body shows under the function that declared it,
+            // class and all.
             FrameKind::Generator => {
-                let name = frame
-                    .func
-                    .as_ref()
-                    .map(|f| String::from_utf8_lossy(&f.f.name_bytes).into_owned())
-                    .unwrap_or_else(|| "{generator}".to_string());
-                (None, None, name)
+                let Some(func) = &frame.func else {
+                    return (None, None, "{generator}".to_string());
+                };
+                let name = String::from_utf8_lossy(&func.f.name_bytes).into_owned();
+                let class = if func.f.flags.contains(rphp_bytecode::FnFlags::CLOSURE) {
+                    frame.scope
+                } else {
+                    frame.scope.or(func.class)
+                };
+                match class {
+                    Some(cid) => {
+                        let sep = if frame.this.is_some() { "->" } else { "::" };
+                        (Some(self.classes[cid as usize].name_str()), Some(sep), name)
+                    }
+                    None => (None, None, name),
+                }
             }
             FrameKind::Include => (
                 None,

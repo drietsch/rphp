@@ -459,42 +459,22 @@ impl FnCompiler<'_> {
         // The iterated container: for a by-reference loop over a variable,
         // element or property the register must alias the container so the
         // loop mutates it in place.
+        // A by-reference loop over an element or property holds the
+        // container through a temporary reference, released with the loop
+        // (so the container does not dump as `&` afterwards).
+        let mut src_temp = None;
         let src = if by_ref {
+            // The same write-fetch chain `$x = &…` uses, so a nested
+            // element (`$this->listeners[$name]`) is reached in place.
             match subject {
                 Expr::Var(id, _) if !self.is_this(*id) => self.var_reg(*id),
-                Expr::Index {
-                    base,
-                    index: Some(index),
-                    ..
-                } => {
-                    let arr = self.compile_expr(base);
-                    let key = self.compile_expr(index);
-                    let dst = self.alloc_temp();
-                    self.emit(Op::RefElem { dst, arr, key: Some(key) });
-                    dst
-                }
-                Expr::Prop {
-                    obj,
-                    name,
-                    nullsafe: false,
-                    ..
-                } => {
-                    let obj = self.compile_expr(obj);
-                    let name = self.member_name_ref(name);
-                    let dst = self.alloc_temp();
-                    self.emit(Op::RefProp { dst, obj, name });
-                    dst
-                }
-                Expr::StaticProp { class, name, span } => {
-                    match self.static_prop_ref(class, name, *span) {
-                        Some((class, name)) => {
-                            let dst = self.alloc_temp();
-                            self.emit(Op::RefStaticProp { dst, class, name });
-                            dst
-                        }
-                        None => self.null_temp(),
+                other if self.is_ref_place(other) => match self.compile_ref_source(other) {
+                    Some(reg) => {
+                        src_temp = Some(reg);
+                        reg
                     }
-                }
+                    None => self.compile_expr(other),
+                },
                 other => self.compile_expr(other),
             }
         } else {
@@ -554,6 +534,9 @@ impl FnCompiler<'_> {
         let lend = self.here();
         self.patch(next, lend);
         self.emit(Op::IterFree { it });
+        if let Some(t) = src_temp {
+            self.emit(Op::LoadNull { dst: t });
+        }
         self.pop_loop(lend, ltop);
         if let Some(t) = bound_temp {
             self.unbind_temp(t);

@@ -175,7 +175,6 @@ fn file_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 ///
 /// Returns the **byte count**, not a bool.
 fn file_put_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let p = arg_path(ctx, &args[0]);
     // An array argument is concatenated, as php does for `file()` output.
     let data: Vec<u8> = match &*args[1].deref() {
         Value::Array(a) => {
@@ -187,6 +186,21 @@ fn file_put_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         }
         other => other.to_php_bytes().to_vec(),
     };
+    // The output wrappers: `php://stdout`/`output` is the engine's output
+    // channel, `php://stderr` the process's.
+    match args[0].to_php_bytes().as_slice() {
+        b"php://stdout" | b"php://output" => {
+            ctx.echo(&data);
+            return Ok(Value::Int(data.len() as i64));
+        }
+        b"php://stderr" => {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&data);
+            return Ok(Value::Int(data.len() as i64));
+        }
+        _ => {}
+    }
+    let p = arg_path(ctx, &args[0]);
     let flags = args.get(2).map_or(0, Value::to_int);
     let r = if flags & FILE_APPEND != 0 {
         fs::OpenOptions::new()

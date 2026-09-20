@@ -1,5 +1,5 @@
 //! Type-inspection and scalar-cast builtins (php-src `ext/standard/type.c`).
-use rphp_value::{Array, Str, Value};
+use rphp_value::{Str, Value};
 
 use rphp_runtime::{nf, nf_ref, Ctx, NativeFn, NativeResult, Unwind};
 
@@ -221,53 +221,54 @@ pub(crate) fn get_debug_type(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `null`, all case-insensitive) written back through the reference.
 /// `object` needs `stdClass` (plan E6) and `resource` is not convertible:
 /// both raise as php does for the latter.
-pub(crate) fn settype(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn settype(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let ty = args[1].to_php_bytes().to_ascii_lowercase();
     let cur = args[0].deref().into_owned();
-    let new = match &ty[..] {
-        b"int" | b"integer" => Value::Int(cur.to_int()),
-        b"float" | b"double" => Value::Float(cur.to_float()),
-        b"string" => Value::Str(Str::from_vec(cur.to_php_bytes())),
-        b"bool" | b"boolean" => Value::Bool(cur.to_bool()),
-        b"array" => match cur {
-            Value::Array(_) => cur,
-            Value::Null | Value::Uninit => Value::empty_array(),
-            Value::Object(o) => {
-                let mut a = Array::new();
-                for (name, v, _) in o.props_snapshot() {
-                    a.set(rphp_value::ArrayKey::Str(name), v);
-                }
-                Value::Array(a)
-            }
-            other => {
-                let mut a = Array::new();
-                a.push(other);
-                Value::Array(a)
-            }
-        },
-        b"null" => Value::Null,
-        b"object" => {
-            return Err(Unwind::error(
-                "settype(): converting to object needs the stdClass class (plan E6)",
+    // The casts themselves (`(int)`, `(object)`, …) with their notices.
+    let kind = match &ty[..] {
+        b"int" | b"integer" => rphp_runtime::CastKind::Int,
+        b"float" | b"double" => rphp_runtime::CastKind::Float,
+        b"string" => rphp_runtime::CastKind::String,
+        b"bool" | b"boolean" => rphp_runtime::CastKind::Bool,
+        b"array" => rphp_runtime::CastKind::Array,
+        b"object" => rphp_runtime::CastKind::Object,
+        b"null" => {
+            Value::assign(&mut args[0], Value::Null);
+            return Ok(Value::Bool(true));
+        }
+        b"resource" => return Err(Unwind::value_error("Cannot convert to resource type")),
+        _ => {
+            return Err(Unwind::value_error(
+                "settype(): Argument #2 ($type) must be a valid type",
             ))
         }
-        b"resource" => return Err(Unwind::error("Cannot convert to resource type")),
-        _ => return Err(Unwind::value_error("settype(): Argument #2 ($type) must be a valid type")),
     };
+    let new = ctx.cast(&cur, kind)?;
     Value::assign(&mut args[0], new);
     Ok(Value::Bool(true))
 }
 
 /// `is_iterable(mixed $value): bool` — arrays (and `Traversable` objects,
 /// once interfaces exist).
-pub(crate) fn is_iterable(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    Ok(Value::Bool(matches!(*args[0].deref(), Value::Array(_))))
+pub(crate) fn is_iterable(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    Ok(Value::Bool(match &*args[0].deref() {
+        Value::Array(_) => true,
+        Value::Object(o) => ctx
+            .class_by_name(b"Traversable")
+            .is_some_and(|t| ctx.object_instanceof(o, t)),
+        _ => false,
+    }))
 }
 
-/// `is_countable(mixed $value): bool` — arrays (and `Countable` objects,
-/// once interfaces exist).
-pub(crate) fn is_countable(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    Ok(Value::Bool(matches!(*args[0].deref(), Value::Array(_))))
+/// `is_countable(mixed $value): bool` — arrays and `Countable` objects.
+pub(crate) fn is_countable(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    Ok(Value::Bool(match &*args[0].deref() {
+        Value::Array(_) => true,
+        Value::Object(o) => ctx
+            .class_by_name(b"Countable")
+            .is_some_and(|t| ctx.object_instanceof(o, t)),
+        _ => false,
+    }))
 }
 
 /// `is_callable(mixed $value, bool $syntax_only = false, string &$callable_name = null): bool`

@@ -698,16 +698,22 @@ pub(crate) fn extension_of(name: &str) -> &'static str {
 }
 
 /// `extension_loaded(string $extension): bool`
-pub(crate) fn extension_loaded(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn extension_loaded(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let name = args[0].to_php_string();
-    Ok(Value::Bool(EXTENSIONS.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name))))
+    Ok(Value::Bool(
+        EXTENSIONS.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name))
+            || ctx.extensions.iter().any(|n| n.eq_ignore_ascii_case(&name)),
+    ))
 }
 
 /// `get_loaded_extensions(bool $zend_extensions = false): array`
-pub(crate) fn get_loaded_extensions(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn get_loaded_extensions(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut a = Array::new();
     if !args.first().is_some_and(Value::to_bool) {
         for (n, _) in EXTENSIONS {
+            a.push(Value::string(n.as_bytes()));
+        }
+        for n in &ctx.extensions {
             a.push(Value::string(n.as_bytes()));
         }
     }

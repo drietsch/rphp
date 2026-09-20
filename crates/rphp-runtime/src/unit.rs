@@ -485,6 +485,7 @@ impl Interp {
             methods,
             native_init: None,
             payload_clone: None,
+            native_props: None,
             declared_at: stub.declared_at.clone(),
             internal: false,
             static_props,

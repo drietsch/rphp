@@ -10,7 +10,7 @@ the commands `cargo xtask ladder` runs under both `php` and `rphp`.
 | Fixture | Rungs | Source |
 |---|---|---|
 | `L1-skeleton` | L1, L3, L6a, L7 | `composer create-project symfony/skeleton` (v8.1.99 → Symfony 8.1.7) |
-| `L8-demo` | L8 | `composer create-project symfony/symfony-demo` (Symfony 8.1, Doctrine ORM over the bundled SQLite `data/database.sqlite`, Twig, security, forms, translations, profiler); `.env.dev` carries the demo's placeholder `APP_SECRET` |
+| `L8-demo` | L8, L8http | `composer create-project symfony/symfony-demo` (Symfony 8.1, Doctrine ORM over the bundled SQLite `data/database.sqlite`, Twig, security, forms, translations, profiler); `.env.dev` carries the demo's placeholder `APP_SECRET`; `bin/console sass:build` once, its `var/sass` output rides along (`var_keep`) |
 
 ## Running
 
@@ -38,7 +38,8 @@ For each selected rung and each side the runner builds a **fresh working
 copy** of the fixture: every entry is copied except `vendor/` (hard-linked file
 by file — PHP resolves `__DIR__` through symlinks, so a symlinked `vendor/`
 would make Composer's `$baseDir` point back at the original fixture), `var/`
-(created empty), `node_modules/` and `.git/` (skipped). Both sides run at the
+(created empty, but for the `[fixture].var_keep` entries), `node_modules/` and
+`.git/` (skipped). Both sides run at the
 **same path**, `target/ladder/<fixture>/<rung>/work/`, which is renamed to
 `php/` resp. `rphp/` when the side is done, so path *lengths* inside serialized
 data and padded console tables cannot differ between the engines. That path is
@@ -76,6 +77,8 @@ name      = "L1-skeleton"          # display name (normally the directory name)
 setup     = "composer install …"   # informational; what tools/fixtures/setup.sh runs
 php_min   = "8.4.1"                # refuse to run against an older stock php
 allowlist = "ladder/divergences.toml"  # optional; rphp-test allowlist for every rung
+var_keep  = ["sass"]               # optional; entries of var/ the working copy keeps
+                                   # (build products no rung command makes)
 
 [[rung]]
 id        = "L6a"                  # unique word; selected with --rung

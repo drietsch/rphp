@@ -72,6 +72,70 @@ pub(crate) fn get_name(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Na
     Ok(Value::string(tz.name().as_bytes()))
 }
 
+/// The IANA `zone.tab` (country code, coordinates, comments per zone),
+/// bundled as php bundles it in timelib's database.
+const ZONE_TAB: &str = include_str!("../../../data/zone.tab");
+
+/// A `zone.tab` ISO 6709 coordinate (`+4813` / `+481300`, `+01620` /
+/// `+0162000`) in degrees, through timelib's integer encoding
+/// (`(deg + base) * 100000`, truncated) so the floats come out as php's.
+fn coordinate(text: &str, base: f64) -> f64 {
+    let (sign, digits) = text.split_at(1);
+    let (deg_len, rest) = if base == 90.0 {
+        (2, &digits[2..])
+    } else {
+        (3, &digits[3..])
+    };
+    let deg: f64 = digits[..deg_len].parse().unwrap_or(0.0);
+    let min: f64 = rest.get(..2).and_then(|m| m.parse().ok()).unwrap_or(0.0);
+    let sec: f64 = rest.get(2..4).and_then(|m| m.parse().ok()).unwrap_or(0.0);
+    let value = deg + min / 60.0 + sec / 3600.0;
+    let value = if sign == "-" { -value } else { value };
+    let stored = ((value + base) * 100000.0) as i64;
+    stored as f64 / 100000.0 - base
+}
+
+/// `DateTimeZone::getLocation(): array|false`
+pub(crate) fn get_location(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let o = this(o)?;
+    let tz = zone_of(ctx, o, "DateTimeZone::getLocation")?;
+    let Tz::Id(id) = &tz else {
+        return Ok(Value::Bool(false));
+    };
+    let mut country = "??".to_string();
+    let (mut lat, mut long, mut comments) = (-90.0, -180.0, String::new());
+    for line in ZONE_TAB.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        let mut cols = line.split('\t');
+        let (Some(cc), Some(coords), Some(zone)) = (cols.next(), cols.next(), cols.next()) else {
+            continue;
+        };
+        if !zone.eq_ignore_ascii_case(id) {
+            continue;
+        }
+        let split = coords[1..].find(['+', '-']).map_or(coords.len(), |i| i + 1);
+        country = cc.to_string();
+        lat = coordinate(&coords[..split], 90.0);
+        long = coordinate(&coords[split..], 180.0);
+        comments = cols.next().unwrap_or("").to_string();
+        break;
+    }
+    let mut out = Array::new();
+    out.set(
+        ArrayKey::str(b"country_code"),
+        Value::string(country.as_bytes()),
+    );
+    out.set(ArrayKey::str(b"latitude"), Value::Float(lat));
+    out.set(ArrayKey::str(b"longitude"), Value::Float(long));
+    out.set(
+        ArrayKey::str(b"comments"),
+        Value::string(comments.as_bytes()),
+    );
+    Ok(Value::Array(out))
+}
+
 /// `DateTimeZone::getOffset(DateTimeInterface $datetime): int`
 pub(crate) fn get_offset(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
@@ -341,6 +405,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .method("__construct", nm!(1, Some(1), construct))
         .method("getName", nm!(0, Some(0), get_name))
         .method("getOffset", nm!(1, Some(1), get_offset))
+        .method("getLocation", nm!(0, Some(0), get_location))
         .method("getTransitions", nm!(0, Some(2), get_transitions))
         .method("listAbbreviations", snm(0, Some(0), list_abbreviations))
         .method("listIdentifiers", snm(0, Some(2), list_identifiers))

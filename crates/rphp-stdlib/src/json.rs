@@ -309,6 +309,20 @@ impl Encoder {
                         return self.encode_serializable(ctx, o);
                     }
                 }
+                // An enum case: a backed one is its value, a pure one has
+                // no serialization (`0` under partial output).
+                if matches!(ctx.class_of(o).kind, rphp_runtime::ClassKind::Enum { .. }) {
+                    return match o.get_deref(b"value") {
+                        Some(v) => self.encode(ctx, &v),
+                        None => {
+                            self.error = JSON_ERROR_NON_BACKED_ENUM;
+                            if self.flag(JSON_PARTIAL_OUTPUT_ON_ERROR) {
+                                self.out.push(b'0');
+                            }
+                            Ok(false)
+                        }
+                    };
+                }
                 return self.encode_object(ctx, o);
             }
             Value::Array(a) => return self.encode_array(ctx, a),

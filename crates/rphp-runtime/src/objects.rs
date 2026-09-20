@@ -194,7 +194,15 @@ impl Interp {
     fn shallow_copy(&mut self, o: &Object) -> Result<Object, Unwind> {
         let id = self.object_ids.alloc();
         let layout = o.layout();
-        let slots = o.with_data(|d| d.slots().to_vec());
+        // php's `zend_objects_clone_members`: a property that is a reference
+        // nobody else holds (the cell a by-reference call such as
+        // `end($this->list)` left behind) is copied as a value, so the clone
+        // and the original stop sharing it.
+        let unwrap = |v: &Value| match v {
+            Value::Ref(r) if r.strong_count() == 1 => r.get(),
+            other => other.clone(),
+        };
+        let slots = o.with_data(|d| d.slots().iter().map(unwrap).collect());
         let copy = Object::new(o.class_id(), id, layout, slots);
         if self.class_of(o).magic.contains(MagicFlags::DESTRUCT) {
             copy.add_flags(rphp_value::ObjFlags::HAS_DESTRUCTOR);
@@ -202,11 +210,15 @@ impl Interp {
         }
         let dyns: Vec<(Box<[u8]>, Value)> = o.with_data(|d| {
             d.dyn_props()
-                .map(|p| p.iter().map(|(n, v)| (Box::from(n), v.clone())).collect())
+                .map(|p| p.iter().map(|(n, v)| (Box::from(n), unwrap(v))).collect())
                 .unwrap_or_default()
         });
         for (n, v) in dyns {
-            copy.dyn_set(&n, v);
+            // A shared reference stays shared with the clone, as php's does.
+            match v {
+                Value::Ref(r) => copy.dyn_set_ref(&n, r),
+                v => copy.dyn_set(&n, v),
+            }
         }
         // A class whose state lives in a native payload copies it here;
         // without the hook the copy would silently start empty.

@@ -43,6 +43,42 @@ pub type NativeInit = fn(&mut Interp, &Object) -> Result<(), Unwind>;
 /// silently.
 pub type PayloadClone = fn(&mut Interp, &Object, &Object) -> Result<(), Unwind>;
 
+/// A native class's computed properties — php's `prop_handler` table (the
+/// DOM's `nodeName`, `ownerDocument`, …): declared nowhere in the slot
+/// layout, read and written through these hooks, inherited by user
+/// subclasses. `get`/`set` answer `None` for a name that is not theirs, so
+/// the ordinary lookup (dynamic properties, `__get`) goes on.
+#[derive(Clone, Copy)]
+pub struct NativeProps {
+    /// The property names in php's declaration order (dumps, Reflection).
+    pub names: &'static [&'static str],
+    pub get: NativePropGet,
+    /// A write; the handler raises php's own error for a read-only one.
+    pub set: NativePropSet,
+    /// `isset()`/`empty()`; absent, the answer comes from `get` (non-null).
+    pub isset: Option<NativePropIsset>,
+    /// `unset()`; absent, php's read-only error.
+    pub unset: Option<NativePropUnset>,
+    /// php's `get_properties`: the whole table computed for `(array)`,
+    /// `json_encode()`, `get_object_vars()` and `foreach`; absent, the
+    /// class contributes nothing there.
+    pub list: Option<NativePropTable>,
+    /// php's `get_debug_info`: what `var_dump()`/`print_r()` show; absent,
+    /// `list`, else `names` read through `get`.
+    pub debug: Option<NativePropTable>,
+}
+
+/// A [`NativeProps`] read hook.
+pub type NativePropGet = fn(&mut Interp, &Object, &[u8]) -> Option<Result<Value, Unwind>>;
+/// A [`NativeProps`] write hook.
+pub type NativePropSet = fn(&mut Interp, &Object, &[u8], Value) -> Option<Result<(), Unwind>>;
+/// A [`NativeProps`] `isset()` hook.
+pub type NativePropIsset = fn(&mut Interp, &Object, &[u8]) -> Option<bool>;
+/// A [`NativeProps`] `unset()` hook.
+pub type NativePropUnset = fn(&mut Interp, &Object, &[u8]) -> Option<Result<(), Unwind>>;
+/// A [`NativeProps`] whole-table hook (`list`, `debug`).
+pub type NativePropTable = fn(&mut Interp, &Object) -> Vec<(rphp_value::ArrayKey, Value)>;
+
 /// A native method descriptor (every field `Copy`, so method tables can be
 /// `'static` data).
 #[derive(Clone, Copy)]
@@ -474,6 +510,8 @@ pub struct ClassDef {
     pub native_init: Option<NativeInit>,
     /// The native payload-copy hook used by `clone` (own or inherited).
     pub payload_clone: Option<PayloadClone>,
+    /// The native computed properties (own or inherited).
+    pub native_props: Option<NativeProps>,
     /// The instance layout, shared by every instance.
     pub layout: Rc<Layout>,
     /// The unit that declared the class and the declaration line, for
@@ -534,6 +572,7 @@ impl ClassDef {
             magic: MagicFlags::NONE,
             native_init: None,
             payload_clone: None,
+            native_props: None,
             layout: Rc::new(Layout::empty(Rc::from(name))),
             declared_at,
             linked: false,
@@ -625,6 +664,8 @@ pub struct ClassSpec {
     pub native_init: Option<NativeInit>,
     /// The native payload-copy hook for `clone` (own).
     pub payload_clone: Option<PayloadClone>,
+    /// The native computed properties (own).
+    pub native_props: Option<NativeProps>,
     /// Where it was declared.
     pub declared_at: Option<(Rc<str>, u32)>,
     /// Registered by the engine / an extension.
@@ -699,6 +740,7 @@ impl Interp {
             methods,
             native_init,
             payload_clone,
+            native_props,
             declared_at,
             internal,
             static_props,
@@ -748,6 +790,7 @@ impl Interp {
             def.magic = p.magic;
             def.native_init = p.native_init;
             def.payload_clone = p.payload_clone;
+            def.native_props = p.native_props;
             // Static properties are inherited by *sharing* the parent's cell:
             // `B::$n` and `A::$n` are one location unless B redeclares it.
             def.static_props = p.static_props.clone();
@@ -930,6 +973,9 @@ impl Interp {
         }
         if let Some(f) = payload_clone {
             def.payload_clone = Some(f);
+        }
+        if let Some(np) = native_props {
+            def.native_props = Some(np);
         }
         // php implicitly implements `Stringable` for any class that declares
         // `__toString()`, so `$o instanceof Stringable` and a `Stringable`

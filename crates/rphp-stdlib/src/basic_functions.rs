@@ -654,7 +654,10 @@ pub(crate) fn get_object_vars(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult
                 continue;
             }
         }
-        out.set(rphp_value::ArrayKey::str(&name), value.deref().into_owned());
+        // A numeric property name becomes an integer key (php 7.2+).
+        let key = rphp_value::array_key(&Value::string(&name))
+            .unwrap_or_else(|| rphp_value::ArrayKey::str(&name));
+        out.set(key, value.deref().into_owned());
     }
     Ok(Value::Array(out))
 }

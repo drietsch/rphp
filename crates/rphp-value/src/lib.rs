@@ -32,9 +32,9 @@ pub use array::{array_key, Array, ArrayKey};
 pub use closure::Closure;
 pub use object::{display_class_name, mangled_key};
 pub use object::{
-    has_pending_destructors, take_pending_destructors, DynProps, Layout, LazyKind, LazyState,
-    ObjFlags, Object, ObjectData, ObjectIdAllocator, Payload, PropEntry, PropMeta, Vis,
-    WeakObject,
+    has_pending_destructors, take_pending_destructors, CastHandler, CastTarget, DynProps, Layout,
+    LazyKind, LazyState, ObjFlags, Object, ObjectData, ObjectIdAllocator, Payload, PropEntry,
+    PropMeta, Vis, WeakObject,
 };
 pub use refs::PhpRef;
 pub use resource::{Resource, ResourceCell, CLOSED_KIND};
@@ -254,8 +254,12 @@ impl Value {
             // An array is truthy iff it is non-empty.
             Value::Array(a) => !a.is_empty(),
             // Any object (a closure or class instance) and any resource (even a
-            // closed one) is truthy.
-            Value::Closure(_) | Value::Object(_) | Value::Resource(_) => true,
+            // closed one) is truthy — unless the class casts by its own rule.
+            Value::Object(o) => match o.cast_via_handler(object::CastTarget::Bool) {
+                Some(Value::Bool(b)) => b,
+                _ => true,
+            },
+            Value::Closure(_) | Value::Resource(_) => true,
             Value::Ref(r) => r.borrow().to_bool(),
         }
     }
@@ -281,8 +285,13 @@ impl Value {
             },
             // PHP: `(int)` of an array is 0 if empty, else 1.
             Value::Array(a) => i64::from(!a.is_empty()),
-            // PHP casts any object to int as 1 (with a notice we do not emit).
-            Value::Closure(_) | Value::Object(_) => 1,
+            // PHP casts any object to int as 1 (with a notice we do not emit),
+            // unless the class casts by its own rule.
+            Value::Object(o) => match o.cast_via_handler(object::CastTarget::Int) {
+                Some(Value::Int(i)) => i,
+                _ => 1,
+            },
+            Value::Closure(_) => 1,
             // A resource casts to its id.
             Value::Resource(r) => i64::from(r.id()),
             Value::Ref(r) => r.borrow().to_int(),
@@ -300,7 +309,11 @@ impl Value {
                 None => 0.0,
             },
             Value::Array(a) => f64::from(!a.is_empty()),
-            Value::Closure(_) | Value::Object(_) => 1.0,
+            Value::Object(o) => match o.cast_via_handler(object::CastTarget::Float) {
+                Some(Value::Float(f)) => f,
+                _ => 1.0,
+            },
+            Value::Closure(_) => 1.0,
             Value::Resource(r) => f64::from(r.id()),
             Value::Ref(r) => r.borrow().to_float(),
         }
@@ -332,8 +345,14 @@ impl Value {
             Value::Array(_) => out.extend_from_slice(b"Array"),
             // PHP throws when an object without __toString is converted to a
             // string; until the engine has that error channel, an object (a
-            // closure or class instance) stringifies to nothing.
-            Value::Closure(_) | Value::Object(_) => {}
+            // closure or class instance) stringifies to nothing — unless the
+            // class casts by its own rule.
+            Value::Object(o) => {
+                if let Some(Value::Str(s)) = o.cast_via_handler(object::CastTarget::Str) {
+                    out.extend_from_slice(s.as_bytes());
+                }
+            }
+            Value::Closure(_) => {}
             Value::Resource(r) => {
                 out.extend_from_slice(b"Resource id #");
                 out.extend_from_slice(r.id().to_string().as_bytes());
@@ -413,15 +432,42 @@ impl Value {
             }
             _ => {}
         }
-        numeric_binop(a, b, |a, b| a.checked_add(b).map(Value::Int).unwrap_or(Value::Float(a as f64 + b as f64)), |a, b| Value::Float(a + b))
+        numeric_binop(
+            a,
+            b,
+            |a, b| {
+                a.checked_add(b)
+                    .map(Value::Int)
+                    .unwrap_or(Value::Float(a as f64 + b as f64))
+            },
+            |a, b| Value::Float(a + b),
+        )
     }
 
     pub fn sub(&self, rhs: &Value) -> VResult {
-        numeric_binop(self, rhs, |a, b| a.checked_sub(b).map(Value::Int).unwrap_or(Value::Float(a as f64 - b as f64)), |a, b| Value::Float(a - b))
+        numeric_binop(
+            self,
+            rhs,
+            |a, b| {
+                a.checked_sub(b)
+                    .map(Value::Int)
+                    .unwrap_or(Value::Float(a as f64 - b as f64))
+            },
+            |a, b| Value::Float(a - b),
+        )
     }
 
     pub fn mul(&self, rhs: &Value) -> VResult {
-        numeric_binop(self, rhs, |a, b| a.checked_mul(b).map(Value::Int).unwrap_or(Value::Float(a as f64 * b as f64)), |a, b| Value::Float(a * b))
+        numeric_binop(
+            self,
+            rhs,
+            |a, b| {
+                a.checked_mul(b)
+                    .map(Value::Int)
+                    .unwrap_or(Value::Float(a as f64 * b as f64))
+            },
+            |a, b| Value::Float(a * b),
+        )
     }
 
     pub fn div(&self, rhs: &Value) -> VResult {
@@ -468,7 +514,10 @@ impl Value {
 
     pub fn neg(&self) -> VResult {
         match self.as_number()? {
-            Value::Int(i) => Ok(i.checked_neg().map(Value::Int).unwrap_or(Value::Float(-(i as f64)))),
+            Value::Int(i) => Ok(i
+                .checked_neg()
+                .map(Value::Int)
+                .unwrap_or(Value::Float(-(i as f64)))),
             Value::Float(f) => Ok(Value::Float(-f)),
             _ => unreachable!(),
         }
@@ -605,10 +654,18 @@ impl Value {
         }
     }
 
-    pub fn lt(&self, rhs: &Value) -> bool { self.spaceship(rhs) < 0 }
-    pub fn le(&self, rhs: &Value) -> bool { self.spaceship(rhs) <= 0 }
-    pub fn gt(&self, rhs: &Value) -> bool { self.spaceship(rhs) > 0 }
-    pub fn ge(&self, rhs: &Value) -> bool { self.spaceship(rhs) >= 0 }
+    pub fn lt(&self, rhs: &Value) -> bool {
+        self.spaceship(rhs) < 0
+    }
+    pub fn le(&self, rhs: &Value) -> bool {
+        self.spaceship(rhs) <= 0
+    }
+    pub fn gt(&self, rhs: &Value) -> bool {
+        self.spaceship(rhs) > 0
+    }
+    pub fn ge(&self, rhs: &Value) -> bool {
+        self.spaceship(rhs) >= 0
+    }
 }
 
 impl PartialEq for Value {
@@ -780,7 +837,11 @@ fn format_php_float(f: f64) -> String {
         return "NAN".to_string();
     }
     if f.is_infinite() {
-        return if f < 0.0 { "-INF".to_string() } else { "INF".to_string() };
+        return if f < 0.0 {
+            "-INF".to_string()
+        } else {
+            "INF".to_string()
+        };
     }
     if f == 0.0 {
         return if f.is_sign_negative() { "-0" } else { "0" }.to_string();
@@ -873,8 +934,14 @@ mod tests {
     #[test]
     fn div_even_is_int_else_float() {
         assert_eq!(Value::Int(6).div(&Value::Int(3)).unwrap(), Value::Int(2));
-        assert_eq!(Value::Int(7).div(&Value::Int(2)).unwrap(), Value::Float(3.5));
-        assert_eq!(Value::Int(1).div(&Value::Int(0)), Err(ValueError::DivisionByZero));
+        assert_eq!(
+            Value::Int(7).div(&Value::Int(2)).unwrap(),
+            Value::Float(3.5)
+        );
+        assert_eq!(
+            Value::Int(1).div(&Value::Int(0)),
+            Err(ValueError::DivisionByZero)
+        );
     }
 
     #[test]
@@ -914,9 +981,15 @@ mod tests {
 
     #[test]
     fn pow_and_mod() {
-        assert_eq!(Value::Int(2).pow(&Value::Int(10)).unwrap(), Value::Int(1024));
+        assert_eq!(
+            Value::Int(2).pow(&Value::Int(10)).unwrap(),
+            Value::Int(1024)
+        );
         assert_eq!(Value::Int(7).rem(&Value::Int(3)).unwrap(), Value::Int(1));
-        assert_eq!(Value::Int(1).rem(&Value::Int(0)), Err(ValueError::ModuloByZero));
+        assert_eq!(
+            Value::Int(1).rem(&Value::Int(0)),
+            Err(ValueError::ModuloByZero)
+        );
     }
 
     fn s(bytes: &str) -> Value {
@@ -929,7 +1002,10 @@ mod tests {
         assert_eq!(s("x=").concat(&Value::Int(5)), s("x=5"));
         assert_eq!(Value::Int(1).concat(&Value::Int(2)), s("12"));
         assert_eq!(s("v=").concat(&Value::Float(3.5)), s("v=3.5"));
-        assert_eq!(s("a").concat(&Value::Bool(true)).concat(&Value::Null), s("a1"));
+        assert_eq!(
+            s("a").concat(&Value::Bool(true)).concat(&Value::Null),
+            s("a1")
+        );
     }
 
     #[test]
@@ -1029,8 +1105,11 @@ mod tests {
         b.set(ArrayKey::Int(0), Value::Int(1));
         assert!(Value::Array(a.clone()).loose_eq(&Value::Array(b.clone())));
         assert!(!Value::Array(a).identical(&Value::Array(b))); // different order
-        // Fewer elements compares less; array > non-array.
-        assert_eq!(arr(&[Value::Int(1)]).spaceship(&arr(&[Value::Int(1), Value::Int(2)])), -1);
+                                                               // Fewer elements compares less; array > non-array.
+        assert_eq!(
+            arr(&[Value::Int(1)]).spaceship(&arr(&[Value::Int(1), Value::Int(2)])),
+            -1
+        );
         assert_eq!(Value::empty_array().spaceship(&Value::Int(5)), 1);
         assert!(!Value::empty_array().loose_eq(&Value::Int(0)));
     }

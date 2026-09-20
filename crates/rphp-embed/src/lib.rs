@@ -135,6 +135,15 @@ impl EngineConfig {
 /// interpreter: `PropertyHookType` (php 8.4), the enum
 /// `ReflectionProperty::hasHook()`/`getHook()` take.
 const PRELUDE: &str = r#"<?php
+namespace Dom {
+    enum AdjacentPosition: string {
+        case BeforeBegin = 'beforebegin';
+        case AfterBegin = 'afterbegin';
+        case BeforeEnd = 'beforeend';
+        case AfterEnd = 'afterend';
+    }
+}
+namespace {
 enum PropertyHookType: string { case Get = 'get'; case Set = 'set'; }
 #[Attribute(Attribute::TARGET_CLASS)]
 final class Attribute {
@@ -160,6 +169,7 @@ final class Override { public function __construct() {} }
 #[Attribute(Attribute::TARGET_METHOD | Attribute::TARGET_FUNCTION | Attribute::TARGET_CLASS_CONSTANT | Attribute::TARGET_CLASS | Attribute::TARGET_CONSTANT)]
 final class Deprecated {
     public function __construct(public readonly ?string $message = null, public readonly ?string $since = null) {}
+}
 }
 "#;
 
@@ -213,6 +223,7 @@ impl Engine {
         }
         rphp_stdlib::register(&mut Registry(&mut it));
         rphp_ext_pdo::register(&mut Registry(&mut it));
+        rphp_ext_dom::register(&mut Registry(&mut it));
         // `Generator` is the engine's own class but implements the stdlib's
         // `Iterator`, so it is registered after the extensions (E8).
         rphp_runtime::register_generator_class(&mut Registry(&mut it));
@@ -221,12 +232,17 @@ impl Engine {
         // The standard library's php-written part: what the native registry
         // cannot declare (an enum; the engine's attribute classes, which
         // carry their own `#[Attribute(...)]` with constant arguments).
-        if let Ok(module) = compile_unit(&it, PRELUDE.as_bytes(), "prelude") {
-            let _ = it.run_prelude(module);
+        match compile_unit(&it, PRELUDE.as_bytes(), "prelude") {
+            Ok(module) => {
+                let _ = it.run_prelude(module);
+            }
+            Err(e) => debug_assert!(false, "prelude does not compile: {e:?}"),
         }
         it.compile_hook = Some(Box::new(|interp: &Interp, src: &[u8], name: &str| {
             compile_unit(interp, src, name).map_err(|e| match e {
-                CompileError::Parse { message, line, .. } => CompileFailure::Parse { message, line },
+                CompileError::Parse { message, line, .. } => {
+                    CompileFailure::Parse { message, line }
+                }
                 // php renders a compile-time fatal of an included file as a
                 // `Fatal error:`; the runtime's hook contract has no such
                 // variant yet, so it goes through the rejection channel.
@@ -326,7 +342,13 @@ impl Engine {
                 // The standard display path: `log_errors`, `html_errors`,
                 // `error_get_last()` all apply to a parse error of the
                 // main script as to any other.
-                let _ = interp.emit_error_full(rphp_runtime::ErrLevel::Parse, &message, name, line, false);
+                let _ = interp.emit_error_full(
+                    rphp_runtime::ErrLevel::Parse,
+                    &message,
+                    name,
+                    line,
+                    false,
+                );
                 interp.finish_output();
             }
             CompileError::Fatal { message, line, .. } => {
@@ -420,7 +442,9 @@ pub fn on_request_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
             .stack_size(REQUEST_STACK_SIZE)
             .spawn_scoped(scope, f)
         {
-            Ok(handle) => handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            Ok(handle) => handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
             Err(_) => unreachable!("spawn failure is handled by the caller"),
         }
     })
@@ -746,7 +770,10 @@ mod tests {
         assert_eq!(it.ini_get("display_errors"), Some("0"));
         assert_eq!(it.ini_get("custom.flag"), Some("yes"));
         assert_eq!(it.argv(), &[b"s.php".to_vec(), b"a".to_vec()]);
-        assert_eq!(it.globals.get(b"argc").map(|c| c.get()), Some(Value::Int(2)));
+        assert_eq!(
+            it.globals.get(b"argc").map(|c| c.get()),
+            Some(Value::Int(2))
+        );
         assert_eq!(it.constant(b"PHP_SAPI"), Some(Value::string(b"cli")));
         it.warn("hidden").unwrap();
         assert_eq!(buffer.take(), b"");

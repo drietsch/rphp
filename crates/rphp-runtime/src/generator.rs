@@ -311,9 +311,13 @@ impl Interp {
             }
         }
         let depth = self.frames.len();
+        if throw.is_some() {
+            // `Generator::throw()`: the exception surfaces *at* the yield,
+            // inside a `try` that ends with it.
+            frame.pc = frame.pc.saturating_sub(1);
+        }
         self.frames.push(frame);
         if let Some(e) = throw {
-            // `Generator::throw()`: the exception surfaces *at* the yield.
             let u = Unwind::Throw(match e {
                 Value::Object(o) => o,
                 other => return Err(Unwind::error(format!("Cannot throw {other:?}"))),
@@ -375,14 +379,77 @@ impl Interp {
                 let Some(iid) = self.generator_id(&inner) else {
                     return Err(Unwind::error("yield from: not a generator"));
                 };
-                if started {
-                    self.resume(iid, sent.clone())?;
+                // The outer body is unparked while the inner runs: a trace
+                // shows `gen()` beneath `inner()`, and an exception out of
+                // the inner surfaces at the `yield from`, where the outer's
+                // own `try` may catch it.
+                let unparked = {
+                    let g = &mut self.generators[idx as usize];
+                    g.frame.take().map(|mut frame| {
+                        let regs = std::mem::take(&mut g.regs);
+                        g.status = GenStatus::Running;
+                        let base = self.stack.len();
+                        frame.base = base;
+                        // Back on the `yield from` op itself, so a `try`
+                        // around it covers what the delegate throws.
+                        frame.pc -= 1;
+                        self.stack.extend(regs);
+                        let depth = self.frames.len();
+                        self.frames.push(frame);
+                        (base, depth)
+                    })
+                };
+                // `Generator::throw()` lands in the innermost delegate.
+                if let Some(t) = self.generators[idx as usize].pending_throw.take() {
+                    self.generators[iid as usize].pending_throw = Some(t);
+                }
+                let stepped = if started {
+                    self.resume(iid, sent.clone())
                 } else {
                     // First touch of the delegate: run the inner generator to
                     // its first `yield` before reading `current`.
-                    self.ensure_started(iid)?;
+                    self.ensure_started(iid)
+                };
+                let repark = |it: &mut Interp| {
+                    if let Some((base, _)) = unparked {
+                        let mut frame = it.frames.pop().expect("outer generator frame");
+                        frame.pc += 1;
+                        let regs = it.stack.split_off(base);
+                        let g = &mut it.generators[idx as usize];
+                        g.frame = Some(frame);
+                        g.regs = regs;
+                    }
+                };
+                if let Err(u) = stepped {
+                    let Some((base, depth)) = unparked else {
+                        return Err(u);
+                    };
+                    {
+                        let g = &mut self.generators[idx as usize];
+                        g.delegate = None;
+                        g.delegate_dst = None;
+                    }
+                    return match self.dispatch_unwind(u, depth) {
+                        // Caught inside the outer body: it runs on to its
+                        // next `yield` or its end.
+                        Ok(()) => match self.run_until(depth) {
+                            Ok(_) => Ok(true),
+                            Err(u) => {
+                                self.force_finish(idx);
+                                Err(u)
+                            }
+                        },
+                        // Not caught: the dispatch popped the outer frame.
+                        Err(u) => {
+                            let _ = base;
+                            self.force_finish(idx);
+                            Err(u)
+                        }
+                    };
                 }
+                repark(self);
                 if self.generators[iid as usize].status == GenStatus::Finished {
+                    self.generators[idx as usize].status = GenStatus::Suspended;
                     true
                 } else {
                     let (k, v) = {

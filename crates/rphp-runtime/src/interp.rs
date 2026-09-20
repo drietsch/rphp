@@ -45,7 +45,7 @@ impl SapiKind {
 }
 
 /// Per-extension state slots the stdlib keeps between calls.
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct ExtState {
     /// `preg_last_error()`.
     pub preg_last_error: i64,
@@ -61,6 +61,23 @@ pub struct ExtState {
     pub stat_cache: std::collections::HashMap<std::path::PathBuf, Option<std::fs::Metadata>>,
     /// What `openlog()` set (`syslog.rs`): `(ident, flags, facility)`.
     pub syslog: (Option<Vec<u8>>, i64, i64),
+    /// Per-extension state an extension crate keeps under its own key
+    /// (`libxml`'s error list, …), typed by the crate that owns it.
+    pub slots: std::collections::HashMap<&'static str, Box<dyn std::any::Any>>,
+}
+
+impl ExtState {
+    /// The extension state under `key`, created with `Default` on first use.
+    pub fn slot<T: Default + 'static>(&mut self, key: &'static str) -> &mut T {
+        let entry = self
+            .slots
+            .entry(key)
+            .or_insert_with(|| Box::new(T::default()));
+        if !entry.is::<T>() {
+            *entry = Box::new(T::default());
+        }
+        entry.downcast_mut::<T>().expect("slot type checked")
+    }
 }
 
 /// Why the compile hook could not produce a unit for `include`/`eval`.
@@ -140,6 +157,9 @@ pub struct Interp {
     pub(crate) fibers: Vec<crate::fiber::FiberState>,
     /// The running fibers, innermost last.
     pub(crate) fiber_stack: Vec<u32>,
+    /// Extensions registered by crates outside the stdlib (`pdo`, `dom`,
+    /// …), for `extension_loaded()` / `get_loaded_extensions()`.
+    pub extensions: Vec<&'static str>,
     /// Set by `Fiber::suspend()` for the dispatch loop, which parks the
     /// fiber once the call op that reached it has returned.
     pub(crate) fiber_suspending: Option<u32>,
@@ -255,6 +275,7 @@ impl Interp {
             fibers: Vec::new(),
             fiber_stack: Vec::new(),
             fiber_suspending: None,
+            extensions: Vec::new(),
             boundary_value: None,
             autoloaders: Vec::new(),
             autoloading: Vec::new(),

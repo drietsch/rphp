@@ -19,7 +19,6 @@
 mod api;
 mod autoload;
 mod call;
-mod string_params;
 mod class;
 mod enums;
 mod errors;
@@ -40,6 +39,7 @@ mod props;
 mod registry;
 mod resources;
 mod statics;
+mod string_params;
 mod symtab;
 mod throwable;
 mod traits;
@@ -49,46 +49,45 @@ mod unwind;
 
 pub use api::parse_error_reporting;
 pub use call::Callable;
+pub use class::{
+    ClassConst, ClassDef, ClassSpec, ConstSpec, ConstState, EnumBacking, EnumCaseInfo, MagicFlags,
+    MethodBody, MethodDef, MethodSpec, NativeInit, NativeMethod, NativeMethodHandler, NativeProps,
+    PayloadClone, PropDefault, PropHooks, PropInfo, PropSpec, StaticPropInfo, WellKnown,
+};
 pub use errors::{
     DisplayMode, ErrLevel, LastError, E_ALL, E_COMPILE_ERROR, E_COMPILE_WARNING, E_CORE_ERROR,
     E_CORE_WARNING, E_DEPRECATED, E_ERROR, E_NOTICE, E_PARSE, E_RECOVERABLE_ERROR, E_STRICT,
     E_USER_DEPRECATED, E_USER_ERROR, E_USER_NOTICE, E_USER_WARNING, E_WARNING, SILENCE_MASK,
 };
 pub use fiber::register_fiber_classes;
-pub use native_args::{native_arginfo, native_default_is_constant, native_return_type, ParamRow};
-pub use generator::register_generator_class;
 pub use frame::{
     format_float_precision, trace_arg, CallTarget, Frame, FrameKind, NativeTarget, PendingCall,
     RetTarget, TraceOpts,
 };
+pub use generator::register_generator_class;
 pub use ini::{parse_bool, IniEntry, IniTable, CORE_DEFAULTS, SERVER_DEFAULTS};
 pub use interp::{
     CompileFailure, CompileHook, ExtState, Interp, SapiKind, MAX_FRAMES, MAX_REENTRY_DEPTH,
 };
+pub use native_args::{native_arginfo, native_default_is_constant, native_return_type, ParamRow};
 pub use ops::{str_increment, value_name};
-pub use props::{LAZY_SKIP_DESTRUCTOR, LAZY_SKIP_INITIALIZATION_ON_SERIALIZE};
-pub use symtab::{Symtab, SymtabData};
-pub use types::Coerced;
-pub use unit::{FuncRt, IcSlot, UnitRt};
-pub use class::{
-    ClassConst, ClassDef, ClassSpec, ConstSpec, ConstState, EnumBacking, EnumCaseInfo, MagicFlags,
-    MethodBody, MethodDef, MethodSpec, NativeInit, NativeMethod, NativeMethodHandler, PayloadClone, PropDefault,
-    PropHooks, PropInfo, PropSpec, StaticPropInfo, WellKnown,
-};
 pub use output::{
     NullSink, ObLevel, OutputSink, OutputStack, ResponseHead, SharedBuffer, SharedHead,
-    PHP_OUTPUT_HANDLER_CLEAN,
-    PHP_OUTPUT_HANDLER_CLEANABLE, PHP_OUTPUT_HANDLER_DISABLED, PHP_OUTPUT_HANDLER_FINAL,
-    PHP_OUTPUT_HANDLER_FLUSH, PHP_OUTPUT_HANDLER_FLUSHABLE, PHP_OUTPUT_HANDLER_PROCESSED,
-    PHP_OUTPUT_HANDLER_REMOVABLE, PHP_OUTPUT_HANDLER_START, PHP_OUTPUT_HANDLER_STARTED,
-    PHP_OUTPUT_HANDLER_STDFLAGS, PHP_OUTPUT_HANDLER_USER,
+    PHP_OUTPUT_HANDLER_CLEAN, PHP_OUTPUT_HANDLER_CLEANABLE, PHP_OUTPUT_HANDLER_DISABLED,
+    PHP_OUTPUT_HANDLER_FINAL, PHP_OUTPUT_HANDLER_FLUSH, PHP_OUTPUT_HANDLER_FLUSHABLE,
+    PHP_OUTPUT_HANDLER_PROCESSED, PHP_OUTPUT_HANDLER_REMOVABLE, PHP_OUTPUT_HANDLER_START,
+    PHP_OUTPUT_HANDLER_STARTED, PHP_OUTPUT_HANDLER_STDFLAGS, PHP_OUTPUT_HANDLER_USER,
 };
+pub use props::{LAZY_SKIP_DESTRUCTOR, LAZY_SKIP_INITIALIZATION_ON_SERIALIZE};
 pub use registry::{
     ClassBuilder, Ctx, ErrorKind, FaultSite, FnFlags, NativeFn, NativeHandler, NativeId,
     NativeResult, PendingThrow, Registry, Unwind,
 };
 pub use resources::ResourceTable;
-pub use rphp_bytecode::{ClassFlags, ClassKind, Visibility};
+pub use rphp_bytecode::{CastKind, ClassFlags, ClassKind, Visibility};
+pub use symtab::{Symtab, SymtabData};
+pub use types::Coerced;
+pub use unit::{FuncRt, IcSlot, UnitRt};
 
 #[cfg(test)]
 mod tests {

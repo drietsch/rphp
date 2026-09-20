@@ -899,6 +899,8 @@ pub fn register(r: &mut Registry) {
     if r.interp().class_by_name(b"PDO").is_some() {
         return;
     }
+    r.extension("PDO");
+    r.extension("pdo_sqlite");
     let i = |n: i64| Value::Int(n);
     let s = |v: &str| Value::string(v.as_bytes());
 

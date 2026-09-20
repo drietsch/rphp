@@ -5,9 +5,12 @@
 
 [fixture]
 name = "L8-demo"
-setup = "composer install --no-interaction --no-progress --prefer-dist"
+setup = "composer install --no-interaction --no-progress --prefer-dist && bin/console sass:build"
 php_min = "8.4.1"
 allowlist = "ladder/divergences.toml"
+# The pages need the compiled stylesheet (`bin/console sass:build`, which
+# downloads dart-sass into var/); the working copy keeps it.
+var_keep = ["sass"]
 
 [[rung]]
 id = "L8"
@@ -20,4 +23,22 @@ commands = [
   "bin/console about --no-ansi",
   "bin/console debug:router --no-ansi",
   "bin/console lint:container --no-ansi",
+]
+
+[[rung]]
+id = "L8http"
+title = "symfony/demo over HTTP (rphp -S vs php -S): the blog, a post, search, feeds, login, 404"
+http = true
+docroot = "public"
+requests = [
+  "GET /",
+  "GET /en/blog/",
+  "GET /en/blog/page/2",
+  "GET /en/blog/posts/lorem-ipsum-dolor-sit-amet-consectetur-adipiscing-elit",
+  "GET /en/blog/search?q=lorem",
+  "GET /en/blog/rss.xml",
+  "GET /de/blog/",
+  "GET /en/login",
+  "GET /en/blog/posts/nope",
+  "GET /nonexistent",
 ]

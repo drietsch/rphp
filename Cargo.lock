@@ -1265,6 +1265,7 @@ dependencies = [
  "rphp-bytecode",
  "rphp-compiler",
  "rphp-diagnostics",
+ "rphp-ext-dom",
  "rphp-ext-pdo",
  "rphp-intern",
  "rphp-parser",
@@ -1279,6 +1280,15 @@ dependencies = [
 name = "rphp-ext-api"
 version = "0.0.0"
 dependencies = [
+ "rphp-value",
+]
+
+[[package]]
+name = "rphp-ext-dom"
+version = "0.0.0"
+dependencies = [
+ "rphp-runtime",
+ "rphp-stdlib",
  "rphp-value",
 ]
 

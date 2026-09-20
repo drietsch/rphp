@@ -349,7 +349,24 @@ pub struct ObjectData {
     flags: ObjFlags,
     /// php 8.4 lazy-object state, when the object is (or was made) lazy.
     lazy: Option<Box<LazyState>>,
+    /// php's `cast_object` handler, for the native classes whose instances
+    /// convert by their own rule (`SimpleXMLElement`'s truthiness and
+    /// numbers); `None` for every other object.
+    cast: Option<CastHandler>,
 }
+
+/// What a [`CastHandler`] is asked to convert to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CastTarget {
+    Bool,
+    Int,
+    Float,
+    Str,
+}
+
+/// A native class's cast rule: `None` leaves the conversion to the
+/// engine's default for objects.
+pub type CastHandler = fn(&Object, CastTarget) -> Option<Value>;
 
 /// Which of php 8.4's two lazy shapes an object is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -593,6 +610,7 @@ impl Drop for ObjectData {
                 payload: std::mem::take(&mut self.payload),
                 flags: self.flags | ObjFlags::DESTRUCTED,
                 lazy: self.lazy.take(),
+                cast: self.cast,
             };
             let obj = Object(Rc::new(RefCell::new(resurrected)));
             DESTRUCT_QUEUE.with(|q| q.borrow_mut().push(obj));
@@ -664,7 +682,19 @@ impl Object {
             payload: Payload::None,
             flags: ObjFlags::NONE,
             lazy: None,
+            cast: None,
         })))
+    }
+
+    /// Install the class's cast rule on this instance.
+    pub fn set_cast_handler(&self, h: CastHandler) {
+        self.0.borrow_mut().cast = Some(h);
+    }
+
+    /// Convert through the cast rule, when the instance has one.
+    pub fn cast_via_handler(&self, target: CastTarget) -> Option<Value> {
+        let h = self.0.borrow().cast?;
+        h(self, target)
     }
 
     /// Run `f` under a shared borrow of the instance state. Never leaks the
@@ -757,6 +787,11 @@ impl Object {
     /// Assign dynamic property `name` by value (appending if absent).
     pub fn dyn_set(&self, name: &[u8], value: Value) {
         self.0.borrow_mut().dyn_props_mut().set(name, value);
+    }
+
+    /// Bind dynamic property `name` to the reference cell `r`.
+    pub fn dyn_set_ref(&self, name: &[u8], r: PhpRef) {
+        self.0.borrow_mut().dyn_props_mut().set_ref(name, r);
     }
 
     /// Remove dynamic property `name`, returning it.

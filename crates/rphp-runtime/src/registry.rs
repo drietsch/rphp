@@ -321,6 +321,14 @@ impl Registry<'_> {
     }
 
     /// Register a global constant (case-sensitive name).
+    /// Declare an extension by name (what `extension_loaded()` reports for
+    /// the crates the stdlib's own table cannot list).
+    pub fn extension(&mut self, name: &'static str) {
+        if !self.0.extensions.contains(&name) {
+            self.0.extensions.push(name);
+        }
+    }
+
     pub fn constant(&mut self, name: &str, value: Value) {
         self.0.constants.insert(Box::from(name.as_bytes()), value);
     }
@@ -355,6 +363,7 @@ impl Registry<'_> {
             methods: Vec::new(),
             native_init: None,
             payload_clone: None,
+            native_props: None,
         }
     }
 
@@ -382,6 +391,7 @@ pub struct ClassBuilder<'a> {
     methods: Vec<MethodSpec>,
     native_init: Option<NativeInit>,
     payload_clone: Option<crate::class::PayloadClone>,
+    native_props: Option<crate::class::NativeProps>,
 }
 
 impl ClassBuilder<'_> {
@@ -475,6 +485,14 @@ impl ClassBuilder<'_> {
         self
     }
 
+    /// The computed properties php's `prop_handler` tables give a class
+    /// (`$node->nodeName`), read and written through hooks and inherited by
+    /// user subclasses.
+    pub fn native_props(mut self, np: crate::class::NativeProps) -> Self {
+        self.native_props = Some(np);
+        self
+    }
+
     /// Link and register the class; returns its process-wide id. Re-registering
     /// a name keeps the earlier id (the definition is replaced).
     ///
@@ -495,6 +513,7 @@ impl ClassBuilder<'_> {
             methods,
             native_init,
             payload_clone,
+            native_props,
         } = self;
         let lookup = |interp: &Interp, n: &str| {
             interp.class_by_name(n.as_bytes()).unwrap_or_else(|| {
@@ -521,6 +540,7 @@ impl ClassBuilder<'_> {
             methods,
             native_init,
             payload_clone,
+            native_props,
             declared_at: None,
             internal: true,
             static_props: Vec::new(),

@@ -756,3 +756,113 @@ constant default (`E_ALL | E_STRICT`) prints its value in `__toString()`
 where php prints the expression; `RoundingMode` (8.4) and `round()`'s enum
 mode; object ids drift by the hidden objects Reflection holds
 (`object-id` category).
+
+## ext/dom, libxml, simplexml, and the demo's blog over HTTP (2026-09-20)
+
+**`ext/dom` + `libxml` + `simplexml`** as their own crate (`rphp-ext-dom`,
+`#![forbid(unsafe_code)]`, no libxml2): an arena document (`tree.rs`, one
+php object per node cached in the document so identity holds, orphan
+holding documents for `new DOMElement()` adopted on insertion), a
+hand-written XML parser with libxml's error codes, messages, columns and
+its habit of going on after most errors (`parser.rs`; the diagnostics
+probe matches php line for line), an XML serializer with libxml's escaping
+per context, the `formatOutput` rule and namespace reconciliation
+(`serialize.rs`), an XPath 1.0 engine (`xpath.rs`: lexer, parser,
+evaluator, `php:function()`/`functionString()`/`registerPhpFunctionNS()`,
+the document element as the default context node, unknown prefixes refused
+at compile time), `SimpleXMLElement` with its property/iterator/array
+faces (`simplexml.rs`), libxml's HTML 4 tag-soup parser in outline plus its
+HTML serializer (`html.rs`), and the class surface: `DOMNode` and its
+family, `DOMNodeList`/`DOMNamedNodeMap` (live), `DOMImplementation`,
+`DOMXPath`, `DOMException`, the `XML_*`/`DOM_*`/`LIBXML_*` constants,
+`libxml_use_internal_errors()` & co. The computed properties go through the
+runtime's new native-property hook (`NativeProps`: php's `prop_handler`,
+`get_properties`, `get_debug_info`), which `var_dump`/`print_r`/`(array)`/
+`get_object_vars`/`json_encode`/`foreach`/`isset`/`empty` all consult.
+
+**php 8.4's `Dom\*` API** on the same tree (`classes/modern.rs`,
+`selector.rs`): `Dom\HTMLDocument::createFromString/createFromFile/
+createEmpty` with an HTML5 parser in outline (implied `html`/`head`/`body`
+and `tbody`, the whitespace rules per insertion mode, `svg`/`math` foreign
+content with the case adjustments and integration points, the adoption
+agency for formatting elements, RCDATA/raw-text elements, `<?…>` as a
+bogus comment, legacy named references without `;`, the C1 remap, and
+lexbor's `tokenizer error …`/`tree error …` diagnostics with their
+columns), `Dom\XMLDocument` (`XML fragment is not well-formed` after the
+warning, the working directory as its `documentURI`), the HTML5
+serialization algorithm (`<!DOCTYPE html>` alone, `&nbsp;`, void elements),
+XHTML rules in `saveXml()` of an HTML document (`<br />`, `<head></head>`)
+and the well-formed *subtree* serialization behind `saveXml($node)`,
+`innerHTML`/`outerHTML` (declaring the namespaces in scope on the subtree's
+root); `Dom\HTMLElement` (uppercase `nodeName`/`tagName`, XHTML namespace)
+vs `Dom\Element`, `Dom\TokenList` (`classList`, the DOMException codes
+and texts for bad tokens), `Dom\NodeList`/`HTMLCollection`/
+`NamedNodeMap`/`DtdNamedNodeMap`, `Dom\Implementation`, `Dom\XPath`,
+`Dom\AdjacentPosition` (prelude enum), `getElementsByClassName()`,
+`querySelector()`/`querySelectorAll()`/`closest()`/`matches()` over a CSS
+selector engine (type/universal/id/class/attribute selectors with the six
+operators and `i`, the four combinators, selector lists, `:not()`/`:is()`/
+`:where()`, `:nth-*()`, `:first/last/only-child` and `-of-type`, `:empty`,
+`:root`; `Invalid selector` is a `DOMException` code 12), `insertAdjacentHTML()`,
+`getInScopeNamespaces()`, `rename()`; the modern property tables in php's
+dump order, `nodeValue`/`prefix`/`textContent`/`baseURI` answering `null`
+where the modern API does and `""` where libxml's does. DTD declarations
+are nodes now: `$doctype->entities`/`notations` list `DOMEntity`
+(`nodeType` 17, ids only for an unparsed entity) and `DOMNotation`, and the
+doctype's internal subset is re-serialized from its declarations the way
+libxml prints it (notations first, `<!ELEMENT>` content models with
+` , `/` | `, one `<!ATTLIST>` line per attribute, comments inline).
+
+**Documented divergences:** object ids (`object-id`); Reflection sees no
+properties on native-property classes and lists the modern classes'
+methods in registration order; `Dom\NodeList`/`HTMLCollection`/
+`NamedNodeMap` implement `ArrayAccess` here where php serves `$list[0]`
+through a handler; `SimpleXMLElement` implements `ArrayAccess` likewise;
+no XSD/RelaxNG validation (`schemaValidate()` & co. answer `true`), no
+`xinclude()`, no `C14N` beyond the plain serialization, no external
+entity loading; the HTML5 parser is an outline (no template contents,
+no `<form>` pointer, no `<table>` foster parenting, no encoding sniffing —
+the demo's sanitizer only needs fragments), and a `bad-doctype-token`
+range column is approximated; the entity map's order is declaration order
+where libxml's hash order varies between runs; `libxml_get_errors()` file
+is `""` for libxml-style errors and `Entity` for lexbor's, as php reports.
+
+**The blog over `rphp -S` (L8http)** — `GET /`, the blog and its second
+page, a post, search, the RSS feed, the German blog, the login form and
+two 404s, byte-identical to `php -S` after the declared normalizers (profiler
+tokens and nonces, session ids, the render-time comments, cookie dates, the
+JSON-escaped port, the `Install the curl extension` log row php's own
+`ext/curl` avoids) — needed, one fatal at a time:
+
+- **`DateTimeZone::getLocation()`** from a bundled `zone.tab`
+  (`crates/rphp-stdlib/data`), the coordinates through timelib's integer
+  encoding so the floats come out as php's (`48.21665999999999`);
+- **generator traces**: a generator driven by `foreach` has no
+  `Generator->rewind()`/`next()` frame (the body's frame sits at the loop,
+  with its class), a generator method's frame names its class, and a
+  `yield from` delegate runs with the outer body *unparked*: its frame
+  shows beneath the inner's, a `try` around the `yield from` catches what
+  the delegate throws (and `finally` runs), `Generator::throw()` lands in
+  the innermost delegate, an exception thrown into a `try { yield }` that
+  ends with the yield is caught;
+- **by-reference `foreach` over a nested place** (`$this->listeners[$e]`,
+  `$arr[$k]`, `$o->list[0]`) goes through the write-fetch chain `$x = &…`
+  uses, so the loop mutates the container in place (the event dispatcher's
+  lazy listeners resolved twice before); the container temp is released
+  with the loop; a null/undefined place warns (`foreach() argument must be
+  of type array|object, null given`) and stays as it is;
+- **`json_encode()` of an enum case**: a backed case is its value, a pure
+  one is `JSON_ERROR_NON_BACKED_ENUM` (`0` under partial output);
+- `file_put_contents('php://stderr'|'php://output'|'php://stdout')`; a
+  class member of a native's `Class|string` union takes its instances as
+  they are (`Dom\Node|string`, `Throwable|string|null`);
+  `libxml_use_internal_errors(false)` drops the buffer; `get_object_vars()`
+  turns a numeric property name into an integer key.
+- The ladder's working copy keeps the fixture's `var/sass` (`[fixture]
+  var_keep`), the compiled stylesheet no rung command produces.
+
+**Cataloged, not done:** `ext/curl` (the demo's `HttpClient` falls back to
+the native client with a notice), `ReflectionClass::__toString()`, the
+`Tentative return`/`<internal:ext>` labels, `RoundingMode`, FastCGI
+(SAPI-4), a compiled-unit cache (the debug build serves a demo page in
+~7 s, the release build in well under a second).

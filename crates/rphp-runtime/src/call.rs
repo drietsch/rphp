@@ -456,15 +456,30 @@ impl Interp {
                 continue;
             };
             let o = o.clone();
-            if !self.class_of(&o).magic.contains(crate::class::MagicFlags::TOSTRING) {
-                // php's own refusal, with the parameter as it is declared. A
-                // variadic position takes the variadic parameter's name.
-                let (name, ty) = params
-                    .iter()
-                    .find(|(pos, _, _)| usize::from(*pos) == i)
-                    .or_else(|| params.last())
-                    .map(|(_, n, t)| (*n, *t))
-                    .unwrap_or(("value", "string"));
+            // The parameter as it is declared. A variadic position takes
+            // the variadic parameter's name.
+            let (name, ty) = params
+                .iter()
+                .find(|(pos, _, _)| usize::from(*pos) == i)
+                .or_else(|| params.last())
+                .map(|(_, n, t)| (*n, *t))
+                .unwrap_or(("value", "string"));
+            // A class member of the union (`Dom\Node|string`,
+            // `Throwable|string|null`) takes an instance as it is.
+            let accepted = ty.trim_start_matches('?').split('|').any(|part| {
+                let part = part.trim();
+                part.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                    && self.class_by_name(part.as_bytes()).is_some_and(|cid| self.object_instanceof(&o, cid))
+            });
+            if accepted {
+                continue;
+            }
+            if !self
+                .class_of(&o)
+                .magic
+                .contains(crate::class::MagicFlags::TOSTRING)
+            {
+                // php's own refusal.
                 return Err(Unwind::type_error(format!(
                     "{key}(): Argument #{} (${name}) must be of type {ty}, {} given",
                     i + 1,

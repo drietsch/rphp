@@ -1723,7 +1723,8 @@ mod tests {
         assert!(!r.classes_constants_unavailable);
         assert!(r.implements(Kind::Class, "arrayobject"));
         assert!(r.implements(Kind::Constant, "PHP_EOL"));
-        assert!(!r.implements(Kind::Class, "domdocument"));
+        assert!(r.implements(Kind::Class, "domdocument"));
+        assert!(!r.implements(Kind::Class, "curlhandle"));
     }
 
     #[test]

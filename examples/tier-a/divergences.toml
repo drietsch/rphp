@@ -69,3 +69,9 @@ snippet   = "pdo/sqlite*.php"
 category  = "object-id"
 reason    = "the fetch-mode probes dump the objects every fetch builds; php reuses freed handles while the engine's ObjectIdAllocator is monotonic"
 normalize = ""
+
+[[allow]]
+snippet   = "dom/*.php"
+category  = "object-id"
+reason    = "the DOM probes dump node objects and LibXMLError objects made on the fly; php reuses freed handles while the engine's ObjectIdAllocator is monotonic"
+normalize = ""

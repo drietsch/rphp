@@ -8,7 +8,9 @@
 //! [`php_gcvt`], the `serialize_precision` form shared with
 //! `var_export`/`serialize` (`var.rs`). Closures keep a placeholder shape
 //! until they become `Closure` objects (plan E6).
-use rphp_value::{display_class_name, ArrayKey, ObjectData, PhpRef, PropEntry, Str, Value, Vis};
+use rphp_value::{
+    display_class_name, ArrayKey, Object, ObjectData, PhpRef, PropEntry, Str, Value, Vis,
+};
 
 use rphp_runtime::{Ctx, NativeFn, NativeResult, nf};
 
@@ -48,9 +50,14 @@ impl Seen {
 pub(crate) fn var_dump(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut seen = Seen::new();
     let precision = serialize_precision(ctx);
-    for v in args {
-        dump(ctx.out(), v, 0, &mut seen, precision);
+    let mut buf = Vec::new();
+    {
+        let mut native = |o: &Object| native_dump_props(ctx, o);
+        for v in args.iter() {
+            dump(&mut buf, v, 0, &mut seen, precision, &mut native);
+        }
     }
+    ctx.out().extend_from_slice(&buf);
     Ok(Value::Null)
 }
 
@@ -59,7 +66,10 @@ pub(crate) fn var_dump(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 pub(crate) fn print_r(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let return_mode = args.get(1).is_some_and(Value::to_bool);
     let mut buf = Vec::new();
-    print_r_buf(&mut buf, &args[0], 0, &mut Seen::new());
+    {
+        let mut native = |o: &Object| native_dump_props(ctx, o);
+        print_r_buf(&mut buf, &args[0], 0, &mut Seen::new(), &mut native);
+    }
     if return_mode {
         Ok(Value::Str(Str::from_vec(buf)))
     } else {
@@ -69,6 +79,16 @@ pub(crate) fn print_r(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 }
 
 // ---- var_dump ---------------------------------------------------------------
+
+/// The computed properties a native class contributes to a dump (php's
+/// `get_debug_info` for the DOM's `prop_handler`s): name → value, an
+/// object-valued one already replaced by `(object value omitted)`.
+type NativeDump<'a> = &'a mut dyn FnMut(&Object) -> Option<Vec<(ArrayKey, Value)>>;
+
+/// What a native class's computed properties look like in a dump.
+fn native_dump_props(ctx: &mut Ctx, o: &Object) -> Option<Vec<(ArrayKey, Value)>> {
+    ctx.native_debug_table(o)
+}
 
 fn indent(out: &mut Vec<u8>, spaces: usize) {
     out.resize(out.len() + spaces, b' ');
@@ -178,7 +198,14 @@ pub(crate) fn php_gcvt(f: f64, precision: i64, exp_char: u8) -> String {
 /// Emit the `var_dump` representation of `v`. `pad` is the indentation (in
 /// spaces) of the *enclosing* container; the caller has already written `pad`
 /// spaces before the value when this is an element.
-fn dump(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, precision: i64) {
+fn dump(
+    out: &mut Vec<u8>,
+    v: &Value,
+    pad: usize,
+    seen: &mut Seen,
+    precision: i64,
+    native: NativeDump<'_>,
+) {
     match v {
         // An uninitialized typed property never reaches user code (the runtime
         // errors first) and is skipped inside objects; standalone it is null.
@@ -205,7 +232,7 @@ fn dump(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, precision: i6
                 indent(out, pad + 2);
                 dump_key(out, k);
                 indent(out, pad + 2);
-                dump(out, val, pad + 2, seen, precision);
+                dump(out, val, pad + 2, seen, precision, native);
             }
             indent(out, pad);
             out.extend_from_slice(b"}\n");
@@ -213,7 +240,10 @@ fn dump(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, precision: i6
         // A closure is an object; PHP prints `object(Closure)#N (3) { name, file,
         // line }` — the shape arrives with the Closure class (plan E6).
         Value::Closure(_) => out.extend_from_slice(b"object(Closure) {\n}\n"),
-        Value::Object(o) => o.with_data(|d| dump_object(out, d, pad, seen, precision)),
+        Value::Object(o) => {
+            let extra = native(o).unwrap_or_default();
+            o.with_data(|d| dump_object(out, d, pad, seen, precision, extra, native))
+        }
         // PHP marks a reference `&` only while more than one handle shares it.
         Value::Ref(r) => {
             // (Measured before the cycle guard takes its own handle.)
@@ -228,7 +258,7 @@ fn dump(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, precision: i6
             if shared && !recursive {
                 out.push(b'&');
             }
-            dump(out, &inner, pad, seen, precision);
+            dump(out, &inner, pad, seen, precision, native);
             seen.refs.pop();
         }
         Value::Resource(r) => {
@@ -238,7 +268,15 @@ fn dump(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, precision: i6
 }
 
 /// `object(Class)#id (count) { ["name"(:protected | :"Decl":private)]=> value … }`
-fn dump_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen, precision: i64) {
+fn dump_object(
+    out: &mut Vec<u8>,
+    d: &ObjectData,
+    pad: usize,
+    seen: &mut Seen,
+    precision: i64,
+    extra: Vec<(ArrayKey, Value)>,
+    native: NativeDump<'_>,
+) {
     if seen.objects.contains(&d.id()) {
         out.extend_from_slice(b"*RECURSION*\n");
         return;
@@ -272,14 +310,24 @@ fn dump_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen, p
         indent(out, pad + 2);
         out.extend_from_slice(b"[\"instance\"]=>\n");
         indent(out, pad + 2);
-        dump(out, &Value::Object(real), pad + 2, seen, precision);
+        dump(out, &Value::Object(real), pad + 2, seen, precision, native);
         seen.objects.pop();
         indent(out, pad);
         out.extend_from_slice(b"}\n");
         return;
     }
-    out.extend_from_slice(format!(")#{} ({}) {{\n", d.id(), d.prop_count()).as_bytes());
+    out.extend_from_slice(
+        format!(")#{} ({}) {{\n", d.id(), d.prop_count() + extra.len()).as_bytes(),
+    );
     seen.objects.push(d.id());
+    // A native class's computed properties come first, as php's
+    // `get_debug_info` lists them.
+    for (k, v) in &extra {
+        indent(out, pad + 2);
+        dump_key(out, k);
+        indent(out, pad + 2);
+        dump(out, v, pad + 2, seen, precision, native);
+    }
     for p in d.props_in_order() {
         // An uninitialized *typed* slot prints as `uninitialized(T)` (a
         // lazy object's slots all are, until its initializer runs); an
@@ -307,7 +355,7 @@ fn dump_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen, p
             Some(ty) if p.value.is_uninit() => {
                 out.extend_from_slice(format!("uninitialized({ty})\n").as_bytes());
             }
-            _ => dump(out, p.value, pad + 2, seen, precision),
+            _ => dump(out, p.value, pad + 2, seen, precision, native),
         }
     }
     seen.objects.pop();
@@ -336,7 +384,7 @@ fn dump_key(out: &mut Vec<u8>, k: &ArrayKey) {
 
 /// Emit the `print_r` representation of `v`. `pad` is the indentation applied to
 /// the `(` / `)` lines of a container; scalars print their plain string cast.
-fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
+fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, native: NativeDump<'_>) {
     match v {
         Value::Array(a) => {
             out.extend_from_slice(b"Array\n");
@@ -350,20 +398,23 @@ fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
                     ArrayKey::Str(b) => out.extend_from_slice(b),
                 }
                 out.extend_from_slice(b"] => ");
-                print_r_buf(out, val, pad + 8, seen);
+                print_r_buf(out, val, pad + 8, seen, native);
                 out.push(b'\n');
             }
             indent(out, pad);
             out.extend_from_slice(b")\n");
         }
-        Value::Object(o) => o.with_data(|d| print_r_object(out, d, pad, seen)),
+        Value::Object(o) => {
+            let extra = native(o).unwrap_or_default();
+            o.with_data(|d| print_r_object(out, d, pad, seen, extra, native))
+        }
         Value::Ref(r) => {
             if !seen.enter_ref(r) {
                 out.extend_from_slice(b"Array\n *RECURSION*");
                 return;
             }
             let inner = r.get();
-            print_r_buf(out, &inner, pad, seen);
+            print_r_buf(out, &inner, pad, seen, native);
             seen.refs.pop();
         }
         // Scalars (and resources: `Resource id #N`) use the same string
@@ -373,7 +424,14 @@ fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen) {
 }
 
 /// `Class Object ( [name(:protected | :Decl:private)] => value … )`
-fn print_r_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen) {
+fn print_r_object(
+    out: &mut Vec<u8>,
+    d: &ObjectData,
+    pad: usize,
+    seen: &mut Seen,
+    extra: Vec<(ArrayKey, Value)>,
+    native: NativeDump<'_>,
+) {
     out.extend_from_slice(display_class_name(d.layout().class_name()));
     // php heads an enum case with `Enum` (pure) or `Enum:int`/`Enum:string`
     // (backed) instead of `Object`, then lists its properties as usual.
@@ -399,12 +457,23 @@ fn print_r_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen
     if let Some(real) = d.lazy().and_then(|l| l.real.clone()) {
         indent(out, pad + 4);
         out.extend_from_slice(b"[instance] => ");
-        print_r_buf(out, &Value::Object(real), pad + 8, seen);
+        print_r_buf(out, &Value::Object(real), pad + 8, seen, native);
         out.push(b'\n');
         seen.objects.pop();
         indent(out, pad);
         out.extend_from_slice(b")\n");
         return;
+    }
+    for (k, v) in &extra {
+        indent(out, pad + 4);
+        out.push(b'[');
+        match k {
+            ArrayKey::Int(i) => out.extend_from_slice(i.to_string().as_bytes()),
+            ArrayKey::Str(s) => out.extend_from_slice(s),
+        }
+        out.extend_from_slice(b"] => ");
+        print_r_buf(out, v, pad + 8, seen, native);
+        out.push(b'\n');
     }
     for p in d.props_in_order().filter(|p| !p.value.is_uninit()) {
         indent(out, pad + 4);
@@ -420,7 +489,7 @@ fn print_r_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen
             }
         }
         out.extend_from_slice(b"] => ");
-        print_r_buf(out, p.value, pad + 8, seen);
+        print_r_buf(out, p.value, pad + 8, seen, native);
         out.push(b'\n');
     }
     seen.objects.pop();
@@ -438,13 +507,13 @@ mod tests {
 
     fn dumped(v: &Value) -> String {
         let mut out = Vec::new();
-        dump(&mut out, v, 0, &mut Seen::new(), -1);
+        dump(&mut out, v, 0, &mut Seen::new(), -1, &mut |_| None);
         String::from_utf8(out).unwrap()
     }
 
     fn printed(v: &Value) -> String {
         let mut out = Vec::new();
-        print_r_buf(&mut out, v, 0, &mut Seen::new());
+        print_r_buf(&mut out, v, 0, &mut Seen::new(), &mut |_| None);
         String::from_utf8(out).unwrap()
     }
 

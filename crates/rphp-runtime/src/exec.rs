@@ -332,7 +332,13 @@ impl Interp {
                     "An iterator cannot be used with foreach by reference",
                 ));
             }
-            self.call_method(&iter, b"rewind", &[])?;
+            // A generator is driven directly (no `Generator->rewind()`
+            // frame in a trace); a user iterator through its method.
+            if self.generator_id(&iter).is_some() {
+                self.generator_rewind(&iter)?;
+            } else {
+                self.call_method(&iter, b"rewind", &[])?;
+            }
             return Ok(IterState::ByRef {
                 cell: PhpRef::new(Value::Object(iter)),
                 pos: 0,
@@ -342,6 +348,11 @@ impl Interp {
         // scope; an uninitialized typed property is skipped.
         let scope = self.current_user_frame().and_then(|f| f.scope);
         let mut arr = rphp_value::Array::new();
+        if let Some(table) = self.native_property_table(o) {
+            for (k, v) in table {
+                arr.set(k, v);
+            }
+        }
         for (name, value, _) in o.props_snapshot() {
             if let Some((vis, decl)) = self.resolve_prop(o.class_id(), &name) {
                 if !self.access_ok(vis, decl, scope) {
@@ -400,6 +411,24 @@ impl Interp {
         pos: usize,
         want_key: bool,
     ) -> Result<Option<(Value, Value, Option<PhpRef>)>, Unwind> {
+        // php drives a generator directly (no `Generator->next()` frame in a
+        // trace; the body's frame sits at the `foreach`), a user `Iterator`
+        // through its methods.
+        if self.generator_id(o).is_some() {
+            if pos > 0 {
+                self.generator_next(o)?;
+            }
+            if !self.generator_valid(o)? {
+                return Ok(None);
+            }
+            let v = self.generator_current(o)?.unref();
+            let k = if want_key {
+                self.generator_key(o)?.unref()
+            } else {
+                Value::Null
+            };
+            return Ok(Some((k, v, None)));
+        }
         if pos > 0 {
             self.call_method(o, b"next", &[])?;
         }
@@ -722,6 +751,20 @@ impl Interp {
                     let name = self.member_name(&func, base, name)?;
                     let holder = self.prop_holder(&o, &name)?;
                     let name = self.prop_storage_key(&holder, &name);
+                    // A native class's computed property (`$xml->item[0] = …`)
+                    // is fetched through its hook; the write-back hands the
+                    // same object back to the class, which knows to ignore it.
+                    let class = self.class_of(&holder).clone();
+                    if class.prop(&name).is_none() {
+                        if let Some(np) = class.native_props {
+                            if let Some(r) = (np.get)(self, &holder, &name) {
+                                let v = r?;
+                                self.set(base, dst, v);
+                                pc += 1;
+                                continue;
+                            }
+                        }
+                    }
                     self.check_prop_access(holder.class_id(), &name)?;
                     self.check_indirect_modify(&holder, &name)?;
                     // Take the property value out (or share its cell) so the
@@ -890,14 +933,28 @@ impl Interp {
                 Op::IterInit { it, src, by_ref } => {
                     let state = if by_ref {
                         match self.rd(base, src) {
-                            Value::Array(_) | Value::Null | Value::Uninit => {
+                            Value::Array(_) => {
                                 let cell = self.make_ref(base, src);
-                                cell.update(|v| {
-                                    if matches!(v, Value::Null | Value::Uninit) {
-                                        *v = Value::empty_array();
-                                    }
-                                });
                                 IterState::ByRef { cell, pos: 0 }
+                            }
+                            // php fetches the place for writing (so a missing
+                            // element or property now exists as null) and then
+                            // refuses to iterate it.
+                            Value::Null | Value::Uninit => {
+                                self.warn_if_undefined(&func, base, src)?;
+                                self.warn(
+                                    "foreach() argument must be of type array|object, null given",
+                                )?;
+                                if self.raw(base, src).deref().is_uninit() {
+                                    // A plain variable stays undefined.
+                                } else if matches!(self.raw(base, src), Value::Ref(_))
+                                    && !func.f.var_names.iter().any(|(_, r)| *r == src)
+                                {
+                                    // A by-reference fetch of an element or
+                                    // property: the temporary's grip is released.
+                                    self.set(base, src, Value::Null);
+                                }
+                                IterState::Empty
                             }
                             Value::Object(o) => self.object_iter_state(&o, true)?,
                             v => {
@@ -2334,7 +2391,7 @@ impl Interp {
         }
         matches!(
             self.classes[m.decl as usize].lname.as_ref(),
-            b"arrayobject" | b"arrayiterator" | b"weakmap"
+            b"arrayobject" | b"arrayiterator" | b"weakmap" | b"simplexmlelement"
         )
     }
 

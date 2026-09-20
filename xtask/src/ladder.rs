@@ -126,6 +126,11 @@ pub struct FixtureMeta {
     /// every rung that does not name its own.
     #[serde(default)]
     pub allowlist: Option<String>,
+    /// Entries of the fixture's `var/` that the working copy keeps (`var/`
+    /// otherwise starts empty): build products the pages need that no rung
+    /// command produces, such as a compiled stylesheet (`sass`).
+    #[serde(default)]
+    pub var_keep: Vec<String>,
 }
 
 /// One `[[rung]]`.
@@ -819,8 +824,9 @@ impl Report {
 
 /// Create the fresh working copy `dst` of the fixture `src`: every entry is
 /// copied except `vendor/` (hard-linked file by file, copied where linking
-/// fails), `var/` (created empty), `node_modules/` and `.git/` (skipped).
-pub fn prepare_workdir(src: &Path, dst: &Path) -> io::Result<()> {
+/// fails), `var/` (created empty but for `var_keep`), `node_modules/` and
+/// `.git/` (skipped).
+pub fn prepare_workdir(src: &Path, dst: &Path, var_keep: &[String]) -> io::Result<()> {
     if dst.exists() {
         std::fs::remove_dir_all(dst)?;
     }
@@ -836,7 +842,15 @@ pub fn prepare_workdir(src: &Path, dst: &Path) -> io::Result<()> {
         }
         match name_str.as_ref() {
             "vendor" => link_tree(&from, &to)?,
-            "var" => std::fs::create_dir_all(&to)?,
+            "var" => {
+                std::fs::create_dir_all(&to)?;
+                for keep in var_keep {
+                    let kept = from.join(keep);
+                    if kept.exists() {
+                        copy_tree(&kept, &to.join(keep))?;
+                    }
+                }
+            }
             _ => copy_tree(&from, &to)?,
         }
     }
@@ -1329,7 +1343,7 @@ impl Runner {
         let mut runs = SideRuns { php: None, rphp: None };
         let mut needles: Vec<Vec<u8>> = Vec::new();
         for &side in &sides {
-            if let Err(e) = prepare_workdir(&fx.dir, &work) {
+            if let Err(e) = prepare_workdir(&fx.dir, &work, &fx.file.fixture.var_keep) {
                 let msg = format!("cannot create working copy {}: {e}", work.display());
                 return self.finish(rep.error(msg), &rung_dir, &sides, start);
             }
@@ -1478,7 +1492,7 @@ impl Runner {
         let mut runs = SideRuns { php: None, rphp: None };
         let mut needles: Vec<Vec<u8>> = Vec::new();
         for &side in &sides {
-            if let Err(e) = prepare_workdir(&fx.dir, &work) {
+            if let Err(e) = prepare_workdir(&fx.dir, &work, &fx.file.fixture.var_keep) {
                 let msg = format!("cannot create working copy {}: {e}", work.display());
                 return self.finish(rep.error(msg), &rung_dir, &sides, start);
             }
@@ -2231,7 +2245,7 @@ commands = [
         let fx = Fixture {
             dir: PathBuf::from("/nonexistent"),
             file: LadderFile {
-                fixture: FixtureMeta { name: "x".into(), setup: None, php_min: None, allowlist: None },
+                fixture: FixtureMeta { name: "x".into(), setup: None, php_min: None, allowlist: None, var_keep: Vec::new() },
                 rung: vec![],
             },
         };

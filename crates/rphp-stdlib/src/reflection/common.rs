@@ -86,7 +86,9 @@ pub(crate) struct FnState {
     /// The function or method.
     pub target: FnTarget,
     /// The receiver a `ReflectionMethod` over a closure keeps (unused for the
-    /// other targets).
+    /// other targets; `getClosureThis()` reads it once the closure target
+    /// carries one).
+    #[allow(dead_code)]
     pub this: Option<Object>,
 }
 

@@ -425,6 +425,7 @@ impl Interp {
                     Some(t) => PropDefault::Thunk(unit.func_base + t),
                     None => PropDefault::Value(c.value.clone().unwrap_or(Value::Null)),
                 },
+                deprecated: None,
             })
             .collect();
         let enum_cases = decl

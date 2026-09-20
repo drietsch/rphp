@@ -1,0 +1,26 @@
+# Divergence allowlist for the L8-demo fixture (ADR-034: closed set of
+# categories, strict; see L1-skeleton/ladder/divergences.toml for the format).
+
+[[allow]]
+snippet   = "L8/bin/console about*"
+category  = "platform-value"
+reason    = "End of maintenance / End of life print `(in +N days)` relative to today's date"
+normalize = 'regex:(?m)^(\s{2}End of (?:maintenance|life)\s+\S+ )\([^)]*\)\s*$ => $1(%WHEN%)'
+
+[[allow]]
+snippet   = "L8/bin/console about*"
+category  = "platform-value"
+reason    = "Cache/Build/Share/Log directory lines print the directory size, which counts .meta/log files that are not artifacts of the rung"
+normalize = 'regex:(?m)^(\s{2}(?:Cache|Build|Share|Log) directory\s+\S+ )\([^)]*\)\s*$ => $1(%SIZE%)'
+
+[[allow]]
+snippet   = "L8/bin/console about*"
+category  = "platform-value"
+reason    = "Timezone prints the current timestamp next to the zone name"
+normalize = 'regex:(?m)^(\s{2}Timezone\s+\S+ )\([^)]*\)\s*$ => $1(%NOW%)'
+
+[[allow]]
+snippet   = "L8/bin/console about*"
+category  = "platform-value"
+reason    = "OPcache/APCu/Xdebug/Intl locale describe the host php build's extensions, not engine behaviour"
+normalize = 'drop-lines:^\s{2}(?:OPcache|APCu|Xdebug|Intl locale)\s'

@@ -1088,12 +1088,25 @@ impl Interp {
         new_this: &Object,
         args: &[Value],
     ) -> NativeResult {
+        self.closure_call_named(closure, new_this, args, Vec::new())
+    }
+
+    /// [`Interp::closure_call`] with named arguments for the closure.
+    pub(crate) fn closure_call_named(
+        &mut self,
+        closure: &Closure,
+        new_this: &Object,
+        args: &[Value],
+        named: Vec<(Box<[u8]>, Value)>,
+    ) -> NativeResult {
         if self.closure_is_static(closure) {
             self.warn("Cannot bind an instance to a static closure, this will be an error in PHP 9")?;
             return Ok(Value::Null);
         }
         let bound = self.rebind_closure(closure, Some(new_this.clone()), Some(new_this.class_id()));
-        self.call_value(&bound, args)
+        self.autoload_callable(&bound)?;
+        let callable = self.resolve_callable(&bound)?;
+        self.call_resolved_named(callable, args, named)
     }
 
     /// `$closure->bindTo(…)` / `->call(…)` / `->__invoke(…)` reached through
@@ -1194,7 +1207,12 @@ impl Interp {
     /// Run `$closure->bindTo(…)` / `$closure->call(…)`: `args[0]` is the
     /// receiver staged by [`Interp::init_closure_method_call`], the rest are
     /// the sent arguments.
-    pub(crate) fn run_closure_method(&mut self, lname: &[u8], args: &[Value]) -> NativeResult {
+    pub(crate) fn run_closure_method(
+        &mut self,
+        lname: &[u8],
+        args: &[Value],
+        extra_named: Vec<(Box<[u8]>, Value)>,
+    ) -> NativeResult {
         let Some(Value::Closure(c)) = args.first().map(|v| v.deref().into_owned()) else {
             return Err(Unwind::error(
                 "internal error: Closure method trampoline without a receiver",
@@ -1231,7 +1249,7 @@ impl Interp {
                         )))
                     }
                 };
-                self.closure_call(&c, &o, &rest[1..])
+                self.closure_call_named(&c, &o, &rest[1..], extra_named)
             }
             other => Err(Unwind::error(format!(
                 "Call to undefined method Closure::{}()",

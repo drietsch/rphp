@@ -14,6 +14,7 @@ use std::rc::Rc;
 use rphp_bytecode::FnFlags;
 use rphp_value::{Closure, Object, PhpRef, Value};
 
+use crate::native_args::NamedFault;
 use crate::class::{MethodBody, MethodDef};
 use crate::frame::{CallTarget, Frame, FrameKind, PendingCall, RetTarget};
 use crate::registry::{Ctx, NativeId, NativeResult, Unwind};
@@ -259,6 +260,7 @@ impl Interp {
             silence_base: self.silence,
             strict,
             native: None,
+            ref_cells: Vec::new(),
             include_kind: None,
             iters: Vec::new(),
             generator: None,
@@ -356,38 +358,19 @@ impl Interp {
     ) -> NativeResult {
         let f = self.natives[id.0 as usize];
         let mut args: Vec<Value> = self.stack.drain(args_base..args_base + argc).collect();
-        for (name, v) in named {
-            match f.params.iter().position(|p| p.as_bytes() == name.as_ref()) {
-                Some(p) => {
-                    if p < args.len() {
-                        if !args[p].is_uninit() {
-                            return Err(Unwind::error(format!(
-                                "Named parameter ${} overwrites previous argument",
-                                String::from_utf8_lossy(&name)
-                            )));
-                        }
-                        args[p] = v;
-                    } else {
-                        while args.len() < p {
-                            args.push(Value::Uninit);
-                        }
-                        args.push(v);
-                    }
-                }
-                None => {
-                    return Err(Unwind::error(format!(
-                        "Unknown named parameter ${}",
-                        String::from_utf8_lossy(&name)
-                    )))
-                }
+        match self.bind_native_named(f.name, &mut args, named) {
+            Ok(extra) => self.call_native_named(id, &mut args, extra),
+            Err(NamedFault::Outside(u)) => Err(u),
+            Err(NamedFault::Inside(u, extra)) => {
+                let silence = self.silence;
+                let mut frame = Frame::native(id, uninit_as_null(&args), silence);
+                frame.extra_named = extra;
+                self.frames.push(frame);
+                let r = self.locate_fault(Err(u));
+                self.frames.pop();
+                r
             }
         }
-        for a in &mut args {
-            if a.is_uninit() {
-                *a = Value::Null;
-            }
-        }
-        self.call_native(id, &mut args)
     }
 
     /// Invoke a registered native with already-evaluated arguments: arity is
@@ -398,6 +381,18 @@ impl Interp {
     /// is flushed. `args` is `&mut` so a by-reference native's writes are
     /// visible to the caller when no cell was passed.
     pub fn call_native(&mut self, id: NativeId, args: &mut [Value]) -> NativeResult {
+        self.call_native_named(id, args, Vec::new())
+    }
+
+    /// [`Interp::call_native`] with the unknown named arguments a
+    /// pass-through native forwards (`call_user_func($f, x: 1)`), kept on
+    /// its frame for [`Interp::take_extra_named`] and the trace.
+    pub(crate) fn call_native_named(
+        &mut self,
+        id: NativeId,
+        args: &mut [Value],
+        extra_named: Vec<(Box<[u8]>, Value)>,
+    ) -> NativeResult {
         let f = self.natives[id.0 as usize];
         if !f.accepts(args.len()) {
             return Err(Unwind::argument_count_error(f.arity_message(args.len())));
@@ -413,7 +408,10 @@ impl Interp {
             }
         }
         let silence = self.silence;
-        self.frames.push(Frame::native(id, args.to_vec(), silence));
+        let mut frame = Frame::native(id, args.to_vec(), silence);
+        frame.ref_cells = cells.clone();
+        frame.extra_named = extra_named;
+        self.frames.push(frame);
         let r = {
             let mut ctx = Ctx(self);
             (f.handler)(&mut ctx, args)
@@ -501,58 +499,67 @@ impl Interp {
             return self.run_call_trampoline(m, this, args, named);
         }
         if Interp::is_closure_method(&m) {
-            let args: Vec<Value> = self.stack.drain(args_base..args_base + argc).collect();
-            if !named.is_empty() {
-                return Err(Unwind::error(format!(
-                    "Unknown named parameter ${}",
-                    String::from_utf8_lossy(&named[0].0)
-                )));
-            }
+            let mut args: Vec<Value> = self.stack.drain(args_base..args_base + argc).collect();
+            let display = format!("Closure::{}", String::from_utf8_lossy(&m.name));
             let lname = m.name.clone();
-            return self.run_closure_method(&lname, &args);
+            // `bindTo` binds its own names; `call` forwards the unknown ones.
+            return match self.bind_closure_method_named(&display, &mut args, named) {
+                Ok(extra) => self.run_closure_method(&lname, &args, extra),
+                Err(NamedFault::Outside(u)) => Err(u),
+                Err(NamedFault::Inside(u, extra)) => {
+                    let silence = self.silence;
+                    let mut frame = Frame::native_method(m, this, uninit_as_null(&args), silence);
+                    frame.extra_named = extra;
+                    self.frames.push(frame);
+                    let r = self.locate_fault(Err(u));
+                    self.frames.pop();
+                    r
+                }
+            };
         }
-        let MethodBody::Native(nm) = &m.body else {
+        let MethodBody::Native(_) = &m.body else {
             unreachable!("call_native_method_window on a user method")
         };
         let mut args: Vec<Value> = self.stack.drain(args_base..args_base + argc).collect();
-        for (name, v) in named {
-            match nm.params.iter().position(|p| p.as_bytes() == name.as_ref()) {
-                Some(p) => {
-                    if p < args.len() {
-                        if !args[p].is_uninit() {
-                            return Err(Unwind::error(format!(
-                                "Named parameter ${} overwrites previous argument",
-                                String::from_utf8_lossy(&name)
-                            )));
-                        }
-                        args[p] = v;
-                    } else {
-                        while args.len() < p {
-                            args.push(Value::Uninit);
-                        }
-                        args.push(v);
-                    }
-                }
-                None => {
-                    return Err(Unwind::error(format!(
-                        "Unknown named parameter ${}",
-                        String::from_utf8_lossy(&name)
-                    )))
-                }
+        if named.is_empty() {
+            return self.call_native_method(m, this, &mut args);
+        }
+        let display = format!(
+            "{}::{}",
+            self.classes[m.decl as usize].name_str(),
+            String::from_utf8_lossy(&m.name)
+        );
+        match self.bind_native_named(&display, &mut args, named) {
+            Ok(extra) => self.call_native_method_named(m, this, &mut args, extra),
+            Err(NamedFault::Outside(u)) => Err(u),
+            Err(NamedFault::Inside(u, extra)) => {
+                let silence = self.silence;
+                let mut frame = Frame::native_method(m, this, uninit_as_null(&args), silence);
+                frame.extra_named = extra;
+                self.frames.push(frame);
+                let r = self.locate_fault(Err(u));
+                self.frames.pop();
+                r
             }
         }
-        for a in &mut args {
-            if a.is_uninit() {
-                *a = Value::Null;
-            }
-        }
-        self.call_native_method(m, this, &mut args)
     }
 
     /// Invoke a native method with already-evaluated arguments: arity check,
     /// a native frame (`Class->method` in traces), by-reference write-back,
     /// output flush — the method counterpart of [`Interp::call_native`].
     pub fn call_native_method(&mut self, m: Rc<MethodDef>, this: Option<Object>, args: &mut [Value]) -> NativeResult {
+        self.call_native_method_named(m, this, args, Vec::new())
+    }
+
+    /// [`Interp::call_native_method`] with the unknown named arguments a
+    /// pass-through method forwards (`$closure->call($o, x: 1)`).
+    pub(crate) fn call_native_method_named(
+        &mut self,
+        m: Rc<MethodDef>,
+        this: Option<Object>,
+        args: &mut [Value],
+        extra_named: Vec<(Box<[u8]>, Value)>,
+    ) -> NativeResult {
         // The engine trampolines take the whole window; see
         // [`Interp::call_native_method_window`].
         if Interp::is_magic_trampoline(&m) {
@@ -561,7 +568,7 @@ impl Interp {
         }
         if Interp::is_closure_method(&m) {
             let lname = m.name.clone();
-            return self.run_closure_method(&lname, args);
+            return self.run_closure_method(&lname, args, extra_named);
         }
         let MethodBody::Native(nm) = &m.body else {
             return Err(Unwind::error("internal error: call_native_method on a user method"));
@@ -593,7 +600,10 @@ impl Interp {
             }
         }
         let silence = self.silence;
-        self.frames.push(Frame::native_method(m, this.clone(), args.to_vec(), silence));
+        let mut frame = Frame::native_method(m, this.clone(), args.to_vec(), silence);
+        frame.ref_cells = cells.clone();
+        frame.extra_named = extra_named;
+        self.frames.push(frame);
         let r = {
             let mut ctx = Ctx(self);
             (nm.handler)(&mut ctx, this.as_ref(), args)
@@ -612,6 +622,13 @@ impl Interp {
     /// the engine's own dispatch for `__toString`, `__destruct`, …). The
     /// method must exist (`Error: Call to undefined method` otherwise).
     pub fn call_method(&mut self, obj: &Object, name: &[u8], args: &[Value]) -> NativeResult {
+        self.call_method_raw(obj, name, args).map(Value::unref)
+    }
+
+    /// [`Interp::call_method`] keeping a by-reference return (`function
+    /// &offsetGet()`) as the cell it returned, for the one caller that binds
+    /// to it (a nested write through `ArrayAccess`, `exec.rs`).
+    pub(crate) fn call_method_raw(&mut self, obj: &Object, name: &[u8], args: &[Value]) -> NativeResult {
         let Some(m) = self.resolve_method(obj.class_id(), name) else {
             return Err(Unwind::error(format!(
                 "Call to undefined method {}::{}()",
@@ -664,6 +681,19 @@ impl Interp {
         self.call_resolved(callable, args)
     }
 
+    /// [`Interp::call_value`] with named arguments after the positional
+    /// ones (a pass-through native forwarding what it was called with).
+    pub fn call_value_named(
+        &mut self,
+        callee: &Value,
+        args: &[Value],
+        named: Vec<(Box<[u8]>, Value)>,
+    ) -> NativeResult {
+        self.autoload_callable(callee)?;
+        let callable = self.resolve_callable(callee)?;
+        self.call_resolved_named(callable, args, named)
+    }
+
     /// Invoke an already-resolved callable.
     pub fn call_resolved(&mut self, callable: Callable, args: &[Value]) -> NativeResult {
         self.call_resolved_named(callable, args, Vec::new())
@@ -698,7 +728,11 @@ impl Interp {
                 scope,
                 static_class,
                 closure,
-            } => self.call_user_func_named(func, this, scope, static_class, closure, args, named),
+            } => self
+                .call_user_func_named(func, this, scope, static_class, closure, args, named)
+                // A native sees the value a by-reference return refers to,
+                // never the cell (php derefs a by-value use of `&f()`).
+                .map(Value::unref),
         }
     }
 
@@ -777,4 +811,12 @@ impl Interp {
         let func = self.funcs[fid as usize].clone();
         self.call_user_func(func, this, scope, scope, None, &[])
     }
+}
+
+/// A call window as a trace shows it: the positions a call skipped are
+/// `NULL`.
+fn uninit_as_null(args: &[Value]) -> Vec<Value> {
+    args.iter()
+        .map(|a| if a.is_uninit() { Value::Null } else { a.clone() })
+        .collect()
 }

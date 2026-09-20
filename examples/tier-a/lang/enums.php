@@ -103,3 +103,7 @@ try {
 } catch (Error $e) {
     echo get_class($e), ': ', $e->getMessage(), "\n";
 }
+
+// An enum is a class to `class_exists()`; not to `interface_exists()`.
+enum Probe {}
+var_dump(class_exists('Probe', false), enum_exists('Probe', false), interface_exists('Probe', false));

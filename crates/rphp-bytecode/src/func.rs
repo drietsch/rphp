@@ -199,6 +199,12 @@ pub struct ParamDef {
     /// Default value; `None` for a required parameter. The runtime evaluates it
     /// via [`Op::RecvInit`]; Reflection reads it on demand.
     pub default: Option<InitRef>,
+    /// When the default is a bare constant fetch, its name as php's
+    /// `ReflectionParameter::getDefaultValueConstantName()` spells it: the
+    /// namespaced candidate of an unqualified name (`N\PHP_INT_MAX`), a
+    /// class constant with the class resolved (`N\C::X`), `self::X` /
+    /// `parent::X` as written.
+    pub default_const: Option<Box<[u8]>>,
     /// Declared type, if any.
     pub ty: Option<TypeDecl>,
     /// Constructor property promotion, if any.
@@ -582,6 +588,7 @@ mod tests {
             by_ref: false,
             variadic,
             default,
+            default_const: None,
             ty: None,
             promoted: None,
             attrs: Vec::new(),

@@ -142,6 +142,9 @@ pub struct Frame {
     pub strict: bool,
     /// For native frames: the native and the arguments it was called with.
     pub native: Option<(NativeTarget, Vec<Value>)>,
+    /// The cells behind a native's by-reference arguments (position,
+    /// cell): what `bindParam()`-style natives keep hold of.
+    pub ref_cells: Vec<(usize, PhpRef)>,
     /// For `Include` frames: which keyword.
     pub include_kind: Option<IncludeKind>,
     /// Live `foreach` iterators by iterator register.
@@ -175,6 +178,7 @@ impl Frame {
             silence_base,
             strict: false,
             native: Some((NativeTarget::Func(id), args)),
+            ref_cells: Vec::new(),
             include_kind: None,
             iters: Vec::new(),
             generator: None,
@@ -439,6 +443,11 @@ impl Interp {
                         for a in self.frame_args(callee) {
                             args.push(a);
                         }
+                        // Unknown named arguments a variadic collected keep
+                        // their names (`f(1, k: 3)` in the rendering).
+                        for (k, v) in &callee.extra_named {
+                            args.set(ArrayKey::str(k), v.clone());
+                        }
                     }
                 }
                 entry.set(ArrayKey::str(b"args"), Value::Array(args));
@@ -485,7 +494,13 @@ impl Interp {
                 name.push_str(&f.to_php_string());
             }
             let args: Vec<String> = match get(b"args") {
-                Some(Value::Array(a)) => a.iter().map(|(_, v)| trace_arg(self, v)).collect(),
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .map(|(k, v)| match k {
+                        ArrayKey::Str(k) => format!("{}: {}", String::from_utf8_lossy(k), trace_arg(self, v)),
+                        ArrayKey::Int(_) => trace_arg(self, v),
+                    })
+                    .collect(),
                 _ => Vec::new(),
             };
             out.push_str(&format!("#{n} {site}: {name}({})\n", args.join(", ")));

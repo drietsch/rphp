@@ -16,8 +16,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use rphp_ast::v2::{
-    Builtin, Closure, Expr, Hook, HookBody, HookKind, Param, Stmt, TempId, Type, TypeKind,
-    Visibility as AstVis,
+    Builtin, ClassRef as AstClassRef, Closure, ConstSel, Expr, Hook, HookBody, HookKind, Param,
+    Resolved, Stmt, TempId, Type, TypeKind, Visibility as AstVis,
 };
 use rphp_bytecode::{
     BuiltinType, CaptureDesc, Class as BcClass, ClassId, CodeAddr, Const, FnFlags, FuncId, Function,
@@ -393,6 +393,7 @@ impl<'a> FnCompiler<'a> {
             Op::Jmp { target: t }
             | Op::JmpIfTrue { target: t, .. }
             | Op::JmpIfFalse { target: t, .. }
+            | Op::JmpUnlessArgByRef { target: t, .. }
             | Op::IterNext { target: t, .. }
             | Op::BindStaticOrJmp { target: t, .. }
             | Op::Switch { default: t, .. } => *t = target,
@@ -705,6 +706,7 @@ impl<'a> FnCompiler<'a> {
                 by_ref: p.by_ref,
                 variadic: p.variadic,
                 default,
+                default_const: p.default.as_ref().and_then(|e| self.default_const_name(e)),
                 ty: p.ty.as_ref().map(|t| self.lower_type(t)),
                 promoted: promotion,
                 attrs: self.compile_attrs(&p.attrs, AttrTarget::Parameter),
@@ -784,6 +786,41 @@ impl<'a> FnCompiler<'a> {
             return InitRef::Const(k);
         }
         InitRef::Thunk(self.compile_thunk(e))
+    }
+
+    /// The name php reports for a default that is one constant fetch
+    /// (`ReflectionParameter::getDefaultValueConstantName()`); `None` for
+    /// any other expression.
+    fn default_const_name(&self, e: &Expr) -> Option<Box<[u8]>> {
+        let interner = self.mx.interner;
+        match e {
+            Expr::Const(name) => {
+                let id = match name.resolved {
+                    Some(Resolved::Const { ns_key, global_key }) => ns_key.unwrap_or(global_key),
+                    _ => name.text,
+                };
+                Some(interner.resolve(id).into())
+            }
+            Expr::ClassConst {
+                class,
+                name: ConstSel::Ident(member, _),
+                ..
+            } => {
+                let mut out: Vec<u8> = match class {
+                    AstClassRef::Named(n) => match n.resolved {
+                        Some(Resolved::Class { fqn, .. }) => interner.resolve(fqn).to_vec(),
+                        _ => interner.resolve(n.text).strip_prefix(b"\\").unwrap_or(interner.resolve(n.text)).to_vec(),
+                    },
+                    AstClassRef::SelfKw(_) => b"self".to_vec(),
+                    AstClassRef::Parent(_) => b"parent".to_vec(),
+                    AstClassRef::Static(_) | AstClassRef::Expr(_) => return None,
+                };
+                out.extend_from_slice(b"::");
+                out.extend_from_slice(interner.resolve(*member));
+                Some(out.into())
+            }
+            _ => None,
+        }
     }
 
     /// Compile `e` as a zero-argument function returning its value.

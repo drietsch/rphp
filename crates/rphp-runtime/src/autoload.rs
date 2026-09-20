@@ -26,11 +26,24 @@ impl Interp {
     /// Returns `None` when no loader declared it. Errors thrown by a loader
     /// propagate (php lets an autoloader throw).
     pub fn lookup_class(&mut self, name: &[u8]) -> Result<Option<u32>, Unwind> {
+        // php (`zend_lookup_class_ex`) never autoloads an empty name or one
+        // with characters a class name cannot contain (`'a b'`); the
+        // leading backslash is stripped after that check, so `'\\'` does
+        // reach the loaders as `''`.
+        if name.is_empty() {
+            return Ok(None);
+        }
         let name = name.strip_prefix(b"\\").unwrap_or(name);
         if let Some(id) = self.class_by_name(name) {
             return Ok(Some(id));
         }
         if self.autoloaders.is_empty() {
+            return Ok(None);
+        }
+        if !name
+            .iter()
+            .all(|&c| c.is_ascii_alphanumeric() || c == b'_' || c == b'\\' || c >= 0x80)
+        {
             return Ok(None);
         }
         let key: Box<[u8]> = name.to_ascii_lowercase().into();

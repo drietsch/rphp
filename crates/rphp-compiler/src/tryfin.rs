@@ -263,10 +263,28 @@ impl FnCompiler<'_> {
     /// `return [expr];` honouring enclosing `finally` bodies.
     pub(crate) fn compile_return(&mut self, value: Option<&Expr>) {
         let mark = self.temp_top;
-        let src = value.map(|e| self.compile_expr(e));
         // In a generator `return $v` does not return a value to the caller: it
         // records `$v` for `getReturn()` and finishes the generator (E8).
         let is_generator = self.flags.contains(rphp_bytecode::FnFlags::GENERATOR);
+        // `function &f()` returning a place hands the caller its cell (a
+        // non-place returns by value, as php does after its notice); a
+        // `finally` on the way keeps the by-value path.
+        let returns_ref = self.flags.contains(rphp_bytecode::FnFlags::RETURNS_REF)
+            && !is_generator
+            && self.finallys.is_empty();
+        if let Some(e) = value.filter(|e| returns_ref && self.is_ref_place(e)) {
+            if let Some(var) = self.compile_ref_source(e) {
+                self.emit(Op::RetRef { var });
+                self.free_to(mark);
+                return;
+            }
+        }
+        let src = value.map(|e| self.compile_expr(e));
+        if returns_ref {
+            self.emit(Op::RetRefTemp { src });
+            self.free_to(mark);
+            return;
+        }
         if self.finallys.is_empty() {
             if is_generator {
                 self.emit(Op::GenReturn { src });

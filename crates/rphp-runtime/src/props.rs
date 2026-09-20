@@ -421,7 +421,7 @@ impl Interp {
     }
 
     /// `$obj->name = v` with php's diagnostics.
-    pub(crate) fn assign_prop(&mut self, obj: &Value, name: &[u8], v: Value) -> Result<(), Unwind> {
+    pub fn assign_prop(&mut self, obj: &Value, name: &[u8], v: Value) -> Result<(), Unwind> {
         match &*obj.deref() {
             Value::Object(o) => {
                 let o = self.lazy_target(&o.clone(), Some(name))?;
@@ -545,6 +545,31 @@ impl Interp {
     }
 
     /// The object in a register for a property write, or php's `Error`.
+    /// php's `zend_readonly_property_indirect_modification_error`: a
+    /// readonly property fetched for writing, by reference or for `unset`
+    /// is refused whatever the scope and whether or not it is initialized —
+    /// unless it holds an object, which is a handle (the object changes,
+    /// the property does not). A `__clone` body may re-initialize.
+    pub(crate) fn check_indirect_modify(&self, o: &Object, name: &[u8]) -> Result<(), Unwind> {
+        let class = self.class_of(o).clone();
+        let scope = self.prop_scope();
+        let key = self.prop_key(&class, name, scope);
+        let Some(p) = class.prop(&key) else {
+            return Ok(());
+        };
+        if !p.readonly || crate::objects::in_clone_window(o.id()) {
+            return Ok(());
+        }
+        if o.get(&key).is_some_and(|v| matches!(&*v.deref(), Value::Object(_))) {
+            return Ok(());
+        }
+        Err(Unwind::error(format!(
+            "Cannot indirectly modify readonly property {}::${}",
+            self.classes[p.decl as usize].name_str(),
+            String::from_utf8_lossy(name)
+        )))
+    }
+
     pub(crate) fn prop_holder(&mut self, obj: &Value, name: &[u8]) -> Result<Object, Unwind> {
         match &*obj.deref() {
             Value::Object(o) => self.lazy_target(&o.clone(), Some(name)),
@@ -785,6 +810,14 @@ impl Interp {
     /// that runs bytecode (a native in between does not change the scope).
     fn prop_scope(&self) -> Option<u32> {
         self.current_user_frame().and_then(|f| f.scope)
+    }
+
+    /// The storage key `$o->name` resolves to from the calling scope: an
+    /// ancestor's private property a subclass re-declared is the mangled
+    /// slot when the ancestor's own method is the one writing.
+    pub(crate) fn prop_storage_key(&self, o: &Object, name: &[u8]) -> Vec<u8> {
+        let class = self.class_of(o);
+        self.prop_key(class, name, self.prop_scope()).into_owned()
     }
 
     /// The storage key `name` resolves to from `scope`.

@@ -61,6 +61,7 @@ mod spl_iterators;
 mod string2;
 mod strings;
 mod types;
+mod syslog;
 mod uniqid;
 mod url;
 mod var;
@@ -112,6 +113,7 @@ const MODULES: &[&[NativeFn]] = &[
     html::FUNCTIONS,
     base64::FUNCTIONS,
     uniqid::FUNCTIONS,
+    syslog::FUNCTIONS,
     random::FUNCTIONS,
     mbstring::FUNCTIONS,
     iconv::FUNCTIONS,
@@ -123,6 +125,7 @@ const MODULES: &[&[NativeFn]] = &[
 
 /// Register every module's functions and constants into an interpreter.
 pub use url::{parse_query, register_variable};
+pub use weak::new_internal_iterator;
 
 pub fn register(r: &mut Registry) {
     for m in MODULES {
@@ -178,6 +181,7 @@ pub fn register(r: &mut Registry) {
     password::register_constants(r);
     filestat::register_constants(r);
     dir::register_constants(r);
+    syslog::register_constants(r);
 }
 
 /// Every native this crate provides (for tooling: coverage, `xtask missing`).

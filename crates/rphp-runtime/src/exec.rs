@@ -561,13 +561,24 @@ impl Interp {
                     // Read the element without keeping a handle on the
                     // container: a live clone would force a copy-on-write of
                     // the whole array in the store below.
-                    let cur = {
-                        let container = self.rd(base, arr);
-                        match &container {
-                            Value::Null | Value::Uninit => Value::Null,
-                            _ => self.array_get(&container, &k)?,
+                    let container = self.rd(base, arr);
+                    // `$o[$k] .= $v` on `ArrayAccess` is php's
+                    // `offsetGet()`, the operation, then `offsetSet()`.
+                    if let Value::Object(o) = &*container.deref() {
+                        if self.is_array_access(o) {
+                            let o = o.clone();
+                            let cur = self.offset_get(&o, &k)?;
+                            let r = self.binary_op(op, &cur, &rhs)?;
+                            self.offset_set(&o, Some(&k), r)?;
+                            pc += 1;
+                            continue;
                         }
+                    }
+                    let cur = match &container {
+                        Value::Null | Value::Uninit => Value::Null,
+                        _ => self.array_get(&container, &k)?,
                     };
+                    drop(container);
                     let r = self.binary_op(op, &cur, &rhs)?;
                     self.array_set(base, arr, Some(key), r)?;
                 }
@@ -598,6 +609,18 @@ impl Interp {
                         Value::Object(o) if self.is_array_access(o) => {
                             let o = o.clone();
                             self.offset_get(&o, &k)?
+                        }
+                        _ => self.array_get(&container, &k)?,
+                    };
+                    self.set(base, dst, v);
+                }
+                Op::FetchElemRW { dst, base: b, key } => {
+                    let container = self.rd(base, b);
+                    let k = self.rd(base, key);
+                    let v = match &*container.deref() {
+                        Value::Object(o) if self.is_array_access(o) => {
+                            let o = o.clone();
+                            self.fetch_dim_w_object(&o, k, false)?
                         }
                         _ => self.array_get(&container, &k)?,
                     };
@@ -663,16 +686,44 @@ impl Interp {
                         _ => self.array_set(base, arr, None, v)?,
                     }
                 }
+                Op::WriteBackElem { arr, key, val } => {
+                    let v = self.rd(base, val);
+                    let container = self.rd(base, arr);
+                    match &*container.deref() {
+                        Value::Object(o) if self.is_array_access(o) => {
+                            if self.has_dim_storage(o) {
+                                let o = o.clone();
+                                let k = key.map(|k| self.rd(base, k));
+                                self.offset_set(&o, k.as_ref(), v)?;
+                            }
+                            // The fetched temporary (or the cell a
+                            // by-reference `offsetGet()` handed out) is done
+                            // with: release it, as php does at the end of
+                            // the statement.
+                            self.set(base, val, Value::Null);
+                        }
+                        _ => self.array_set(base, arr, key, v)?,
+                    }
+                }
                 Op::FetchElemW { dst, arr, key } => {
                     let k = key.map(|k| self.rd(base, k));
-                    let taken = self.fetch_elem_w(base, arr, k.as_ref())?;
+                    let container = self.rd(base, arr);
+                    let taken = match &*container.deref() {
+                        Value::Object(o) if self.is_array_access(o) => {
+                            let o = o.clone();
+                            self.fetch_dim_w_object(&o, k.unwrap_or(Value::Null), true)?
+                        }
+                        _ => self.fetch_elem_w(base, arr, k.as_ref())?,
+                    };
                     self.set(base, dst, taken);
                 }
                 Op::FetchPropW { dst, obj, name } => {
                     let o = self.rd(base, obj);
                     let name = self.member_name(&func, base, name)?;
                     let holder = self.prop_holder(&o, &name)?;
+                    let name = self.prop_storage_key(&holder, &name);
                     self.check_prop_access(holder.class_id(), &name)?;
+                    self.check_indirect_modify(&holder, &name)?;
                     // Take the property value out (or share its cell) so the
                     // nested write mutates in place; the write-back restores it.
                     let taken = holder.with_data_mut(|d| match d.get_mut(&name) {
@@ -693,7 +744,9 @@ impl Interp {
                     let o = self.rd(base, obj);
                     let name = self.member_name(&func, base, name)?;
                     let holder = self.prop_holder(&o, &name)?;
+                    let name = self.prop_storage_key(&holder, &name);
                     self.check_prop_access(holder.class_id(), &name)?;
+                    self.check_indirect_modify(&holder, &name)?;
                     if holder.get(&name).is_none() {
                         self.dynamic_prop_notice(&holder, &name)?;
                     }
@@ -1004,6 +1057,12 @@ impl Interp {
                         continue;
                     }
                 }
+                Op::JmpUnlessArgByRef { pos, target } => {
+                    if !self.pending_by_ref(fi, pos as usize) {
+                        pc = target as usize;
+                        continue;
+                    }
+                }
                 Op::Switch {
                     src,
                     table,
@@ -1240,7 +1299,9 @@ impl Interp {
                     let name = self.member_name(&func, base, name)?;
                     let v = if self.pending_by_ref(fi, pos as usize) {
                         let holder = self.prop_holder(&o, &name)?;
+                        let name = self.prop_storage_key(&holder, &name);
                         self.check_prop_access(holder.class_id(), &name)?;
+                        self.check_indirect_modify(&holder, &name)?;
                         if holder.get(&name).is_none() {
                             self.dynamic_prop_notice(&holder, &name)?;
                         }
@@ -1290,6 +1351,32 @@ impl Interp {
                                 .iter()
                                 .find(|p| p.name.as_ref() == nm.as_ref())
                                 .is_some_and(|p| p.by_ref),
+                            // A native's names come from the arginfo table,
+                            // its by-reference mask from its row.
+                            CallTarget::Native(id) => {
+                                let f = self.natives[id.0 as usize];
+                                crate::native_args::params_of(&f.name.to_ascii_lowercase())
+                                    .and_then(|ps| ps.iter().position(|(n, _, _)| n.as_bytes() == nm.as_ref()))
+                                    .is_some_and(|i| f.is_by_ref(i))
+                            }
+                            CallTarget::NativeMethod(m) => match &m.body {
+                                MethodBody::Native(nm_def) => {
+                                    let key = format!(
+                                        "{}::{}",
+                                        self.classes[m.decl as usize].name_str().to_ascii_lowercase(),
+                                        String::from_utf8_lossy(&m.name).to_ascii_lowercase()
+                                    );
+                                    crate::native_args::params_of(&key)
+                                        .and_then(|ps| ps.iter().position(|(n, _, _)| n.as_bytes() == nm.as_ref()))
+                                        .is_some_and(|i| nm_def.is_by_ref(i))
+                                }
+                                MethodBody::User(f) => f
+                                    .f
+                                    .params
+                                    .iter()
+                                    .find(|p| p.name.as_ref() == nm.as_ref())
+                                    .is_some_and(|p| p.by_ref),
+                            },
                             _ => false,
                         }
                     };
@@ -1324,6 +1411,15 @@ impl Interp {
                                 ..
                             } = pending;
                             let r = self.call_native_method_window(m, this, args_base, argc, named)?;
+                            // `Fiber::suspend()`: the chain from the fiber's
+                            // boundary up to this frame leaves the stacks,
+                            // and the loop that `start()`/`resume()` entered
+                            // ends here (`fiber.rs`). The resumed value lands
+                            // in `dst` when the chain comes back.
+                            if let Some(id) = self.fiber_suspending.take() {
+                                self.park_fiber(id, dst);
+                                return Ok(Switch::Done(Value::Null));
+                            }
                             self.stack[abs] = match new_obj {
                                 Some(obj) => Value::Object(obj),
                                 None => r,
@@ -1399,14 +1495,27 @@ impl Interp {
                     return self.do_return(v, stop_depth);
                 }
                 Op::RetRef { var } => {
-                    let v = self.rd(base, var);
+                    // `function &f() { return $place; }`: the caller receives
+                    // the cell itself, which `$x = &f()` binds to and a
+                    // by-value use derefs. The declared type is checked on
+                    // what the cell holds; a coercion never lands in it.
+                    let cell = self.make_ref(base, var);
+                    if func.f.ret_ty.is_some() {
+                        let strict = self.frames[fi].strict;
+                        self.verify_return(&func, Some(cell.get()), strict)?;
+                    }
+                    return self.do_return(Value::Ref(cell), stop_depth);
+                }
+                Op::RetRefTemp { src } => {
+                    self.notice("Only variable references should be returned by reference")?;
+                    let v = src.map_or(Value::Null, |r| self.rd(base, r));
                     let v = if func.f.ret_ty.is_some() {
                         let strict = self.frames[fi].strict;
                         self.verify_return(&func, Some(v), strict)?
                     } else {
                         v
                     };
-                    return self.do_return(v, stop_depth);
+                    return self.do_return(Value::Ref(PhpRef::new(v)), stop_depth);
                 }
 
                 // --- prologue ---
@@ -2210,6 +2319,50 @@ impl Interp {
             self.deprecated("Automatic conversion of false to array is deprecated")?;
         }
         Ok(r.0)
+    }
+
+    /// Whether an `ArrayAccess` object's elements are real storage a nested
+    /// write reaches (php's `spl_array` / `WeakMap` dimension handlers),
+    /// as against an `offsetGet()` that hands out a temporary: the
+    /// resolved `offsetGet` is the engine's own, on one of those classes.
+    pub(crate) fn has_dim_storage(&self, o: &Object) -> bool {
+        let Some(m) = self.resolve_method(o.class_id(), b"offsetget") else {
+            return false;
+        };
+        if !matches!(m.body, MethodBody::Native(_)) {
+            return false;
+        }
+        matches!(
+            self.classes[m.decl as usize].lname.as_ref(),
+            b"arrayobject" | b"arrayiterator" | b"weakmap"
+        )
+    }
+
+    /// `$o[$k]` fetched for a nested write: the stored element when the
+    /// object has real dimension storage (the write-back stores it again;
+    /// a `W` fetch is `quiet` — php neither warns nor notices on a missing
+    /// key there — an `RW` one warns as a read would), otherwise
+    /// `offsetGet()`'s temporary with php's notice that writing into it
+    /// changes nothing.
+    fn fetch_dim_w_object(&mut self, o: &Object, key: Value, quiet: bool) -> Result<Value, Unwind> {
+        if self.has_dim_storage(o) {
+            if !quiet {
+                return self.offset_get(o, &key);
+            }
+            self.silence += 1;
+            let r = self.offset_get(o, &key);
+            self.silence -= 1;
+            return r;
+        }
+        let o = o.clone();
+        let v = self.call_method_raw(&o, b"offsetGet", std::slice::from_ref(&key))?;
+        if !matches!(v, Value::Ref(_)) {
+            self.notice(&format!(
+                "Indirect modification of overloaded element of {} has no effect",
+                self.class_of(&o).name_str()
+            ))?;
+        }
+        Ok(v)
     }
 
     /// `&$arr[$key]`: the element's reference cell (autovivified).

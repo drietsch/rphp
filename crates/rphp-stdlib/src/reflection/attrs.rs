@@ -19,7 +19,7 @@
 //! `newInstance()` asks. php evaluates them just as lazily.
 
 use rphp_runtime::{
-    nm, Callable, ClassFlags, Ctx, MethodBody, NativeResult, Registry, Unwind, Visibility,
+    nm, Callable, Ctx, MethodBody, NativeResult, Registry, Unwind, Visibility,
 };
 use rphp_value::{Array, ArrayKey, Object, Value};
 
@@ -329,31 +329,9 @@ fn new_instance(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRes
     Ok(Value::Object(obj))
 }
 
-/// `Attribute::__construct(int $flags = Attribute::TARGET_ALL)`
-fn attribute_construct(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
-    let recv = this(o)?;
-    let flags = args.first().map_or(TARGET_ALL, |v| v.deref().to_int());
-    recv.set(b"flags", Value::Int(flags));
-    Ok(Value::Null)
-}
-
-/// Register `Attribute` and `ReflectionAttribute`.
+/// Register `ReflectionAttribute` (`Attribute` itself is php-written, in
+/// the embed prelude, so it can carry its own `#[Attribute]`).
 pub(crate) fn register_classes(r: &mut Registry) {
-    r.class("Attribute")
-        .flags(ClassFlags::FINAL)
-        .prop("flags", Visibility::Public, Value::Int(TARGET_ALL))
-        .class_const("TARGET_CLASS", Value::Int(TARGET_CLASS))
-        .class_const("TARGET_FUNCTION", Value::Int(TARGET_FUNCTION))
-        .class_const("TARGET_METHOD", Value::Int(TARGET_METHOD))
-        .class_const("TARGET_PROPERTY", Value::Int(TARGET_PROPERTY))
-        .class_const("TARGET_CLASS_CONSTANT", Value::Int(TARGET_CLASS_CONSTANT))
-        .class_const("TARGET_PARAMETER", Value::Int(TARGET_PARAMETER))
-        .class_const("TARGET_CONSTANT", Value::Int(TARGET_CONSTANT))
-        .class_const("TARGET_ALL", Value::Int(TARGET_ALL))
-        .class_const("IS_REPEATABLE", Value::Int(IS_REPEATABLE))
-        .method("__construct", nm!(0, Some(1), attribute_construct))
-        .finish();
-
     r.class("ReflectionAttribute")
         .implements(&["Reflector"])
         .prop("name", Visibility::Public, Value::string(b""))

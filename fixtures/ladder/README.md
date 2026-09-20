@@ -10,6 +10,7 @@ the commands `cargo xtask ladder` runs under both `php` and `rphp`.
 | Fixture | Rungs | Source |
 |---|---|---|
 | `L1-skeleton` | L1, L3, L6a, L7 | `composer create-project symfony/skeleton` (v8.1.99 → Symfony 8.1.7) |
+| `L8-demo` | L8 | `composer create-project symfony/symfony-demo` (Symfony 8.1, Doctrine ORM over the bundled SQLite `data/database.sqlite`, Twig, security, forms, translations, profiler); `.env.dev` carries the demo's placeholder `APP_SECRET` |
 
 ## Running
 

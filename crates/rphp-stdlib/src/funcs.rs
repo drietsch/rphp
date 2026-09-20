@@ -26,7 +26,8 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
 /// `call_user_func($callable, ...$args)`: invoke `$callable` with the remaining
 /// arguments and return its result.
 pub(crate) fn call_user_func(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    ctx.call_value(&args[0], &args[1..])
+    let named = ctx.take_extra_named();
+    ctx.call_value_named(&args[0], &args[1..], named)
 }
 
 /// `call_user_func_array($callable, $args)`: invoke `$callable` with the

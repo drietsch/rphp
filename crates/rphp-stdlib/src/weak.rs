@@ -234,7 +234,7 @@ fn weakmap_get_iterator(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> N
 /// Build an `InternalIterator` over `items` from native code.
 /// [`Interp::instantiate`] is the right door: the class's `__construct` is
 /// private, exactly as in php.
-pub(crate) fn new_internal_iterator(ctx: &mut Ctx, items: Vec<(Value, Value)>) -> Object {
+pub fn new_internal_iterator(ctx: &mut Ctx, items: Vec<(Value, Value)>) -> Object {
     let cid = ctx
         .class_by_name(b"InternalIterator")
         .expect("InternalIterator is registered");

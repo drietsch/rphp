@@ -225,9 +225,12 @@ fn class_like_exists(
 }
 
 /// `class_exists(string $class, bool $autoload = true): bool` — declared
-/// classes (not interfaces, traits or enums).
+/// classes and enums (an enum *is* a class to php; interfaces and traits
+/// are not).
 pub(crate) fn class_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    class_like_exists(ctx, args, |c| c.kind == rphp_runtime::ClassKind::Class)
+    class_like_exists(ctx, args, |c| {
+        matches!(c.kind, rphp_runtime::ClassKind::Class | rphp_runtime::ClassKind::Enum { .. })
+    })
 }
 
 /// `interface_exists(string $interface, bool $autoload = true): bool`
@@ -274,7 +277,7 @@ pub(crate) fn get_declared_interfaces(ctx: &mut Ctx, _: &mut [Value]) -> NativeR
 /// properties visible from the calling scope.
 pub(crate) fn get_class_vars(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let name = args[0].to_php_bytes();
-    let Some(cid) = ctx.class_by_name(&name) else {
+    let Some(cid) = ctx.lookup_class(&name)? else {
         return Err(Unwind::type_error(format!(
             "get_class_vars(): Argument #1 ($class) must be a valid class name, {} given",
             String::from_utf8_lossy(&name)
@@ -299,8 +302,10 @@ pub(crate) fn get_class_vars(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult 
 /// `class_implements(object|string $object_or_class, bool $autoload = true): array|false`
 /// — `name => name` for every implemented interface.
 pub(crate) fn class_implements(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let autoload = args.get(1).is_none_or(Value::to_bool);
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
+        Value::Str(s) if autoload => ctx.lookup_class(s.as_bytes())?,
         Value::Str(s) => ctx.class_by_name(s.as_bytes()),
         other => {
             return Err(Unwind::type_error(format!(
@@ -311,8 +316,9 @@ pub(crate) fn class_implements(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
     };
     let Some(cid) = class else {
         ctx.warn(&format!(
-            "class_implements(): Class {} does not exist and could not be loaded",
-            String::from_utf8_lossy(&args[0].to_php_bytes())
+            "class_implements(): Class {} does not exist{}",
+            String::from_utf8_lossy(&args[0].to_php_bytes()),
+            if autoload { " and could not be loaded" } else { "" }
         ))?;
         return Ok(Value::Bool(false));
     };
@@ -329,8 +335,10 @@ pub(crate) fn class_implements(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
 /// — `name => name` for the traits the class uses **itself**; a parent's
 /// traits are not reported.
 pub(crate) fn class_uses(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let autoload = args.get(1).is_none_or(Value::to_bool);
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
+        Value::Str(s) if autoload => ctx.lookup_class(s.as_bytes())?,
         Value::Str(s) => ctx.class_by_name(s.as_bytes()),
         other => return Err(Unwind::type_error(format!(
             "class_uses(): Argument #1 ($object_or_class) must be of type object|string, {} given",
@@ -339,8 +347,9 @@ pub(crate) fn class_uses(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     };
     let Some(cid) = class else {
         ctx.warn(&format!(
-            "class_uses(): Class {} does not exist and could not be loaded",
-            String::from_utf8_lossy(&args[0].to_php_bytes())
+            "class_uses(): Class {} does not exist{}",
+            String::from_utf8_lossy(&args[0].to_php_bytes()),
+            if autoload { " and could not be loaded" } else { "" }
         ))?;
         return Ok(Value::Bool(false));
     };
@@ -479,8 +488,10 @@ pub(crate) fn get_defined_functions(ctx: &mut Ctx, _: &mut [Value]) -> NativeRes
 }
 
 pub(crate) fn class_parents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let autoload = args.get(1).is_none_or(Value::to_bool);
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
+        Value::Str(s) if autoload => ctx.lookup_class(s.as_bytes())?,
         Value::Str(s) => ctx.class_by_name(s.as_bytes()),
         other => {
             return Err(Unwind::type_error(format!(
@@ -491,8 +502,9 @@ pub(crate) fn class_parents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     };
     let Some(cid) = class else {
         ctx.warn(&format!(
-            "class_parents(): Class {} does not exist and could not be loaded",
-            String::from_utf8_lossy(&args[0].to_php_bytes())
+            "class_parents(): Class {} does not exist{}",
+            String::from_utf8_lossy(&args[0].to_php_bytes()),
+            if autoload { " and could not be loaded" } else { "" }
         ))?;
         return Ok(Value::Bool(false));
     };
@@ -509,7 +521,7 @@ pub(crate) fn class_parents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// The class id a `$object_or_class` argument denotes, with php's
 /// `TypeError` text for `func`.
 fn class_arg(
-    ctx: &Ctx,
+    ctx: &mut Ctx,
     func: &str,
     pos: usize,
     v: &Value,
@@ -517,7 +529,8 @@ fn class_arg(
 ) -> Result<Option<u32>, Unwind> {
     match &*v.deref() {
         Value::Object(o) => Ok(Some(o.class_id())),
-        Value::Str(s) if allow_string => Ok(ctx.class_by_name(s.as_bytes())),
+        // A name goes through the autoloader (php's `zend_lookup_class`).
+        Value::Str(s) if allow_string => ctx.lookup_class(s.as_bytes()),
         other => Err(Unwind::type_error(format!(
             "{func}(): Argument #{pos} ($object_or_class) must be of type {}, {} given",
             if allow_string {
@@ -558,7 +571,14 @@ pub(crate) fn get_class(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `get_parent_class(object|string $object_or_class = ?): string|false`
 pub(crate) fn get_parent_class(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let class = match args.first() {
-        Some(v) => class_arg(ctx, "get_parent_class", 1, v, true)?,
+        Some(v) => match class_arg(ctx, "get_parent_class", 1, v, true)? {
+            Some(c) => Some(c),
+            None => {
+                return Err(Unwind::type_error(
+                    "get_parent_class(): Argument #1 ($object_or_class) must be an object or a valid class name, string given",
+                ))
+            }
+        },
         None => {
             ctx.deprecated("Calling get_parent_class() without arguments is deprecated")?;
             ctx.current_user_frame().and_then(|f| f.scope)

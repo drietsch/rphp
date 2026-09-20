@@ -59,6 +59,8 @@ pub struct ExtState {
     /// `None` meaning "checked, does not exist". `clearstatcache()` empties
     /// it and anything that changes a path drops its entry.
     pub stat_cache: std::collections::HashMap<std::path::PathBuf, Option<std::fs::Metadata>>,
+    /// What `openlog()` set (`syslog.rs`): `(ident, flags, facility)`.
+    pub syslog: (Option<Vec<u8>>, i64, i64),
 }
 
 /// Why the compile hook could not produce a unit for `include`/`eval`.
@@ -134,6 +136,13 @@ pub struct Interp {
     /// Parked generator bodies, indexed by the id in a `Generator` object's
     /// payload (E8).
     pub(crate) generators: Vec<crate::generator::GeneratorState>,
+    /// Every fiber built this request (`fiber.rs`).
+    pub(crate) fibers: Vec<crate::fiber::FiberState>,
+    /// The running fibers, innermost last.
+    pub(crate) fiber_stack: Vec<u32>,
+    /// Set by `Fiber::suspend()` for the dispatch loop, which parks the
+    /// fiber once the call op that reached it has returned.
+    pub(crate) fiber_suspending: Option<u32>,
     /// The value a re-entry boundary must hand back when its frame was
     /// removed without returning through `do_return` — which is what calling
     /// a generator function from native code does (E8).
@@ -243,6 +252,9 @@ impl Interp {
             reentry_depth: 0,
             included: HashSet::new(),
             generators: Vec::new(),
+            fibers: Vec::new(),
+            fiber_stack: Vec::new(),
+            fiber_suspending: None,
             boundary_value: None,
             autoloaders: Vec::new(),
             autoloading: Vec::new(),

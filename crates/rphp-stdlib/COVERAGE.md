@@ -649,3 +649,110 @@ through the standard error path now but in mago's words;
 `get_defined_constants(true)` files every constant under `Core`; php's
 `(3)` property count after a reset of an object that had dynamic
 properties; FastCGI (SAPI-4) is the next SAPI.
+
+## PDO, and the engine features the L8 walk needed (2026-09-20)
+
+**`ext/pdo` + `pdo_sqlite`** as their own crate (`rphp-ext-pdo`, over the
+`rusqlite` bundle — pure Rust apart from SQLite's own C, ADR-032's list
+grows by one confined `unsafe` site: `bridge.rs`, which parks the
+interpreter's address in a thread-local for the duration of a driver call
+so a user-defined SQL function/aggregate/collation can re-enter it from
+SQLite's synchronous callback; the invariants are stated in the module
+header). Measured against php's `pdo_sqlite`: the DSN parse and `could not
+find driver`, the `SQLSTATE[..]: desc: code msg` texts and the `errorInfo()`
+triples, errmode exception/warning/silent (recorded on the statement, not
+the handle), `rowCount()` only for a change statement, every fetch mode
+(`GROUP` keeps `BOTH`'s column positions, `KEY_PAIR`/`INTO`/`CLASS` errors
+through `general_error`, `LAZY` as `PDORow`), `bindParam()` through the
+engine's new by-reference cell channel (`Frame.ref_cells`, `Ctx::ref_arg`),
+`setFetchMode()`'s `ArgumentCountError` texts, the attribute set
+(`getAttribute()` reports `IM001` for an unknown one, `setAttribute()` is
+`false`), transactions and their messages, `quote()`'s NUL refusal, the
+`Pdo\Sqlite` subclass with `createFunction`/`createAggregate`/
+`createCollation`/`loadExtension` and the deprecated `PDO::sqliteCreate*`
+wrappers, the deprecated `PDO::SQLITE_*`/`MYSQL_*`/`PGSQL_*` constants
+(deprecated class constants are a registry feature now). Result sets are
+buffered per `execute()` (`getIterator()` too). Not done: `openBlob()`,
+`setAuthorizer()`, `getColumnMeta()` past the last column.
+
+**The L8 walk** (`fixtures/ladder/L8-demo`, symfony/demo: `bin/console
+about`, `debug:router`, `lint:container` green — the whole demo container
+with Doctrine, Twig, security, translator and profiler compiled under the
+`DebugClassLoader`) found, one fatal at a time:
+
+- **Named arguments to natives** (`json_decode($s, flags: …)`): php's
+  arginfo — every native's parameter names, declared types, defaults and
+  return type — is a generated table (`cargo xtask native-params` →
+  `rphp-runtime/src/native_params.rs`, 3846 natives) the call windows bind
+  against: unknown names are php's `Error` before the frame, or the
+  `ArgumentCountError` from inside it for a variadic native (whose frame
+  the trace shows with the named extras); a skipped required position is
+  `Argument #n ($x) not passed`, a skipped `<default>` one `must be passed
+  explicitly, because the default value is not known`, a skipped optional
+  one gets the stub's default evaluated (literals, constants,
+  `Class::CONST`, `|`); a by-reference named parameter still receives the
+  caller's cell; `call_user_func`, `ReflectionClass::newInstance`,
+  `Reflection*::invoke`, `Closure::call`/`__invoke`, `Fiber::start` forward
+  unknown names to the callable. The same table gives Reflection a native's
+  parameters, types, defaults (`isDefaultValueConstant()`,
+  `getDefaultValueConstantName()`, `<default>`) and return type, and a
+  user parameter's constant default keeps its *name* (`N\PHP_INT_MAX`,
+  `self::X`) for those two, with `__toString()` printing defaults as
+  written and strings escaped like `smart_str_append_escaped`.
+- **Fibers** (`Fiber`, `FiberError`): a fiber is a parked call chain —
+  `Fiber::suspend()` reached from bytecode moves every frame above the
+  fiber's boundary (register windows, pending calls, `foreach` iterators)
+  into the fiber; `resume()`/`throw()` put it back at the current stack top
+  and continue after (or raise at) the suspending call; nesting, transfer
+  values both ways, status queries, `getReturn()`'s three refusals,
+  exceptions crossing the boundary both ways, traces from inside. The one
+  gap: a suspend *through a native* (a callback inside `array_map()`, a
+  generator body driven by `Generator::send()`) has a Rust frame between
+  boundary and suspension point and is refused with a `FiberError` — php
+  switches C stacks. A suspended fiber that is never resumed does not run
+  its `finally` blocks on destruction.
+- **`Attribute`, `ReturnTypeWillChange`, `AllowDynamicProperties`,
+  `SensitiveParameter`, `Override`, `Deprecated`** are php-written in the
+  embed prelude (marked internal), so each carries its own
+  `#[Attribute(...)]` with the flags php reports through
+  `ReflectionAttribute::getArguments()`/`newInstance()`.
+- **`readonly` and indirect modification**: a write fetch, a reference, an
+  `unset()` of an element or a by-reference send of a readonly property is
+  `Cannot indirectly modify readonly property` whatever the scope and
+  before initialization too, unless the property holds an object (a
+  handle). A nested place sent as an argument (`new X($this->list[$k])`)
+  is fetched for writing only when the parameter turns out to be
+  by-reference — `JmpUnlessArgByRef`, php's `FETCH_DIM_FUNC_ARG` decision —
+  so a by-value call reads a readonly element (and does not autovivify a
+  missing key) as php does. A write fetch of `$this->p` from an ancestor's
+  method reaches the ancestor's private slot when the subclass re-declares
+  the name.
+- **Nested writes through `ArrayAccess`** (`$map[$k][] = 1`, `$o[$k]++`,
+  `.=`, `??=`): real storage on `ArrayObject`/`ArrayIterator`/`WeakMap`
+  (php's `spl_array`/`WeakMap` dimension handlers; a `W` fetch is quiet, an
+  `RW` one warns), a temporary with php's `Indirect modification of
+  overloaded element` notice and no `offsetSet()` for every other class,
+  a by-reference `offsetGet()` followed (`WriteBackElem`, `FetchElemRW`).
+- **Return by reference** (`function &f()`): a returned place hands the
+  caller its cell (`$x = &f()` binds, a by-value use derefs, a native
+  never sees the cell), a non-place earns php's notice and a fresh cell.
+- **`ext/standard` syslog** (`openlog`/`syslog`/`closelog`, the `LOG_*`
+  constants — over the logger's datagram socket, since `libc` is off
+  limits), the 85 `STREAM_*` constants (`STREAM_PF_INET6` is macOS's 30),
+  `stream_set_chunk_size()`/`stream_set_write_buffer()`/
+  `stream_set_read_buffer()` with php's `-1`/`0` answers.
+- **Class inspection autoloads** (`method_exists`, `property_exists`,
+  `get_class_methods`, `get_parent_class`, `get_class_vars`; the `class_*`
+  family per its `$autoload` argument with the warning text changing) and
+  the loaders never see an empty or invalid name (`'\\'` does reach them as
+  `''`); `class_exists()` is true for an enum; `SessionHandler` implements
+  only `SessionHandlerInterface` and `SessionIdInterface`, as php's does.
+
+**Cataloged, not done:** `ext/dom` (+ `libxml`, `simplexml` with XPath) —
+the demo's XLIFF translations stop at `Extension DOM is required`, the next
+extension wave; `ReflectionClass::__toString()`; the `Tentative return`
+marker and the `<internal:ext>` label of internal methods; a compound
+constant default (`E_ALL | E_STRICT`) prints its value in `__toString()`
+where php prints the expression; `RoundingMode` (8.4) and `round()`'s enum
+mode; object ids drift by the hidden objects Reflection holds
+(`object-id` category).

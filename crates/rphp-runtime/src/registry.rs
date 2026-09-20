@@ -378,7 +378,7 @@ pub struct ClassBuilder<'a> {
     interfaces: Vec<String>,
     flags: ClassFlags,
     props: Vec<(String, Visibility, Value)>,
-    consts: Vec<(String, Value)>,
+    consts: Vec<(String, Value, Option<&'static str>)>,
     methods: Vec<MethodSpec>,
     native_init: Option<NativeInit>,
     payload_clone: Option<crate::class::PayloadClone>,
@@ -419,7 +419,14 @@ impl ClassBuilder<'_> {
     /// `SplDoublyLinkedList::IT_MODE_LIFO`, …). Native constants are always
     /// ready values, never lazy initializers.
     pub fn class_const(mut self, name: &str, value: Value) -> Self {
-        self.consts.push((name.to_string(), value));
+        self.consts.push((name.to_string(), value, None));
+        self
+    }
+
+    /// Declare a public class constant php deprecates: every fetch raises
+    /// `Deprecated: Constant C::NAME is deprecated<note>`.
+    pub fn deprecated_class_const(mut self, name: &str, value: Value, note: &'static str) -> Self {
+        self.consts.push((name.to_string(), value, Some(note)));
         self
     }
 
@@ -519,12 +526,13 @@ impl ClassBuilder<'_> {
             static_props: Vec::new(),
             consts: consts
                 .into_iter()
-                .map(|(n, v)| crate::class::ConstSpec {
+                .map(|(n, v, deprecated)| crate::class::ConstSpec {
                     name: Box::from(n.as_bytes()),
                     vis: Visibility::Public,
                     is_final: false,
                     ty: None,
                     init: PropDefault::Value(v),
+                    deprecated,
                 })
                 .collect(),
             enum_cases: Vec::new(),

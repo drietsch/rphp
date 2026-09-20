@@ -301,6 +301,13 @@ impl Interp {
                 String::from_utf8_lossy(name)
             )));
         }
+        if let Some(note) = k.deprecated {
+            self.deprecated(&format!(
+                "Constant {}::{} is deprecated{note}",
+                self.classes[k.decl as usize].name_str(),
+                String::from_utf8_lossy(name)
+            ))?;
+        }
         self.eval_class_const(&k, name, spelling)
     }
 

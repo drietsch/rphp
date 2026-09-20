@@ -1,0 +1,182 @@
+//! `cargo xtask native-params`: the parameter names and defaults of every
+//! native function and method, generated from the manifest.
+//!
+//! php resolves a named argument (`json_decode($s, flags: …)`) against the
+//! callee's declared parameter names, and fills the positions a call skips
+//! with their defaults. A native's `nf!` row carries no arginfo, so the
+//! engine reads both from this table:
+//! `crates/rphp-runtime/src/native_params.rs`, one row per native — the
+//! lowercase name (`class::method` for a method), the return type, then
+//! each parameter's name, declared type and its default expression as
+//! php's stubs spell it (`null`, `512`,
+//! `ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML401`, …), `None` for a required
+//! one, `...` for the variadic, `<default>` for an optional parameter whose
+//! default php does not know either (skipping it is an error). The runtime
+//! evaluates the expressions it can (literals, constants and `|` of them);
+//! the rest fall back to `null`, which is what a native with no better
+//! idea did before.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+
+use crate::XtaskResult;
+
+#[derive(serde::Deserialize)]
+struct Param {
+    name: String,
+    #[serde(default)]
+    optional: bool,
+    #[serde(default)]
+    variadic: bool,
+    #[serde(default)]
+    default_expr: Option<String>,
+    #[serde(default, rename = "type")]
+    ty: Option<String>,
+    #[serde(default)]
+    nullable: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct Ret {
+    #[serde(rename = "type")]
+    ty: String,
+    #[serde(default)]
+    nullable: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct Sig {
+    params: Vec<Param>,
+    #[serde(default, rename = "return")]
+    ret: Option<Ret>,
+}
+
+#[derive(serde::Deserialize)]
+struct Method {
+    name: String,
+    params: Vec<Param>,
+    #[serde(default, rename = "return")]
+    ret: Option<Ret>,
+}
+
+#[derive(serde::Deserialize)]
+struct Class {
+    name: String,
+    methods: Vec<Method>,
+}
+
+/// A type as `ReflectionType::__toString()` spells it: the manifest
+/// already writes `?bool` and `array|string|null`, and flags `mixed` as
+/// nullable without changing its spelling.
+fn type_text(ty: &str, _nullable: bool) -> String {
+    ty.to_string()
+}
+
+/// One row: a native's return type and parameter list.
+fn row(params: &[Param], ret: Option<&Ret>) -> (Option<String>, Vec<(String, Option<String>, Option<String>)>) {
+    let params = params
+        .iter()
+        .map(|p| {
+            let default = if p.variadic {
+                Some("...".to_string())
+            } else if p.optional {
+                // php's `<default>`: optional with no known default, which
+                // a call may not skip.
+                Some(p.default_expr.clone().unwrap_or_else(|| "<default>".to_string()))
+            } else {
+                None
+            };
+            let ty = p.ty.as_ref().map(|t| type_text(t, p.nullable));
+            (p.name.clone(), ty, default)
+        })
+        .collect();
+    (ret.map(|r| type_text(&r.ty, r.nullable)), params)
+}
+
+fn rust_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+pub fn run(args: &[String]) -> XtaskResult {
+    let root = crate::corpus::repo_root();
+    let manifest = match args.iter().position(|a| a == "--manifest") {
+        Some(i) => root.join(&args[i + 1]),
+        None => root.join("manifest/php-8.5.0"),
+    };
+    let out_path = root.join("crates/rphp-runtime/src/native_params.rs");
+    let functions: BTreeMap<String, Sig> =
+        serde_json::from_str(&fs::read_to_string(manifest.join("functions.json"))?)?;
+    let classes: BTreeMap<String, Class> =
+        serde_json::from_str(&fs::read_to_string(manifest.join("classes.json"))?)?;
+    type Row = (Option<String>, Vec<(String, Option<String>, Option<String>)>);
+    let mut rows: BTreeMap<String, Row> = BTreeMap::new();
+    for (name, sig) in &functions {
+        rows.insert(name.to_ascii_lowercase(), row(&sig.params, sig.ret.as_ref()));
+    }
+    for class in classes.values() {
+        for m in &class.methods {
+            rows.insert(
+                format!("{}::{}", class.name.to_ascii_lowercase(), m.name.to_ascii_lowercase()),
+                row(&m.params, m.ret.as_ref()),
+            );
+        }
+    }
+    let opt = |v: &Option<String>| match v {
+        Some(v) => format!("Some({})", rust_str(v)),
+        None => "None".to_string(),
+    };
+    let mut out = String::new();
+    out.push_str(
+        "//! Generated by `cargo xtask native-params` from the php manifest — do\n\
+         //! not edit. Every native function and method: its return type, then\n\
+         //! each parameter's name, declared type and default expression\n\
+         //! (`None` = required, `...` = variadic, `<default>` = optional but\n\
+         //! unknown), for named arguments, the defaults of skipped positions\n\
+         //! and Reflection. Types are spelled as `ReflectionType::__toString()`\n\
+         //! prints them. Keys are lowercase; a method is `class::method`.\n\n",
+    );
+    out.push_str(
+        "/// One native's parameters: name, declared type, default expression.\n\
+         pub type Params = &'static [(&'static str, Option<&'static str>, Option<&'static str>)];\n\n",
+    );
+    out.push_str(&format!("/// {} natives: key, return type, parameters.\n", rows.len()));
+    out.push_str("pub static NATIVE_PARAMS: &[(&str, Option<&str>, Params)] = &[\n");
+    for (name, (ret, params)) in &rows {
+        let items: Vec<String> = params
+            .iter()
+            .map(|(n, t, d)| format!("({}, {}, {})", rust_str(n), opt(t), opt(d)))
+            .collect();
+        out.push_str(&format!(
+            "    ({}, {}, &[{}]),\n",
+            rust_str(name),
+            opt(ret),
+            items.join(", ")
+        ));
+    }
+    out.push_str("];\n");
+    write_if_changed(&out_path, &out)?;
+    println!("native-params: {} natives → {}", rows.len(), out_path.display());
+    Ok(())
+}
+
+fn write_if_changed(path: &Path, content: &str) -> XtaskResult {
+    if fs::read_to_string(path).map(|old| old == content).unwrap_or(false) {
+        return Ok(());
+    }
+    fs::write(path, content)?;
+    Ok(())
+}

@@ -1133,23 +1133,8 @@ impl FnCompiler<'_> {
     pub(crate) fn emit_writebacks(&mut self, wbs: Vec<Wb>) {
         for wb in wbs.into_iter().rev() {
             match wb {
-                Wb::Elem {
-                    arr,
-                    key: Some(key),
-                    val,
-                } => {
-                    self.emit(Op::ArraySet {
-                        arr,
-                        key,
-                        value: val,
-                    });
-                }
-                Wb::Elem {
-                    arr,
-                    key: None,
-                    val,
-                } => {
-                    self.emit(Op::ArrayPush { arr, value: val });
+                Wb::Elem { arr, key, val } => {
+                    self.emit(Op::WriteBackElem { arr, key, val });
                 }
                 Wb::Prop { obj, name, val } => {
                     let ic = self.ic();
@@ -1374,7 +1359,19 @@ impl FnCompiler<'_> {
     ///
     /// Every place that writes a reference shares this: `$x = &…`, a
     /// by-reference array element (`[&$a[$k], &$v]`) and the loops.
-    fn compile_ref_source(&mut self, value: &Expr) -> Option<Reg> {
+    /// Whether `e` is a place a by-reference return can hand out: a
+    /// variable, element, property or static property (`$this` and
+    /// `$GLOBALS` excluded).
+    pub(crate) fn is_ref_place(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Var(id, _) => !self.is_this(*id) && !self.is_globals(*id),
+            Expr::Index { base, .. } => self.is_place(base) || matches!(&**base, Expr::Var(..)),
+            Expr::Prop { nullsafe: false, .. } | Expr::StaticProp { .. } | Expr::VarVar { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn compile_ref_source(&mut self, value: &Expr) -> Option<Reg> {
         let src: Reg = match value {
             Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => self.var_reg(*id),
             // `&$a[]`: php appends a fresh null element and binds to it.
@@ -1977,7 +1974,7 @@ impl FnCompiler<'_> {
                 let key = self.compile_expr(index);
                 let (handle, wbs) = self.plan_fetch_w(&plan);
                 let cur = self.alloc_temp();
-                self.emit(Op::ArrayGet {
+                self.emit(Op::FetchElemRW {
                     dst: cur,
                     base: handle,
                     key,
@@ -1988,10 +1985,10 @@ impl FnCompiler<'_> {
                     pre,
                     inc,
                 });
-                self.emit(Op::ArraySet {
+                self.emit(Op::WriteBackElem {
                     arr: handle,
-                    key,
-                    value: cur,
+                    key: Some(key),
+                    val: cur,
                 });
                 self.emit_writebacks(wbs);
                 res.unwrap_or(cur)
@@ -2671,9 +2668,11 @@ impl FnCompiler<'_> {
                 self.emit(Op::RefStaticProp { dst: var, class, name });
                 self.emit(Op::SendVar { pos, var });
             }
-            // `f($obj->list['k'])`, `f($a['x']['y'])`: the container is
-            // fetched for writing (with its write-backs) so the element can
-            // be bound by reference when the parameter asks for it.
+            // `f($obj->list['k'])`, `f($a['x']['y'])`: php decides at
+            // runtime, per the resolved parameter, between fetching the
+            // container for writing (so the element can be bound by
+            // reference) and a plain read (`FETCH_DIM_FUNC_ARG`); both
+            // paths are compiled and the branch picks one.
             Expr::Index {
                 base,
                 index: Some(index),
@@ -2682,10 +2681,21 @@ impl FnCompiler<'_> {
                 let Some(plan) = self.plan_chain(base) else {
                     return;
                 };
+                let mark = self.temp_top;
+                let jval = self.emit(Op::JmpUnlessArgByRef { pos, target: 0 });
                 let key = self.compile_expr(index);
                 let (handle, wbs) = self.plan_fetch_w(&plan);
                 self.emit(Op::SendRefElem { pos, arr: handle, key });
                 self.emit_writebacks(wbs);
+                let jend = self.jmp_fwd();
+                self.free_to(mark);
+                let lval = self.here();
+                self.patch(jval, lval);
+                let src = self.compile_expr(value);
+                self.emit(Op::SendVal { pos, src });
+                self.free_to(mark);
+                let lend = self.here();
+                self.patch(jend, lend);
             }
             Expr::Index {
                 index: Some(_), ..

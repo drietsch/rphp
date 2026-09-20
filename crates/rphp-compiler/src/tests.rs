@@ -707,6 +707,7 @@ fn assert_branch_targets_in_range(code: &[Op]) {
             Op::Jmp { target }
             | Op::JmpIfTrue { target, .. }
             | Op::JmpIfFalse { target, .. }
+            | Op::JmpUnlessArgByRef { target, .. }
             | Op::IterNext { target, .. }
             | Op::Switch {
                 default: target, ..

@@ -25,11 +25,14 @@ mod enums;
 mod errors;
 mod eval;
 mod exec;
+mod fiber;
 mod frame;
 mod generator;
 mod ini;
 mod interp;
 mod methods;
+mod native_args;
+mod native_params;
 mod objects;
 mod ops;
 mod output;
@@ -51,6 +54,8 @@ pub use errors::{
     E_CORE_WARNING, E_DEPRECATED, E_ERROR, E_NOTICE, E_PARSE, E_RECOVERABLE_ERROR, E_STRICT,
     E_USER_DEPRECATED, E_USER_ERROR, E_USER_NOTICE, E_USER_WARNING, E_WARNING, SILENCE_MASK,
 };
+pub use fiber::register_fiber_classes;
+pub use native_args::{native_arginfo, native_default_is_constant, native_return_type, ParamRow};
 pub use generator::register_generator_class;
 pub use frame::{
     format_float_precision, trace_arg, CallTarget, Frame, FrameKind, NativeTarget, PendingCall,
@@ -115,6 +120,7 @@ mod tests {
                 by_ref: false,
                 variadic: false,
                 default: None,
+                default_const: None,
                 ty: None,
                 promoted: None,
                 attrs: Vec::new(),

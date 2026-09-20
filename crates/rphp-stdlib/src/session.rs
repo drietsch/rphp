@@ -1141,12 +1141,11 @@ pub(crate) fn register_classes(r: &mut Registry) {
     // php's `files` handler as a class: a subclass may override one method
     // and call `parent::` for the rest, which is the documented way to add
     // encryption or a different directory.
+    // php declares it against the first two interfaces only: the strict /
+    // timestamp behaviour is a *user* subclass's to add (Symfony's
+    // `StrictSessionHandler` refuses to wrap one that already has it).
     r.class("SessionHandler")
-        .implements(&[
-            "SessionHandlerInterface",
-            "SessionIdInterface",
-            "SessionUpdateTimestampHandlerInterface",
-        ])
+        .implements(&["SessionHandlerInterface", "SessionIdInterface"])
         .method("open", nm!(2, Some(2), handler_open))
         .method("close", nm!(0, Some(0), handler_close))
         .method("read", nm!(1, Some(1), handler_read_method))
@@ -1154,8 +1153,6 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .method("destroy", nm!(1, Some(1), handler_destroy_method))
         .method("gc", nm!(1, Some(1), handler_gc_method))
         .method("create_sid", nm!(0, Some(0), handler_create_sid))
-        .method("validateId", nm!(1, Some(1), handler_validate_id))
-        .method("updateTimestamp", nm!(2, Some(2), handler_update_timestamp))
         .finish();
 }
 
@@ -1215,15 +1212,3 @@ fn handler_create_sid(ctx: &mut Ctx, _: Option<&Object>, _args: &mut [Value]) ->
     Ok(Value::string(&new_id(ctx)?))
 }
 
-/// `SessionHandler::validateId(string $id): bool`
-fn handler_validate_id(ctx: &mut Ctx, _: Option<&Object>, args: &mut [Value]) -> NativeResult {
-    let id = args[0].to_php_bytes().to_vec();
-    Ok(Value::Bool(
-        valid_id(&id) && session_file(ctx, &id).exists(),
-    ))
-}
-
-/// `SessionHandler::updateTimestamp(string $id, string $data): bool`
-fn handler_update_timestamp(ctx: &mut Ctx, _: Option<&Object>, args: &mut [Value]) -> NativeResult {
-    handler_write_method(ctx, None, args)
-}

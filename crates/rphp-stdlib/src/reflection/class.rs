@@ -602,7 +602,8 @@ fn new_instance_without_ctor(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value])
 /// `ReflectionClass::newInstance(mixed ...$args): object`
 fn new_instance(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let cid = cid_of(this(o)?)?;
-    construct(ctx, cid, args, Vec::new())
+    let named = ctx.take_extra_named();
+    construct(ctx, cid, args, named)
 }
 
 /// `ReflectionClass::newInstanceArgs(array $args = []): object` — string keys

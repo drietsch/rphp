@@ -63,3 +63,9 @@ snippet   = "reflection/lazy-objects.php"
 category  = "object-id"
 reason    = "var_dump prints the handle of every lazy object; php's closures are objects that take handles of their own, the engine's are not, and php reuses freed handles while the engine's ObjectIdAllocator is monotonic"
 normalize = ""
+
+[[allow]]
+snippet   = "pdo/sqlite*.php"
+category  = "object-id"
+reason    = "the fetch-mode probes dump the objects every fetch builds; php reuses freed handles while the engine's ObjectIdAllocator is monotonic"
+normalize = ""

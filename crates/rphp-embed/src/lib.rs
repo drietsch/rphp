@@ -134,7 +134,34 @@ impl EngineConfig {
 /// Standard-library declarations written in php and compiled into every
 /// interpreter: `PropertyHookType` (php 8.4), the enum
 /// `ReflectionProperty::hasHook()`/`getHook()` take.
-const PRELUDE: &str = "<?php enum PropertyHookType: string { case Get = 'get'; case Set = 'set'; }";
+const PRELUDE: &str = r#"<?php
+enum PropertyHookType: string { case Get = 'get'; case Set = 'set'; }
+#[Attribute(Attribute::TARGET_CLASS)]
+final class Attribute {
+    const TARGET_CLASS = 1;
+    const TARGET_FUNCTION = 2;
+    const TARGET_METHOD = 4;
+    const TARGET_PROPERTY = 8;
+    const TARGET_CLASS_CONSTANT = 16;
+    const TARGET_PARAMETER = 32;
+    const TARGET_CONSTANT = 64;
+    const TARGET_ALL = 127;
+    const IS_REPEATABLE = 128;
+    public function __construct(public int $flags = Attribute::TARGET_ALL) {}
+}
+#[Attribute(Attribute::TARGET_METHOD)]
+final class ReturnTypeWillChange { public function __construct() {} }
+#[Attribute(Attribute::TARGET_CLASS)]
+final class AllowDynamicProperties { public function __construct() {} }
+#[Attribute(Attribute::TARGET_PARAMETER)]
+final class SensitiveParameter { public function __construct() {} }
+#[Attribute(Attribute::TARGET_METHOD | Attribute::TARGET_PROPERTY)]
+final class Override { public function __construct() {} }
+#[Attribute(Attribute::TARGET_METHOD | Attribute::TARGET_FUNCTION | Attribute::TARGET_CLASS_CONSTANT | Attribute::TARGET_CLASS | Attribute::TARGET_CONSTANT)]
+final class Deprecated {
+    public function __construct(public readonly ?string $message = null, public readonly ?string $since = null) {}
+}
+"#;
 
 /// The per-process engine: creates interpreters, compiles and runs code.
 pub struct Engine {
@@ -185,12 +212,15 @@ impl Engine {
             }
         }
         rphp_stdlib::register(&mut Registry(&mut it));
+        rphp_ext_pdo::register(&mut Registry(&mut it));
         // `Generator` is the engine's own class but implements the stdlib's
         // `Iterator`, so it is registered after the extensions (E8).
         rphp_runtime::register_generator_class(&mut Registry(&mut it));
+        rphp_runtime::register_fiber_classes(&mut Registry(&mut it));
         constants::register(&mut Registry(&mut it), cfg.sapi);
-        // The standard library's php-written part: what the native
-        // registry cannot declare yet (an enum).
+        // The standard library's php-written part: what the native registry
+        // cannot declare (an enum; the engine's attribute classes, which
+        // carry their own `#[Attribute(...)]` with constant arguments).
         if let Ok(module) = compile_unit(&it, PRELUDE.as_bytes(), "prelude") {
             let _ = it.run_prelude(module);
         }

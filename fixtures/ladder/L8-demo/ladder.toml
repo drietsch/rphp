@@ -1,0 +1,23 @@
+# Ladder rungs served by this fixture (symfony/demo, the reference
+# application: Doctrine ORM over SQLite, Twig, security, forms, translations,
+# the web profiler). Executed by `cargo xtask ladder --rung <id>`; schema and
+# execution model: fixtures/ladder/README.md.
+
+[fixture]
+name = "L8-demo"
+setup = "composer install --no-interaction --no-progress --prefer-dist"
+php_min = "8.4.1"
+allowlist = "ladder/divergences.toml"
+
+[[rung]]
+id = "L8"
+title = "symfony/demo: container compiled, console booted"
+env = { COLUMNS = "120", LINES = "50" }
+commands = [
+  # Boots the kernel and compiles the whole demo container (Doctrine, Twig,
+  # security, translator, profiler…); the host-dependent lines are
+  # normalized by ladder/divergences.toml.
+  "bin/console about --no-ansi",
+  "bin/console debug:router --no-ansi",
+  "bin/console lint:container --no-ansi",
+]

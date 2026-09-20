@@ -8,6 +8,7 @@ mod fetch_php_src;
 mod gen;
 mod ladder;
 mod missing;
+mod native_params;
 mod string_params;
 mod parse_sweep;
 mod phpt;
@@ -31,6 +32,7 @@ fn main() {
         "ladder" => ladder::run(&rest),
         "missing" => missing::run(&rest),
         "string-params" => string_params::run(&rest),
+        "native-params" => native_params::run(&rest),
         "corpus" => corpus::run(&rest),
         "token-ids" => token_ids::run(&rest),
         "parse-sweep" => parse_sweep::run(&rest),

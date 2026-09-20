@@ -92,26 +92,18 @@ pub(crate) fn register_classes(r: &mut Registry) {
     r.class("ReflectionException").extends("Exception").finish();
 
     // `Reflection` itself is just the modifier-name helper, and
-    // `SensitiveParameter` is the attribute php marks arguments with so a
-    // backtrace redacts them (the engine drops attributes, so the class only
-    // has to exist and be final).
     r.class("Reflection")
         .method(
             "getModifierNames",
             common::snm(1, Some(1), get_modifier_names),
         )
         .finish();
-    r.class("SensitiveParameter")
-        .flags(rphp_runtime::ClassFlags::FINAL)
-        .finish();
-    // `ReturnTypeWillChange` is Zend's own attribute, the one that silences
-    // the "return type should be compatible" deprecation on an internal
-    // interface's method. It is declared here beside the other attribute
-    // class for the same reason: the engine drops attributes, so it only
-    // has to exist.
-    r.class("ReturnTypeWillChange")
-        .flags(rphp_runtime::ClassFlags::FINAL)
-        .finish();
+    // The engine's own attribute classes (`Attribute`, `SensitiveParameter`,
+    // `ReturnTypeWillChange`, `AllowDynamicProperties`, `Override`,
+    // `Deprecated`) are php-written, in `rphp-embed`'s prelude: each carries
+    // its own `#[Attribute(...)]` with constant arguments, which a native
+    // class table cannot express and `ReflectionAttribute::getArguments()`
+    // must report.
 
     types::register_classes(r);
     class::register_classes(r);
@@ -190,22 +182,5 @@ mod tests {
         assert_eq!(get(&mut it, b"IS_PUBLIC"), 1);
         assert_eq!(get(&mut it, b"IS_READONLY"), 128);
         assert_eq!(get(&mut it, b"IS_PRIVATE_SET"), 4096);
-        let aid = it.class_by_name(b"Attribute").unwrap();
-        assert_eq!(
-            it.class_const(aid, b"TARGET_ALL", None).unwrap().to_int(),
-            127
-        );
-        assert_eq!(
-            it.class_const(aid, b"TARGET_CONSTANT", None)
-                .unwrap()
-                .to_int(),
-            64
-        );
-        assert_eq!(
-            it.class_const(aid, b"IS_REPEATABLE", None)
-                .unwrap()
-                .to_int(),
-            128
-        );
     }
 }

@@ -42,6 +42,9 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("stream_get_contents", 1, Some(3), stream_get_contents),
     nf!("stream_get_meta_data", 1, Some(1), stream_get_meta_data),
     nf!("stream_set_blocking", 2, Some(2), stream_set_blocking),
+    nf!("stream_set_chunk_size", 2, Some(2), stream_set_chunk_size),
+    nf!("stream_set_write_buffer", 2, Some(2), stream_set_write_buffer),
+    nf!("stream_set_read_buffer", 2, Some(2), stream_set_read_buffer),
     nf!("stream_isatty", 1, Some(1), stream_isatty),
     nf!("stream_copy_to_stream", 2, Some(4), stream_copy_to_stream),
     nf!("stream_is_local", 1, Some(1), stream_is_local),
@@ -88,6 +91,9 @@ pub(crate) struct Stream {
     /// is what is left of that fill, so it is `0` on a fresh handle and after
     /// a seek, and up to one 8192-byte chunk after a read.
     fill_end: usize,
+    /// `stream_set_chunk_size()`: what the function reports back; the
+    /// buffer-backed reads here do not chunk.
+    chunk_size: i64,
 }
 
 /// Where a stream's writes end up.
@@ -396,6 +402,98 @@ pub(crate) fn register_constants(r: &mut rphp_runtime::Registry) {
     ] {
         r.constant(name, Value::Int(v));
     }
+    // `streamsfuncs.c`'s `STREAM_*` constants, php's values on macOS
+    // (`STREAM_PF_INET6` is the one platform-dependent value: 30 here, 10
+    // on Linux — cataloged).
+    for (name, v) in [
+        ("STREAM_NOTIFY_CONNECT", 2),
+        ("STREAM_NOTIFY_AUTH_REQUIRED", 3),
+        ("STREAM_NOTIFY_AUTH_RESULT", 10),
+        ("STREAM_NOTIFY_MIME_TYPE_IS", 4),
+        ("STREAM_NOTIFY_FILE_SIZE_IS", 5),
+        ("STREAM_NOTIFY_REDIRECTED", 6),
+        ("STREAM_NOTIFY_PROGRESS", 7),
+        ("STREAM_NOTIFY_FAILURE", 9),
+        ("STREAM_NOTIFY_COMPLETED", 8),
+        ("STREAM_NOTIFY_RESOLVE", 1),
+        ("STREAM_NOTIFY_SEVERITY_INFO", 0),
+        ("STREAM_NOTIFY_SEVERITY_WARN", 1),
+        ("STREAM_NOTIFY_SEVERITY_ERR", 2),
+        ("STREAM_FILTER_READ", 1),
+        ("STREAM_FILTER_WRITE", 2),
+        ("STREAM_FILTER_ALL", 3),
+        ("STREAM_CLIENT_PERSISTENT", 1),
+        ("STREAM_CLIENT_ASYNC_CONNECT", 2),
+        ("STREAM_CLIENT_CONNECT", 4),
+        ("STREAM_CRYPTO_METHOD_ANY_CLIENT", 127),
+        ("STREAM_CRYPTO_METHOD_SSLv2_CLIENT", 3),
+        ("STREAM_CRYPTO_METHOD_SSLv3_CLIENT", 5),
+        ("STREAM_CRYPTO_METHOD_SSLv23_CLIENT", 57),
+        ("STREAM_CRYPTO_METHOD_TLS_CLIENT", 121),
+        ("STREAM_CRYPTO_METHOD_TLSv1_0_CLIENT", 9),
+        ("STREAM_CRYPTO_METHOD_TLSv1_1_CLIENT", 17),
+        ("STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT", 33),
+        ("STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT", 65),
+        ("STREAM_CRYPTO_METHOD_ANY_SERVER", 126),
+        ("STREAM_CRYPTO_METHOD_SSLv2_SERVER", 2),
+        ("STREAM_CRYPTO_METHOD_SSLv3_SERVER", 4),
+        ("STREAM_CRYPTO_METHOD_SSLv23_SERVER", 120),
+        ("STREAM_CRYPTO_METHOD_TLS_SERVER", 120),
+        ("STREAM_CRYPTO_METHOD_TLSv1_0_SERVER", 8),
+        ("STREAM_CRYPTO_METHOD_TLSv1_1_SERVER", 16),
+        ("STREAM_CRYPTO_METHOD_TLSv1_2_SERVER", 32),
+        ("STREAM_CRYPTO_METHOD_TLSv1_3_SERVER", 64),
+        ("STREAM_CRYPTO_PROTO_SSLv3", 4),
+        ("STREAM_CRYPTO_PROTO_TLSv1_0", 8),
+        ("STREAM_CRYPTO_PROTO_TLSv1_1", 16),
+        ("STREAM_CRYPTO_PROTO_TLSv1_2", 32),
+        ("STREAM_CRYPTO_PROTO_TLSv1_3", 64),
+        ("STREAM_SHUT_RD", 0),
+        ("STREAM_SHUT_WR", 1),
+        ("STREAM_SHUT_RDWR", 2),
+        ("STREAM_PF_INET", 2),
+        ("STREAM_PF_INET6", 30),
+        ("STREAM_PF_UNIX", 1),
+        ("STREAM_IPPROTO_IP", 0),
+        ("STREAM_IPPROTO_TCP", 6),
+        ("STREAM_IPPROTO_UDP", 17),
+        ("STREAM_IPPROTO_ICMP", 1),
+        ("STREAM_IPPROTO_RAW", 255),
+        ("STREAM_SOCK_STREAM", 1),
+        ("STREAM_SOCK_DGRAM", 2),
+        ("STREAM_SOCK_RAW", 3),
+        ("STREAM_SOCK_SEQPACKET", 5),
+        ("STREAM_SOCK_RDM", 4),
+        ("STREAM_PEEK", 2),
+        ("STREAM_OOB", 1),
+        ("STREAM_SERVER_BIND", 4),
+        ("STREAM_SERVER_LISTEN", 8),
+        ("STREAM_USE_PATH", 1),
+        ("STREAM_IGNORE_URL", 2),
+        ("STREAM_REPORT_ERRORS", 8),
+        ("STREAM_MUST_SEEK", 16),
+        ("STREAM_URL_STAT_LINK", 1),
+        ("STREAM_URL_STAT_QUIET", 2),
+        ("STREAM_MKDIR_RECURSIVE", 1),
+        ("STREAM_IS_URL", 1),
+        ("STREAM_OPTION_BLOCKING", 1),
+        ("STREAM_OPTION_READ_TIMEOUT", 4),
+        ("STREAM_OPTION_READ_BUFFER", 2),
+        ("STREAM_OPTION_WRITE_BUFFER", 3),
+        ("STREAM_BUFFER_NONE", 0),
+        ("STREAM_BUFFER_LINE", 1),
+        ("STREAM_BUFFER_FULL", 2),
+        ("STREAM_CAST_AS_STREAM", 0),
+        ("STREAM_CAST_FOR_SELECT", 3),
+        ("STREAM_META_TOUCH", 1),
+        ("STREAM_META_OWNER", 3),
+        ("STREAM_META_OWNER_NAME", 2),
+        ("STREAM_META_GROUP", 5),
+        ("STREAM_META_GROUP_NAME", 4),
+        ("STREAM_META_ACCESS", 6),
+    ] {
+        r.constant(name, Value::Int(v));
+    }
     // The CLI SAPI's three standard handles, in php's order — which is why
     // they are resources 1, 2 and 3 and the first `fopen()` of a script is 5.
     for (name, sink, uri, mode) in [
@@ -492,6 +590,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             },
             uri: path_str.clone().into(),
             fill_end: 0,
+            chunk_size: 8192,
         }
     } else {
         let p = arg_path(ctx, &args[0]);
@@ -521,6 +620,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             mode: m.clone().into(),
             uri: p.to_string_lossy().into_owned().into(),
             fill_end: pos,
+            chunk_size: 8192,
         }
     };
     Ok(ctx.resources.add("stream", Box::new(stream)))
@@ -553,6 +653,7 @@ pub(crate) fn open_resource(ctx: &mut Ctx, path: &std::path::Path, mode: &str) -
         mode: mode.into(),
         uri: path.to_string_lossy().into_owned().into(),
         fill_end: 0,
+            chunk_size: 8192,
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -572,6 +673,7 @@ fn std_stream(sink: Sink, uri: &str, mode: &str) -> Stream {
         mode: mode.into(),
         uri: uri.into(),
         fill_end: 0,
+            chunk_size: 8192,
     }
 }
 
@@ -829,6 +931,48 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 fn stream_set_blocking(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
     with_stream(ctx, &stream, "stream_set_blocking", |_| Value::Bool(true))
+}
+
+/// `stream_set_chunk_size(resource $stream, int $size): int` — the previous
+/// chunk size (8192 to begin with); php refuses a size below 1 or above
+/// `INT_MAX`.
+fn stream_set_chunk_size(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    let size = args[1].to_int();
+    if size <= 0 {
+        return Err(Unwind::value_error(
+            "stream_set_chunk_size(): Argument #2 ($size) must be greater than 0",
+        ));
+    }
+    if size > i64::from(i32::MAX) {
+        return Err(Unwind::value_error(
+            "stream_set_chunk_size(): Argument #2 ($size) is too large",
+        ));
+    }
+    with_stream(ctx, &stream, "stream_set_chunk_size", |s| {
+        Value::Int(std::mem::replace(&mut s.chunk_size, size))
+    })
+}
+
+/// `stream_set_write_buffer(resource $stream, int $size): int` — `0` when
+/// the stream took the setting, `-1` when it has no write buffer to set.
+/// php's plain-file streams answer `-1` unless they sit on a `FILE*`,
+/// which only the process's standard handles do; memory streams answer
+/// `-1` too.
+fn stream_set_write_buffer(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    let sink = with_stream(ctx, &stream, "stream_set_write_buffer", |s| s.sink)?;
+    Ok(Value::Int(match sink {
+        Sink::Stdout | Sink::Stderr => 0,
+        Sink::Buffer => -1,
+    }))
+}
+
+/// `stream_set_read_buffer(resource $stream, int $size): int` — the read
+/// buffer is the stream layer's own, so every stream answers `0`.
+fn stream_set_read_buffer(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    with_stream(ctx, &stream, "stream_set_read_buffer", |_| Value::Int(0))
 }
 
 /// `stream_isatty(resource $stream): bool` — true only for the process's own

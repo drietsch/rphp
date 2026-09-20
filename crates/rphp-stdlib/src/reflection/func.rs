@@ -458,14 +458,35 @@ fn native_method_arity(i: &Info) -> Option<(u8, Option<u8>)> {
     }
 }
 
-/// The parameter *names* a native declares, if php-src's stub named them.
-fn native_param_names(i: &Info) -> &'static [&'static str] {
+/// php's arginfo for a native target: the generated
+/// `rphp_runtime::native_arginfo` table, keyed by the function name or
+/// `Class::method` (the declaring class).
+fn native_arginfo(ctx: &Ctx, i: &Info) -> Option<rphp_runtime::ParamRow> {
     if let Some(n) = &i.native {
-        return n.params;
+        return rphp_runtime::native_arginfo(n.name);
     }
-    match i.method.as_ref().map(|m| &m.body) {
-        Some(MethodBody::Native(d)) => d.params,
-        _ => &[],
+    let m = i.method.as_ref()?;
+    let MethodBody::Native(_) = &m.body else {
+        return None;
+    };
+    let class = ctx.class(m.decl).name_str();
+    rphp_runtime::native_arginfo(&format!("{class}::{}", String::from_utf8_lossy(&m.name)))
+}
+
+/// The parameter *names* a native declares.
+fn native_param_names(ctx: &Ctx, i: &Info) -> Vec<&'static str> {
+    native_arginfo(ctx, i)
+        .map(|row| row.iter().map(|(n, _, _)| *n).collect())
+        .unwrap_or_default()
+}
+
+/// The stub default of a native's parameter `index`: `None` for a
+/// required one, a variadic, or one php reports as `<default>`.
+fn native_param_default(ctx: &Ctx, i: &Info, index: usize) -> Option<&'static str> {
+    let (_, _, d) = native_arginfo(ctx, i)?.get(index)?;
+    match d {
+        Some("..." | "<default>") | None => None,
+        Some(expr) => Some(expr),
     }
 }
 
@@ -481,7 +502,7 @@ fn get_parameters(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeR
         }
         return Ok(list(out));
     }
-    for (idx, name) in native_param_names(&i).iter().enumerate() {
+    for (idx, name) in native_param_names(ctx, &i).iter().enumerate() {
         out.push(make_parameter(ctx, &t, idx, name.as_bytes())?);
     }
     Ok(list(out))
@@ -490,19 +511,32 @@ fn get_parameters(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeR
 /// `ReflectionFunctionAbstract::hasReturnType(): bool`
 fn has_return_type(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let i = recv(ctx, o)?;
-    let has = i.func.as_ref().is_some_and(|f| f.f.ret_ty.is_some());
-    Ok(Value::Bool(has))
+    Ok(Value::Bool(return_type_string(ctx, &i).is_some()))
+}
+
+/// The declared return type's text: the compiled declaration, or for a
+/// native the stub's (php's `getReturnType()` on an internal function).
+fn return_type_string(ctx: &Ctx, i: &Info) -> Option<String> {
+    if let Some(f) = &i.func {
+        return f.f.ret_ty.as_ref().map(ToString::to_string);
+    }
+    let display = match (&i.native, &i.method) {
+        (Some(n), _) => n.name.to_string(),
+        (None, Some(m)) => format!(
+            "{}::{}",
+            ctx.class(m.decl).name_str(),
+            String::from_utf8_lossy(&m.name)
+        ),
+        _ => return None,
+    };
+    rphp_runtime::native_return_type(&display).map(ToString::to_string)
 }
 
 /// `ReflectionFunctionAbstract::getReturnType(): ?ReflectionType`
 fn get_return_type(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let i = recv(ctx, o)?;
     let scope = i.scope();
-    let Some(s) = i
-        .func
-        .as_ref()
-        .and_then(|f| f.f.ret_ty.as_ref().map(ToString::to_string))
-    else {
+    let Some(s) = return_type_string(ctx, &i) else {
         return Ok(Value::Null);
     };
     types::from_string(ctx, &s, scope)
@@ -824,7 +858,8 @@ fn method_invoke(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nativ
         .skip(1)
         .map(|v| v.deref().into_owned())
         .collect();
-    invoke_method(ctx, this(o)?, inst, &rest)
+    let named = ctx.take_extra_named();
+    invoke_method(ctx, this(o)?, inst, &rest, named)
 }
 
 /// `ReflectionMethod::invokeArgs(?object $object, array $args): mixed`
@@ -834,7 +869,7 @@ fn method_invoke_args(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> 
         Some(Value::Array(a)) => a.values().map(|v| v.deref().into_owned()).collect(),
         _ => Vec::new(),
     };
-    invoke_method(ctx, this(o)?, inst, &rest)
+    invoke_method(ctx, this(o)?, inst, &rest, Vec::new())
 }
 
 /// The body behind both, with php's three `ReflectionException`s: no object
@@ -844,6 +879,7 @@ fn invoke_method(
     recv_obj: &Object,
     inst: Option<Object>,
     args: &[Value],
+    named: Vec<(Box<[u8]>, Value)>,
 ) -> NativeResult {
     let t = target(recv_obj)?;
     let i = info(ctx, &t)?;
@@ -871,9 +907,9 @@ fn invoke_method(
                 "Given object is not an instance of the class this method was declared in",
             ));
         }
-        return dispatch(ctx, &m, Some(obj), args);
+        return dispatch(ctx, &m, Some(obj), args, named);
     }
-    dispatch(ctx, &m, None, args)
+    dispatch(ctx, &m, None, args, named)
 }
 
 /// Call a resolved method, bypassing visibility the way Reflection does.
@@ -882,6 +918,7 @@ fn dispatch(
     m: &Rc<MethodDef>,
     this_obj: Option<Object>,
     args: &[Value],
+    named: Vec<(Box<[u8]>, Value)>,
 ) -> NativeResult {
     let static_class = this_obj.as_ref().map_or(m.decl, |o| o.class_id());
     let callable = match &m.body {
@@ -897,7 +934,7 @@ fn dispatch(
             this: this_obj,
         },
     };
-    ctx.call_resolved(callable, args)
+    ctx.call_resolved_named(callable, args, named)
 }
 
 /// `ReflectionMethod::getClosure(?object $object = null): Closure`
@@ -965,7 +1002,8 @@ fn is_closure(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult 
 /// `ReflectionFunction::invoke(mixed ...$args): mixed`
 fn function_invoke(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let vals: Vec<Value> = args.iter().map(|v| v.deref().into_owned()).collect();
-    invoke_function(ctx, this(o)?, &vals)
+    let named = ctx.take_extra_named();
+    invoke_function(ctx, this(o)?, &vals, named)
 }
 
 /// `ReflectionFunction::invokeArgs(array $args): mixed`
@@ -974,14 +1012,19 @@ fn function_invoke_args(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -
         Some(Value::Array(a)) => a.values().map(|v| v.deref().into_owned()).collect(),
         _ => Vec::new(),
     };
-    invoke_function(ctx, this(o)?, &vals)
+    invoke_function(ctx, this(o)?, &vals, Vec::new())
 }
 
 /// Call the reflected function.
-fn invoke_function(ctx: &mut Ctx, recv_obj: &Object, args: &[Value]) -> NativeResult {
+fn invoke_function(
+    ctx: &mut Ctx,
+    recv_obj: &Object,
+    args: &[Value],
+    named: Vec<(Box<[u8]>, Value)>,
+) -> NativeResult {
     let t = target(recv_obj)?;
     let callee = callable_value(ctx, &t)?;
-    ctx.call_value(&callee, args)
+    ctx.call_value_named(&callee, args, named)
 }
 
 /// `ReflectionFunction::getClosure(): Closure`
@@ -1025,7 +1068,7 @@ fn parameter_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
     let i = info(ctx, &owner)?;
     let names: Vec<Box<[u8]>> = match &i.func {
         Some(f) => f.f.params.iter().map(|p| p.name.clone()).collect(),
-        None => native_param_names(&i)
+        None => native_param_names(ctx, &i)
             .iter()
             .map(|n| Box::from(n.as_bytes()))
             .collect(),
@@ -1066,29 +1109,57 @@ fn parameter_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
 
 /// php's rendering of a default value inside `__toString()`: `NULL`,
 /// `true`, `'text'`, `[0 => 1, 'k' => 2]`, a number as written.
+/// php's `smart_str_append_escaped`: backslash and the C escapes spelled
+/// out, other control bytes and everything past ASCII as `\xNN`; the
+/// quote itself is left alone.
+fn escape_default_str(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        match b {
+            b'\\' => out.push_str("\\\\"),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0x0c => out.push_str("\\f"),
+            0x0b => out.push_str("\\v"),
+            0x1b => out.push_str("\\e"),
+            b if b < 0x20 || b >= 0x7f => out.push_str(&format!("\\x{b:02X}")),
+            b => out.push(b as char),
+        }
+    }
+    out
+}
+
 pub(crate) fn export_default(v: &Value) -> String {
     match &*v.deref() {
         Value::Null | Value::Uninit => "NULL".to_string(),
         Value::Bool(b) => (if *b { "true" } else { "false" }).to_string(),
         Value::Int(n) => n.to_string(),
         Value::Float(f) => {
-            let s = f.to_string();
-            if s.contains(['.', 'e', 'E', 'n', 'i']) {
+            // php's own float spelling (`1.0E+100`), with `.0` when integral.
+            let s = Value::Float(*f).to_php_string();
+            if s.contains(['.', 'E', 'N', 'I']) {
                 s
             } else {
                 format!("{s}.0")
             }
         }
-        Value::Str(st) => format!("'{}'", String::from_utf8_lossy(st.as_bytes())),
+        Value::Str(st) => format!("'{}'", escape_default_str(st.as_bytes())),
         Value::Array(a) => {
+            // A list prints its values alone; any other shape its keys too.
+            let is_list = a
+                .iter()
+                .enumerate()
+                .all(|(i, (k, _))| matches!(k, rphp_value::ArrayKey::Int(n) if *n == i as i64));
             let parts: Vec<String> = a
                 .iter()
                 .map(|(k, v)| {
+                    if is_list {
+                        return export_default(&v);
+                    }
                     let key = match &k {
                         rphp_value::ArrayKey::Int(n) => n.to_string(),
-                        rphp_value::ArrayKey::Str(s) => {
-                            format!("'{}'", String::from_utf8_lossy(s))
-                        }
+                        rphp_value::ArrayKey::Str(s) => format!("'{}'", escape_default_str(s)),
                     };
                     format!("{key} => {}", export_default(&v))
                 })
@@ -1137,10 +1208,30 @@ fn param_to_string(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Native
     }
     out.push('$');
     out.push_str(&String::from_utf8_lossy(&name));
-    if param_has_default(ctx, o, &mut [])?.to_bool() {
-        let d = param_get_default(ctx, o, &mut [])?;
+    // php prints the default as *written*: a native's stub expression (even
+    // `<default>`), a user parameter's constant fetch by name (a resolved
+    // class constant with a leading backslash), a literal exported.
+    let (s, i) = param_of(ctx, this(o)?)?;
+    if i.func.is_none() {
+        if let Some((_, _, Some(expr))) = native_arginfo(ctx, &i).and_then(|row| row.get(s.index)) {
+            if *expr != "..." {
+                out.push_str(" = ");
+                out.push_str(expr);
+            }
+        }
+    } else if param_has_default(ctx, o, &mut [])?.to_bool() {
         out.push_str(" = ");
-        out.push_str(&export_default(&d));
+        match param_default_const_name(ctx, &i, s.index) {
+            Some(name) if name.contains("::") && !name.starts_with("self::") && !name.starts_with("parent::") => {
+                out.push('\\');
+                out.push_str(&name);
+            }
+            Some(name) => out.push_str(&name),
+            None => {
+                let d = param_get_default(ctx, o, &mut [])?;
+                out.push_str(&export_default(&d));
+            }
+        }
     }
     out.push_str(" ]");
     Ok(Value::string(out.as_bytes()))
@@ -1292,7 +1383,7 @@ fn function_to_string(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Nat
     // Parameters and the return type.
     let names: Vec<Vec<u8>> = match &i.func {
         Some(f) => f.f.params.iter().map(|p| p.name.to_vec()).collect(),
-        None => native_param_names(&i).iter().map(|n| n.as_bytes().to_vec()).collect(),
+        None => native_param_names(ctx, &i).iter().map(|n| n.as_bytes().to_vec()).collect(),
     };
     let ret_value = get_return_type(ctx, o, &mut [])?;
     let ret = type_text(ctx, &ret_value)?;
@@ -1365,11 +1456,11 @@ fn callable_target(ctx: &mut Ctx, v: &Value) -> Result<FnTarget, Unwind> {
 /// `ReflectionParameter::getName(): string`
 fn param_get_name(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let (s, i) = param_of(ctx, this(o)?)?;
-    Ok(Value::string(&param_name(&i, s.index)))
+    Ok(Value::string(&param_name(ctx, &i, s.index)))
 }
 
 /// The declared name of parameter `index`.
-fn param_name(i: &Info, index: usize) -> Box<[u8]> {
+fn param_name(ctx: &Ctx, i: &Info, index: usize) -> Box<[u8]> {
     if let Some(f) = &i.func {
         return f
             .f
@@ -1377,7 +1468,7 @@ fn param_name(i: &Info, index: usize) -> Box<[u8]> {
             .get(index)
             .map_or_else(|| Box::from(&b""[..]), |p| p.name.clone());
     }
-    native_param_names(i)
+    native_param_names(ctx, i)
         .get(index)
         .map_or_else(|| Box::from(&b""[..]), |n| Box::from(n.as_bytes()))
 }
@@ -1389,8 +1480,13 @@ fn param_get_position(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Nat
 }
 
 /// The canonical spelling of a parameter's declared type, if it has one.
-fn param_type_string(i: &Info, index: usize) -> Option<String> {
-    let p = i.func.as_ref().and_then(|f| f.f.params.get(index))?;
+fn param_type_string(ctx: &Ctx, i: &Info, index: usize) -> Option<String> {
+    let Some(f) = i.func.as_ref() else {
+        // A native: the stub's declared type, from the arginfo table.
+        let (_, ty, _) = native_arginfo(ctx, i)?.get(index)?;
+        return ty.map(ToString::to_string);
+    };
+    let p = f.f.params.get(index)?;
     let ty = p.ty.as_ref().map(ToString::to_string)?;
     // php's *implicitly nullable* parameter: a single declared type with a
     // literal `null` default accepts null as well, and Reflection shows the
@@ -1428,14 +1524,14 @@ fn default_is_null(i: &Info, index: usize) -> bool {
 /// `ReflectionParameter::hasType(): bool`
 fn param_has_type(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let (s, i) = param_of(ctx, this(o)?)?;
-    Ok(Value::Bool(param_type_string(&i, s.index).is_some()))
+    Ok(Value::Bool(param_type_string(ctx, &i, s.index).is_some()))
 }
 
 /// `ReflectionParameter::getType(): ?ReflectionType`
 fn param_get_type(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let (s, i) = param_of(ctx, this(o)?)?;
     let scope = i.scope();
-    match param_type_string(&i, s.index) {
+    match param_type_string(ctx, &i, s.index) {
         Some(t) => types::from_string(ctx, &t, scope),
         None => Ok(Value::Null),
     }
@@ -1446,7 +1542,7 @@ fn param_get_type(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeR
 fn param_allows_null(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let (s, i) = param_of(ctx, this(o)?)?;
     let scope = i.scope();
-    let allows = match param_type_string(&i, s.index) {
+    let allows = match param_type_string(ctx, &i, s.index) {
         Some(t) => types::parse(ctx, &t, scope).nullable,
         None => true,
     };
@@ -1470,7 +1566,7 @@ fn param_is_variadic(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Nati
     let v = match &i.func {
         Some(f) => f.f.params.get(s.index).is_some_and(|p| p.variadic),
         None => {
-            let names = native_param_names(&i);
+            let names = native_param_names(ctx, &i);
             let last = !names.is_empty() && s.index + 1 == names.len();
             last && match (&i.native, native_method_arity(&i)) {
                 (Some(n), _) => n.max_args.is_none(),
@@ -1520,18 +1616,37 @@ fn param_default(i: &Info, index: usize) -> Option<InitKey> {
     parse_init_ref(&format!("{d:?}"))
 }
 
+/// Where parameter `index`'s default comes from.
+enum ParamDefault {
+    /// A user function's compiled initializer.
+    User(InitKey),
+    /// A native's stub expression.
+    Native(&'static str),
+}
+
+fn param_default_source(ctx: &Ctx, i: &Info, index: usize) -> Option<ParamDefault> {
+    if i.func.is_some() {
+        return param_default(i, index).map(ParamDefault::User);
+    }
+    native_param_default(ctx, i, index).map(ParamDefault::Native)
+}
+
 /// `ReflectionParameter::isDefaultValueAvailable(): bool`
 fn param_has_default(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let (s, i) = param_of(ctx, this(o)?)?;
-    Ok(Value::Bool(param_default(&i, s.index).is_some()))
+    Ok(Value::Bool(param_default_source(ctx, &i, s.index).is_some()))
 }
 
 /// `ReflectionParameter::getDefaultValue(): mixed`
 fn param_get_default(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let (s, i) = param_of(ctx, this(o)?)?;
     let failed = || refl_error("Internal error: Failed to retrieve the default value");
-    let Some(k) = param_default(&i, s.index) else {
+    let Some(src) = param_default_source(ctx, &i, s.index) else {
         return Err(failed());
+    };
+    let k = match src {
+        ParamDefault::Native(expr) => return Ok(ctx.native_default(expr)),
+        ParamDefault::User(k) => k,
     };
     let f = i.func.clone().ok_or_else(failed)?;
     match k {
@@ -1548,6 +1663,40 @@ fn param_get_default(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Nati
             run_thunk(ctx, fid, i.class)
         }
     }
+}
+
+/// The constant name a default is, when it is one constant fetch: a user
+/// parameter's `default_const`, a native stub's bare name.
+fn param_default_const_name(ctx: &Ctx, i: &Info, index: usize) -> Option<String> {
+    if let Some(f) = &i.func {
+        return f
+            .f
+            .params
+            .get(index)?
+            .default_const
+            .as_ref()
+            .map(|n| String::from_utf8_lossy(n).into_owned());
+    }
+    let expr = native_param_default(ctx, i, index)?;
+    rphp_runtime::native_default_is_constant(expr).then(|| expr.trim_start_matches('\\').to_string())
+}
+
+/// `ReflectionParameter::isDefaultValueConstant(): bool`
+fn param_default_is_constant(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let (s, i) = param_of(ctx, this(o)?)?;
+    if param_default_source(ctx, &i, s.index).is_none() {
+        return Err(refl_error("Internal error: Failed to retrieve the default value"));
+    }
+    Ok(Value::Bool(param_default_const_name(ctx, &i, s.index).is_some()))
+}
+
+/// `ReflectionParameter::getDefaultValueConstantName(): ?string`
+fn param_default_const(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let (s, i) = param_of(ctx, this(o)?)?;
+    if param_default_source(ctx, &i, s.index).is_none() {
+        return Err(refl_error("Internal error: Failed to retrieve the default value"));
+    }
+    Ok(param_default_const_name(ctx, &i, s.index).map_or(Value::Null, |n| Value::string(n.as_bytes())))
 }
 
 /// `ReflectionParameter::getDeclaringFunction(): ReflectionFunctionAbstract`
@@ -1705,6 +1854,8 @@ pub(crate) fn register_classes(r: &mut Registry) {
             nm!(0, Some(0), param_has_default),
         )
         .method("getDefaultValue", nm!(0, Some(0), param_get_default))
+        .method("isDefaultValueConstant", nm!(0, Some(0), param_default_is_constant))
+        .method("getDefaultValueConstantName", nm!(0, Some(0), param_default_const))
         .method(
             "getDeclaringFunction",
             nm!(0, Some(0), param_declaring_function),

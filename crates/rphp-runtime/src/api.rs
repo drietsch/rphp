@@ -2,7 +2,7 @@
 //! to [`Interp`]): output, diagnostics, calling back into PHP, ini,
 //! constants, resources, and location queries.
 
-use rphp_value::Value;
+use rphp_value::{PhpRef, Value};
 
 use crate::errors::ErrLevel;
 use crate::frame::Frame;
@@ -42,6 +42,16 @@ impl Interp {
 
     /// Record where the output that reached the SAPI came from, the first
     /// time any does — php quotes it back in "headers already sent by".
+    /// The cell behind the running native's by-reference argument `i`
+    /// (`None` when the caller passed a plain value, or `i` is by value):
+    /// for a native that keeps the binding beyond the call, as
+    /// `PDOStatement::bindParam()` does.
+    pub fn ref_arg(&self, i: usize) -> Option<PhpRef> {
+        self.frames
+            .last()
+            .and_then(|f| f.ref_cells.iter().find(|(p, _)| *p == i).map(|(_, c)| c.clone()))
+    }
+
     pub fn note_output(&mut self) {
         if self.out.take_first_send() {
             self.output_started = self

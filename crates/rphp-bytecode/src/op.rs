@@ -401,6 +401,17 @@ pub enum Op {
         base: Reg,
         key: Reg,
     },
+    /// `dst = base[key]` fetched to be modified and stored back
+    /// (`$a['k']++`, php's `RW` fetch): an array element as `ArrayGet`
+    /// (undefined-key warning included); an `ArrayAccess` object as the
+    /// `W` fetch — its storage, or `offsetGet()`'s temporary with php's
+    /// "Indirect modification" notice, which the `WriteBackElem` then
+    /// drops.
+    FetchElemRW {
+        dst: Reg,
+        base: Reg,
+        key: Reg,
+    },
     /// `arr[key] = value`, mutating the array in register `arr` in place (COW).
     /// Auto-vivifies a fresh array when `arr` holds null.
     ArraySet {
@@ -412,6 +423,18 @@ pub enum Op {
     ArrayPush {
         arr: Reg,
         value: Reg,
+    },
+    /// The write-back of a nested write (`$a['x']['y'] = 1` stores the
+    /// modified `$a['x']` back; `key` `None` is an append): an array is
+    /// stored like `ArraySet`/`ArrayPush`; an `ArrayAccess` object gets
+    /// `offsetSet()` only when its element storage is real (`ArrayObject`,
+    /// `WeakMap`, …) — for any other object php modified a temporary
+    /// (with its "Indirect modification" notice at the fetch) and stores
+    /// nothing.
+    WriteBackElem {
+        arr: Reg,
+        key: Option<Reg>,
+        val: Reg,
     },
     /// `foreach` step: if `cursor >= len(arr)` jump to `target`; otherwise load
     /// the entry at position `cursor` into `key_dst`/`val_dst` and advance
@@ -677,6 +700,15 @@ pub enum Op {
         obj: Reg,
         name: NameRef,
     },
+    /// Branch to `target` unless the innermost pending call takes positional
+    /// argument `pos` by reference: php's `FETCH_*_FUNC_ARG` decision, made
+    /// once here so a nested place (`f($this->list['k'])`) is fetched for
+    /// writing only when the parameter really is by-reference, and read
+    /// (no autovivification, no readonly violation) otherwise.
+    JmpUnlessArgByRef {
+        pos: u16,
+        target: CodeAddr,
+    },
     /// Spread `src` (`...$args`): an array or `Traversable`; string keys become
     /// named arguments (PHP 8.1), which must come after all positional ones.
     SendUnpack {
@@ -709,6 +741,12 @@ pub enum Op {
     /// (`$x = &f()`). Return-type checks apply as for [`Op::Ret`].
     RetRef {
         var: Reg,
+    },
+    /// `return <expression>` from a `function &f()` when the expression is
+    /// not a place: php's `Notice: Only variable references should be
+    /// returned by reference`, then the value in a fresh cell.
+    RetRefTemp {
+        src: Option<Reg>,
     },
 
     // --- prologue (E3) ---

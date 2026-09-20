@@ -197,6 +197,11 @@ pub(crate) fn array_keys(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 pub(crate) fn array_values(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_values", &args[0])?;
+    // php returns a packed array as it is (refcount + 1); a reference
+    // element would be unwrapped by the copy, so only a plain list shares.
+    if arr.is_pristine_list() && !arr.iter().any(|(_, v)| matches!(v, Value::Ref(_))) {
+        return Ok(Value::Array(arr.clone()));
+    }
     let mut out = Array::new();
     for (_, v) in arr.iter() {
         push_any(&mut out, v.clone());

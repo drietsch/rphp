@@ -84,19 +84,31 @@ fn canonical_int_key(b: &[u8]) -> Option<i64> {
 
 type Entry = Option<(ArrayKey, Value)>;
 
-#[derive(Default)]
 struct ArrayData {
     /// Insertion-ordered entries; `None` is a tombstone left by `unset`.
     entries: Vec<Entry>,
     /// Number of `Some` entries.
     live: usize,
-    /// key → raw position in `entries` (always a live slot).
+    /// key → raw position in `entries` (always a live slot). Empty while
+    /// `packed`.
     index: HashMap<ArrayKey, usize>,
+    /// php's packed array: entry `i` has key `i` and there are no
+    /// tombstones, so a lookup is the position itself and `index` stays
+    /// empty (an append or a copy never hashes). The first other key or
+    /// hole builds the index and clears the flag.
+    packed: bool,
     /// The key a bare `$a[] =` append will use next.
     next_int: i64,
     /// The internal pointer (`current()`/`next()`/…): a raw position, or
     /// `entries.len()` when past the end.
     pos: usize,
+}
+
+impl Default for ArrayData {
+    /// Empty, and packed until a key says otherwise.
+    fn default() -> ArrayData {
+        ArrayData { entries: Vec::new(), live: 0, index: HashMap::new(), packed: true, next_int: 0, pos: 0 }
+    }
 }
 
 impl Clone for ArrayData {
@@ -123,6 +135,7 @@ impl Clone for ArrayData {
             entries,
             live: self.live,
             index: self.index.clone(),
+            packed: self.packed,
             next_int: self.next_int,
             pos: self.pos,
         }
@@ -132,6 +145,32 @@ impl Clone for ArrayData {
 impl ArrayData {
     fn tombstones(&self) -> usize {
         self.entries.len() - self.live
+    }
+
+    /// The raw position of `key`, if present.
+    #[inline]
+    fn lookup(&self, key: &ArrayKey) -> Option<usize> {
+        if self.packed {
+            return match key {
+                ArrayKey::Int(k) if *k >= 0 && (*k as usize) < self.entries.len() => Some(*k as usize),
+                _ => None,
+            };
+        }
+        self.index.get(key).copied()
+    }
+
+    /// Leave packed mode: build the index over the entries.
+    fn unpack(&mut self) {
+        if !self.packed {
+            return;
+        }
+        self.packed = false;
+        self.index.reserve(self.entries.len());
+        for (raw, e) in self.entries.iter().enumerate() {
+            if let Some((k, _)) = e {
+                self.index.insert(k.clone(), raw);
+            }
+        }
     }
 
     /// First live raw position `>= from`.
@@ -151,7 +190,14 @@ impl ArrayData {
             self.next_int = self.next_int.max(k.saturating_add(1));
         }
         let raw = self.entries.len();
-        self.index.insert(key.clone(), raw);
+        if self.packed {
+            if !matches!(&key, ArrayKey::Int(k) if *k == raw as i64) {
+                self.unpack();
+                self.index.insert(key.clone(), raw);
+            }
+        } else {
+            self.index.insert(key.clone(), raw);
+        }
         self.entries.push(Some((key, value)));
         self.live += 1;
         raw
@@ -168,6 +214,7 @@ impl ArrayData {
         let old = std::mem::take(&mut self.entries);
         let mut entries: Vec<Entry> = Vec::with_capacity(self.live);
         self.index.clear();
+        self.packed = false;
         // `pos` follows the element it points at; past-the-end stays past the end.
         let mut new_pos = None;
         for (raw, e) in old.into_iter().enumerate() {
@@ -216,7 +263,7 @@ impl Array {
     /// Look up by normalized key, returning the element **as stored** (possibly
     /// a [`Value::Ref`]). Readers usually want [`Array::get_deref`].
     pub fn get(&self, key: &ArrayKey) -> Option<&Value> {
-        self.0.index.get(key).and_then(|&i| self.0.at(i)).map(|(_, v)| v)
+        self.0.lookup(key).and_then(|i| self.0.at(i)).map(|(_, v)| v)
     }
 
     /// Look up by normalized key, dereferencing a reference element.
@@ -228,13 +275,13 @@ impl Array {
     /// `Ref`; write with [`Value::assign`] to honour it.
     pub fn get_mut(&mut self, key: &ArrayKey) -> Option<&mut Value> {
         let data = Rc::make_mut(&mut self.0);
-        let i = *data.index.get(key)?;
+        let i = data.lookup(key)?;
         data.entries[i].as_mut().map(|(_, v)| v)
     }
 
     /// Whether `key` is present (`array_key_exists`; a `null` element counts).
     pub fn contains_key(&self, key: &ArrayKey) -> bool {
-        self.0.index.contains_key(key)
+        self.0.lookup(key).is_some()
     }
 
     /// Insert or overwrite `key` by value: an existing reference element is
@@ -245,7 +292,7 @@ impl Array {
     pub fn set(&mut self, key: ArrayKey, value: Value) {
         let value = value.unref();
         let data = Rc::make_mut(&mut self.0);
-        if let Some(&i) = data.index.get(&key) {
+        if let Some(i) = data.lookup(&key) {
             if let Some((_, slot)) = data.entries[i].as_mut() {
                 Value::assign(slot, value);
             }
@@ -258,7 +305,7 @@ impl Array {
     /// previous binding rather than writing through it.
     pub fn set_ref(&mut self, key: ArrayKey, r: PhpRef) {
         let data = Rc::make_mut(&mut self.0);
-        if let Some(&i) = data.index.get(&key) {
+        if let Some(i) = data.lookup(&key) {
             if let Some((_, slot)) = data.entries[i].as_mut() {
                 *slot = Value::Ref(r);
             }
@@ -286,8 +333,8 @@ impl Array {
     /// is shared only by this array (and by copies taken *afterwards*).
     pub fn get_ref(&mut self, key: ArrayKey) -> PhpRef {
         let data = Rc::make_mut(&mut self.0);
-        let i = match data.index.get(&key) {
-            Some(&i) => i,
+        let i = match data.lookup(&key) {
+            Some(i) => i,
             None => data.insert_new(key, Value::Null),
         };
         match data.entries[i].as_mut() {
@@ -302,10 +349,10 @@ impl Array {
     /// holes outnumber half the live entries. The next append key is **not**
     /// reset (`$a = [1, 2]; unset($a[1]); $a[] = 3;` yields key 2).
     pub fn unset(&mut self, key: &ArrayKey) -> Option<Value> {
-        if !self.0.index.contains_key(key) {
-            return None;
-        }
+        self.0.lookup(key)?;
         let data = Rc::make_mut(&mut self.0);
+        // A hole ends packed mode (the positions no longer are the keys).
+        data.unpack();
         let i = data.index.remove(key)?;
         let (_, v) = data.entries[i].take()?;
         data.live -= 1;
@@ -415,6 +462,14 @@ impl Array {
             .all(|(i, k)| matches!(k, ArrayKey::Int(n) if *n == i as i64))
     }
 
+    /// Whether the storage is a gap-free list with its internal pointer at
+    /// the start: `array_values()` and friends hand such an array back as
+    /// it is (sharing the storage), as php's packed-array fast path does.
+    pub fn is_pristine_list(&self) -> bool {
+        let d = &self.0;
+        d.packed && d.pos == 0 && d.next_int == d.live as i64
+    }
+
     /// Union (`+`): all of `self`'s entries, plus `other`'s keys not in `self`.
     pub fn union(&self, other: &Array) -> Array {
         let mut out = self.clone();
@@ -429,7 +484,8 @@ impl Array {
     /// Loose `==`: same count and the same key⇒(loosely-equal) value pairs,
     /// order-independent.
     pub fn loose_eq(&self, other: &Array) -> bool {
-        self.len() == other.len()
+        Rc::ptr_eq(&self.0, &other.0)
+            || self.len() == other.len()
             && self
                 .iter()
                 .all(|(k, v)| other.get(k).is_some_and(|ov| v.loose_eq(ov)))
@@ -438,7 +494,10 @@ impl Array {
     /// Strict `===`: same key/value pairs in the **same order**, identically
     /// (reference elements compare their contents, as PHP does).
     pub fn identical(&self, other: &Array) -> bool {
-        self.len() == other.len()
+        // The same storage (a copy not yet written to) is identical without
+        // a walk, as `zend_is_identical` decides for a shared `zend_array`.
+        Rc::ptr_eq(&self.0, &other.0)
+            || self.len() == other.len()
             && self
                 .iter()
                 .zip(other.iter())

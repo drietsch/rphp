@@ -693,26 +693,23 @@ impl Interp {
                 }
                 Op::ArraySet { arr, key, value } => {
                     let v = self.rd(base, value);
-                    let container = self.rd(base, arr);
-                    match &*container.deref() {
-                        Value::Object(o) if self.is_array_access(o) => {
-                            let o = o.clone();
+                    // Only an `ArrayAccess` container is taken out of the
+                    // register; holding a clone of an array here would make
+                    // the write below copy it (copy-on-write sees two owners).
+                    match self.array_access_in(base, arr) {
+                        Some(o) => {
                             let k = self.rd(base, key);
                             self.offset_set(&o, Some(&k), v)?;
                         }
-                        _ => self.array_set(base, arr, Some(key), v)?,
+                        None => self.array_set(base, arr, Some(key), v)?,
                     }
                 }
                 Op::ArrayPush { arr, value } => {
                     let v = self.rd(base, value);
-                    let container = self.rd(base, arr);
-                    match &*container.deref() {
+                    match self.array_access_in(base, arr) {
                         // `$o[] = $v` is `offsetSet(null, $v)`.
-                        Value::Object(o) if self.is_array_access(o) => {
-                            let o = o.clone();
-                            self.offset_set(&o, None, v)?;
-                        }
-                        _ => self.array_set(base, arr, None, v)?,
+                        Some(o) => self.offset_set(&o, None, v)?,
+                        None => self.array_set(base, arr, None, v)?,
                     }
                 }
                 Op::WriteBackElem { arr, key, val } => {
@@ -2308,12 +2305,29 @@ impl Interp {
         Ok(target)
     }
 
+    /// The `ArrayAccess` object in register `arr` (through a reference),
+    /// if that is what the register holds — without cloning anything else.
+    fn array_access_in(&self, base: usize, arr: u16) -> Option<Object> {
+        let slot = self.raw(base, arr);
+        let o = match slot {
+            Value::Object(o) => o.clone(),
+            Value::Ref(r) => match &*r.borrow() {
+                Value::Object(o) => o.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        self.is_array_access(&o).then_some(o)
+    }
+
     /// `arr[key] = v` / `arr[] = v` on the container in register `arr`
     /// (through a reference binding), with php's autovivification rules.
     fn array_set(&mut self, base: usize, arr: u16, key: Option<u16>, v: Value) -> Result<(), Unwind> {
         let k = key.map(|k| self.rd(base, k));
-        let classes = self.classes.clone();
-        let class_name = move |o: &Object| classes[o.class_id() as usize].name_str();
+        // The name comes off the object's own layout: no borrow of the
+        // class table (whose clone, per element write, cost more than the
+        // write).
+        let class_name = |o: &Object| String::from_utf8_lossy(rphp_value::display_class_name(o.layout().class_name())).into_owned();
         let notice =
             self.with_slot(base, arr, |slot| Interp::array_set_in(slot, k.as_ref(), v, &class_name))?;
         match notice {
@@ -2332,7 +2346,6 @@ impl Interp {
     /// container (or its reference cell shared) so the following nested
     /// write mutates it in place; the compiler writes it back afterwards.
     fn fetch_elem_w(&mut self, base: usize, arr: u16, key: Option<&Value>) -> Result<Value, Unwind> {
-        let classes = self.classes.clone();
         let key = key.cloned();
         let r = self.with_slot(base, arr, |slot| {
             let mut deprecated_false = false;
@@ -2366,7 +2379,7 @@ impl Interp {
                 Value::Str(_) => Err(Unwind::error("Cannot use string offset as an array")),
                 Value::Object(o) => Err(Unwind::error(format!(
                     "Cannot use object of type {} as array",
-                    String::from_utf8_lossy(&classes[o.class_id() as usize].name)
+                    String::from_utf8_lossy(rphp_value::display_class_name(o.layout().class_name()))
                 ))),
                 Value::Closure(_) => Err(Unwind::error("Cannot use object of type Closure as array")),
                 _ => Err(Unwind::error("Cannot use a scalar value as an array")),

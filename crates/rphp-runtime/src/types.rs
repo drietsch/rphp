@@ -281,12 +281,16 @@ impl Interp {
             if slot.is_uninit() {
                 continue; // filled by RecvInit
             }
+            // An exact match leaves the register alone: no clone, no
+            // comparison (an array argument would be compared element by
+            // element otherwise).
+            if self.matches_exact(&slot.deref(), ty, scope, static_class) {
+                continue;
+            }
             let v = slot.deref().into_owned();
             match self.coerce_to_type(v.clone(), ty, strict, scope, static_class)? {
                 Coerced::Ok(nv) => {
-                    if !nv.identical(&v) || !matches!(nv, Value::Object(_)) {
-                        Value::assign(&mut self.stack[base + p.reg as usize], nv);
-                    }
+                    Value::assign(&mut self.stack[base + p.reg as usize], nv);
                 }
                 Coerced::Mismatch => {
                     let fname = self.callable_display_name(func);

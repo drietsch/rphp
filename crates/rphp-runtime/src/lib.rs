@@ -61,6 +61,7 @@ pub use interp::{
     CompileFailure, CompileHook, ExtState, Interp, SapiKind, MAX_FRAMES, MAX_REENTRY_DEPTH,
 };
 pub use ops::{str_increment, value_name};
+pub use props::{LAZY_SKIP_DESTRUCTOR, LAZY_SKIP_INITIALIZATION_ON_SERIALIZE};
 pub use symtab::{Symtab, SymtabData};
 pub use types::Coerced;
 pub use unit::{FuncRt, IcSlot, UnitRt};

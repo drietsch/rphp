@@ -172,6 +172,15 @@ impl Interp {
         {
             return Ok(());
         }
+        // A lazy object that never ran its initializer has no state to
+        // destruct, and a proxy's destructor belongs to its real instance,
+        // which runs it when the proxy lets go of it.
+        if obj
+            .lazy()
+            .is_some_and(|l| !l.initialized || l.kind == rphp_value::LazyKind::Proxy)
+        {
+            return Ok(());
+        }
         self.call_method(obj, b"__destruct", &[])?;
         Ok(())
     }

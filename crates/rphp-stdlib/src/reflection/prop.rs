@@ -262,22 +262,45 @@ fn prop_set_raw_value(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> 
 }
 
 /// `ReflectionProperty::setRawValueWithoutLazyInitialization(object $object, mixed $value): void`
-/// — there are no lazy objects here, so the write is the ordinary one.
+/// — a write that leaves a lazy object lazy: the slot is set and marked
+/// initialized ahead of the initializer.
 fn prop_set_raw_value_no_lazy(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
-    prop_set_value(ctx, o, args)
+    let s: PropState = state(this(o)?)?;
+    let obj = instance_arg(ctx, &s, args, "setRawValueWithoutLazyInitialization")?;
+    let v = args.get(1).map(|v| v.deref().into_owned()).unwrap_or(Value::Null);
+    if obj.is_uninitialized_lazy() {
+        skip_lazy(&obj, &s.name, Some(v));
+    } else {
+        obj.set(&s.name, v);
+    }
+    Ok(Value::Null)
 }
 
-/// `ReflectionProperty::isLazy(object $object): bool` — no object this
-/// engine builds is lazy.
-fn prop_is_lazy(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    this(o)?;
-    Ok(Value::Bool(false))
+/// Initialize `name` ahead of the initializer, to `value` or its default.
+/// Once every declared property is, php treats the object as initialized —
+/// an ordinary object again, with no initializer left to run.
+fn skip_lazy(obj: &Object, name: &[u8], value: Option<Value>) {
+    if obj.lazy_skip(name, value) {
+        obj.clear_lazy();
+    }
 }
 
-/// `ReflectionProperty::skipLazyInitialization(object $object): void` —
-/// nothing to skip.
-fn prop_skip_lazy_init(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    this(o)?;
+/// `ReflectionProperty::isLazy(object $object): bool` — whether reading the
+/// property would run the object's initializer.
+fn prop_is_lazy(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let obj = instance_arg(ctx, &s, args, "isLazy")?;
+    Ok(Value::Bool(obj.lazy_needs_init(Some(&s.name))))
+}
+
+/// `ReflectionProperty::skipLazyInitialization(object $object): void` — the
+/// property keeps its default and no longer triggers the initializer.
+fn prop_skip_lazy_init(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let obj = instance_arg(ctx, &s, args, "skipLazyInitialization")?;
+    if obj.is_uninitialized_lazy() {
+        skip_lazy(&obj, &s.name, None);
+    }
     Ok(Value::Null)
 }
 

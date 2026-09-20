@@ -275,6 +275,11 @@ pub(crate) fn compile_class(
         traits,
         ..
     } = lo;
+    // `#[AllowDynamicProperties]` is the one attribute the engine acts on
+    // itself: the class's dynamic properties skip the 8.2 deprecation.
+    if class_attrs.iter().any(|a| a.name.eq_ignore_ascii_case(b"AllowDynamicProperties")) {
+        flags |= ClassFlags::ALLOW_DYNAMIC;
+    }
 
     let class = BcClass {
         name,

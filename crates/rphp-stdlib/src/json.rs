@@ -301,6 +301,9 @@ impl Encoder {
             }
             Value::Str(s) => return Ok(self.escape_string(s.as_bytes(), self.flags, false)),
             Value::Object(o) => {
+                // A lazy object initializes first; a proxy encodes its real
+                // instance.
+                let o = &ctx.lazy_resolve(&o.clone())?;
                 if let Some(iface) = ctx.class_by_name(b"JsonSerializable") {
                     if ctx.object_instanceof(o, iface) {
                         return self.encode_serializable(ctx, o);

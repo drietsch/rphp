@@ -271,11 +271,169 @@ fn get_extension(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRe
     Ok(Value::Null)
 }
 
-/// `ReflectionClass::isUninitializedLazyObject(object $object): bool` —
-/// there are no lazy objects in this engine, so no object is one.
-fn is_uninitialized_lazy_object(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    this(o)?;
-    Ok(Value::Bool(false))
+// ---- php 8.4 lazy objects ---------------------------------------------------
+
+/// The initializer / factory argument, checked the way php's `callable`
+/// parameter is.
+fn callable_arg(ctx: &Ctx, who: &str, args: &[Value], n: usize, name: &str) -> Result<Value, Unwind> {
+    let v = args.first().map(|v| v.deref().into_owned()).unwrap_or(Value::Null);
+    if !ctx.is_callable(&v) {
+        let detail = match &v {
+            Value::Str(s) => format!(
+                "function \"{}\" not found or invalid function name",
+                String::from_utf8_lossy(s.as_bytes())
+            ),
+            _ => "no array or string given".to_string(),
+        };
+        return Err(Unwind::type_error(format!(
+            "ReflectionClass::{who}(): Argument #{n} (${name}) must be a valid callback, {detail}"
+        )));
+    }
+    Ok(v)
+}
+
+/// The `$options` argument: only the `SKIP_*` bits, and `SKIP_DESTRUCTOR`
+/// only for a reset (a new object has no state to destruct).
+fn lazy_options(who: &str, v: Option<&Value>, n: usize, reset: bool) -> Result<i64, Unwind> {
+    let options = v.map_or(0, |v| v.deref().to_int());
+    let known = rphp_runtime::LAZY_SKIP_INITIALIZATION_ON_SERIALIZE | rphp_runtime::LAZY_SKIP_DESTRUCTOR;
+    if options & !known != 0 {
+        return Err(refl_error(format!(
+            "ReflectionClass::{who}(): Argument #{n} ($options) contains invalid flags"
+        )));
+    }
+    if !reset && options & rphp_runtime::LAZY_SKIP_DESTRUCTOR != 0 {
+        return Err(refl_error(format!(
+            "ReflectionClass::{who}(): Argument #{n} ($options) does not accept ReflectionClass::SKIP_DESTRUCTOR"
+        )));
+    }
+    Ok(options)
+}
+
+/// Build the bare instance a lazy object starts from: the class's slots at
+/// their defaults, no constructor.
+fn bare_instance(ctx: &mut Ctx, cid: u32) -> Result<Object, Unwind> {
+    let def = ctx.class(cid);
+    if !def.is_instantiable() {
+        return Err(Unwind::error(format!(
+            "Cannot instantiate {} {}",
+            def.kind_word(),
+            def.name_str()
+        )));
+    }
+    Ok(ctx.instantiate(cid))
+}
+
+/// `newLazyGhost` / `newLazyProxy`.
+fn new_lazy(ctx: &mut Ctx, o: Option<&Object>, args: &[Value], kind: rphp_value::LazyKind) -> NativeResult {
+    let (who, arg) = match kind {
+        rphp_value::LazyKind::Ghost => ("newLazyGhost", "initializer"),
+        rphp_value::LazyKind::Proxy => ("newLazyProxy", "factory"),
+    };
+    let cid = cid_of(this(o)?)?;
+    let init = callable_arg(ctx, who, args, 1, arg)?;
+    let options = lazy_options(who, args.get(1), 2, false)?;
+    ctx.check_lazy_class(cid)?;
+    let obj = bare_instance(ctx, cid)?;
+    ctx.make_lazy(&obj, kind, init, options, false)?;
+    Ok(Value::Object(obj))
+}
+
+/// `ReflectionClass::newLazyGhost(callable $initializer, int $options = 0): object`
+fn new_lazy_ghost(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    new_lazy(ctx, o, args, rphp_value::LazyKind::Ghost)
+}
+
+/// `ReflectionClass::newLazyProxy(callable $factory, int $options = 0): object`
+fn new_lazy_proxy(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    new_lazy(ctx, o, args, rphp_value::LazyKind::Proxy)
+}
+
+/// `resetAsLazyGhost` / `resetAsLazyProxy`: an existing instance of the
+/// reflected class starts over as a lazy one. An object still waiting on
+/// an initializer cannot be reset.
+fn reset_as_lazy(ctx: &mut Ctx, o: Option<&Object>, args: &[Value], kind: rphp_value::LazyKind) -> NativeResult {
+    let (who, arg) = match kind {
+        rphp_value::LazyKind::Ghost => ("resetAsLazyGhost", "initializer"),
+        rphp_value::LazyKind::Proxy => ("resetAsLazyProxy", "factory"),
+    };
+    let cid = cid_of(this(o)?)?;
+    let obj = instance_of_arg(ctx, cid, who, args)?;
+    let init = callable_arg(ctx, who, &args[1..], 2, arg)?;
+    let options = lazy_options(who, args.get(2), 3, true)?;
+    if obj.is_uninitialized_lazy() {
+        return Err(refl_error("Object is already lazy"));
+    }
+    ctx.make_lazy(&obj, kind, init, options, true)?;
+    Ok(Value::Null)
+}
+
+/// `ReflectionClass::resetAsLazyGhost(object $object, callable $initializer, int $options = 0): void`
+fn reset_as_lazy_ghost(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    reset_as_lazy(ctx, o, args, rphp_value::LazyKind::Ghost)
+}
+
+/// `ReflectionClass::resetAsLazyProxy(object $object, callable $factory, int $options = 0): void`
+fn reset_as_lazy_proxy(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    reset_as_lazy(ctx, o, args, rphp_value::LazyKind::Proxy)
+}
+
+/// The `object $object` argument of the lazy-object methods, which php
+/// types as an instance of the reflected class.
+fn instance_of_arg(ctx: &Ctx, cid: u32, who: &str, args: &[Value]) -> Result<Object, Unwind> {
+    let v = args.first().map(|v| v.deref().into_owned());
+    if let Some(Value::Object(obj)) = &v {
+        if ctx.instanceof_class(obj.class_id(), cid) {
+            return Ok(obj.clone());
+        }
+    }
+    Err(Unwind::type_error(format!(
+        "ReflectionClass::{who}(): Argument #1 ($object) must be of type {}, {} given",
+        ctx.class(cid).name_str(),
+        v.as_ref().map_or("null".to_string(), |v| match v {
+            Value::Object(o) => ctx.class(o.class_id()).name_str().to_string(),
+            other => other.type_name().to_string(),
+        })
+    )))
+}
+
+/// `ReflectionClass::isUninitializedLazyObject(object $object): bool`
+fn is_uninitialized_lazy_object(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let cid = cid_of(this(o)?)?;
+    let obj = instance_of_arg(ctx, cid, "isUninitializedLazyObject", args)?;
+    Ok(Value::Bool(obj.is_uninitialized_lazy()))
+}
+
+/// `ReflectionClass::initializeLazyObject(object $object): object` — the
+/// object itself for a ghost, the real instance for a proxy.
+fn initialize_lazy_object(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let cid = cid_of(this(o)?)?;
+    let obj = instance_of_arg(ctx, cid, "initializeLazyObject", args)?;
+    Ok(Value::Object(ctx.lazy_initialize(&obj)?))
+}
+
+/// `ReflectionClass::markLazyObjectAsInitialized(object $object): object` —
+/// initialized without running the initializer, its properties at their
+/// defaults.
+fn mark_lazy_object_as_initialized(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let cid = cid_of(this(o)?)?;
+    let obj = instance_of_arg(ctx, cid, "markLazyObjectAsInitialized", args)?;
+    if obj.is_uninitialized_lazy() {
+        obj.lazy_restore_defaults();
+        obj.clear_lazy();
+    }
+    Ok(Value::Object(obj))
+}
+
+/// `ReflectionClass::getLazyInitializer(object $object): ?callable` — the
+/// initializer of a lazy object that has not run it, `null` otherwise.
+fn get_lazy_initializer(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let cid = cid_of(this(o)?)?;
+    let obj = instance_of_arg(ctx, cid, "getLazyInitializer", args)?;
+    Ok(match obj.lazy() {
+        Some(l) if !l.initialized => l.initializer,
+        _ => Value::Null,
+    })
 }
 
 /// `ReflectionClass::isInternal(): bool`
@@ -944,10 +1102,22 @@ fn class_methods(b: rphp_runtime::ClassBuilder<'_>) -> rphp_runtime::ClassBuilde
         .method("getTraitAliases", nm!(0, Some(0), get_trait_aliases))
         .method("getExtensionName", nm!(0, Some(0), get_extension_name))
         .method("getExtension", nm!(0, Some(0), get_extension))
+        .class_const("SKIP_INITIALIZATION_ON_SERIALIZE", Value::Int(8))
+        .class_const("SKIP_DESTRUCTOR", Value::Int(16))
+        .method("newLazyGhost", nm!(1, Some(2), new_lazy_ghost))
+        .method("newLazyProxy", nm!(1, Some(2), new_lazy_proxy))
+        .method("resetAsLazyGhost", nm!(2, Some(3), reset_as_lazy_ghost))
+        .method("resetAsLazyProxy", nm!(2, Some(3), reset_as_lazy_proxy))
         .method(
             "isUninitializedLazyObject",
             nm!(1, Some(1), is_uninitialized_lazy_object),
         )
+        .method("initializeLazyObject", nm!(1, Some(1), initialize_lazy_object))
+        .method(
+            "markLazyObjectAsInitialized",
+            nm!(1, Some(1), mark_lazy_object_as_initialized),
+        )
+        .method("getLazyInitializer", nm!(1, Some(1), get_lazy_initializer))
         .method("isUserDefined", nm!(0, Some(0), is_user_defined))
         .method("isIterable", nm!(0, Some(0), is_iterable))
         .method("isIterateable", nm!(0, Some(0), is_iterable))

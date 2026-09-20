@@ -323,6 +323,9 @@ impl Interp {
     /// there is no `Generator` class yet, so nothing can reach this path as
     /// one — when E8 lands, it branches here before `resolve_iterator`.
     fn object_iter_state(&mut self, o: &Object, by_ref: bool) -> Result<IterState, Unwind> {
+        // A lazy object initializes before it is walked; a proxy walks its
+        // real instance.
+        let o = &self.lazy_resolve(o)?;
         if let Some(iter) = self.resolve_iterator(o)? {
             if by_ref {
                 return Err(Unwind::error(

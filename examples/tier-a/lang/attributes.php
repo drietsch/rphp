@@ -113,3 +113,15 @@ try {
 } catch (Throwable $e) {
     echo get_class($e), ': ', $e->getMessage(), "\n";
 }
+
+// `#[AllowDynamicProperties]` is the one attribute the engine acts on: its
+// class — and every subclass — creates dynamic properties without the 8.2
+// deprecation.
+#[AllowDynamicProperties]
+class Bag {}
+class SubBag extends Bag {}
+class Strict {}
+$b = new Bag; $b->x = 1;
+$s = new SubBag; $s->y = 2;
+$t = new Strict; $t->z = 3;
+print_r([$b, $s, $t]);

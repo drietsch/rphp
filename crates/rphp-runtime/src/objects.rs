@@ -113,6 +113,29 @@ impl Interp {
                 self.class_name_of(&o)
             )));
         }
+        // php 8.4: a lazy object initializes before it is cloned, and a
+        // proxy's clone is a new proxy over a clone of the real instance.
+        if o.is_lazy() {
+            let target = self.lazy_resolve(&o)?;
+            if let Some(real) = o.lazy_real() {
+                let Value::Object(real_copy) = self.clone_object_with(&Value::Object(real), with)? else {
+                    unreachable!("clone answers an object")
+                };
+                let copy = self.shallow_copy(&o)?;
+                let options = o.lazy().map_or(0, |l| l.options);
+                let mut state = rphp_value::LazyState::new(
+                    rphp_value::LazyKind::Proxy,
+                    Value::Null,
+                    options,
+                    Vec::new(),
+                );
+                state.initialized = true;
+                state.real = Some(real_copy);
+                copy.set_lazy(state);
+                return Ok(Value::Object(copy));
+            }
+            debug_assert!(target.ptr_eq(&o));
+        }
         let class = self.class_of(&o).clone();
         // php checks `__clone`'s visibility before it copies anything.
         if let Some(m) = self.resolve_method(class.id, b"__clone") {

@@ -59,6 +59,9 @@ pub struct PropMeta {
     pub decl_class: u32,
     /// `decl_class`'s name, for the formatters.
     pub decl_class_name: Rc<[u8]>,
+    /// The declared type as written, for `uninitialized(int)` in a dump;
+    /// `None` for an untyped property.
+    pub ty: Option<Rc<str>>,
 }
 
 /// php's storage key for a private property, `"\0Class\0name"` — the key
@@ -340,6 +343,65 @@ pub struct ObjectData {
     dyn_props: Option<Box<DynProps>>,
     payload: Payload,
     flags: ObjFlags,
+    /// php 8.4 lazy-object state, when the object is (or was made) lazy.
+    lazy: Option<Box<LazyState>>,
+}
+
+/// Which of php 8.4's two lazy shapes an object is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LazyKind {
+    /// `newLazyGhost`: the object *is* the instance; the initializer fills
+    /// it in place.
+    Ghost,
+    /// `newLazyProxy`: the object stands in for a real instance the factory
+    /// builds; property accesses forward to it afterwards.
+    Proxy,
+}
+
+/// php 8.4 lazy-object state (`ReflectionClass::newLazyGhost` /
+/// `newLazyProxy`). The runtime runs the initializer the first time a
+/// property is touched — reading, writing, `isset`, `unset`, `foreach`,
+/// `serialize`, `json_encode`, `clone`, `==` — and never for a plain method
+/// call; the props the caller marked ahead of time
+/// (`ReflectionProperty::skipLazyInitialization`) do not trigger it.
+#[derive(Clone, Debug)]
+pub struct LazyState {
+    pub kind: LazyKind,
+    /// The initializer (ghost) or factory (proxy) callable.
+    pub initializer: Value,
+    /// `ReflectionClass::SKIP_*` bits.
+    pub options: i64,
+    /// Whether the initializer has run (or the object was marked so).
+    pub initialized: bool,
+    /// A proxy's real instance, once the factory has built it.
+    pub real: Option<Object>,
+    /// Properties initialized ahead of the initializer, which an access
+    /// does not trigger it for.
+    pub skipped: Vec<Box<[u8]>>,
+    /// The declared slots' default values, in layout order: what a ghost's
+    /// slots hold when its initializer starts, and what
+    /// `ReflectionProperty::skipLazyInitialization()` puts in one.
+    pub defaults: Vec<Value>,
+}
+
+impl LazyState {
+    /// A fresh, uninitialized state.
+    pub fn new(kind: LazyKind, initializer: Value, options: i64, defaults: Vec<Value>) -> LazyState {
+        LazyState {
+            kind,
+            initializer,
+            options,
+            initialized: false,
+            real: None,
+            skipped: Vec::new(),
+            defaults,
+        }
+    }
+
+    /// Whether declared slot `name` still waits on the initializer.
+    pub fn pending(&self, name: &[u8]) -> bool {
+        !self.initialized && !self.skipped.iter().any(|s| s.as_ref() == name)
+    }
 }
 
 impl ObjectData {
@@ -366,6 +428,11 @@ impl ObjectData {
     /// The instance flags, mutably.
     pub fn flags_mut(&mut self) -> &mut ObjFlags {
         &mut self.flags
+    }
+
+    /// The php 8.4 lazy-object state, if the object is or was made lazy.
+    pub fn lazy(&self) -> Option<&LazyState> {
+        self.lazy.as_deref()
     }
 
     /// Declared slots in layout order (values as stored).
@@ -510,6 +577,7 @@ impl Drop for ObjectData {
                 dyn_props: self.dyn_props.take(),
                 payload: std::mem::take(&mut self.payload),
                 flags: self.flags | ObjFlags::DESTRUCTED,
+                lazy: self.lazy.take(),
             };
             let obj = Object(Rc::new(RefCell::new(resurrected)));
             DESTRUCT_QUEUE.with(|q| q.borrow_mut().push(obj));
@@ -580,6 +648,7 @@ impl Object {
             dyn_props: None,
             payload: Payload::None,
             flags: ObjFlags::NONE,
+            lazy: None,
         })))
     }
 
@@ -623,6 +692,10 @@ impl Object {
     /// OR `flags` into the instance flags.
     pub fn add_flags(&self, flags: ObjFlags) {
         self.0.borrow_mut().flags |= flags;
+    }
+
+    pub fn remove_flags(&self, flags: ObjFlags) {
+        self.0.borrow_mut().flags.remove(flags);
     }
 
     /// Read property `name` as stored (a bound slot yields the `Ref`), or
@@ -709,6 +782,135 @@ impl Object {
             .filter(|p| !p.value.is_uninit())
             .map(|p| (Box::from(p.name), p.value.clone(), p.vis))
             .collect()
+    }
+
+    // ---- php 8.4 lazy objects ------------------------------------------------
+
+    /// The lazy state, if the object is or was made lazy.
+    pub fn lazy(&self) -> Option<LazyState> {
+        self.0.borrow().lazy.as_deref().cloned()
+    }
+
+    /// Whether the object carries lazy state at all (uninitialized, or an
+    /// initialized proxy).
+    pub fn is_lazy(&self) -> bool {
+        self.0.borrow().lazy.is_some()
+    }
+
+    /// Whether an access to `prop` (any property when `None`) must run the
+    /// initializer first: the object is lazy, not yet initialized, and the
+    /// property was not initialized ahead of time.
+    pub fn lazy_needs_init(&self, prop: Option<&[u8]>) -> bool {
+        match self.0.borrow().lazy.as_deref() {
+            Some(l) if !l.initialized => match prop {
+                Some(p) => !l.skipped.iter().any(|s| s.as_ref() == p),
+                None => true,
+            },
+            _ => false,
+        }
+    }
+
+    /// `ReflectionClass::isUninitializedLazyObject()`.
+    pub fn is_uninitialized_lazy(&self) -> bool {
+        self.0.borrow().lazy.as_deref().is_some_and(|l| !l.initialized)
+    }
+
+    /// The real instance behind an initialized proxy, if this is one.
+    pub fn lazy_real(&self) -> Option<Object> {
+        self.0.borrow().lazy.as_deref().and_then(|l| l.real.clone())
+    }
+
+    /// Make the object lazy (`newLazyGhost` / `newLazyProxy` /
+    /// `resetAsLazy*`): php empties every declared slot (they read as
+    /// `uninitialized(T)` until the initializer runs) and drops the dynamic
+    /// properties. The old values are released after the borrow ends, so a
+    /// destructor they trigger can look at this object.
+    pub fn set_lazy(&self, state: LazyState) {
+        let old: Vec<Value> = {
+            let mut d = self.0.borrow_mut();
+            let mut old: Vec<Value> = d.slots.iter_mut().map(|s| std::mem::replace(s, Value::Uninit)).collect();
+            if let Some(dp) = d.dyn_props.take() {
+                old.extend(dp.iter().map(|(_, v)| v.clone()));
+            }
+            d.lazy = Some(Box::new(state));
+            old
+        };
+        drop(old);
+    }
+
+    /// Drop the lazy state altogether: the object is an ordinary one again
+    /// (every slot initialized ahead of time, or an initialized ghost).
+    pub fn clear_lazy(&self) {
+        let old = self.0.borrow_mut().lazy.take();
+        drop(old);
+    }
+
+    /// Update the lazy state in place.
+    pub fn with_lazy_mut<R>(&self, f: impl FnOnce(&mut LazyState) -> R) -> Option<R> {
+        self.0.borrow_mut().lazy.as_deref_mut().map(f)
+    }
+
+    /// Put the defaults back into every slot still waiting on the
+    /// initializer — what a ghost's initializer starts from.
+    pub fn lazy_restore_defaults(&self) {
+        let mut d = self.0.borrow_mut();
+        let Some(l) = d.lazy.as_deref() else { return };
+        let fill: Vec<(usize, Value)> = d
+            .layout
+            .props
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| !l.skipped.iter().any(|s| s.as_ref() == &*m.name))
+            .map(|(i, _)| (i, l.defaults.get(i).cloned().unwrap_or(Value::Uninit)))
+            .collect();
+        for (i, v) in fill {
+            d.slots[i] = v;
+        }
+    }
+
+    /// Empty every slot still waiting on the initializer again — the state
+    /// php reverts to when a ghost's initializer throws.
+    pub fn lazy_undef_pending(&self) {
+        let old: Vec<Value> = {
+            let mut d = self.0.borrow_mut();
+            let Some(l) = d.lazy.as_deref() else { return };
+            let idx: Vec<usize> = d
+                .layout
+                .props
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| !l.skipped.iter().any(|s| s.as_ref() == &*m.name))
+                .map(|(i, _)| i)
+                .collect();
+            let mut old = Vec::with_capacity(idx.len());
+            for i in idx {
+                old.push(std::mem::replace(&mut d.slots[i], Value::Uninit));
+            }
+            if let Some(dp) = d.dyn_props.take() {
+                old.extend(dp.iter().map(|(_, v)| v.clone()));
+            }
+            old
+        };
+        drop(old);
+    }
+
+    /// Initialize declared slot `name` ahead of the initializer
+    /// (`ReflectionProperty::skipLazyInitialization()` /
+    /// `setRawValueWithoutLazyInitialization()`): the slot takes `value`, or
+    /// its default, and no longer triggers the initializer. Answers whether
+    /// every declared slot is now initialized ahead — php then treats the
+    /// object as initialized.
+    pub fn lazy_skip(&self, name: &[u8], value: Option<Value>) -> bool {
+        let mut d = self.0.borrow_mut();
+        let Some(i) = d.layout.slot_of(name) else { return false };
+        let Some(l) = d.lazy.as_deref_mut() else { return false };
+        if !l.skipped.iter().any(|s| s.as_ref() == name) {
+            l.skipped.push(Box::from(name));
+        }
+        let v = value.unwrap_or_else(|| l.defaults.get(usize::from(i)).cloned().unwrap_or(Value::Uninit));
+        let all = l.skipped.len() >= d.layout.props.len();
+        d.slots[usize::from(i)] = v;
+        all
     }
 
     /// Replace the native payload.
@@ -805,7 +1007,7 @@ mod tests {
     }
 
     fn meta(n: &str, vis: Vis) -> PropMeta {
-        PropMeta { name: Box::from(n.as_bytes()), vis, decl_class: 0, decl_class_name: name("Foo") }
+        PropMeta { name: Box::from(n.as_bytes()), vis, decl_class: 0, decl_class_name: name("Foo"), ty: None }
     }
 
     fn layout() -> Rc<Layout> {

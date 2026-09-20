@@ -152,6 +152,9 @@ fn export(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, level: usize, seen: &mut 
             out.extend_from_slice(b"))");
         }
         Value::Object(o) => {
+            // A lazy object initializes first; a proxy exports its real
+            // instance.
+            let o = &ctx.lazy_resolve(&o.clone())?;
             if seen.objects.contains(&o.id()) {
                 ctx.warn("var_export does not handle circular references")?;
                 out.extend_from_slice(b"NULL");
@@ -364,6 +367,13 @@ fn ser(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, st: &mut SerState) -> Result
             out.push(b'}');
         }
         Value::Object(o) => {
+            // A lazy object initializes first — unless it was made with
+            // `SKIP_INITIALIZATION_ON_SERIALIZE`, when it serializes with no
+            // properties at all — and a proxy serializes its real instance.
+            let skip = o.lazy().is_some_and(|l| {
+                !l.initialized && l.options & rphp_runtime::LAZY_SKIP_INITIALIZATION_ON_SERIALIZE != 0
+            });
+            let o = &if skip { o.clone() } else { ctx.lazy_resolve(&o.clone())? };
             let class = o.layout().class_name().to_vec();
             // An anonymous class cannot be named again on the way back in, so
             // php refuses it the way it refuses a closure.

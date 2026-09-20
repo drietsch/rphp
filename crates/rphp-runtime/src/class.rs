@@ -963,6 +963,7 @@ impl Interp {
                 },
                 decl_class: p.decl,
                 decl_class_name: Rc::from(&self.class_display_name(p.decl, id, &name)[..]),
+                ty: p.ty.as_ref().map(|t| Rc::from(t.to_string().as_str())),
             })
             .collect();
         def.layout = Rc::new(Layout::new(Rc::from(&name[..]), metas));

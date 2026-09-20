@@ -256,7 +256,7 @@ slot, with the rest hidden in the instance payload. Five tier-a snippets under
 `examples/tier-a/reflection/` match php byte for byte, and the L1 Composer gate
 is green again with them. **Deferred:** the `__toString()` dump formats (php's
 multi-line `Class [ <user> class Foo ] { … }`), `ReflectionGenerator`,
-`ReflectionFiber`, `ReflectionExtension`, lazy objects, and
+`ReflectionFiber`, `ReflectionExtension`, and
 `ReflectionParameter::isDefaultValueConstant` (a compiled default is an opaque
 initializer; the constant's *name* is not recorded). **Engine gaps it found,
 each blocking a real method:** the compiler drops attributes (`attrs: vec![]`)
@@ -466,8 +466,8 @@ than on an engine gap. **That is where the walk resumes.**
 Cataloged along the way, none of them blocking:
 
 - `PropertyHookType` (a native *enum*, which the class registry cannot
-  declare yet), `ReflectionExtension`, and the lazy-object family
-  (`newLazyGhost`, `resetAsLazyProxy`, …).
+  declare yet) and `ReflectionExtension`. (The lazy-object family arrived
+  with the L6a walk.)
 - `ReflectionFunctionAbstract::getStaticVariables()` and `returnsReference()`
   — the runtime keeps a function's `static` cells keyed per function and
   exposes neither them nor `FnFlags::RETURNS_REF` to the stdlib.
@@ -484,8 +484,8 @@ Cataloged along the way, none of them blocking:
 ## The L6a walk (2026-09-20)
 
 `bin/console about`, `cache:clear`, `debug:container`, `debug:router`,
-`debug:autowiring` and `lint:container` are byte-identical to php, and 106
-of the 107 dumped container files match. In the order the walk found them:
+`debug:autowiring` and `lint:container` are byte-identical to php, and all
+107 dumped container files match. In the order the walk found them:
 
 - **Attributes reach Reflection** — the compiler never filled `AttrDef`;
   FrameworkBundle's `#[RequiredBundle]` declares its dependencies.
@@ -502,15 +502,40 @@ of the 107 dumped container files match. In the order the walk found them:
   the native call boundary; `sprintf`'s `%s`, `implode()` and a loose
   comparison with a string by hand.
 
-**What is left on L6a: php 8.4 lazy objects.** The container dumper tries
-`ReflectionClass::newLazyGhost()` and dumps a ghost when it exists, a proxy
-otherwise; without either the generated `getUriSignerService.php` differs,
-and the service could not be instantiated here. `newLazyGhost`,
-`newLazyProxy`, `isUninitializedLazyObject`, `initializeLazyObject`,
-`markLazyObjectAsInitialized`, `getLazyInitializer`, `resetAsLazyGhost`,
-`resetAsLazyProxy`, and the `ReflectionProperty` trio are the surface; the
-engine work is an initializer on the object that every property access
-runs first, and for a proxy a forward to the real instance.
+- **php 8.4 lazy objects** — the container dumper tries
+  `ReflectionClass::newLazyGhost()` and dumps a ghost when it exists, a proxy
+  otherwise; the last artifact (`getUriSignerService.php`) matched once it
+  did. The state rides on the object (`LazyState`: kind, initializer,
+  options, the declared slots' defaults, the slots initialized ahead); making
+  an object lazy empties every declared slot, which is why `var_dump` shows
+  `lazy ghost object(C)#n (0) { ["a"]=> uninitialized(int) … }`, `print_r`
+  and `(array)` show nothing, and `serialize()` under
+  `SKIP_INITIALIZATION_ON_SERIALIZE` writes `O:1:"C":0:{}` — with no special
+  casing in any of them. A property access (read, write, `isset`, `empty`,
+  `unset`, a dynamic write) runs the initializer; so do `foreach`, `clone`,
+  `==`/`<=>`, `json_encode`, `serialize`, `var_export` and
+  `get_object_vars`; a method call, `instanceof`, `property_exists`,
+  `spl_object_hash` and `===` do not. A ghost's slots hold their defaults
+  when its initializer starts and are emptied again if it throws; an
+  initialized ghost is an ordinary object again, an initialized proxy
+  forwards every access to the real instance (`["instance"]=>` in the dumps)
+  and its clone is a new proxy over a clone of it. A class with no declared
+  properties has nothing to defer and gets a plain object, as php does.
+  Destructors: never for an uninitialized lazy object, never for a proxy
+  (the real instance runs its own), at `resetAsLazy*` time for the state
+  being discarded unless `SKIP_DESTRUCTOR`. Every error text measured:
+  internal classes (`X is internal` / `X inherits internal class Y`),
+  `Object is already lazy`, the option checks, the argument types
+  (`must be of type C, stdClass given`), and the initializer/factory return
+  checks. **Not reproduced:** php's `(3)` count after resetting an object
+  that had dynamic properties (its property table survives the reset).
+- **`uninitialized(T)` in `var_dump`** for any uninitialized typed property
+  (`PropMeta` now records the declared type's canonical text) — a gap the
+  lazy dumps exposed.
+- **`#[AllowDynamicProperties]`** was parsed and never acted on: the
+  compiler now sets `ALLOW_DYNAMIC` from the attribute, inherited as php's
+  is.
+- **`spl_object_hash()`**.
 
 Also cataloged: `ReflectionClassConstant::getAttributes()` (the compiler
 lowers them, the runtime constant does not carry them yet), `PhpToken`

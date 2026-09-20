@@ -56,6 +56,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("is_a", 2, Some(3), is_a),
     nf!("is_subclass_of", 2, Some(3), is_subclass_of),
     nf!("spl_object_id", 1, Some(1), spl_object_id),
+    nf!("spl_object_hash", 1, Some(1), spl_object_hash),
 ];
 
 fn name_of(v: &Value) -> String {
@@ -615,6 +616,8 @@ pub(crate) fn get_object_vars(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult
             args[0].type_name()
         )));
     };
+    // A lazy object initializes first; a proxy lists its real instance.
+    let o = &ctx.lazy_resolve(&o.clone())?;
     let scope = ctx.current_user_frame().and_then(|f| f.scope);
     let mut out = rphp_value::Array::new();
     // Each slot is judged by its *own* declaring class: an ancestor's
@@ -700,6 +703,18 @@ pub(crate) fn spl_object_id(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Value::Object(o) => Ok(Value::Int(i64::from(o.id()))),
         other => Err(Unwind::type_error(format!(
             "spl_object_id(): Argument #1 ($object) must be of type object, {} given",
+            other.type_name()
+        ))),
+    }
+}
+
+/// `spl_object_hash(object $object): string` — php 8.1's shape: the handle
+/// as sixteen hex digits, then sixteen zeros.
+pub(crate) fn spl_object_hash(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    match &*args[0].deref() {
+        Value::Object(o) => Ok(Value::string(format!("{:016x}0000000000000000", o.id()).as_bytes())),
+        other => Err(Unwind::type_error(format!(
+            "spl_object_hash(): Argument #1 ($object) must be of type object, {} given",
             other.type_name()
         ))),
     }

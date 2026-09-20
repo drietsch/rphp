@@ -32,8 +32,9 @@ pub use array::{array_key, Array, ArrayKey};
 pub use closure::Closure;
 pub use object::{display_class_name, mangled_key};
 pub use object::{
-    has_pending_destructors, take_pending_destructors, DynProps, Layout, ObjFlags, Object,
-    ObjectData, ObjectIdAllocator, Payload, PropEntry, PropMeta, Vis, WeakObject,
+    has_pending_destructors, take_pending_destructors, DynProps, Layout, LazyKind, LazyState,
+    ObjFlags, Object, ObjectData, ObjectIdAllocator, Payload, PropEntry, PropMeta, Vis,
+    WeakObject,
 };
 pub use refs::PhpRef;
 pub use resource::{Resource, ResourceCell, CLOSED_KIND};

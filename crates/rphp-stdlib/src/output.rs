@@ -255,11 +255,39 @@ fn dump_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen, p
         out.extend_from_slice(b")\n");
         return;
     }
+    // A php 8.4 lazy object is headed `lazy ghost ` / `lazy proxy ` while
+    // uninitialized (a proxy keeps the prefix for good), and an initialized
+    // proxy shows the real instance under `["instance"]`.
+    let lazy = d.lazy();
+    match lazy.map(|l| (l.kind, l.initialized)) {
+        Some((rphp_value::LazyKind::Ghost, false)) => out.extend_from_slice(b"lazy ghost "),
+        Some((rphp_value::LazyKind::Proxy, _)) => out.extend_from_slice(b"lazy proxy "),
+        _ => {}
+    }
     out.extend_from_slice(b"object(");
     out.extend_from_slice(display_class_name(d.layout().class_name()));
+    if let Some(real) = lazy.and_then(|l| l.real.clone()) {
+        out.extend_from_slice(format!(")#{} (1) {{\n", d.id()).as_bytes());
+        seen.objects.push(d.id());
+        indent(out, pad + 2);
+        out.extend_from_slice(b"[\"instance\"]=>\n");
+        indent(out, pad + 2);
+        dump(out, &Value::Object(real), pad + 2, seen, precision);
+        seen.objects.pop();
+        indent(out, pad);
+        out.extend_from_slice(b"}\n");
+        return;
+    }
     out.extend_from_slice(format!(")#{} ({}) {{\n", d.id(), d.prop_count()).as_bytes());
     seen.objects.push(d.id());
-    for p in d.props_in_order().filter(|p| !p.value.is_uninit()) {
+    for p in d.props_in_order() {
+        // An uninitialized *typed* slot prints as `uninitialized(T)` (a
+        // lazy object's slots all are, until its initializer runs); an
+        // untyped one that was unset is simply gone.
+        let ty = p.meta.and_then(|m| m.ty.clone());
+        if p.value.is_uninit() && ty.is_none() {
+            continue;
+        }
         indent(out, pad + 2);
         out.extend_from_slice(b"[\"");
         out.extend_from_slice(p.name);
@@ -275,7 +303,12 @@ fn dump_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen, p
         }
         out.extend_from_slice(b"]=>\n");
         indent(out, pad + 2);
-        dump(out, p.value, pad + 2, seen, precision);
+        match ty {
+            Some(ty) if p.value.is_uninit() => {
+                out.extend_from_slice(format!("uninitialized({ty})\n").as_bytes());
+            }
+            _ => dump(out, p.value, pad + 2, seen, precision),
+        }
     }
     seen.objects.pop();
     indent(out, pad);
@@ -362,6 +395,17 @@ fn print_r_object(out: &mut Vec<u8>, d: &ObjectData, pad: usize, seen: &mut Seen
     indent(out, pad);
     out.extend_from_slice(b"(\n");
     seen.objects.push(d.id());
+    // An initialized lazy proxy lists the real instance under `[instance]`.
+    if let Some(real) = d.lazy().and_then(|l| l.real.clone()) {
+        indent(out, pad + 4);
+        out.extend_from_slice(b"[instance] => ");
+        print_r_buf(out, &Value::Object(real), pad + 8, seen);
+        out.push(b'\n');
+        seen.objects.pop();
+        indent(out, pad);
+        out.extend_from_slice(b")\n");
+        return;
+    }
     for p in d.props_in_order().filter(|p| !p.value.is_uninit()) {
         indent(out, pad + 4);
         out.push(b'[');
@@ -410,6 +454,7 @@ mod tests {
             vis,
             decl_class: 0,
             decl_class_name: Rc::from(decl.as_bytes()),
+            ty: None,
         }
     }
 

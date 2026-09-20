@@ -105,9 +105,25 @@ impl Interp {
     /// is true and `$obj <=> 5` is `-1`. Every other pairing (bool, null,
     /// string, array, another object) compares as `Value` already does.
     pub fn cmp_operands(&mut self, l: Value, r: Value) -> Result<(Value, Value), Unwind> {
+        let (l, r) = self.lazy_beside_object(l, r)?;
         let l = self.object_beside_number(&l, &r)?;
         let r = self.object_beside_number(&r, &l)?;
         Ok((l, r))
+    }
+
+    /// Two distinct objects compare property by property, which initializes
+    /// a lazy one and compares a proxy's real instance; the same instance on
+    /// both sides is equal without any of that.
+    fn lazy_beside_object(&mut self, l: Value, r: Value) -> Result<(Value, Value), Unwind> {
+        let (Value::Object(a), Value::Object(b)) = (&*l.deref(), &*r.deref()) else {
+            return Ok((l, r));
+        };
+        if a.ptr_eq(b) || (!a.is_lazy() && !b.is_lazy()) {
+            return Ok((l, r));
+        }
+        let a = self.lazy_resolve(&a.clone())?;
+        let b = self.lazy_resolve(&b.clone())?;
+        Ok((Value::Object(a), Value::Object(b)))
     }
 
     fn object_beside_number(&mut self, v: &Value, other: &Value) -> Result<Value, Unwind> {
@@ -482,6 +498,10 @@ impl Interp {
     /// (`\0*\0name`) properties.
     pub fn object_to_array(&self, o: &Object) -> Array {
         let mut out = Array::new();
+        // An initialized proxy casts as its real instance; an uninitialized
+        // lazy object casts to nothing at all (php does not initialize it).
+        let real = o.lazy_real();
+        let o = real.as_ref().unwrap_or(o);
         // Each slot carries its own declaring class, which is what tells an
         // ancestor's private property apart from the subclass's of the same
         // name — the two keys differ only in the class between the NULs.

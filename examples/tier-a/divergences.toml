@@ -57,3 +57,9 @@ snippet   = "date/period.php"
 category  = "object-id"
 reason    = "the snippet dumps many short-lived date objects; php reuses each freed handle while the engine's ObjectIdAllocator is monotonic (documented in rphp-value)"
 normalize = ""
+
+[[allow]]
+snippet   = "reflection/lazy-objects.php"
+category  = "object-id"
+reason    = "var_dump prints the handle of every lazy object; php's closures are objects that take handles of their own, the engine's are not, and php reuses freed handles while the engine's ObjectIdAllocator is monotonic"
+normalize = ""

@@ -131,14 +131,198 @@ enum Access {
     Shadowed,
 }
 
+/// `ReflectionClass::SKIP_INITIALIZATION_ON_SERIALIZE`: `serialize()` does
+/// not initialize the lazy object.
+pub const LAZY_SKIP_INITIALIZATION_ON_SERIALIZE: i64 = 8;
+/// `ReflectionClass::SKIP_DESTRUCTOR`: a `resetAsLazy*` does not run the
+/// destructor on the state it discards.
+pub const LAZY_SKIP_DESTRUCTOR: i64 = 16;
+
 impl Interp {
+    // ---- php 8.4 lazy objects -----------------------------------------------
+
+    /// The object an access to `name` really touches. A lazy object that has
+    /// not run its initializer runs it first — unless `name` was initialized
+    /// ahead of time (`ReflectionProperty::skipLazyInitialization`) — and an
+    /// initialized *proxy* hands over the real instance the factory built.
+    /// A plain method call never comes through here, which is why one does
+    /// not initialize a lazy object; the property accesses inside it do.
+    pub(crate) fn lazy_target(&mut self, o: &Object, name: Option<&[u8]>) -> Result<Object, Unwind> {
+        if !o.is_lazy() {
+            return Ok(o.clone());
+        }
+        if o.lazy_needs_init(name) {
+            self.lazy_initialize(o)?;
+        }
+        Ok(o.lazy_real().unwrap_or_else(|| o.clone()))
+    }
+
+    /// The object a whole-object operation (`foreach`, `clone`, `==`,
+    /// `json_encode`, `serialize`, `get_object_vars`, …) really works on:
+    /// a lazy object is initialized first, and an initialized proxy hands
+    /// over its real instance.
+    pub fn lazy_resolve(&mut self, o: &Object) -> Result<Object, Unwind> {
+        self.lazy_target(o, None)
+    }
+
+    /// The declared slots' default values, in layout order — what
+    /// `instantiate` seeds and `new_object` completes with the constant
+    /// expressions, without allocating an object.
+    pub fn default_slots(&mut self, class: u32) -> Result<Vec<Value>, Unwind> {
+        let c = self.classes[class as usize].clone();
+        let mut out = vec![Value::Uninit; c.layout.props().len()];
+        for p in &c.props {
+            out[usize::from(p.slot)] = match &p.default {
+                crate::class::PropDefault::Value(v) => v.clone(),
+                crate::class::PropDefault::Thunk(fid) => self.run_thunk(*fid, None, Some(p.decl))?,
+            };
+        }
+        Ok(out)
+    }
+
+    /// Make `o` lazy (`ReflectionClass::newLazyGhost` / `newLazyProxy` /
+    /// `resetAsLazyGhost` / `resetAsLazyProxy`). php refuses an instance of
+    /// an internal class other than `stdClass`, or of a class inheriting
+    /// one; a reset runs the destructor on the state being discarded unless
+    /// `SKIP_DESTRUCTOR` says otherwise, and the object then starts a new
+    /// lifecycle (its destructor runs again when it goes).
+    pub fn make_lazy(
+        &mut self,
+        o: &Object,
+        kind: rphp_value::LazyKind,
+        initializer: Value,
+        options: i64,
+        reset: bool,
+    ) -> Result<(), Unwind> {
+        let cid = o.class_id();
+        self.check_lazy_class(cid)?;
+        if reset
+            && options & LAZY_SKIP_DESTRUCTOR == 0
+            && o.flags().contains(rphp_value::ObjFlags::HAS_DESTRUCTOR)
+            && !o.flags().contains(rphp_value::ObjFlags::DESTRUCTED)
+            && !o.lazy().is_some_and(|l| !l.initialized)
+        {
+            self.call_destructor(o)?;
+            o.remove_flags(rphp_value::ObjFlags::DESTRUCTED);
+        }
+        // Laziness lives in the declared slots: a class without any has
+        // nothing to defer, and php hands back an ordinary, initialized
+        // object whose initializer never runs.
+        if o.layout().props().is_empty() {
+            o.set_lazy(rphp_value::LazyState::new(kind, Value::Null, options, Vec::new()));
+            o.clear_lazy();
+            return Ok(());
+        }
+        let defaults = self.default_slots(cid)?;
+        o.set_lazy(rphp_value::LazyState::new(kind, initializer, options, defaults));
+        Ok(())
+    }
+
+    /// php refuses to make an instance of an internal class other than
+    /// `stdClass` lazy — or of a class that inherits one — before it looks
+    /// at anything else about the class.
+    pub fn check_lazy_class(&self, cid: u32) -> Result<(), Unwind> {
+        let mut walk = Some(cid);
+        while let Some(c) = walk {
+            let def = &self.classes[c as usize];
+            if def.internal && def.name.as_ref() != b"stdClass" {
+                let own = self.classes[cid as usize].name_str();
+                return Err(Unwind::error(if c == cid {
+                    format!("Cannot make instance of internal class lazy: {own} is internal")
+                } else {
+                    format!(
+                        "Cannot make instance of internal class lazy: {own} inherits internal class {}",
+                        def.name_str()
+                    )
+                }));
+            }
+            walk = def.parent;
+        }
+        Ok(())
+    }
+
+    /// Run a lazy object's initializer (`ReflectionClass::initializeLazyObject`
+    /// and every first access). The object counts as initialized *while* the
+    /// initializer runs, so `$obj->__construct()` inside it does not recurse;
+    /// a ghost's slots hold their defaults when it starts. An initializer
+    /// that throws leaves the object lazy — a ghost's slots emptied again —
+    /// as php does. Answers the object itself for a ghost and the real
+    /// instance for a proxy.
+    pub fn lazy_initialize(&mut self, o: &Object) -> Result<Object, Unwind> {
+        let Some(state) = o.lazy() else {
+            return Ok(o.clone());
+        };
+        if state.initialized {
+            return Ok(o.lazy_real().unwrap_or_else(|| o.clone()));
+        }
+        o.with_lazy_mut(|l| l.initialized = true);
+        let unmark = |o: &Object| {
+            o.with_lazy_mut(|l| l.initialized = false);
+        };
+        if state.kind == rphp_value::LazyKind::Ghost {
+            o.lazy_restore_defaults();
+        }
+        let result = self.call_value(&state.initializer, &[Value::Object(o.clone())]);
+        match state.kind {
+            rphp_value::LazyKind::Ghost => match result {
+                Ok(v) if matches!(v, Value::Null) => {
+                    // An initialized ghost is an ordinary object again.
+                    o.clear_lazy();
+                    Ok(o.clone())
+                }
+                Ok(_) => {
+                    o.lazy_undef_pending();
+                    unmark(o);
+                    Err(Unwind::type_error(
+                        "Lazy object initializer must return NULL or no value",
+                    ))
+                }
+                Err(e) => {
+                    o.lazy_undef_pending();
+                    unmark(o);
+                    Err(e)
+                }
+            },
+            rphp_value::LazyKind::Proxy => match result {
+                Ok(Value::Object(real)) => {
+                    let (rc, pc) = (real.class_id(), o.class_id());
+                    if !self.is_subclass_or_eq(rc, pc) {
+                        unmark(o);
+                        return Err(Unwind::type_error(format!(
+                            "The real instance class {} is not compatible with the proxy class {}. The proxy must be a instance of the same class as the real instance, or a sub-class with no additional properties, and no overrides of the __destructor or __clone methods.",
+                            self.classes[rc as usize].name_str(),
+                            self.classes[pc as usize].name_str()
+                        )));
+                    }
+                    o.with_lazy_mut(|l| {
+                        l.real = Some(real.clone());
+                        l.initializer = Value::Null;
+                    });
+                    Ok(real)
+                }
+                Ok(other) => {
+                    unmark(o);
+                    Err(Unwind::type_error(format!(
+                        "Lazy proxy factory must return an instance of a class compatible with {}, {} returned",
+                        self.classes[o.class_id() as usize].name_str(),
+                        value_name(&other)
+                    )))
+                }
+                Err(e) => {
+                    unmark(o);
+                    Err(e)
+                }
+            },
+        }
+    }
+
     // ---- entry points (`exec.rs` decodes the operand, we do the rest) -------
 
     /// `$obj->name` in a read context.
     pub(crate) fn fetch_prop(&mut self, obj: &Value, name: &[u8]) -> Result<Value, Unwind> {
         match &*obj.deref() {
             Value::Object(o) => {
-                let o = o.clone();
+                let o = self.lazy_target(&o.clone(), Some(name))?;
                 self.read_prop(&o, name)
             }
             other => {
@@ -157,7 +341,7 @@ impl Interp {
     pub(crate) fn assign_prop(&mut self, obj: &Value, name: &[u8], v: Value) -> Result<(), Unwind> {
         match &*obj.deref() {
             Value::Object(o) => {
-                let o = o.clone();
+                let o = self.lazy_target(&o.clone(), Some(name))?;
                 self.write_prop(&o, name, v)
             }
             other => Err(Unwind::error(format!(
@@ -171,7 +355,7 @@ impl Interp {
     /// `isset($obj->name)`.
     pub(crate) fn isset_prop(&mut self, obj: &Value, name: &[u8]) -> Result<bool, Unwind> {
         let o = match &*obj.deref() {
-            Value::Object(o) => o.clone(),
+            Value::Object(o) => self.lazy_target(&o.clone(), Some(name))?,
             _ => return Ok(false),
         };
         match self.stored_prop(&o, name) {
@@ -186,7 +370,7 @@ impl Interp {
     /// `__get` is always empty.
     pub(crate) fn empty_prop(&mut self, obj: &Value, name: &[u8]) -> Result<bool, Unwind> {
         let o = match &*obj.deref() {
-            Value::Object(o) => o.clone(),
+            Value::Object(o) => self.lazy_target(&o.clone(), Some(name))?,
             _ => return Ok(true),
         };
         match self.stored_prop(&o, name) {
@@ -208,7 +392,7 @@ impl Interp {
     /// `Cannot unset …` wording.
     pub(crate) fn unset_prop(&mut self, obj: &Value, name: &[u8]) -> Result<(), Unwind> {
         let o = match &*obj.deref() {
-            Value::Object(o) => o.clone(),
+            Value::Object(o) => self.lazy_target(&o.clone(), Some(name))?,
             _ => return Ok(()),
         };
         let class = self.class_of(&o).clone();
@@ -264,9 +448,9 @@ impl Interp {
     }
 
     /// The object in a register for a property write, or php's `Error`.
-    pub(crate) fn prop_holder(&self, obj: &Value, name: &[u8]) -> Result<Object, Unwind> {
+    pub(crate) fn prop_holder(&mut self, obj: &Value, name: &[u8]) -> Result<Object, Unwind> {
         match &*obj.deref() {
-            Value::Object(o) => Ok(o.clone()),
+            Value::Object(o) => self.lazy_target(&o.clone(), Some(name)),
             other => Err(Unwind::error(format!(
                 "Attempt to assign property \"{}\" on {}",
                 String::from_utf8_lossy(name),

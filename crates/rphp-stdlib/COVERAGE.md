@@ -480,3 +480,39 @@ Cataloged along the way, none of them blocking:
 - php's scanner gives the last docblock it saw to the next declaration it
   opens (`/** … */ $f = function () {};`); the parser here wants it directly
   before the `function` keyword.
+
+## The L6a walk (2026-09-20)
+
+`bin/console about`, `cache:clear`, `debug:container`, `debug:router`,
+`debug:autowiring` and `lint:container` are byte-identical to php, and 106
+of the 107 dumped container files match. In the order the walk found them:
+
+- **Attributes reach Reflection** — the compiler never filled `AttrDef`;
+  FrameworkBundle's `#[RequiredBundle]` declares its dependencies.
+- **`&$a[]`**, a reference to an append (`EventDispatcher`).
+- **Private property shadowing** — two same-named private slots on one
+  object (`OutputStyle` and `SymfonyStyle` both declare `$output`).
+- **Objects compare by value** — `==`, `<`, `<=>` property by property, and
+  an object beside a number is `1` with php's notice.
+- **ext/tokenizer** over the workspace scanner (the routing attribute loader).
+- **Every reflector's `__toString()`** — Symfony hashes them into the
+  container's resource signatures.
+- **A `Stringable` object at a native's `string` parameter** — generated
+  from the manifest (`cargo xtask string-params`, 1460 natives), applied at
+  the native call boundary; `sprintf`'s `%s`, `implode()` and a loose
+  comparison with a string by hand.
+
+**What is left on L6a: php 8.4 lazy objects.** The container dumper tries
+`ReflectionClass::newLazyGhost()` and dumps a ghost when it exists, a proxy
+otherwise; without either the generated `getUriSignerService.php` differs,
+and the service could not be instantiated here. `newLazyGhost`,
+`newLazyProxy`, `isUninitializedLazyObject`, `initializeLazyObject`,
+`markLazyObjectAsInitialized`, `getLazyInitializer`, `resetAsLazyGhost`,
+`resetAsLazyProxy`, and the `ReflectionProperty` trio are the surface; the
+engine work is an initializer on the object that every property access
+runs first, and for a proxy a forward to the real instance.
+
+Also cataloged: `ReflectionClassConstant::getAttributes()` (the compiler
+lowers them, the runtime constant does not carry them yet), `PhpToken`
+subclasses (`MyToken::tokenize()` answers `PhpToken` instances), and
+`TOKEN_PARSE` (accepted, not applied).

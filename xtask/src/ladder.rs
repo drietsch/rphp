@@ -1363,6 +1363,29 @@ pub fn matching_files(root: &Path, pattern: &str) -> Vec<String> {
     out
 }
 
+/// Whether a pattern's *directory* part carries a wildcard.
+fn rel_has_wildcard_dir(pattern: &str) -> bool {
+    match pattern.rfind('/') {
+        Some(i) => pattern[..i].contains('*'),
+        None => false,
+    }
+}
+
+/// The values a Symfony container dump derives from the working copy's
+/// path and the wall clock, which the two sides can never share:
+/// `ContainerAbc1234` directory and class names (a hash of the dumped
+/// files, which name the path), and the `container.build_hash` /
+/// `build_id` / `build_time` parameters. Each is replaced by a placeholder
+/// so the rest of the file can be compared.
+pub fn normalize_artifact(bytes: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    let hash = regex::Regex::new(r"Container[A-Za-z0-9_]{7}\b").unwrap();
+    let text = hash.replace_all(&text, "Container%HASH%").into_owned();
+    let build = regex::Regex::new(r"'container\.build_(hash|id|time)' => [^,\n]+,").unwrap();
+    let text = build.replace_all(&text, "'container.build_$1' => %BUILD%,").into_owned();
+    text.into_bytes()
+}
+
 /// Compare every file matching `pattern` on the php side against the rphp
 /// side, byte-for-byte after `%FIXTURE%` normalization.
 pub fn compare_artifacts(pattern: &str, php_dir: &Path, rphp_dir: &Path, needles: &[Vec<u8>]) -> Vec<ArtifactReport> {
@@ -1382,12 +1405,31 @@ pub fn compare_artifacts(pattern: &str, php_dir: &Path, rphp_dir: &Path, needles
         });
         return rows;
     }
+    let mut paired: Vec<String> = Vec::new();
     for rel in &php_files {
         let php_path = php_dir.join(rel);
-        let rphp_path = rphp_dir.join(rel);
+        // A wildcard *directory* in the pattern (`var/cache/dev/Container*/`)
+        // is one whose name php derives from the working copy's path — the
+        // two sides can never share it — so the rphp file is the one with
+        // the same name under the same pattern, when that is unambiguous.
+        let rphp_rel = if rel_has_wildcard_dir(pattern) {
+            let base = Path::new(rel).file_name().map(|f| f.to_string_lossy().into_owned());
+            let candidates: Vec<&String> = rphp_files
+                .iter()
+                .filter(|r| Path::new(r).file_name().map(|f| f.to_string_lossy().into_owned()) == base)
+                .collect();
+            match candidates.as_slice() {
+                [one] => (*one).clone(),
+                _ => rel.clone(),
+            }
+        } else {
+            rel.clone()
+        };
+        let rphp_path = rphp_dir.join(&rphp_rel);
+        paired.push(rphp_rel.clone());
         let mut row = ArtifactReport { pattern: pattern.to_string(), path: Some(rel.clone()), status: ItemStatus::Ok, detail: None };
         let php_bytes = match std::fs::read(&php_path) {
-            Ok(b) => normalize_fixture_paths(&b, needles),
+            Ok(b) => normalize_artifact(&normalize_fixture_paths(&b, needles)),
             Err(e) => {
                 row.status = ItemStatus::Fail;
                 row.detail = Some(format!("cannot read php side: {e}"));
@@ -1397,7 +1439,7 @@ pub fn compare_artifacts(pattern: &str, php_dir: &Path, rphp_dir: &Path, needles
         };
         match std::fs::read(&rphp_path) {
             Ok(b) => {
-                let rphp_bytes = normalize_fixture_paths(&b, needles);
+                let rphp_bytes = normalize_artifact(&normalize_fixture_paths(&b, needles));
                 if php_bytes != rphp_bytes {
                     row.status = ItemStatus::Fail;
                     row.detail = Some(unified_diff(&php_bytes, &rphp_bytes, "php", "rphp"));
@@ -1414,7 +1456,7 @@ pub fn compare_artifacts(pattern: &str, php_dir: &Path, rphp_dir: &Path, needles
         }
         rows.push(row);
     }
-    for rel in rphp_files.iter().filter(|r| !php_files.contains(r)) {
+    for rel in rphp_files.iter().filter(|r| !php_files.contains(r) && !paired.contains(r)) {
         rows.push(ArtifactReport {
             pattern: pattern.to_string(),
             path: Some(rel.clone()),

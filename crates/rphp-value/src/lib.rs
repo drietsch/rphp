@@ -30,7 +30,7 @@ mod string;
 
 pub use array::{array_key, Array, ArrayKey};
 pub use closure::Closure;
-pub use object::display_class_name;
+pub use object::{display_class_name, mangled_key};
 pub use object::{
     has_pending_destructors, take_pending_destructors, DynProps, Layout, ObjFlags, Object,
     ObjectData, ObjectIdAllocator, Payload, PropEntry, PropMeta, Vis, WeakObject,
@@ -83,6 +83,80 @@ pub enum ValueError {
 }
 
 pub type VResult = Result<Value, ValueError>;
+
+thread_local! {
+    /// The object pairs a comparison is inside of right now — php's
+    /// recursion protection for `==` over a structure that contains itself.
+    static COMPARING: std::cell::RefCell<Vec<(u32, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// php's `zend_std_compare_objects`: the same object is equal to itself;
+/// objects of different classes are *uncomparable* (`1`); objects of one
+/// class compare their properties in slot order, the first difference
+/// deciding, and a slot only one side has initialized makes them
+/// uncomparable too.
+///
+/// **Known divergence.** php raises `Nesting level too deep - recursive
+/// dependency?` when the comparison meets a pair it is already comparing;
+/// that pair is treated as equal here, since a value comparison cannot
+/// raise.
+fn object_spaceship(a: &Object, b: &Object) -> i64 {
+    if a.ptr_eq(b) {
+        return 0;
+    }
+    if a.class_id() != b.class_id() {
+        return 1;
+    }
+    let pair = (a.id(), b.id());
+    let recursive = COMPARING.with(|c| c.borrow().contains(&pair));
+    if recursive {
+        return 0;
+    }
+    COMPARING.with(|c| c.borrow_mut().push(pair));
+    let left = a.props_snapshot_with_decl();
+    let right = b.props_snapshot_with_decl();
+    // Declared slots first, in order — the same class gives both objects the
+    // same slots — then the dynamic properties as php compares two symbol
+    // tables: the shorter is less, then key by key.
+    let mut result = 0;
+    for (name, lv, _, ldecl) in left.iter().filter(|e| e.3.is_some()) {
+        let Some((_, rv, _, _)) = right
+            .iter()
+            .find(|(n, _, _, rdecl)| n == name && rdecl == ldecl)
+        else {
+            result = 1;
+            break;
+        };
+        let r = lv.spaceship(rv);
+        if r != 0 {
+            result = r;
+            break;
+        }
+    }
+    if result == 0 {
+        let ldyn: Vec<_> = left.iter().filter(|e| e.3.is_none()).collect();
+        let rdyn: Vec<_> = right.iter().filter(|e| e.3.is_none()).collect();
+        if ldyn.len() != rdyn.len() {
+            result = if ldyn.len() < rdyn.len() { -1 } else { 1 };
+        } else {
+            for (name, lv, _, _) in ldyn {
+                let Some((_, rv, _, _)) = rdyn.iter().find(|(n, _, _, _)| n == name) else {
+                    result = 1;
+                    break;
+                };
+                let r = lv.spaceship(rv);
+                if r != 0 {
+                    result = r;
+                    break;
+                }
+            }
+        }
+    }
+    COMPARING.with(|c| {
+        c.borrow_mut().pop();
+    });
+    result
+}
 
 impl Value {
     /// Construct a string value by copying `bytes`.
@@ -428,9 +502,7 @@ impl Value {
             // Closures compare by identity; never equal to a non-closure.
             (Closure(a), Closure(b)) => a == b,
             (Closure(_), _) | (_, Closure(_)) => false,
-            // Objects: identity here (loose `==` of distinct same-class instances
-            // with equal properties is a documented divergence, not yet modelled).
-            (Object(a), Object(b)) => a == b,
+            (Object(a), Object(b)) => object_spaceship(a, b) == 0,
             (Object(_), _) | (_, Object(_)) => false,
             (Resource(a), Resource(b)) => a.id() == b.id(),
             (Resource(r), _) => Int(i64::from(r.id())).loose_eq(&resource_operand(rhs)),
@@ -495,8 +567,9 @@ impl Value {
             (Closure(a), Closure(b)) => i64::from(a != b),
             (Closure(_), _) => 1,
             (_, Closure(_)) => -1,
-            // Objects: uncomparable beyond identity, ordered greater than scalars.
-            (Object(a), Object(b)) => i64::from(a != b),
+            // Objects of one class compare property by property; of two
+            // classes they are uncomparable, which php spells `1`.
+            (Object(a), Object(b)) => object_spaceship(a, b),
             (Object(_), _) => 1,
             (_, Object(_)) => -1,
             (Resource(a), Resource(b)) => int_cmp(i64::from(a.id()), i64::from(b.id())),

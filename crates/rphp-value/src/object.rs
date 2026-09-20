@@ -61,6 +61,17 @@ pub struct PropMeta {
     pub decl_class_name: Rc<[u8]>,
 }
 
+/// php's storage key for a private property, `"\0Class\0name"` — the key
+/// an ancestor's private property that a subclass re-declared lives under.
+pub fn mangled_key(decl_class_name: &[u8], name: &[u8]) -> Box<[u8]> {
+    let mut k = Vec::with_capacity(decl_class_name.len() + name.len() + 2);
+    k.push(0);
+    k.extend_from_slice(decl_class_name);
+    k.push(0);
+    k.extend_from_slice(name);
+    k.into_boxed_slice()
+}
+
 /// The shape of every instance of one class: declared properties in slot
 /// order plus a name → slot index. Built once per class by the runtime and
 /// shared (`Rc`) by all instances.
@@ -76,11 +87,22 @@ impl Layout {
     /// than `u16::MAX` properties are declared.
     pub fn new(class_name: Rc<[u8]>, props: Vec<PropMeta>) -> Layout {
         assert!(props.len() <= usize::from(u16::MAX), "too many declared properties");
-        let index = props
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (p.name.clone(), i as u16))
-            .collect();
+        // php keeps an ancestor's *private* property beside a subclass's
+        // property of the same name — two slots, one object. The slots
+        // arrive parent-first, so of two entries that share a name the
+        // earlier is the ancestor's private one: it is reachable by the
+        // plain name only from that ancestor's own code, and it lives in the
+        // index under php's mangled key, `"\0Decl\0name"`. Its displayed
+        // name stays plain, which is what the formatters print and mangle
+        // themselves.
+        let mut index: HashMap<Box<[u8]>, u16> = HashMap::with_capacity(props.len());
+        for (i, p) in props.iter().enumerate() {
+            if let Some(earlier) = index.remove(&p.name) {
+                let shadowed = &props[usize::from(earlier)];
+                index.insert(mangled_key(&shadowed.decl_class_name, &shadowed.name), earlier);
+            }
+            index.insert(p.name.clone(), i as u16);
+        }
         Layout { class_name, props, index }
     }
 
@@ -668,6 +690,18 @@ impl Object {
     /// visibility)` — for consumers that will re-enter the VM while walking
     /// them (a `__debugInfo` call, a `foreach` body): cloned out so no borrow
     /// is held. `Uninit` slots are skipped.
+    /// [`props_snapshot`](Self::props_snapshot) with each slot's declaring
+    /// class, which is what tells an ancestor's private property apart from
+    /// a subclass's of the same name. `None` for a dynamic property.
+    pub fn props_snapshot_with_decl(&self) -> Vec<(Box<[u8]>, Value, Vis, Option<u32>)> {
+        self.0
+            .borrow()
+            .props_in_order()
+            .filter(|p| !p.value.is_uninit())
+            .map(|p| (Box::from(p.name), p.value.clone(), p.vis, p.meta.map(|m| m.decl_class)))
+            .collect()
+    }
+
     pub fn props_snapshot(&self) -> Vec<(Box<[u8]>, Value, Vis)> {
         self.0
             .borrow()

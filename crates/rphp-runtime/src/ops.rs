@@ -98,6 +98,32 @@ pub enum SetNotice {
 }
 
 impl Interp {
+    /// The two operands of a loose comparison, after php's one conversion
+    /// that a value comparison cannot make on its own: an **object beside a
+    /// number** is cast to that number's type — `1` with `Notice: Object of
+    /// class C could not be converted to int` (or `float`) — so `$obj == 1`
+    /// is true and `$obj <=> 5` is `-1`. Every other pairing (bool, null,
+    /// string, array, another object) compares as `Value` already does.
+    pub fn cmp_operands(&mut self, l: Value, r: Value) -> Result<(Value, Value), Unwind> {
+        let l = self.object_beside_number(&l, &r)?;
+        let r = self.object_beside_number(&r, &l)?;
+        Ok((l, r))
+    }
+
+    fn object_beside_number(&mut self, v: &Value, other: &Value) -> Result<Value, Unwind> {
+        let (obj, as_float) = match (&*v.deref(), &*other.deref()) {
+            (Value::Object(o), Value::Int(_)) => (o.clone(), false),
+            (Value::Object(o), Value::Float(_)) => (o.clone(), true),
+            _ => return Ok(v.deref().into_owned()),
+        };
+        let class = String::from_utf8_lossy(obj.layout().class_name()).into_owned();
+        self.notice(&format!(
+            "Object of class {class} could not be converted to {}",
+            if as_float { "float" } else { "int" }
+        ))?;
+        Ok(if as_float { Value::Float(1.0) } else { Value::Int(1) })
+    }
+
     /// Warn for a leading-numeric string operand (`"12abc" + 1`).
     fn warn_non_numeric(&mut self, v: &Value) -> Result<(), Unwind> {
         if let Value::Str(s) = &*v.deref() {
@@ -446,20 +472,30 @@ impl Interp {
     /// (`\0*\0name`) properties.
     pub fn object_to_array(&self, o: &Object) -> Array {
         let mut out = Array::new();
-        for (name, value, vis) in o.props_snapshot() {
+        // Each slot carries its own declaring class, which is what tells an
+        // ancestor's private property apart from the subclass's of the same
+        // name — the two keys differ only in the class between the NULs.
+        let entries: Vec<(Vec<u8>, Value, rphp_value::Vis, Vec<u8>)> = o.with_data(|d| {
+            d.props_in_order()
+                .filter(|p| !p.value.is_uninit())
+                .map(|p| {
+                    let decl = p
+                        .meta
+                        .map(|m| m.decl_class_name.to_vec())
+                        .unwrap_or_else(|| o.layout().class_name().to_vec());
+                    (p.name.to_vec(), p.value.clone(), p.vis, decl)
+                })
+                .collect()
+        });
+        for (name, value, vis, decl) in entries {
             let key: Vec<u8> = match vis {
-                rphp_value::Vis::Public => name.to_vec(),
+                rphp_value::Vis::Public => name,
                 rphp_value::Vis::Protected => {
                     let mut k = b"\0*\0".to_vec();
                     k.extend_from_slice(&name);
                     k
                 }
                 rphp_value::Vis::Private => {
-                    let layout = o.layout();
-                    let decl = layout
-                        .slot_of(&name)
-                        .map(|i| layout.prop(i).decl_class_name.to_vec())
-                        .unwrap_or_else(|| layout.class_name().to_vec());
                     let mut k = vec![0u8];
                     k.extend_from_slice(&decl);
                     k.push(0);

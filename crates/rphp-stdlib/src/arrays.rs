@@ -135,12 +135,18 @@ pub(crate) fn count(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     }
 }
 
-pub(crate) fn in_array(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let needle = &args[0];
+pub(crate) fn in_array(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let needle = args[0].clone();
     let haystack = want_array("in_array", &args[1])?;
     let strict = args.get(2).is_some_and(Value::to_bool);
     for (_, v) in haystack.iter() {
-        let hit = if strict { needle.identical(v) } else { needle.loose_eq(v) };
+        let hit = if strict {
+            needle.identical(v)
+        } else {
+            // `==`, with php's object-beside-number notice and conversion.
+            let (l, r) = ctx.cmp_operands(needle.clone(), v.clone())?;
+            l.loose_eq(&r)
+        };
         if hit {
             return Ok(Value::Bool(true));
         }
@@ -676,8 +682,8 @@ pub(crate) fn array_unique(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-pub(crate) fn array_search(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let needle = &args[0];
+pub(crate) fn array_search(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let needle = args[0].clone();
     let haystack = match &args[1] {
         Value::Array(a) => a,
         other => {
@@ -688,8 +694,14 @@ pub(crate) fn array_search(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
         }
     };
     let strict = args.get(2).is_some_and(Value::to_bool);
+    let haystack = haystack.clone();
     for (k, v) in haystack.iter() {
-        let hit = if strict { needle.identical(v) } else { needle.loose_eq(v) };
+        let hit = if strict {
+            needle.identical(v)
+        } else {
+            let (l, r) = ctx.cmp_operands(needle.clone(), v.clone())?;
+            l.loose_eq(&r)
+        };
         if hit {
             return Ok(k.to_value());
         }

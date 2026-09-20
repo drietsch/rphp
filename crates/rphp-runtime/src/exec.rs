@@ -948,12 +948,12 @@ impl Interp {
 
                 // --- comparison ---
                 Op::CmpEq { dst, a, b } => {
-                    let r = self.rd(base, a).loose_eq(&self.rd(base, b));
-                    self.set(base, dst, Value::Bool(r));
+                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
+                    self.set(base, dst, Value::Bool(l.loose_eq(&r)));
                 }
                 Op::CmpNe { dst, a, b } => {
-                    let r = !self.rd(base, a).loose_eq(&self.rd(base, b));
-                    self.set(base, dst, Value::Bool(r));
+                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
+                    self.set(base, dst, Value::Bool(!l.loose_eq(&r)));
                 }
                 Op::CmpIdentical { dst, a, b } => {
                     let r = self.rd(base, a).identical(&self.rd(base, b));
@@ -964,24 +964,24 @@ impl Interp {
                     self.set(base, dst, Value::Bool(r));
                 }
                 Op::CmpLt { dst, a, b } => {
-                    let r = self.rd(base, a).lt(&self.rd(base, b));
-                    self.set(base, dst, Value::Bool(r));
+                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
+                    self.set(base, dst, Value::Bool(l.lt(&r)));
                 }
                 Op::CmpLe { dst, a, b } => {
-                    let r = self.rd(base, a).le(&self.rd(base, b));
-                    self.set(base, dst, Value::Bool(r));
+                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
+                    self.set(base, dst, Value::Bool(l.le(&r)));
                 }
                 Op::CmpGt { dst, a, b } => {
-                    let r = self.rd(base, a).gt(&self.rd(base, b));
-                    self.set(base, dst, Value::Bool(r));
+                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
+                    self.set(base, dst, Value::Bool(l.gt(&r)));
                 }
                 Op::CmpGe { dst, a, b } => {
-                    let r = self.rd(base, a).ge(&self.rd(base, b));
-                    self.set(base, dst, Value::Bool(r));
+                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
+                    self.set(base, dst, Value::Bool(l.ge(&r)));
                 }
                 Op::Spaceship { dst, a, b } => {
-                    let r = self.rd(base, a).spaceship(&self.rd(base, b));
-                    self.set(base, dst, Value::Int(r));
+                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
+                    self.set(base, dst, Value::Int(l.spaceship(&r)));
                 }
 
                 // --- control flow ---

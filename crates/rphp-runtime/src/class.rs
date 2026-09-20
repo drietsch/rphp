@@ -784,6 +784,22 @@ impl Interp {
             }
         }
         for ps in props {
+            // Re-declaring an ancestor's **private** property does not
+            // replace it: php keeps both slots on the object, the
+            // ancestor's under its mangled key, reachable by the plain name
+            // from that ancestor's own code only. The layout indexes it the
+            // same way (`Layout::new`).
+            let inherited_private = def
+                .prop_index
+                .get(&ps.name)
+                .map(|&i| &def.props[i as usize])
+                .is_some_and(|p| p.vis == Visibility::Private && p.decl != id);
+            if inherited_private {
+                let i = def.prop_index.remove(&ps.name).expect("looked up just above");
+                let decl_name = self.classes[def.props[i as usize].decl as usize].name.clone();
+                def.prop_index
+                    .insert(rphp_value::mangled_key(&decl_name, &ps.name), i);
+            }
             match def.prop_index.get(&ps.name).copied() {
                 Some(i) => {
                     let p = &mut def.props[i as usize];

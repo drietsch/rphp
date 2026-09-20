@@ -617,8 +617,16 @@ pub(crate) fn get_object_vars(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult
     };
     let scope = ctx.current_user_frame().and_then(|f| f.scope);
     let mut out = rphp_value::Array::new();
-    for (name, value, _) in o.props_snapshot() {
-        if let Some((vis, decl)) = ctx.resolve_prop(o.class_id(), &name) {
+    // Each slot is judged by its *own* declaring class: an ancestor's
+    // private property and a subclass's of the same name are two slots, and
+    // from the ancestor's scope it is the ancestor's that is visible.
+    for (name, value, vis, decl) in o.props_snapshot_with_decl() {
+        if let Some(decl) = decl {
+            let vis = match vis {
+                rphp_value::Vis::Public => rphp_runtime::Visibility::Public,
+                rphp_value::Vis::Protected => rphp_runtime::Visibility::Protected,
+                rphp_value::Vis::Private => rphp_runtime::Visibility::Private,
+            };
             if !ctx.access_ok_public(vis, decl, scope) {
                 continue;
             }

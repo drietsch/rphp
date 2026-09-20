@@ -213,6 +213,8 @@ impl Interp {
         };
         let class = self.class_of(&o).clone();
         let scope = self.prop_scope();
+        let key = self.prop_key(&class, name, scope);
+        let name: &[u8] = &key;
         let Some(p) = class.prop(name) else {
             return self.unset_dynamic(&o, name);
         };
@@ -278,6 +280,8 @@ impl Interp {
     fn read_prop(&mut self, o: &Object, name: &[u8]) -> Result<Value, Unwind> {
         let class = self.class_of(o).clone();
         let scope = self.prop_scope();
+        let key = self.prop_key(&class, name, scope);
+        let name: &[u8] = &key;
         match class.prop(name) {
             Some(p) => match self.access_of(&class, p, scope) {
                 Access::Visible => {
@@ -367,6 +371,8 @@ impl Interp {
     fn write_prop(&mut self, o: &Object, name: &[u8], v: Value) -> Result<(), Unwind> {
         let class = self.class_of(o).clone();
         let scope = self.prop_scope();
+        let key = self.prop_key(&class, name, scope);
+        let name: &[u8] = &key;
         let Some(p) = class.prop(name) else {
             return self.write_dynamic(o, name, v);
         };
@@ -497,6 +503,26 @@ impl Interp {
         self.current_user_frame().and_then(|f| f.scope)
     }
 
+    /// The storage key `name` resolves to from `scope`.
+    ///
+    /// An ancestor's private property that a subclass re-declared lives
+    /// under php's mangled key (`Layout::new`), and only that ancestor's own
+    /// code reaches it by the plain name — every other scope's `name` is the
+    /// subclass's slot. The mangled entry exists only where a re-declaration
+    /// happened, so this is one hash miss for everyone else.
+    fn prop_key<'n>(&self, class: &ClassDef, name: &'n [u8], scope: Option<u32>) -> std::borrow::Cow<'n, [u8]> {
+        if let Some(s) = scope {
+            if s != class.id && !class.prop_index.is_empty() {
+                let decl_name = &self.classes[s as usize].name;
+                let mangled = rphp_value::mangled_key(decl_name, name);
+                if class.prop_index.contains_key(&mangled) {
+                    return std::borrow::Cow::Owned(mangled.into_vec());
+                }
+            }
+        }
+        std::borrow::Cow::Borrowed(name)
+    }
+
     /// How the calling scope sees a declared property (see [`Access`]).
     fn access_of(&self, class: &ClassDef, p: &PropInfo, scope: Option<u32>) -> Access {
         if self.access_ok(p.vis, p.decl, scope) {
@@ -519,6 +545,8 @@ impl Interp {
     fn stored_prop(&self, o: &Object, name: &[u8]) -> Stored {
         let class = self.class_of(o).clone();
         let scope = self.prop_scope();
+        let key = self.prop_key(&class, name, scope);
+        let name: &[u8] = &key;
         match class.prop(name) {
             Some(p) => match self.access_of(&class, p, scope) {
                 Access::Visible => match o.get(name) {

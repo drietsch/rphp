@@ -1161,7 +1161,14 @@ impl<'a> Unserializer<'a> {
                     Value::Str(s) => s.as_bytes().to_vec(),
                     _ => return Err(UErr::At(after)),
                 };
-                let name = unmangle(&mangled).to_vec();
+                // An ancestor's private property that a subclass re-declared
+                // is stored under its mangled key (`Layout::new`), so that
+                // key is the slot when the layout knows it as such.
+                let name = if obj.layout().slot_of(&mangled).is_some() {
+                    mangled.clone()
+                } else {
+                    unmangle(&mangled).to_vec()
+                };
                 let declared = obj.layout().slot_of(&name).is_some();
                 if !declared && obj.get(&name).is_none() {
                     let class = obj.layout().class_name().to_vec();

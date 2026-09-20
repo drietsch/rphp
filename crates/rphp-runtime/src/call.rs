@@ -357,8 +357,9 @@ impl Interp {
         named: Vec<(Box<[u8]>, Value)>,
     ) -> NativeResult {
         let f = self.natives[id.0 as usize];
-        let mut args: Vec<Value> = self.stack.drain(args_base..args_base + argc).collect();
-        match self.bind_native_named(f.name, &mut args, named) {
+        let mut args = self.take_vec();
+        args.extend(self.stack.drain(args_base..args_base + argc));
+        let r = match self.bind_native_named(f.name, &mut args, named) {
             Ok(extra) => self.call_native_named(id, &mut args, extra),
             Err(NamedFault::Outside(u)) => Err(u),
             Err(NamedFault::Inside(u, extra)) => {
@@ -369,6 +370,41 @@ impl Interp {
                 let r = self.locate_fault(Err(u));
                 self.frames.pop();
                 r
+            }
+        };
+        self.give_vec(args);
+        r
+    }
+
+    /// A cleared argument vector from the pool (or a fresh one).
+    #[inline]
+    pub(crate) fn take_vec(&mut self) -> Vec<Value> {
+        self.vec_pool.pop().unwrap_or_default()
+    }
+
+    /// Hand an argument vector back to the pool, cleared.
+    #[inline]
+    pub(crate) fn give_vec(&mut self, mut v: Vec<Value>) {
+        v.clear();
+        if self.vec_pool.len() < 64 {
+            self.vec_pool.push(v);
+        }
+    }
+
+    /// The frame's copy of a native's arguments, from the pool.
+    #[inline]
+    fn frame_args_copy(&mut self, args: &[Value]) -> Vec<Value> {
+        let mut v = self.take_vec();
+        v.extend_from_slice(args);
+        v
+    }
+
+    /// Pop a native frame, returning its argument vector to the pool.
+    #[inline]
+    fn pop_native_frame(&mut self) {
+        if let Some(frame) = self.frames.pop() {
+            if let Some((_, args)) = frame.native {
+                self.give_vec(args);
             }
         }
     }
@@ -408,8 +444,11 @@ impl Interp {
             }
         }
         let silence = self.silence;
-        let mut frame = Frame::native(id, args.to_vec(), silence);
-        frame.ref_cells = cells.clone();
+        let copy = self.frame_args_copy(args);
+        let mut frame = Frame::native(id, copy, silence);
+        if !cells.is_empty() {
+            frame.ref_cells = cells.clone();
+        }
         frame.extra_named = extra_named;
         self.frames.push(frame);
         let r = {
@@ -417,7 +456,7 @@ impl Interp {
             (f.handler)(&mut ctx, args)
         };
         let r = self.locate_fault(r);
-        self.frames.pop();
+        self.pop_native_frame();
         self.silence = silence;
         for (i, cell) in cells {
             cell.set(args[i].clone());
@@ -535,9 +574,12 @@ impl Interp {
         let MethodBody::Native(_) = &m.body else {
             unreachable!("call_native_method_window on a user method")
         };
-        let mut args: Vec<Value> = self.stack.drain(args_base..args_base + argc).collect();
+        let mut args = self.take_vec();
+        args.extend(self.stack.drain(args_base..args_base + argc));
         if named.is_empty() {
-            return self.call_native_method(m, this, &mut args);
+            let r = self.call_native_method(m, this, &mut args);
+            self.give_vec(args);
+            return r;
         }
         let display = format!(
             "{}::{}",
@@ -615,8 +657,11 @@ impl Interp {
             }
         }
         let silence = self.silence;
-        let mut frame = Frame::native_method(m, this.clone(), args.to_vec(), silence);
-        frame.ref_cells = cells.clone();
+        let copy = self.frame_args_copy(args);
+        let mut frame = Frame::native_method(m, this.clone(), copy, silence);
+        if !cells.is_empty() {
+            frame.ref_cells = cells.clone();
+        }
         frame.extra_named = extra_named;
         self.frames.push(frame);
         let r = {
@@ -624,7 +669,7 @@ impl Interp {
             (nm.handler)(&mut ctx, this.as_ref(), args)
         };
         let r = self.locate_fault(r);
-        self.frames.pop();
+        self.pop_native_frame();
         self.silence = silence;
         for (i, cell) in cells {
             cell.set(args[i].clone());

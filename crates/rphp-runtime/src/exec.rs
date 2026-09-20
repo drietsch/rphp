@@ -579,6 +579,11 @@ impl Interp {
                     self.set(base, dst, r);
                 }
                 Op::AssignOp { op, var, src } => {
+                    if let Some(r) = fast_arith(op, self.raw(base, var), self.raw(base, src)) {
+                        self.set(base, var, r);
+                        pc += 1;
+                        continue;
+                    }
                     let cur = self.rd(base, var);
                     let rhs = self.rd(base, src);
                     let r = self.binary_op(op, &cur, &rhs)?;
@@ -620,6 +625,17 @@ impl Interp {
                     self.assign_prop(&o, &name, r)?;
                 }
                 Op::IncDec { var, dst, pre, inc } => {
+                    if let Value::Int(i) = self.raw(base, var) {
+                        let i = *i;
+                        if let Some(n) = if inc { i.checked_add(1) } else { i.checked_sub(1) } {
+                            self.set(base, var, Value::Int(n));
+                            if let Some(d) = dst {
+                                self.set(base, d, Value::Int(if pre { n } else { i }));
+                            }
+                            pc += 1;
+                            continue;
+                        }
+                    }
                     let old = self.rd(base, var);
                     let new = self.inc_dec(&old, inc)?;
                     Value::assign(&mut self.stack[base + var as usize], new.clone());
@@ -1058,34 +1074,64 @@ impl Interp {
 
                 // --- comparison ---
                 Op::CmpEq { dst, a, b } => {
+                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
+                        self.set(base, dst, Value::Bool(l == r));
+                        pc += 1;
+                        continue;
+                    }
                     let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
                     self.set(base, dst, Value::Bool(l.loose_eq(&r)));
                 }
                 Op::CmpNe { dst, a, b } => {
+                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
+                        self.set(base, dst, Value::Bool(l != r));
+                        pc += 1;
+                        continue;
+                    }
                     let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
                     self.set(base, dst, Value::Bool(!l.loose_eq(&r)));
                 }
                 Op::CmpIdentical { dst, a, b } => {
-                    let r = self.rd(base, a).identical(&self.rd(base, b));
+                    let r = self.raw(base, a).identical(self.raw(base, b));
                     self.set(base, dst, Value::Bool(r));
                 }
                 Op::CmpNotIdentical { dst, a, b } => {
-                    let r = !self.rd(base, a).identical(&self.rd(base, b));
+                    let r = !self.raw(base, a).identical(self.raw(base, b));
                     self.set(base, dst, Value::Bool(r));
                 }
                 Op::CmpLt { dst, a, b } => {
+                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
+                        self.set(base, dst, Value::Bool(l < r));
+                        pc += 1;
+                        continue;
+                    }
                     let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
                     self.set(base, dst, Value::Bool(l.lt(&r)));
                 }
                 Op::CmpLe { dst, a, b } => {
+                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
+                        self.set(base, dst, Value::Bool(l <= r));
+                        pc += 1;
+                        continue;
+                    }
                     let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
                     self.set(base, dst, Value::Bool(l.le(&r)));
                 }
                 Op::CmpGt { dst, a, b } => {
+                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
+                        self.set(base, dst, Value::Bool(l > r));
+                        pc += 1;
+                        continue;
+                    }
                     let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
                     self.set(base, dst, Value::Bool(l.gt(&r)));
                 }
                 Op::CmpGe { dst, a, b } => {
+                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
+                        self.set(base, dst, Value::Bool(l >= r));
+                        pc += 1;
+                        continue;
+                    }
                     let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
                     self.set(base, dst, Value::Bool(l.ge(&r)));
                 }
@@ -2120,6 +2166,11 @@ impl Interp {
 
     /// `dst = a OP b` for the binary operators.
     fn arith(&mut self, base: usize, dst: u16, a: u16, b: u16, op: AssignOpKind) -> Result<(), Unwind> {
+        // Two numbers in the registers: no clone, no diagnostics to consider.
+        if let Some(r) = fast_arith(op, self.raw(base, a), self.raw(base, b)) {
+            self.set(base, dst, r);
+            return Ok(());
+        }
         let x = self.rd(base, a);
         let y = self.rd(base, b);
         let r = self.binary_op(op, &x, &y)?;
@@ -2603,4 +2654,63 @@ impl Interp {
         candidates.push(self.cwd.join(&p));
         candidates.into_iter().find(|c| c.is_file())
     }
+}
+
+
+/// Both registers as `f64` when both hold plain numbers (an `Int` beside
+/// a `Float` compares as floats, as php does), `None` otherwise.
+#[inline]
+fn fast_numbers(a: &Value, b: &Value) -> Option<(f64, f64)> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            // Exact: integer comparison encoded in the float pair only
+            // when both fit, else fall back.
+            if x.unsigned_abs() < (1u64 << 53) && y.unsigned_abs() < (1u64 << 53) {
+                Some((*x as f64, *y as f64))
+            } else {
+                None
+            }
+        }
+        (Value::Float(x), Value::Float(y)) => Some((*x, *y)),
+        (Value::Int(x), Value::Float(y)) => Some((*x as f64, *y)),
+        (Value::Float(x), Value::Int(y)) => Some((*x, *y as f64)),
+        _ => None,
+    }
+}
+
+/// `+ - * %` and `/` on two plain numbers, with php's overflow-to-float
+/// and integer-division rules; `None` hands the case to the general path
+/// (a zero divisor included, for its exception).
+#[inline]
+fn fast_arith(op: AssignOpKind, a: &Value, b: &Value) -> Option<Value> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => {
+            let (x, y) = (*x, *y);
+            Some(match op {
+                AssignOpKind::Add => x.checked_add(y).map_or(Value::Float(x as f64 + y as f64), Value::Int),
+                AssignOpKind::Sub => x.checked_sub(y).map_or(Value::Float(x as f64 - y as f64), Value::Int),
+                AssignOpKind::Mul => x.checked_mul(y).map_or(Value::Float(x as f64 * y as f64), Value::Int),
+                AssignOpKind::Mod if y != 0 && y != -1 => Value::Int(x % y),
+                AssignOpKind::Mod if y == -1 => Value::Int(0),
+                AssignOpKind::Div if y != 0 && y != -1 && x % y == 0 => Value::Int(x / y),
+                AssignOpKind::Div if y != 0 && y != -1 => Value::Float(x as f64 / y as f64),
+                _ => return None,
+            })
+        }
+        (Value::Float(x), Value::Float(y)) => fast_float(op, *x, *y),
+        (Value::Int(x), Value::Float(y)) => fast_float(op, *x as f64, *y),
+        (Value::Float(x), Value::Int(y)) => fast_float(op, *x, *y as f64),
+        _ => None,
+    }
+}
+
+#[inline]
+fn fast_float(op: AssignOpKind, x: f64, y: f64) -> Option<Value> {
+    Some(Value::Float(match op {
+        AssignOpKind::Add => x + y,
+        AssignOpKind::Sub => x - y,
+        AssignOpKind::Mul => x * y,
+        AssignOpKind::Div if y != 0.0 => x / y,
+        _ => return None,
+    }))
 }

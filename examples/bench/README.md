@@ -20,3 +20,11 @@ and the native call path are the next performance wave. symfony/demo's
 `/en/blog/` under `rphp -S`: 2.2 s → 0.48 s warm over the day (php 75 ms);
 the compiled-unit cache took it from 0.84 s (every request had parsed and
 compiled ~1500 files, then read them again) to 0.48 s.
+
+`function-vs-global.php`: top-level code keeps its variables in the symbol
+table (reference cells), so the same loop runs ~3× slower at file scope
+than in a function — write benchmarks (and hot code) inside functions.
+Numeric fast paths (int/float operands read straight from the registers)
+took the in-function arithmetic loop to 12× php; the native call path is
+~130 ns per call (php 2 ns): the 272-byte `Frame` moved three times, the
+argument copies for traces, the output flush check.

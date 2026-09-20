@@ -61,8 +61,13 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
 
 /// The byte string an argument coerces to (the `(string)` cast). Lets every
 /// builtin accept any scalar the way PHP's weak typing does.
-fn bytes(v: &Value) -> Vec<u8> {
-    v.to_php_bytes()
+/// A string argument's bytes: borrowed from a string value (the common
+/// case, no copy), converted for anything else.
+fn bytes(v: &Value) -> std::borrow::Cow<'_, [u8]> {
+    match v {
+        Value::Str(s) => std::borrow::Cow::Borrowed(s.as_bytes()),
+        other => std::borrow::Cow::Owned(other.to_php_bytes()),
+    }
 }
 
 /// Wrap owned bytes as a string value.
@@ -115,19 +120,19 @@ pub(crate) fn strlen(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 }
 
 pub(crate) fn strtoupper(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let mut b = bytes(&args[0]);
+    let mut b = bytes(&args[0]).into_owned();
     b.make_ascii_uppercase();
     Ok(str_value(b))
 }
 
 pub(crate) fn strtolower(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let mut b = bytes(&args[0]);
+    let mut b = bytes(&args[0]).into_owned();
     b.make_ascii_lowercase();
     Ok(str_value(b))
 }
 
 pub(crate) fn ucfirst(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let mut b = bytes(&args[0]);
+    let mut b = bytes(&args[0]).into_owned();
     if let Some(first) = b.first_mut() {
         first.make_ascii_uppercase();
     }
@@ -135,7 +140,7 @@ pub(crate) fn ucfirst(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 }
 
 pub(crate) fn lcfirst(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let mut b = bytes(&args[0]);
+    let mut b = bytes(&args[0]).into_owned();
     if let Some(first) = b.first_mut() {
         first.make_ascii_lowercase();
     }
@@ -322,7 +327,7 @@ pub(crate) fn implode(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             ));
         }
         match args[1].deref().into_owned() {
-            Value::Array(a) => (bytes(&a0), a),
+            Value::Array(a) => (bytes(&a0).into_owned(), a),
             Value::Null => {
                 return Err(Unwind::type_error(
                     "implode(): If argument #1 ($separator) is of type string, argument #2 ($array) must be of type array, null given",
@@ -492,16 +497,16 @@ fn ascii_lower(b: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) fn strrev(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let mut b = bytes(&args[0]);
+    let mut b = bytes(&args[0]).into_owned();
     b.reverse();
     Ok(str_value(b))
 }
 
 pub(crate) fn ucwords(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let mut b = bytes(&args[0]);
+    let mut b = bytes(&args[0]).into_owned();
     // Default word delimiters match php-src: " \t\r\n\f\v".
     let delims: Vec<u8> = match args.get(1) {
-        Some(d) => bytes(d),
+        Some(d) => bytes(d).into_owned(),
         None => vec![b' ', b'\t', b'\r', b'\n', 0x0c, 0x0b],
     };
     // A byte is capitalized iff it follows a delimiter (or starts the string).
@@ -520,7 +525,7 @@ pub(crate) fn str_pad(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let target = args[1].to_int();
     let pad = match args.get(2) {
-        Some(p) => bytes(p),
+        Some(p) => bytes(p).into_owned(),
         None => vec![b' '],
     };
     // 0 = STR_PAD_LEFT, 1 = STR_PAD_RIGHT (default), 2 = STR_PAD_BOTH.
@@ -537,7 +542,7 @@ pub(crate) fn str_pad(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     }
     let cur = s.len() as i64;
     if target <= cur {
-        return Ok(str_value(s));
+        return Ok(str_value(s.into_owned()));
     }
     let total = (target - cur) as usize;
     // Build `n` bytes by cycling through `pad` (a partial final copy is allowed).
@@ -564,7 +569,7 @@ pub(crate) fn str_pad(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
             v
         }
         _ => {
-            let mut v = s.clone();
+            let mut v = s.to_vec();
             v.extend_from_slice(&make(total));
             v
         }
@@ -673,7 +678,7 @@ fn rpos_impl(args: &[Value], ci: bool, name: &str) -> NativeResult {
     let (hb, nb) = if ci {
         (ascii_lower(&haystack), ascii_lower(&needle))
     } else {
-        (haystack.clone(), needle.clone())
+        (haystack.to_vec(), needle.to_vec())
     };
     let mut p = hi;
     while p >= lo {
@@ -839,7 +844,7 @@ fn hex_val(c: u8) -> Option<u8> {
 pub(crate) fn bin2hex(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let b = bytes(&args[0]);
     let mut out = Vec::with_capacity(b.len() * 2);
-    for &byte in &b {
+    for &byte in b.iter() {
         out.push(hex_digit(byte >> 4));
         out.push(hex_digit(byte & 0xf));
     }
@@ -1059,7 +1064,7 @@ pub(crate) fn substr_replace(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult 
 pub(crate) fn quotemeta(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let mut out = Vec::with_capacity(s.len());
-    for &c in &s {
+    for &c in s.iter() {
         if matches!(
             c,
             b'.' | b'\\' | b'+' | b'*' | b'?' | b'[' | b'^' | b']' | b'$' | b'(' | b')'
@@ -1074,7 +1079,7 @@ pub(crate) fn quotemeta(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 pub(crate) fn addslashes(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let s = bytes(&args[0]);
     let mut out = Vec::with_capacity(s.len());
-    for &c in &s {
+    for &c in s.iter() {
         match c {
             b'\'' | b'"' | b'\\' => {
                 out.push(b'\\');
@@ -1195,11 +1200,11 @@ pub(crate) fn number_format(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let dec_arg = args.get(1).map_or(0, Value::to_int);
     let dec = dec_arg.max(0) as usize;
     let dec_point = match args.get(2) {
-        Some(v) => bytes(v),
+        Some(v) => bytes(v).into_owned(),
         None => vec![b'.'],
     };
     let thousands = match args.get(3) {
-        Some(v) => bytes(v),
+        Some(v) => bytes(v).into_owned(),
         None => vec![b','],
     };
     // php rounds first (half away from zero on the decimal the float

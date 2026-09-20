@@ -114,6 +114,9 @@ pub const MAX_FRAMES: usize = 1_000_000;
 /// tables and the frame stack go through methods.
 pub struct Interp {
     pub(crate) natives: Vec<NativeFn>,
+    /// Argument vectors a native call takes and hands back (the drained
+    /// window and the frame's copy for traces), so a call allocates nothing.
+    pub(crate) vec_pool: Vec<Vec<Value>>,
     /// Lowercased name → id.
     pub(crate) native_index: HashMap<Box<[u8]>, NativeId>,
     pub(crate) constants: HashMap<Box<[u8]>, Value>,
@@ -275,6 +278,7 @@ impl Interp {
             in_shutdown: false,
             main_func: None,
             frames: Vec::new(),
+            vec_pool: Vec::new(),
             stack: Vec::new(),
             reentry_depth: 0,
             included: HashSet::new(),

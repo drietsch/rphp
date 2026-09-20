@@ -543,7 +543,7 @@ mod tests {
         let mut it = Interp::new_for_tests();
         it.script_name = "/tmp/t.php".into();
         let mut m = m;
-        m.file = std::rc::Rc::from("/tmp/t.php");
+        m.file = std::sync::Arc::from("/tmp/t.php");
         it.load_module(m).unwrap();
         it.run_main().unwrap();
         assert_eq!(

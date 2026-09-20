@@ -196,6 +196,8 @@ pub struct PropHooks {
     pub get: Option<u32>,
     /// `set` hook.
     pub set: Option<u32>,
+    /// No backing value (see `rphp_bytecode::Hooks::is_virtual`).
+    pub is_virtual: bool,
 }
 
 /// One own property of a [`ClassSpec`].
@@ -964,6 +966,7 @@ impl Interp {
                 decl_class: p.decl,
                 decl_class_name: Rc::from(&self.class_display_name(p.decl, id, &name)[..]),
                 ty: p.ty.as_ref().map(|t| Rc::from(t.to_string().as_str())),
+                is_virtual: p.hooks.is_some_and(|h| h.is_virtual),
             })
             .collect();
         def.layout = Rc::new(Layout::new(Rc::from(&name[..]), metas));

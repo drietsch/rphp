@@ -19,7 +19,7 @@ use rphp_compiler::{compile, CompileOptions};
 use rphp_diagnostics::{codes, Diagnostic};
 use rphp_intern::Interner;
 use rphp_parser::{parse_v2, ParseOptions};
-use rphp_runtime::{CompileFailure, DisplayMode};
+use rphp_runtime::CompileFailure;
 use rphp_source::SourceMap;
 use rphp_value::{Array, ArrayKey, PhpRef, Value};
 
@@ -121,7 +121,20 @@ impl EngineConfig {
             ..EngineConfig::embed()
         }
     }
+
+    /// The built-in web server's configuration (`php -S`).
+    pub fn server() -> EngineConfig {
+        EngineConfig {
+            sapi: SapiKind::Server,
+            ..EngineConfig::embed()
+        }
+    }
 }
+
+/// Standard-library declarations written in php and compiled into every
+/// interpreter: `PropertyHookType` (php 8.4), the enum
+/// `ReflectionProperty::hasHook()`/`getHook()` take.
+const PRELUDE: &str = "<?php enum PropertyHookType: string { case Get = 'get'; case Set = 'set'; }";
 
 /// The per-process engine: creates interpreters, compiles and runs code.
 pub struct Engine {
@@ -144,6 +157,14 @@ impl Engine {
     /// applied, `$_SERVER`/`$argv`/`$argc` seeded into the globals table,
     /// and the compile hook `include`/`require` use installed.
     pub fn new_interp(&self, sink: Box<dyn OutputSink>) -> Interp {
+        let mut it = self.new_interp_unseeded(sink);
+        self.seed_globals(&mut it);
+        it
+    }
+
+    /// [`Engine::new_interp`] without the CLI's `$_SERVER`/`$argv` seeding:
+    /// a web SAPI binds its own request afterwards.
+    pub fn new_interp_unseeded(&self, sink: Box<dyn OutputSink>) -> Interp {
         let cfg = &self.config;
         let mut it = Interp::new(sink);
         it.sapi = cfg.sapi;
@@ -152,6 +173,11 @@ impl Engine {
         }
         it.argv = cfg.argv.iter().map(|s| s.as_bytes().to_vec()).collect();
         it.script_path = cfg.script_path.clone();
+        if cfg.sapi == SapiKind::Server {
+            for (k, v) in rphp_runtime::SERVER_DEFAULTS {
+                it.ini_set(k, v);
+            }
+        }
         for (k, v) in &cfg.ini {
             // `-d` accepts unknown directives too (php stores them as-is).
             if it.ini_set(k, v).is_none() {
@@ -163,7 +189,11 @@ impl Engine {
         // `Iterator`, so it is registered after the extensions (E8).
         rphp_runtime::register_generator_class(&mut Registry(&mut it));
         constants::register(&mut Registry(&mut it), cfg.sapi);
-        self.seed_globals(&mut it);
+        // The standard library's php-written part: what the native
+        // registry cannot declare yet (an enum).
+        if let Ok(module) = compile_unit(&it, PRELUDE.as_bytes(), "prelude") {
+            let _ = it.run_prelude(module);
+        }
         it.compile_hook = Some(Box::new(|interp: &Interp, src: &[u8], name: &str| {
             compile_unit(interp, src, name).map_err(|e| match e {
                 CompileError::Parse { message, line, .. } => CompileFailure::Parse { message, line },
@@ -260,18 +290,13 @@ impl Engine {
     /// `Stack trace:` block php ≥ 8.5 prints); a compile rejection prints
     /// its rendered diagnostics on stderr (php has no equivalent: these are
     /// constructs the engine does not lower yet).
-    fn report_load_error(&self, interp: &mut Interp, name: &str, err: CompileError) -> i32 {
+    pub fn report_load_error(&self, interp: &mut Interp, name: &str, err: CompileError) -> i32 {
         match err {
             CompileError::Parse { message, line, .. } => {
-                if interp.ini.bool("log_errors") {
-                    eprintln!("PHP Parse error:  {message} in {name} on line {line}");
-                }
-                let text = format!("\nParse error: {message} in {name} on line {line}\n");
-                match DisplayMode::parse(interp.ini_get("display_errors").unwrap_or("")) {
-                    DisplayMode::Stdout => interp.echo(text.as_bytes()),
-                    DisplayMode::Stderr => eprint!("{text}"),
-                    DisplayMode::Off => {}
-                }
+                // The standard display path: `log_errors`, `html_errors`,
+                // `error_get_last()` all apply to a parse error of the
+                // main script as to any other.
+                let _ = interp.emit_error_full(rphp_runtime::ErrLevel::Parse, &message, name, line, false);
                 interp.finish_output();
             }
             CompileError::Fatal { message, line, .. } => {

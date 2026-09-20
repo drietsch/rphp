@@ -305,7 +305,7 @@ const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
 /// `php_url_encode` (`raw = false`: space → `+`, `~` escaped) /
 /// `php_raw_url_encode` (`raw = true`: RFC 3986, `~` kept, space → `%20`).
-fn encode(s: &[u8], raw: bool) -> Vec<u8> {
+pub(crate) fn encode(s: &[u8], raw: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len());
     for &b in s {
         if b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_' || (raw && b == b'~') {
@@ -474,6 +474,20 @@ pub(crate) fn parse_str(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let input = args[0].to_php_bytes();
     let separators = ctx.ini_get("arg_separator.input").unwrap_or("&").as_bytes().to_vec();
     let max_vars = ctx.ini.int("max_input_vars");
+    let (result, exceeded) = parse_query(&input, &separators, max_vars);
+    if exceeded {
+        ctx.warn(&format!(
+            "parse_str(): Input variables exceeded {max_vars}. To increase the limit change max_input_vars in php.ini."
+        ))?;
+    }
+    Value::assign(&mut args[1], Value::Array(result));
+    Ok(Value::Null)
+}
+
+/// php's `php_default_treat_data`: a query string (or urlencoded body) as
+/// the array `$_GET`/`$_POST`/`parse_str()` build from it. Answers whether
+/// `max_input_vars` (when > 0) cut it short.
+pub fn parse_query(input: &[u8], separators: &[u8], max_vars: i64) -> (Array, bool) {
     let mut result = Array::new();
     let mut count = 0i64;
     for pair in input.split(|b| separators.contains(b)) {
@@ -482,10 +496,7 @@ pub(crate) fn parse_str(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         }
         count += 1;
         if max_vars > 0 && count > max_vars {
-            ctx.warn(&format!(
-                "parse_str(): Input variables exceeded {max_vars}. To increase the limit change max_input_vars in php.ini."
-            ))?;
-            break;
+            return (result, true);
         }
         let (name, value) = match pair.iter().position(|&b| b == b'=') {
             Some(eq) => (decode(&pair[..eq], true), decode(&pair[eq + 1..], true)),
@@ -493,13 +504,13 @@ pub(crate) fn parse_str(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         };
         register_variable(&mut result, &name, Value::Str(Str::from_vec(value)));
     }
-    Value::assign(&mut args[1], Value::Array(result));
-    Ok(Value::Null)
+    (result, false)
 }
 
 /// `php_register_variable_ex`: place `val` under the (possibly nested)
-/// variable name `var_name` in `table`.
-fn register_variable(table: &mut Array, var_name: &[u8], val: Value) {
+/// variable name `var_name` in `table` — `a[b][]=` and the rest of php's
+/// request-variable grammar.
+pub fn register_variable(table: &mut Array, var_name: &[u8], val: Value) {
     // Leading spaces are ignored; `.` and space become `_` up to the first
     // `[`, which starts the index list.
     let mut var: Vec<u8> = var_name.iter().skip_while(|&&b| b == b' ').copied().collect();

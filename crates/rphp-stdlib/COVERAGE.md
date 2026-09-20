@@ -541,3 +541,111 @@ Also cataloged: `ReflectionClassConstant::getAttributes()` (the compiler
 lowers them, the runtime constant does not carry them yet), `PhpToken`
 subclasses (`MyToken::tokenize()` answers `PhpToken` instances), and
 `TOKEN_PARSE` (accepted, not applied).
+
+## SAPI-3 and the L7 walk (2026-09-20)
+
+`rphp -S host:port [-t docroot] [router.php]` — php's `cli-server` SAPI as
+its own crate (`rphp-sapi-server`, ADR-033): a hand-rolled HTTP/1.x reader
+over `TcpListener`, one request per connection (`Connection: close`, as
+php's), each served on a request-stack thread with a fresh interpreter
+(`PHP_CLI_SERVER_WORKERS=n` runs `n` accept loops). Measured against
+`php -n -S` rather than read off php-src:
+
+- **Routing** is php's `normalize_vpath` + `translate_vpath` step for step
+  (`resolve.rs`): a missing path walks back a segment at a time until a
+  file or a directory with `index.php`/`index.html` turns up, the stripped
+  tail becoming `PATH_INFO`; a directory without an index is `404`. A
+  router script runs first with the server's working directory and its
+  `false` return hands the request on — to the script (same interpreter,
+  same superglobals) or to the static file.
+- **The response head** is php's: status line (or the script's own
+  `HTTP/…` line), `Host`, `Date`, `Connection: close`, then the header list
+  `header()` built (`X-Powered-By` first, `Content-type: text/html;
+  charset=UTF-8` appended when nothing set one, never for a 304). The head
+  goes out on the first byte that leaves the output buffers, on `flush()`
+  (which is why a later `header()` then complains without a location), or
+  at the end. A `HEAD` request drops the body after the head.
+- **`$_SERVER`** in php's key order (environment, the SAPI's keys, the
+  headers as `HTTP_*` with `CONTENT_TYPE`/`CONTENT_LENGTH` doubled,
+  `PHP_AUTH_*` from `Authorization`, the request times); `$_GET`/`$_POST`
+  through the stdlib's `parse_query` (`max_input_vars`), `$_COOKIE` with
+  php's rules (name as sent, raw-decoded value, first of a repeated name),
+  `$_FILES` from an RFC 1867 parser with php's `php……` temp names,
+  `full_path`, per-attribute arrays for `f[]`, `is_uploaded_file()` /
+  `move_uploaded_file()`, temp files removed at request end; `$_REQUEST`
+  per `request_order`/`variables_order`; `php://input` (empty for a
+  multipart POST, as php consumes it); `getallheaders()` /
+  `apache_request_headers()` / `apache_response_headers()` registered only
+  under the server SAPI, as php does.
+- **Static files** with php's 1181-entry mime table (`; charset=UTF-8` for
+  `text/*`), `Content-Length`, `405` with `Allow: GET, HEAD, POST` for
+  `DELETE`/`PUT`/`PATCH`; the `400`/`404`/`405` pages byte for byte.
+- **The ini** `php -n -S` reports: `html_errors=1` (errors render as
+  `<br />\n<b>Warning</b>:  … in <b>file</b> on line <b>N</b><br />`, the
+  message escaped for a fatal or parse error only), `implicit_flush=0`,
+  `max_execution_time=30`, `register_argc_argv=0`; `output_buffering`
+  honoured when set (a chunked default level flushes every `chunk_size`
+  bytes). The log is php's (`[Sun Sep 20 11:49:38 2026] 127.0.0.1:50751
+  [200]: GET /`, `Accepted`/`Closing`, `PHP Warning:  …` when
+  `log_errors`), stamped in local time as `ctime()` does.
+- **Headers everywhere:** the head is a `ResponseHead` shared between the
+  interpreter and the SAPI sink; `header()` applies php's rules
+  (`Content-Type: text/plain` → `Content-type: text/plain;charset=UTF-8`,
+  `Location` → 302 unless a status was chosen, `HTTP/…` lines as status
+  lines), the CLI keeps no list at all (php's CLI handler drops the line,
+  so `headers_list()` is empty there), `setcookie()`/`setrawcookie()` build
+  php's `Set-Cookie` lines (raw-url-encoded value, `deleted` + 1970 for an
+  empty one, `expires`/`Max-Age`, every option and error text), and
+  `session_start()` reads the id from the cookie, sends the session cookie
+  from `session.cookie_*` and the `session.cache_limiter` headers.
+
+**The L7 walk** (`GET /`, `GET /nonexistent`, a `PATH_INFO` request and a
+`POST`, byte-identical to `php -S` under the fixture's allowlist for
+`random_int()` hues, VarDumper ids and the request clock) found, one fatal
+at a time:
+
+- **Property hooks: backed or virtual.** A hook body that mentions
+  `$this->name` makes the property backed — reads without a `get` hook and
+  writes without a `set` hook go to the slot (Symfony's `Request` declares
+  `public ServerBag $server { set { …; $this->server = $value; } }` and reads
+  it plainly). A property none of whose hooks does is virtual: no slot at
+  all, so nothing dumps, casts or serializes it, `isInitialized()` is true,
+  the missing accessor is `Property C::$p is read-only`/`write-only`, and
+  `getRawValue`/`setRawValue` are `Must not read from`/`write to virtual
+  property`. `isset()`/`empty()` ask the `get` hook, `get_object_vars()` and
+  `json_encode()` read hooked properties through it, `unset()` of a hooked
+  property is `Cannot unset hooked property`, `setValue()` runs the `set`
+  hook, `setRawValue()` bypasses it. Reflection's `hasHooks`/`getHooks`/
+  `hasHook`/`getHook`/`isVirtual` answer (a hook is a `ReflectionMethod`
+  named `$prop::get`), and `PropertyHookType` exists — declared by a php
+  *prelude* every interpreter compiles, the one native enum the registry
+  cannot declare, marked internal afterwards.
+- **A by-reference argument bound to a nested element**
+  (`krsort($this->listeners[$name])`, `byref($a['x']['y'])`) — the compiler
+  sent a copy; the container is now fetched for writing with its
+  write-backs. With it, php's `zend_array_dup` rule: **duplicating an
+  array unwraps a reference nobody else holds**, so a copy taken after
+  such a call does not share the element.
+- **Autoload through a callable**: `['C', 'm']()`, `'C::m'`,
+  `call_user_func`, `is_callable()` load the class first, as
+  `zend_is_callable` does (VarDumper's casters name their classes as
+  strings).
+- **Traces**: a closure's frame carries the class it is scoped to (`::`
+  without a `$this`), a trait's method the *using* class, a call in a fluent
+  chain the line of the method name, string arguments are escaped C-style
+  after the 15-byte cut, and an uncaught argument `TypeError` reads
+  `… called in X on line N and defined in F:L`.
+- **`FILTER_CALLBACK`** and the `FILTER_REQUIRE_ARRAY`/`FORCE_ARRAY`/
+  `REQUIRE_SCALAR` flags in `filter_var()`, the missing `FILTER_*`
+  constants, and **deprecated constants** as a registry feature
+  (`FILTER_SANITIZE_STRING` raises php's deprecation on every fetch).
+- **`highlight_file()` / `highlight_string()` / `show_source()`** — php's
+  syntax highlighter (8.3+ `<pre><code>` form) over the workspace scanner,
+  which the debug exception page excerpts source with.
+
+**Cataloged, not done:** the parser's messages (`Unexpected token
+`Semicolon`` where php says `syntax error, unexpected token ";"`), reported
+through the standard error path now but in mago's words;
+`get_defined_constants(true)` files every constant under `Core`; php's
+`(3)` property count after a reset of an object that had dynamic
+properties; FastCGI (SAPI-4) is the next SAPI.

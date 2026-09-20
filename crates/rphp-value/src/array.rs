@@ -84,7 +84,7 @@ fn canonical_int_key(b: &[u8]) -> Option<i64> {
 
 type Entry = Option<(ArrayKey, Value)>;
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct ArrayData {
     /// Insertion-ordered entries; `None` is a tombstone left by `unset`.
     entries: Vec<Entry>,
@@ -97,6 +97,36 @@ struct ArrayData {
     /// The internal pointer (`current()`/`next()`/…): a raw position, or
     /// `entries.len()` when past the end.
     pos: usize,
+}
+
+impl Clone for ArrayData {
+    /// php's `zend_array_dup`: a reference element nobody else holds (its
+    /// count is 1, the array's own) is copied as a plain value, so the
+    /// copy does not share what was only ever bound by a by-reference
+    /// argument or a `foreach` by reference that has ended. A reference
+    /// still held elsewhere stays shared, as php keeps it.
+    fn clone(&self) -> ArrayData {
+        let entries = self
+            .entries
+            .iter()
+            .map(|e| {
+                e.as_ref().map(|(k, v)| {
+                    let v = match v {
+                        Value::Ref(r) if r.strong_count() == 1 => r.get(),
+                        other => other.clone(),
+                    };
+                    (k.clone(), v)
+                })
+            })
+            .collect();
+        ArrayData {
+            entries,
+            live: self.live,
+            index: self.index.clone(),
+            next_int: self.next_int,
+            pos: self.pos,
+        }
+    }
 }
 
 impl ArrayData {

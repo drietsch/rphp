@@ -418,12 +418,12 @@ impl Encoder {
             return Ok(false);
         }
         self.seen_objects.push(o.id());
-        let props: Vec<(Vec<u8>, Value)> = o.with_data(|d| {
-            d.props_in_order()
-                .filter(|p| p.vis == Vis::Public && !p.value.is_uninit())
-                .map(|p| (p.name.to_vec(), p.value.clone()))
-                .collect()
-        });
+        let props: Vec<(Vec<u8>, Value)> = ctx
+            .props_through_hooks(o)?
+            .into_iter()
+            .filter(|(_, _, vis, _)| *vis == Vis::Public)
+            .map(|(name, v, _, _)| (name.to_vec(), v))
+            .collect();
         self.out.push(b'{');
         self.depth += 1;
         let mut need_comma = false;

@@ -146,6 +146,12 @@ pub(crate) fn ob_clean(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
 /// `flush(): void` — push the SAPI layer (the sink); `ob_*` levels stay.
 pub(crate) fn flush(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
     ctx.out.flush_sink();
+    // A web SAPI sends the head on `flush()` even while the buffers hold
+    // every byte; php then never records where the output started, so a
+    // later `header()` complains without a location.
+    if ctx.head.lock().map(|h| h.sent).unwrap_or(false) {
+        ctx.out.forget_first_send();
+    }
     Ok(Value::Null)
 }
 
@@ -167,7 +173,9 @@ fn status_of(level: &rphp_runtime::ObLevel, index: usize) -> Value {
     a.set(ArrayKey::str(b"flags"), Value::Int(flags));
     a.set(ArrayKey::str(b"level"), Value::Int(index as i64));
     a.set(ArrayKey::str(b"chunk_size"), Value::Int(level.chunk_size as i64));
-    a.set(ArrayKey::str(b"buffer_size"), Value::Int(16384));
+    // php sizes the buffer to the chunk size when there is one, else 16K.
+    let size = if level.chunk_size > 0 { level.chunk_size } else { 16384 };
+    a.set(ArrayKey::str(b"buffer_size"), Value::Int(size as i64));
     a.set(ArrayKey::str(b"buffer_used"), Value::Int(level.buf.len() as i64));
     Value::Array(a)
 }

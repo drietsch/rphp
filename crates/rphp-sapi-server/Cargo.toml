@@ -1,0 +1,15 @@
+[package]
+name = "rphp-sapi-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# One `Engine` for the process, one interpreter per request (ADR-033).
+rphp-embed.workspace = true
+rphp-runtime.workspace = true
+rphp-stdlib.workspace = true
+rphp-value.workspace = true
+# The log stamp is the machine's local time (php uses `ctime_r`).
+jiff.workspace = true

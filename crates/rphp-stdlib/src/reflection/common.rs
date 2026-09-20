@@ -74,6 +74,8 @@ pub(crate) enum FnTarget {
     Native(NativeId),
     /// A method: the class it was looked up on plus the declared name.
     Method { cid: u32, name: Box<[u8]> },
+    /// A property hook (`$name::get`), compiled as a function of `decl`.
+    Hook { fid: u32, decl: u32 },
     /// A closure value.
     Closure(Closure),
 }

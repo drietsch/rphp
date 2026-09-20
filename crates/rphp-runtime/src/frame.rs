@@ -216,9 +216,9 @@ pub fn trace_arg(interp: &Interp, v: &Value) -> String {
         Value::Str(s) => {
             let b = s.as_bytes();
             if b.len() > 15 {
-                format!("'{}...'", String::from_utf8_lossy(&b[..15]))
+                format!("'{}...'", escape_trace_bytes(&b[..15]))
             } else {
-                format!("'{}'", String::from_utf8_lossy(b))
+                format!("'{}'", escape_trace_bytes(b))
             }
         }
         Value::Array(_) => "Array".to_string(),
@@ -227,6 +227,27 @@ pub fn trace_arg(interp: &Interp, v: &Value) -> String {
         Value::Resource(r) => format!("Resource id #{}", r.id()),
         Value::Ref(_) => unreachable!("deref'd above"),
     }
+}
+
+/// php's `smart_str_append_escaped`: the C escapes for `\n`, `\r`,
+/// `\t`, `\f`, `\v`, `\\`, `\e`, and `\xHH` for every other byte
+/// outside printable ASCII (quotes are left alone).
+fn escape_trace_bytes(b: &[u8]) -> String {
+    let mut out = String::with_capacity(b.len());
+    for &c in b {
+        match c {
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0x0c => out.push_str("\\f"),
+            0x0b => out.push_str("\\v"),
+            b'\\' => out.push_str("\\\\"),
+            0x1b => out.push_str("\\e"),
+            0x20..=0x7e => out.push(c as char),
+            _ => out.push_str(&format!("\\x{c:02X}")),
+        }
+    }
+    out
 }
 
 impl Interp {
@@ -325,12 +346,21 @@ impl Interp {
                     return (None, None, "{main}".to_string());
                 }
                 let name = String::from_utf8_lossy(&func.f.name_bytes).into_owned();
-                match func.class {
-                    Some(cid) if !func.f.flags.contains(rphp_bytecode::FnFlags::CLOSURE) => {
+                // A closure reports the class it is scoped to (bound or
+                // declared in), `->` with a `$this`, `::` without one; a
+                // method reports the class it runs in — the *using* class
+                // for a trait's method, as php copies it there.
+                let class = if func.f.flags.contains(rphp_bytecode::FnFlags::CLOSURE) {
+                    frame.scope
+                } else {
+                    frame.scope.or(func.class)
+                };
+                match class {
+                    Some(cid) => {
                         let sep = if frame.this.is_some() { "->" } else { "::" };
                         (Some(self.classes[cid as usize].name_str()), Some(sep), name)
                     }
-                    _ => (None, None, name),
+                    None => (None, None, name),
                 }
             }
         }

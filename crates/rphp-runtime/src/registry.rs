@@ -325,6 +325,13 @@ impl Registry<'_> {
         self.0.constants.insert(Box::from(name.as_bytes()), value);
     }
 
+    /// A constant php deprecates: every fetch raises `Deprecated: Constant
+    /// NAME is deprecated<note>`.
+    pub fn deprecated_constant(&mut self, name: &str, value: Value, note: &'static str) {
+        self.constant(name, value);
+        self.0.deprecated_constants.insert(Box::from(name.as_bytes()), note);
+    }
+
     /// The interpreter being populated.
     pub fn interp(&mut self) -> &mut Interp {
         self.0

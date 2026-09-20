@@ -110,7 +110,7 @@ id = "H"
 title = "http"
 http = true
 docroot = "public"
-requests = ["GET /"]
+requests = ["GET /", "POST /x?q=1 a=b", "GET /missing.txt"]
 "#,
     );
     write(
@@ -124,6 +124,10 @@ normalize = "drop-lines:^volatile "
 "#,
     );
     write(&dir.join("hello.php"), "<?php echo \"hi \", $argv[1] ?? \"-\", \"\\n\";\n");
+    write(
+        &dir.join("public/index.php"),
+        "<?php header('X-Ladder: 1'); echo \"served \", $_SERVER['REQUEST_METHOD'], \" \", $_SERVER['REQUEST_URI'], \" \", $_POST['a'] ?? '-', \"\\n\";\n",
+    );
     write(&dir.join("cat.php"), "<?php echo \"in:\", stream_get_contents(STDIN);\n");
     write(&dir.join("env.php"), "<?php echo getenv(\"LADDER_X\"), \" \", getenv(\"TZ\"), \"\\n\";\n");
     write(&dir.join("exit3.php"), "<?php echo \"bye\\n\"; exit(3);\n");
@@ -159,7 +163,7 @@ fn list_real_fixtures() {
     assert!(out.contains("L1-skeleton"), "{out}");
     assert!(out.contains("L1 "), "{out}");
     assert!(out.contains("L6a"), "{out}");
-    assert!(out.contains("HTTP rungs need SAPI-3"), "{out}");
+    assert!(out.contains("served by `php -S` vs `rphp -S`"), "{out}");
 }
 
 #[test]
@@ -269,9 +273,23 @@ fn php_vs_php_matches_including_stdin_env_exit_artifacts_and_allowlists() {
     assert!(out.contains("[6] dropme.php  ok"), "{out}");
     assert!(out.contains("[allow: platform-value]"), "{out}");
     assert!(out.contains("artifact var/out.txt (var/*.txt)  ok"), "{out}");
-    assert!(out.contains("skipped: HTTP rungs need SAPI-3"), "{out}");
+    assert!(out.contains("[1] GET /  ok"), "{out}");
+    assert!(out.contains("[2] POST /x?q=1 a=b  ok"), "{out}");
+    assert!(out.contains("[3] GET /missing.txt  ok"), "{out}");
     assert!(out.contains("-- R2: ok"), "{out}");
-    assert!(out.contains("3 rung(s) — 2 ok, 0 FAIL, 1 skipped"), "{out}");
+    assert!(out.contains("-- H: ok"), "{out}");
+    assert!(out.contains("3 rung(s) — 3 ok, 0 FAIL, 0 skipped"), "{out}");
+    // The responses are the raw wire bytes, with the port and the date
+    // replaced; the HTTP status stands in for the exit code.
+    let h_php = sb.side_dir("synthetic", "H", "php");
+    let r1 = std::fs::read_to_string(h_php.join("out/1.stdout")).unwrap();
+    assert!(r1.starts_with("HTTP/1.1 200 OK\r\nHost: 127.0.0.1:%PORT%\r\nDate: %DATE%\r\n"), "{r1}");
+    assert!(r1.contains("X-Ladder: 1\r\n"), "{r1}");
+    assert!(r1.ends_with("served GET / -\n"), "{r1}");
+    assert!(std::fs::read_to_string(h_php.join("out/2.stdout")).unwrap().ends_with("served POST /x?q=1 b\n"));
+    // php's server walks a missing path up to the document root's index.php.
+    assert!(std::fs::read_to_string(h_php.join("out/3.stdout")).unwrap().ends_with("served GET /missing.txt -\n"));
+    assert_eq!(std::fs::read_to_string(h_php.join("out/3.exit")).unwrap(), "200\n");
 
     // The dumps prove stdin, env and the exit code reached the processes.
     let php_side = sb.side_dir("synthetic", "R2", "php");
@@ -290,8 +308,8 @@ fn php_vs_php_matches_including_stdin_env_exit_artifacts_and_allowlists() {
     let report: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(sb.target.join("ladder-report.json")).unwrap()).unwrap();
     assert_eq!(report["summary"]["rungs"], 3);
-    assert_eq!(report["summary"]["ok"], 2);
-    assert_eq!(report["summary"]["skipped"], 1);
+    assert_eq!(report["summary"]["ok"], 3);
+    assert_eq!(report["summary"]["skipped"], 0);
     assert_eq!(report["rungs"][1]["id"], "R2");
     assert_eq!(report["rungs"][1]["status"], "ok");
     assert_eq!(report["rungs"][1]["commands"][2]["php"]["exit"], 3);

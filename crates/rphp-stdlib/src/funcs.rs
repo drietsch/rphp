@@ -60,6 +60,7 @@ pub(crate) fn call_user_func_array(ctx: &mut Ctx, args: &mut [Value]) -> NativeR
     if named.is_empty() {
         return ctx.call_value(&args[0], &positional);
     }
+    ctx.autoload_callable(&args[0])?;
     let callable = ctx.resolve_callable(&args[0])?;
     ctx.call_resolved_named(callable, &positional, named)
 }

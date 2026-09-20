@@ -1083,6 +1083,7 @@ impl Interp {
                 }
                 Op::InitDynCall { callee, .. } => {
                     let v = self.rd(base, callee);
+                    self.autoload_callable(&v)?;
                     let c = self.resolve_callable(&v)?;
                     let (target, this, scope, static_class, name) = match c {
                         crate::call::Callable::Native(id) => (
@@ -1593,12 +1594,12 @@ impl Interp {
                     // inside a namespace falls back to the global one, which
                     // is how `DIRECTORY_SEPARATOR` resolves inside
                     // `namespace Composer\Autoload`.
-                    let v = match self.constants.get(&n).cloned() {
-                        Some(v) => v,
+                    let (v, found) = match self.constants.get(&n).cloned() {
+                        Some(v) => (v, n),
                         None => {
                             let g = ns_fallback.map(|k| self.name_bytes(&func, k));
                             match g.as_ref().and_then(|g| self.constants.get(g).cloned()) {
-                                Some(v) => v,
+                                Some(v) => (v, g.expect("looked up through it")),
                                 None => {
                                     return Err(Unwind::error(format!(
                                         "Undefined constant \"{}\"",
@@ -1608,6 +1609,14 @@ impl Interp {
                             }
                         }
                     };
+                    if !self.deprecated_constants.is_empty() {
+                        if let Some(note) = self.deprecated_constants.get(&found).copied() {
+                            self.deprecated(&format!(
+                                "Constant {} is deprecated{note}",
+                                String::from_utf8_lossy(&found)
+                            ))?;
+                        }
+                    }
                     self.set(base, dst, v);
                 }
                 Op::DeclareConst { name, src } => {

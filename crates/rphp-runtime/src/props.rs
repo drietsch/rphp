@@ -139,6 +139,89 @@ pub const LAZY_SKIP_INITIALIZATION_ON_SERIALIZE: i64 = 8;
 pub const LAZY_SKIP_DESTRUCTOR: i64 = 16;
 
 impl Interp {
+    // ---- php 8.4 property hooks, for Reflection ------------------------------
+
+    /// `ReflectionProperty::getValue()`: the `get` hook's answer when the
+    /// property has one, `None` when the slot is the value.
+    pub fn hooked_get(&mut self, o: &Object, name: &[u8]) -> Result<Option<Value>, Unwind> {
+        let class = self.class_of(o).clone();
+        let Some(p) = class.prop(name) else {
+            return Ok(None);
+        };
+        let Some(h) = p.hooks else {
+            return Ok(None);
+        };
+        match h.get {
+            Some(g) => self.call_hook(o, p.decl, name, g, None),
+            None => Ok(None),
+        }
+    }
+
+    /// `ReflectionProperty::setValue()`: runs the `set` hook when there is
+    /// one (answering `true`), else leaves the write to the caller.
+    pub fn hooked_set(&mut self, o: &Object, name: &[u8], v: Value) -> Result<bool, Unwind> {
+        let class = self.class_of(o).clone();
+        let Some(p) = class.prop(name) else {
+            return Ok(false);
+        };
+        let Some(h) = p.hooks else {
+            return Ok(false);
+        };
+        match h.set {
+            Some(setter) => Ok(self.call_hook(o, p.decl, name, setter, Some(v))?.is_some()),
+            None => Ok(false),
+        }
+    }
+
+    /// The properties `get_object_vars()` and `json_encode()` see: every
+    /// declared property in declaration order — a hooked one through its
+    /// `get` hook (virtual ones included), the rest from their slots
+    /// (uninitialized ones skipped) — then the dynamic ones. Each with its
+    /// visibility and declaring class (`None` for a dynamic property).
+    pub fn props_through_hooks(
+        &mut self,
+        o: &Object,
+    ) -> Result<Vec<(Box<[u8]>, Value, rphp_value::Vis, Option<u32>)>, Unwind> {
+        let class = self.class_of(o).clone();
+        let mut out = Vec::new();
+        // Each slot with its own value: two same-named private slots (an
+        // ancestor's and a subclass's) are both here, in layout order.
+        let slots: Vec<(Box<[u8]>, rphp_value::Vis, u32, bool, Value)> = o.with_data(|d| {
+            d.layout()
+                .props()
+                .iter()
+                .zip(d.slots().iter())
+                .map(|(m, v)| (m.name.clone(), m.vis, m.decl_class, m.is_virtual, v.clone()))
+                .collect()
+        });
+        for (name, vis, decl, is_virtual, value) in slots {
+            let hooked = class
+                .prop(&name)
+                .filter(|p| p.decl == decl)
+                .and_then(|p| p.hooks)
+                .and_then(|h| h.get);
+            if let Some(g) = hooked {
+                if let Some(v) = self.call_hook(o, decl, &name, g, None)? {
+                    out.push((name, v, vis, Some(decl)));
+                    continue;
+                }
+            }
+            if is_virtual || value.is_uninit() {
+                continue;
+            }
+            out.push((name, value, vis, Some(decl)));
+        }
+        let dyns: Vec<(Box<[u8]>, Value)> = o.with_data(|d| {
+            d.dyn_props()
+                .map(|p| p.iter().map(|(n, v)| (Box::from(n), v.clone())).collect())
+                .unwrap_or_default()
+        });
+        for (n, v) in dyns {
+            out.push((n, v, rphp_value::Vis::Public, None));
+        }
+        Ok(out)
+    }
+
     // ---- php 8.4 lazy objects -----------------------------------------------
 
     /// The object an access to `name` really touches. A lazy object that has
@@ -358,6 +441,10 @@ impl Interp {
             Value::Object(o) => self.lazy_target(&o.clone(), Some(name))?,
             _ => return Ok(false),
         };
+        // A hooked property is `isset` when its `get` hook answers non-null.
+        if let Some(v) = self.hooked_get(&o, name)? {
+            return Ok(!matches!(v, Value::Null));
+        }
         match self.stored_prop(&o, name) {
             Stored::Present(v) => Ok(!matches!(*v.deref(), Value::Null | Value::Uninit)),
             Stored::NotSet => Ok(false),
@@ -373,6 +460,9 @@ impl Interp {
             Value::Object(o) => self.lazy_target(&o.clone(), Some(name))?,
             _ => return Ok(true),
         };
+        if let Some(v) = self.hooked_get(&o, name)? {
+            return Ok(!v.to_bool());
+        }
         match self.stored_prop(&o, name) {
             Stored::Present(v) => Ok(!v.deref().to_bool()),
             Stored::NotSet => Ok(true),
@@ -411,6 +501,13 @@ impl Interp {
                 Err(self.prop_access_error(&o, p.vis, name))
             }
             Access::Visible => {
+                if p.hooks.is_some() {
+                    return Err(Unwind::error(format!(
+                        "Cannot unset hooked property {}::${}",
+                        self.classes[p.decl as usize].name_str(),
+                        String::from_utf8_lossy(name)
+                    )));
+                }
                 let initialized = self.slot_initialized(&o, name);
                 if p.readonly && initialized {
                     return Err(Unwind::error(format!(
@@ -470,14 +567,16 @@ impl Interp {
             Some(p) => match self.access_of(&class, p, scope) {
                 Access::Visible => {
                     // php 8.4 hooks: a `get` hook replaces the store read; a
-                    // property with only a `set` hook is write-only.
+                    // *virtual* property (no backing value) without one is
+                    // write-only, while a backed set-only property reads
+                    // its slot.
                     if let Some(h) = p.hooks {
-                        let (decl, has_set) = (p.decl, h.set.is_some());
+                        let decl = p.decl;
                         if let Some(g) = h.get {
                             if let Some(v) = self.call_hook(o, decl, name, g, None)? {
                                 return Ok(v);
                             }
-                        } else if has_set && !hook_held(o.id(), name) {
+                        } else if h.is_virtual && !hook_held(o.id(), name) {
                             return Err(Unwind::error(format!(
                                 "Property {}::${} is write-only",
                                 self.classes[decl as usize].name_str(),
@@ -570,18 +669,19 @@ impl Interp {
             }
             Access::Visible => {}
         }
-        // php 8.4 hooks: a `set` hook replaces the store write; a property
-        // with only a `get` hook is read-only. Inside the hook body the
-        // bypass (`hook_held`) lets `$this->p = …` reach the slot.
+        // php 8.4 hooks: a `set` hook replaces the store write; a *virtual*
+        // property without one is read-only, while a backed get-only
+        // property writes its slot. Inside the hook body the bypass
+        // (`hook_held`) lets `$this->p = …` reach the slot.
         if let Some(h) = p.hooks {
-            let (decl, has_get) = (p.decl, h.get.is_some());
+            let decl = p.decl;
             if let Some(setter) = h.set {
                 if self.call_hook(o, decl, name, setter, Some(v.clone()))?.is_some() {
                     return Ok(());
                 }
-            } else if has_get && !hook_held(o.id(), name) {
+            } else if h.is_virtual && !hook_held(o.id(), name) {
                 return Err(Unwind::error(format!(
-                    "Cannot modify readonly property {}::${}",
+                    "Property {}::${} is read-only",
                     self.classes[decl as usize].name_str(),
                     String::from_utf8_lossy(name)
                 )));

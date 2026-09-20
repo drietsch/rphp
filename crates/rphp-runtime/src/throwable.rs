@@ -205,6 +205,14 @@ impl Interp {
     /// `previous` outwards, each `Class: message in file:line\nStack
     /// trace:\n…`, joined by `\n\nNext `.
     pub fn throwable_to_string(&self, o: &Object) -> String {
+        self.throwable_to_string_ex(o, false)
+    }
+
+    /// [`Interp::throwable_to_string`]; `uncaught` applies php's one
+    /// finishing touch for the top-level rendering: a `TypeError` whose
+    /// message says `, called in X on line N` gets ` and defined` appended,
+    /// so the line reads `… called in X on line N and defined in F:L`.
+    fn throwable_to_string_ex(&self, o: &Object, uncaught: bool) -> String {
         let mut str = String::new();
         let mut cur = Some(o.clone());
         let mut guard = 0;
@@ -214,7 +222,10 @@ impl Interp {
                 break;
             }
             let class = self.class_name_of(&e);
-            let message = self.throwable_str(&e, b"message");
+            let mut message = self.throwable_str(&e, b"message");
+            if uncaught && guard == 1 && class == "TypeError" && message.contains(", called in ") {
+                message.push_str(" and defined");
+            }
             let file = self.throwable_str(&e, b"file");
             let line = self.throwable_int(&e, b"line");
             let trace = self.throwable_trace_string(&e);
@@ -285,7 +296,7 @@ impl Interp {
         let file = self.throwable_str(o, b"file");
         let line = self.throwable_int(o, b"line") as u32;
         let text = if self.class_of(o).internal || !self.has_to_string(o) {
-            self.throwable_to_string(o)
+            self.throwable_to_string_ex(o, true)
         } else {
             match self.object_to_string(o) {
                 Ok(s) => s.to_string_lossy().into_owned(),

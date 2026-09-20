@@ -287,9 +287,12 @@ impl FnCompiler<'_> {
                 if *nullsafe {
                     self.nullsafe_check(obj_reg);
                 }
+                // php files the call under the line of the method *name*,
+                // which is what a fluent chain's trace shows.
+                let line = self.member_name_line(name);
                 let name = self.member_name_ref(name);
                 let ic = self.ic();
-                let line = self.cur_line;
+                self.cur_line = line;
                 self.emit(Op::InitMethodCall {
                     obj: obj_reg,
                     name,
@@ -309,9 +312,10 @@ impl FnCompiler<'_> {
                 let Some(class) = self.class_ref(class, *span) else {
                     return self.null_temp();
                 };
+                let line = self.member_name_line(name);
                 let name = self.member_name_ref(name);
                 let ic = self.ic();
-                let line = self.cur_line;
+                self.cur_line = line;
                 self.emit(Op::InitStaticCall { class, name, ic });
                 self.free_to(mark);
                 self.compile_sends(args);
@@ -473,6 +477,18 @@ impl FnCompiler<'_> {
     /// line of the call itself goes back before the op that runs it. php
     /// reports a call at the line its *name* is on — a call spread over
     /// several lines is not reported at its closing paren.
+    /// The line a member name sits on (the current line for a computed
+    /// name).
+    fn member_name_line(&self, name: &MemberName) -> u32 {
+        match name {
+            MemberName::Ident(_, span) => match self.mx.line_of {
+                Some(line_of) => line_of(span.lo),
+                None => self.cur_line,
+            },
+            MemberName::Expr(_) => self.cur_line,
+        }
+    }
+
     fn emit_do_call(&mut self, line: u32) -> Reg {
         self.cur_line = line;
         let dst = self.alloc_temp();
@@ -2600,6 +2616,19 @@ impl FnCompiler<'_> {
         }
     }
 
+    /// Whether an expression names a place a reference can be taken to (a
+    /// variable, element, property, static property or variable variable),
+    /// as against a temporary such as a call result.
+    fn is_place(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Var(id, _) => !self.is_globals(*id),
+            Expr::Index { base, .. } => self.is_place(base),
+            Expr::Prop { obj, nullsafe: false, .. } => self.is_place(obj) || matches!(&**obj, Expr::Var(..)),
+            Expr::StaticProp { .. } | Expr::VarVar { .. } => true,
+            _ => false,
+        }
+    }
+
     /// One positional argument: a variable, element or property is sent so
     /// the callee can take it by reference; a call result or nested place
     /// goes through a temporary (silently by value if the parameter is
@@ -2641,6 +2670,22 @@ impl FnCompiler<'_> {
                 let var = self.alloc_temp();
                 self.emit(Op::RefStaticProp { dst: var, class, name });
                 self.emit(Op::SendVar { pos, var });
+            }
+            // `f($obj->list['k'])`, `f($a['x']['y'])`: the container is
+            // fetched for writing (with its write-backs) so the element can
+            // be bound by reference when the parameter asks for it.
+            Expr::Index {
+                base,
+                index: Some(index),
+                ..
+            } if self.is_place(base) => {
+                let Some(plan) = self.plan_chain(base) else {
+                    return;
+                };
+                let key = self.compile_expr(index);
+                let (handle, wbs) = self.plan_fetch_w(&plan);
+                self.emit(Op::SendRefElem { pos, arr: handle, key });
+                self.emit_writebacks(wbs);
             }
             Expr::Index {
                 index: Some(_), ..

@@ -62,6 +62,10 @@ pub struct PropMeta {
     /// The declared type as written, for `uninitialized(int)` in a dump;
     /// `None` for an untyped property.
     pub ty: Option<Rc<str>>,
+    /// A php 8.4 *virtual* property (hooks that never touch a backing
+    /// value): the slot exists to keep the layout aligned with the class's
+    /// property list, but no consumer ever sees it.
+    pub is_virtual: bool,
 }
 
 /// php's storage key for a private property, `"\0Class\0name"` — the key
@@ -528,7 +532,12 @@ impl ObjectData {
     /// Number of initialized properties (declared slots that are not `Uninit`,
     /// plus dynamic ones) — the `(N)` in `var_dump`'s header.
     pub fn prop_count(&self) -> usize {
-        self.slots.iter().filter(|v| !v.is_uninit()).count()
+        self.layout
+            .props
+            .iter()
+            .zip(self.slots.iter())
+            .filter(|(m, v)| !m.is_virtual && !v.is_uninit())
+            .count()
             + self.dyn_props.as_ref().map_or(0, |d| d.len())
     }
 
@@ -536,12 +545,18 @@ impl ObjectData {
     /// `Uninit` ones — consumers decide whether to show or skip them), then
     /// dynamic properties in insertion order.
     pub fn props_in_order(&self) -> impl Iterator<Item = PropEntry<'_>> {
-        let declared = self.layout.props.iter().zip(self.slots.iter()).map(|(m, v)| PropEntry {
-            name: &m.name,
-            value: v,
-            vis: m.vis,
-            meta: Some(m),
-        });
+        let declared = self
+            .layout
+            .props
+            .iter()
+            .zip(self.slots.iter())
+            .filter(|(m, _)| !m.is_virtual)
+            .map(|(m, v)| PropEntry {
+                name: &m.name,
+                value: v,
+                vis: m.vis,
+                meta: Some(m),
+            });
         let dynamic = self
             .dyn_props
             .iter()
@@ -1007,7 +1022,7 @@ mod tests {
     }
 
     fn meta(n: &str, vis: Vis) -> PropMeta {
-        PropMeta { name: Box::from(n.as_bytes()), vis, decl_class: 0, decl_class_name: name("Foo"), ty: None }
+        PropMeta { name: Box::from(n.as_bytes()), vis, decl_class: 0, decl_class_name: name("Foo"), ty: None, is_virtual: false }
     }
 
     fn layout() -> Rc<Layout> {

@@ -659,6 +659,7 @@ impl Interp {
     /// path for higher-order natives (`array_map`, `usort`, `ob_start`
     /// handlers, `set_error_handler` callbacks, shutdown functions).
     pub fn call_value(&mut self, callee: &Value, args: &[Value]) -> NativeResult {
+        self.autoload_callable(callee)?;
         let callable = self.resolve_callable(callee)?;
         self.call_resolved(callable, args)
     }

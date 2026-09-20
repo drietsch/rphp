@@ -46,6 +46,7 @@ mod pcre;
 mod random;
 mod session;
 mod tokenizer;
+mod highlight;
 mod reflection;
 mod spl_autoload;
 mod spl_containers;
@@ -92,6 +93,7 @@ const MODULES: &[&[NativeFn]] = &[
     net::FUNCTIONS,
     session::FUNCTIONS,
     tokenizer::FUNCTIONS,
+    highlight::FUNCTIONS,
     ctype::FUNCTIONS,
     funcs::FUNCTIONS,
     hash::FUNCTIONS,
@@ -120,6 +122,8 @@ const MODULES: &[&[NativeFn]] = &[
 ];
 
 /// Register every module's functions and constants into an interpreter.
+pub use url::{parse_query, register_variable};
+
 pub fn register(r: &mut Registry) {
     for m in MODULES {
         r.functions(m);
@@ -161,6 +165,8 @@ pub fn register(r: &mut Registry) {
     exec::register_constants(r);
     file2::register_constants(r);
     head::register_constants(r);
+    head::register_server_functions(r);
+    highlight::register_ini(r);
     date::register_constants(r);
     filter::register_constants(r);
     reflection::register_constants(r);

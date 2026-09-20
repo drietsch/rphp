@@ -36,3 +36,30 @@ snippet   = "L6a/bin/console about*"
 category  = "platform-value"
 reason    = "OPcache/APCu/Xdebug/Intl locale describe the host php build's extensions, not engine behaviour"
 normalize = 'drop-lines:^\s{2}(?:OPcache|APCu|Xdebug|Intl locale)\s'
+
+# L7 (HTTP) — what Symfony's own pages randomize or time-stamp. The port and
+# the `Date` header are placeholders already (the ladder replaces both).
+
+[[allow]]
+snippet   = "L7/**"
+category  = "platform-value"
+reason    = "the welcome page picks its colour hue with random_int()"
+normalize = 'regex:--hue: \d+; => --hue: %HUE%;'
+
+[[allow]]
+snippet   = "L7/**"
+category  = "platform-value"
+reason    = "VarDumper numbers each HTML dump with mt_rand(), in the script and the element ids"
+normalize = 'regex:sf-dump-\d+ => sf-dump-%N%'
+
+[[allow]]
+snippet   = "L7/**"
+category  = "object-id"
+reason    = "the debug page prints spl_object_id() next to dumped objects; php reuses freed handles, the engine's allocator is monotonic"
+normalize = 'regex:class=sf-dump-ref>#\d+</a> => class=sf-dump-ref>#%ID%</a>'
+
+[[allow]]
+snippet   = "L7/**"
+category  = "timing"
+reason    = "the exception page prints the request's wall-clock time"
+normalize = 'regex:<span class="text-muted newline">\d\d:\d\d:\d\d</span> => <span class="text-muted newline">%TIME%</span>'

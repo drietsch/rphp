@@ -20,7 +20,7 @@
 //!   straight to the slot and does not raise it.
 
 use rphp_runtime::{nm, Ctx, NativeResult, PropDefault, Registry, Unwind, Visibility};
-use rphp_value::{Object, Value};
+use rphp_value::{Array, ArrayKey, Object, Value};
 
 use super::class;
 use super::common::{
@@ -217,30 +217,73 @@ fn prop_mangled_name(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Nati
     Ok(Value::string(&out))
 }
 
-/// `ReflectionProperty::hasHooks(): bool` / `getHooks(): array` /
-/// `hasHook(PropertyHookType $type): bool` / `getHook(…): ?ReflectionMethod`
-///
-/// Property hooks are not lowered by the compiler (see `props.rs`), so no
-/// property this engine can run has one and the four answers are the empty
-/// ones php gives for a plain property.
-fn prop_has_hooks(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    this(o)?;
-    Ok(Value::Bool(false))
+/// The hooks of the property, if it is declared with any.
+fn hooks_of(ctx: &Ctx, s: &PropState) -> Option<rphp_runtime::PropHooks> {
+    if s.dynamic {
+        return None;
+    }
+    ctx.class(s.cid).prop(&s.name).and_then(|p| p.hooks)
 }
 
-fn prop_get_hooks(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    this(o)?;
-    Ok(Value::empty_array())
+/// `ReflectionProperty::hasHooks(): bool`
+fn prop_has_hooks(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    Ok(Value::Bool(hooks_of(ctx, &s).is_some()))
 }
 
-fn prop_has_hook(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    this(o)?;
-    Ok(Value::Bool(false))
+/// `ReflectionProperty::getHooks(): array` — `['get' => ReflectionMethod,
+/// 'set' => …]` for the hooks the property declares.
+fn prop_get_hooks(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let mut out = Array::new();
+    let Some(h) = hooks_of(ctx, &s) else {
+        return Ok(Value::Array(out));
+    };
+    let decl = ctx.class(s.cid).prop(&s.name).map_or(s.cid, |p| p.decl);
+    if let Some(fid) = h.get {
+        out.set(ArrayKey::str(b"get"), super::func::make_hook_method(ctx, fid, decl)?);
+    }
+    if let Some(fid) = h.set {
+        out.set(ArrayKey::str(b"set"), super::func::make_hook_method(ctx, fid, decl)?);
+    }
+    Ok(Value::Array(out))
 }
 
-fn prop_get_hook(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    this(o)?;
-    Ok(Value::Null)
+/// The `PropertyHookType $type` argument: `get` or `set`.
+fn hook_kind(ctx: &Ctx, args: &[Value], who: &str) -> Result<bool, Unwind> {
+    let v = args.first().map(|v| v.deref().into_owned()).unwrap_or(Value::Null);
+    if let Value::Object(o) = &v {
+        if ctx.class(o.class_id()).name.as_ref() == b"PropertyHookType" {
+            let case = o.get_deref(b"name").map(|n| n.to_php_bytes()).unwrap_or_default();
+            return Ok(case.as_slice() == b"Get");
+        }
+    }
+    Err(Unwind::type_error(format!(
+        "ReflectionProperty::{who}(): Argument #1 ($type) must be of type PropertyHookType, {} given",
+        v.type_name()
+    )))
+}
+
+/// `ReflectionProperty::hasHook(PropertyHookType $type): bool`
+fn prop_has_hook(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let get = hook_kind(ctx, args, "hasHook")?;
+    Ok(Value::Bool(hooks_of(ctx, &s).is_some_and(|h| if get { h.get.is_some() } else { h.set.is_some() })))
+}
+
+/// `ReflectionProperty::getHook(PropertyHookType $type): ?ReflectionMethod`
+fn prop_get_hook(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let get = hook_kind(ctx, args, "getHook")?;
+    let Some(h) = hooks_of(ctx, &s) else {
+        return Ok(Value::Null);
+    };
+    let fid = if get { h.get } else { h.set };
+    let Some(fid) = fid else {
+        return Ok(Value::Null);
+    };
+    let decl = ctx.class(s.cid).prop(&s.name).map_or(s.cid, |p| p.decl);
+    super::func::make_hook_method(ctx, fid, decl)
 }
 
 /// `ReflectionProperty::getSettableType(): ?ReflectionType` — the type a
@@ -253,12 +296,44 @@ fn prop_settable_type(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> 
 /// `ReflectionProperty::getRawValue(object $object): mixed` — the value
 /// behind the hooks, which is the value itself while there are none.
 fn prop_get_raw_value(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
-    prop_get_value(ctx, o, args)
+    let s: PropState = state(this(o)?)?;
+    if matches!(locate(ctx, &s), Decl::Static(_)) {
+        return prop_get_value(ctx, o, args);
+    }
+    if hooks_of(ctx, &s).is_some_and(|h| h.is_virtual) {
+        return Err(Unwind::error(format!(
+            "Must not read from virtual property {}::${}",
+            ctx.class(s.cid).name_str(),
+            String::from_utf8_lossy(&s.name)
+        )));
+    }
+    let obj = instance_arg(ctx, &s, args, "getRawValue")?;
+    raw_slot(ctx, &s, &obj)
 }
 
-/// `ReflectionProperty::setRawValue(object $object, mixed $value): void`
+/// `ReflectionProperty::setRawValue(object $object, mixed $value): void` —
+/// the slot, hooks bypassed; a virtual property has no slot to set.
 fn prop_set_raw_value(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
-    prop_set_value(ctx, o, args)
+    let s: PropState = state(this(o)?)?;
+    if matches!(locate(ctx, &s), Decl::Static(_)) {
+        return prop_set_value(ctx, o, args);
+    }
+    if let Some(h) = hooks_of(ctx, &s).filter(|h| h.is_virtual) {
+        let class = ctx.class(s.cid).name_str().to_string();
+        let name = String::from_utf8_lossy(&s.name).into_owned();
+        return Err(Unwind::error(if h.set.is_none() {
+            format!("Property {class}::${name} is read-only")
+        } else {
+            format!("Must not write to virtual property {class}::${name}")
+        }));
+    }
+    let obj = instance_arg(ctx, &s, args, "setRawValue")?;
+    let v = match args.get(1) {
+        Some(v) => v.deref().into_owned(),
+        None => Value::Null,
+    };
+    obj.set(&s.name, v);
+    Ok(Value::Null)
 }
 
 /// `ReflectionProperty::setRawValueWithoutLazyInitialization(object $object, mixed $value): void`
@@ -355,14 +430,9 @@ fn prop_is_default(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRe
 /// class's constructor whether a parameter of the same name promotes.
 /// `ReflectionProperty::isVirtual(): bool` (8.4) — true for a hooked property
 /// whose hooks never touch the backing store, so php gives it no storage.
-///
-/// **Divergence:** rphp lays out a slot for every declared property and does
-/// not record whether a hook reads or writes it, so this is always `false`.
-/// The answer is right for a property without hooks, which is nearly all of
-/// them; a genuinely virtual one is reported as backed.
-fn prop_is_virtual(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    let _: PropState = state(this(o)?)?;
-    Ok(Value::Bool(false))
+fn prop_is_virtual(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    Ok(Value::Bool(hooks_of(ctx, &s).is_some_and(|h| h.is_virtual)))
 }
 
 fn prop_is_promoted(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
@@ -458,9 +528,18 @@ fn prop_get_value(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nati
         return Ok(v);
     }
     let obj = instance_arg(ctx, &s, args, "getValue")?;
+    // A hooked property answers through its `get` hook.
+    if let Some(v) = ctx.hooked_get(&obj, &s.name)? {
+        return Ok(v);
+    }
+    raw_slot(ctx, &s, &obj)
+}
+
+/// The slot behind a property, or php's uninitialized error.
+fn raw_slot(ctx: &Ctx, s: &PropState, obj: &Object) -> NativeResult {
     match obj.get_deref(&s.name) {
         Some(v) if !v.is_uninit() => Ok(v),
-        Some(_) => Err(uninit_error(ctx, &s)),
+        Some(_) => Err(uninit_error(ctx, s)),
         None => Ok(Value::Null),
     }
 }
@@ -485,6 +564,18 @@ fn prop_set_value(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nati
         Some(v) => v.deref().into_owned(),
         None => Value::Null,
     };
+    // A hooked property is written through its `set` hook; a virtual one
+    // without a hook cannot be written at all.
+    if ctx.hooked_set(&obj, &s.name, v.clone())? {
+        return Ok(Value::Null);
+    }
+    if hooks_of(ctx, &s).is_some_and(|h| h.is_virtual) {
+        return Err(Unwind::error(format!(
+            "Property {}::${} is read-only",
+            ctx.class(s.cid).name_str(),
+            String::from_utf8_lossy(&s.name)
+        )));
+    }
     obj.set(&s.name, v);
     Ok(Value::Null)
 }
@@ -498,6 +589,10 @@ fn prop_is_initialized(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
         return Ok(Value::Bool(!v.is_uninit()));
     }
     let obj = instance_arg(ctx, &s, args, "isInitialized")?;
+    // A virtual property has no slot to be uninitialized.
+    if hooks_of(ctx, &s).is_some_and(|h| h.is_virtual) {
+        return Ok(Value::Bool(true));
+    }
     let set = obj.get(&s.name).is_some_and(|v| !v.is_uninit());
     Ok(Value::Bool(set))
 }

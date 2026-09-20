@@ -25,3 +25,11 @@ var_dump(filter_var('0x1A', FILTER_VALIDATE_INT, FILTER_FLAG_ALLOW_HEX));
 var_dump(filter_var('a1b-2c+3', FILTER_SANITIZE_NUMBER_INT));
 var_dump(filter_var("o'brien", FILTER_SANITIZE_ADD_SLASHES));
 var_dump(filter_id('int'), filter_id('nope'));
+
+// FILTER_CALLBACK maps the value (every leaf of an array) through the
+// `options` callable; the array flags decide what an array does.
+var_dump(filter_var("ab", FILTER_CALLBACK, ["options" => "strtoupper"]), filter_var(["a", "b"], FILTER_CALLBACK, ["options" => fn($v) => $v . "!"]), filter_var(5, FILTER_CALLBACK, ["options" => fn($v) => $v]));
+try { filter_var("x", FILTER_CALLBACK, ["options" => "nope"]); } catch (Throwable $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+var_dump(filter_var(["1", "x"], FILTER_VALIDATE_INT), filter_var(["1", "x"], FILTER_VALIDATE_INT, FILTER_REQUIRE_ARRAY), filter_var("1", FILTER_VALIDATE_INT, FILTER_FORCE_ARRAY), filter_var(["a" => ["1"]], FILTER_VALIDATE_INT, FILTER_REQUIRE_ARRAY), filter_var("1", FILTER_VALIDATE_INT, FILTER_REQUIRE_ARRAY));
+var_dump(FILTER_CALLBACK, FILTER_THROW_ON_FAILURE, FILTER_FLAG_EMAIL_UNICODE, @FILTER_SANITIZE_STRIPPED);
+echo FILTER_SANITIZE_STRING, "\n";

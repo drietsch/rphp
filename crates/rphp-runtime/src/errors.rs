@@ -294,7 +294,11 @@ impl Interp {
             };
             let label = level.label();
             if self.ini.bool("log_errors") {
-                eprintln!("PHP {label}:  {message} in {file} on line {line}{trace}");
+                let entry = format!("PHP {label}:  {message} in {file} on line {line}{trace}");
+                match &mut self.error_log {
+                    Some(log) => log(&entry),
+                    None => eprintln!("{entry}"),
+                }
             }
             let prepend = self
                 .ini
@@ -306,8 +310,21 @@ impl Interp {
                 .get("error_append_string")
                 .unwrap_or("")
                 .to_string();
-            let text =
-                format!("{prepend}\n{label}: {message} in {file} on line {line}{trace}\n{append}");
+            // `html_errors=1` (every SAPI but the CLI) wraps the label and
+            // the location in `<b>`; the message itself is not escaped.
+            let text = if self.ini.bool("html_errors") {
+                // php escapes the message of a fatal or parse error only.
+                let message = if matches!(level, ErrLevel::Error | ErrLevel::Parse) {
+                    html_escape(message)
+                } else {
+                    message.to_string()
+                };
+                format!(
+                    "{prepend}<br />\n<b>{label}</b>:  {message} in <b>{file}</b> on line <b>{line}</b>{trace}<br />\n{append}"
+                )
+            } else {
+                format!("{prepend}\n{label}: {message} in {file} on line {line}{trace}\n{append}")
+            };
             match DisplayMode::parse(self.ini.get("display_errors").unwrap_or("")) {
                 DisplayMode::Stdout => self.echo(text.as_bytes()),
                 DisplayMode::Stderr => eprint!("{text}"),
@@ -365,13 +382,16 @@ impl Interp {
             Some(site) => (site.file.clone(), site.line, self.trace_to_string(&site.trace)),
             None => (self.current_file(), self.current_line(), self.render_trace()),
         };
+        // php reads an uncaught TypeError's `, called in X on line N` as a
+        // sentence and finishes it: `… and defined in <file>:<line>`.
+        let class = p.kind.class_name();
+        let text = if class == "TypeError" && p.message.contains(", called in ") {
+            format!("{} and defined", p.message)
+        } else {
+            p.message.clone()
+        };
         let message = format!(
-            "Uncaught {}: {} in {}:{}\nStack trace:\n{}\n  thrown",
-            p.kind.class_name(),
-            p.message,
-            file,
-            line,
-            trace
+            "Uncaught {class}: {text} in {file}:{line}\nStack trace:\n{trace}\n  thrown"
         );
         let _ = self.emit_error_at(ErrLevel::Error, &message, &file, line);
     }
@@ -406,4 +426,20 @@ mod tests {
         assert_eq!(DisplayMode::parse("On"), DisplayMode::Stdout);
         assert_eq!(DisplayMode::parse("0"), DisplayMode::Off);
     }
+}
+
+/// `htmlspecialchars` with `ENT_QUOTES`, for `html_errors`.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#039;"),
+            c => out.push(c),
+        }
+    }
+    out
 }

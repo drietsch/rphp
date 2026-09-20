@@ -382,6 +382,7 @@ impl Interp {
         let rebase = |h: &rphp_bytecode::Hooks| crate::class::PropHooks {
             get: h.get.map(|f| unit.func_base + f),
             set: h.set.map(|f| unit.func_base + f),
+            is_virtual: h.is_virtual,
         };
         let props = decl
             .props

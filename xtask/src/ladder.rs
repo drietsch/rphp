@@ -38,8 +38,8 @@ use rayon::prelude::*;
 use rphp_test::differential::normalize::replace_bytes;
 use rphp_test::differential::{
     compare, escape_bytes, find_php, find_rphp, glob_match, php_command, relative_name,
-    rphp_command, run_command, unified_diff, Allowlist, Category, Channel, NormalizeContext,
-    Policy, RunResult, Verdict,
+    rphp_command, run_command, scrub_env, unified_diff, Allowlist, Category, Channel,
+    NormalizeContext, Policy, RunResult, Verdict, PHP_INI,
 };
 use serde::{Deserialize, Serialize};
 
@@ -92,7 +92,7 @@ const SKIPPED_ENTRIES: &[&str] = &["node_modules", ".git"];
 /// Placeholder for the working-copy path in diffs and artifact comparison.
 const FIXTURE_PLACEHOLDER: &[u8] = b"%FIXTURE%";
 /// Why HTTP rungs are not run yet.
-pub const HTTP_SKIP_NOTE: &str = "HTTP rungs need SAPI-3; skipped";
+pub const HTTP_SKIP_NOTE: &str = "served by `php -S` vs `rphp -S`";
 
 // ---------------------------------------------------------------------------
 // ladder.toml schema
@@ -940,6 +940,141 @@ pub fn normalize_fixture_paths(bytes: &[u8], needles: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
+/// One line of an HTTP rung's `requests`: `METHOD /path [body]`, the body
+/// sent url-encoded (`application/x-www-form-urlencoded`).
+#[derive(Debug, Clone)]
+struct HttpRequest {
+    line: String,
+    method: String,
+    target: String,
+    body: Option<String>,
+}
+
+impl HttpRequest {
+    fn parse(line: &str) -> Result<HttpRequest, String> {
+        let mut parts = line.splitn(3, ' ');
+        let method = parts.next().filter(|m| !m.is_empty()).ok_or_else(|| format!("request `{line}`: no method"))?;
+        let target = parts
+            .next()
+            .filter(|t| t.starts_with('/'))
+            .ok_or_else(|| format!("request `{line}`: expected `METHOD /path`"))?;
+        Ok(HttpRequest {
+            line: line.to_string(),
+            method: method.to_string(),
+            target: target.to_string(),
+            body: parts.next().map(str::to_string),
+        })
+    }
+}
+
+/// A port nothing listens on right now.
+fn free_port() -> io::Result<u16> {
+    let l = std::net::TcpListener::bind("127.0.0.1:0")?;
+    Ok(l.local_addr()?.port())
+}
+
+/// Poll until the server accepts connections, or it exits / the deadline
+/// passes.
+fn wait_ready(port: u16, child: &mut std::process::Child, deadline: Duration) -> Result<(), String> {
+    let start = Instant::now();
+    loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("server exited before listening ({status})"));
+        }
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return Ok(());
+        }
+        if start.elapsed() > deadline {
+            return Err(format!("server did not listen within {}s", deadline.as_secs()));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Send one request and read the whole response (the servers close the
+/// connection after it). The HTTP status is the `RunResult`'s exit code,
+/// the raw response its stdout.
+fn http_exchange(port: u16, req: &HttpRequest, timeout: Duration) -> RunResult {
+    let failed = |status: i32, msg: String| RunResult {
+        stdout: Vec::new(),
+        stderr: msg.into_bytes(),
+        status,
+        timed_out: false,
+    };
+    let mut stream = match std::net::TcpStream::connect(("127.0.0.1", port)) {
+        Ok(s) => s,
+        Err(e) => return failed(-1, format!("connect: {e}")),
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    let mut head = format!(
+        "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUser-Agent: ladder\r\nAccept: */*\r\nConnection: close\r\n",
+        req.method, req.target
+    );
+    if let Some(body) = &req.body {
+        head.push_str(&format!(
+            "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n",
+            body.len()
+        ));
+    }
+    head.push_str("\r\n");
+    if let Err(e) = stream.write_all(head.as_bytes()) {
+        return failed(-1, format!("send: {e}"));
+    }
+    if let Some(body) = &req.body {
+        if let Err(e) = stream.write_all(body.as_bytes()) {
+            return failed(-1, format!("send: {e}"));
+        }
+    }
+    let mut response = Vec::new();
+    let mut timed_out = false;
+    if let Err(e) = stream.read_to_end(&mut response) {
+        if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) {
+            timed_out = true;
+        } else if response.is_empty() {
+            return failed(-1, format!("read: {e}"));
+        }
+    }
+    // `HTTP/1.1 404 Not Found` → 404.
+    let status = response
+        .split(|b| *b == b' ')
+        .nth(1)
+        .and_then(|s| std::str::from_utf8(s).ok())
+        .and_then(|s| s.trim().parse::<i32>().ok())
+        .unwrap_or(-1);
+    RunResult {
+        stdout: normalize_http(response, port),
+        stderr: Vec::new(),
+        status,
+        timed_out,
+    }
+}
+
+/// What every response carries that no engine decides: the port each side
+/// happened to get (echoed in `Host:` and any absolute URL) and the `Date`
+/// header's clock reading. Both become placeholders before comparison.
+fn normalize_http(response: Vec<u8>, port: u16) -> Vec<u8> {
+    let with_port = replace_bytes(&response, format!("127.0.0.1:{port}").as_bytes(), b"127.0.0.1:%PORT%");
+    let with_port = replace_bytes(&with_port, format!("127.0.0.1%3A{port}").as_bytes(), b"127.0.0.1%3A%PORT%");
+    // The head ends at the first blank line; only its `Date:` field is
+    // replaced.
+    let head_end = with_port
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map_or(with_port.len(), |p| p + 4);
+    let (head, body) = with_port.split_at(head_end);
+    let mut out = Vec::with_capacity(with_port.len());
+    for line in head.split_inclusive(|b| *b == b'\n') {
+        if line.len() > 5 && line[..5].eq_ignore_ascii_case(b"date:") {
+            out.extend_from_slice(b"Date: %DATE%\r\n");
+        } else {
+            out.extend_from_slice(line);
+        }
+    }
+    out.extend_from_slice(body);
+    out
+}
+
 fn normalize_result(res: &RunResult, needles: &[Vec<u8>]) -> RunResult {
     RunResult {
         stdout: normalize_fixture_paths(&res.stdout, needles),
@@ -1165,14 +1300,7 @@ impl Runner {
         let mut rep = RungReport::new(fx.name(), rung);
         rep.kept = self.opts.keep;
         if rung.http {
-            rep.status = RungStatus::Skipped;
-            rep.note = Some(format!(
-                "{HTTP_SKIP_NOTE} (docroot {}, {} request(s))",
-                rung.docroot.as_deref().unwrap_or("?"),
-                rung.requests.len()
-            ));
-            rep.duration_ms = start.elapsed().as_millis();
-            return rep;
+            return self.run_http_rung(fx, rung, rep, start);
         }
         let commands = match rung.resolved_commands() {
             Ok(c) => c,
@@ -1314,6 +1442,177 @@ impl Runner {
             rep.status = RungStatus::Fail;
         }
         self.finish(rep, &rung_dir, &sides, start)
+    }
+
+    /// An HTTP rung: each side serves its working copy's document root
+    /// with its built-in server (`php -n -S` / `rphp -S`, the oracle's ini
+    /// pinned on both), every request in `requests` is sent to it, and the
+    /// raw responses (status line, headers, body) are compared the way a
+    /// command's stdout is — the HTTP status standing in for the exit code.
+    fn run_http_rung(&self, fx: &Fixture, rung: &RungSpec, mut rep: RungReport, start: Instant) -> RungReport {
+        let Some(docroot) = rung.docroot.clone() else {
+            return rep.error("http rung without a docroot".to_string());
+        };
+        let requests: Vec<HttpRequest> = match rung.requests.iter().map(|l| HttpRequest::parse(l)).collect() {
+            Ok(r) => r,
+            Err(e) => return rep.error(e),
+        };
+        let allowlist = match build_allowlist(fx, rung, &[]) {
+            Ok(a) => a,
+            Err(e) => return rep.error(e),
+        };
+        let rung_dir = self.opts.target_dir.join("ladder").join(fx.dir_name()).join(&rung.id);
+        if let Err(e) = std::fs::remove_dir_all(&rung_dir) {
+            if e.kind() != io::ErrorKind::NotFound {
+                return rep.error(format!("cannot clear {}: {e}", rung_dir.display()));
+            }
+        }
+        if let Err(e) = std::fs::create_dir_all(&rung_dir) {
+            return rep.error(format!("cannot create {}: {e}", rung_dir.display()));
+        }
+        let work = rung_dir.join("work");
+        let sides: Vec<Side> = match self.opts.only {
+            Some(s) => vec![s],
+            None => vec![Side::Php, Side::Rphp],
+        };
+        let mut runs = SideRuns { php: None, rphp: None };
+        let mut needles: Vec<Vec<u8>> = Vec::new();
+        for &side in &sides {
+            if let Err(e) = prepare_workdir(&fx.dir, &work) {
+                let msg = format!("cannot create working copy {}: {e}", work.display());
+                return self.finish(rep.error(msg), &rung_dir, &sides, start);
+            }
+            needles = fixture_needles(&work);
+            let outcome = self.serve_side(side, rung, &docroot, &requests, &rung_dir, &work);
+            rep.workdirs.insert(side.name().to_string(), rung_dir.join(side.name()).display().to_string());
+            match outcome {
+                Ok(r) => match side {
+                    Side::Php => runs.php = Some(r),
+                    Side::Rphp => runs.rphp = Some(r),
+                },
+                Err(e) => return self.finish(rep.error(e), &rung_dir, &sides, start),
+            }
+        }
+        for (i, req) in requests.iter().enumerate() {
+            let n = i + 1;
+            let name = command_name(&rung.id, &req.line);
+            let categories: Vec<String> = allowlist.categories_for(&name).iter().map(|c| c.name().to_string()).collect();
+            let outcome = |side: Side, run: &TimedRun| SideOutcome {
+                exit: run.result.status,
+                timed_out: run.result.timed_out,
+                duration_ms: run.duration.as_millis(),
+                out: rung_dir.join(side.name()).join("out").join(n.to_string()).display().to_string(),
+            };
+            let php_run = runs.php.as_ref().map(|v| &v[i]);
+            let rphp_run = runs.rphp.as_ref().map(|v| &v[i]);
+            let mut crep = CommandReport {
+                index: n,
+                line: req.line.clone(),
+                status: ItemStatus::Ran,
+                channel: None,
+                categories,
+                php: php_run.map(|r| outcome(Side::Php, r)),
+                rphp: rphp_run.map(|r| outcome(Side::Rphp, r)),
+                diff: None,
+                rphp_stderr_tail: None,
+                note: None,
+            };
+            let mut notes: Vec<String> = Vec::new();
+            for (side, run) in [(Side::Php, php_run), (Side::Rphp, rphp_run)] {
+                let Some(run) = run else { continue };
+                if run.result.timed_out {
+                    notes.push(format!("{} timed out after {}s", side.name(), self.opts.timeout.as_secs()));
+                    crep.status = ItemStatus::Fail;
+                }
+            }
+            if let (Some(php_run), Some(rphp_run)) = (php_run, rphp_run) {
+                let script_abs = work.join(&docroot).join("index.php");
+                let mut policy = Policy::new(&name, &allowlist);
+                policy.php_ctx = NormalizeContext::for_script(&script_abs, &work);
+                policy.rphp_ctx = NormalizeContext::for_script(&script_abs, &work);
+                let php_n = normalize_result(&php_run.result, &needles);
+                let rphp_n = normalize_result(&rphp_run.result, &needles);
+                match compare(&php_n, &rphp_n, &policy) {
+                    Verdict::Match => {
+                        if crep.status != ItemStatus::Fail {
+                            crep.status = ItemStatus::Ok;
+                        }
+                    }
+                    Verdict::Mismatch { channel, first_diff } => {
+                        crep.status = ItemStatus::Fail;
+                        crep.channel = Some(channel.to_string());
+                        crep.diff = Some(first_diff);
+                    }
+                }
+            }
+            if !notes.is_empty() {
+                crep.note = Some(notes.join("; "));
+            }
+            rep.commands.push(crep);
+        }
+        if rep.commands.iter().any(|c| c.status == ItemStatus::Fail) {
+            rep.status = RungStatus::Fail;
+        }
+        self.finish(rep, &rung_dir, &sides, start)
+    }
+
+    /// Serve `work/<docroot>` on one side and collect the responses.
+    fn serve_side(
+        &self,
+        side: Side,
+        rung: &RungSpec,
+        docroot: &str,
+        requests: &[HttpRequest],
+        rung_dir: &Path,
+        work: &Path,
+    ) -> Result<Vec<TimedRun>, String> {
+        let out_dir = work.join("out");
+        std::fs::create_dir_all(&out_dir).map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
+        let port = free_port().map_err(|e| format!("no free port: {e}"))?;
+        let bin = self.side_binary(side);
+        let mut command = Command::new(bin);
+        if side == Side::Php {
+            command.arg("-n");
+        }
+        for (k, v) in PHP_INI {
+            command.arg("-d").arg(format!("{k}={v}"));
+        }
+        command
+            .arg("-S")
+            .arg(format!("127.0.0.1:{port}"))
+            .arg("-t")
+            .arg(docroot)
+            .current_dir(work);
+        scrub_env(&mut command);
+        command.envs(&rung.env);
+        let log = std::fs::File::create(out_dir.join("server.log"))
+            .map_err(|e| format!("cannot create server log: {e}"))?;
+        let log2 = log.try_clone().map_err(|e| format!("cannot clone server log: {e}"))?;
+        command.stdin(Stdio::null()).stdout(Stdio::from(log)).stderr(Stdio::from(log2));
+        let mut child = command
+            .spawn()
+            .map_err(|e| format!("{} `{} -S`: cannot start: {e}", side.name(), bin.display()))?;
+        let ready = wait_ready(port, &mut child, Duration::from_secs(20));
+        let result = match ready {
+            Ok(()) => {
+                let mut runs = Vec::with_capacity(requests.len());
+                for (i, req) in requests.iter().enumerate() {
+                    let started = Instant::now();
+                    let result = http_exchange(port, req, self.opts.timeout);
+                    dump_result(&out_dir, i + 1, &result)
+                        .map_err(|e| format!("cannot write {}: {e}", out_dir.display()))?;
+                    runs.push(TimedRun { result, duration: started.elapsed() });
+                }
+                Ok(runs)
+            }
+            Err(e) => Err(format!("{} `{} -S 127.0.0.1:{port}`: {e}", side.name(), bin.display())),
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        let side_dir = rung_dir.join(side.name());
+        std::fs::rename(work, &side_dir)
+            .map_err(|e| format!("cannot move {} to {}: {e}", work.display(), side_dir.display()))?;
+        result
     }
 
     fn finish(&self, mut rep: RungReport, rung_dir: &Path, sides: &[Side], start: Instant) -> RungReport {
@@ -1611,7 +1910,7 @@ pub fn render_list(fixtures: &[Fixture], fixtures_dir: &Path) -> String {
         let _ = writeln!(out, "{}  {}  {vendor}{php_min}", fx.name(), fx.dir.display());
         for rung in &fx.file.rung {
             let what = if rung.http {
-                format!("http: {} request(s), docroot {} ({HTTP_SKIP_NOTE})", rung.requests.len(), rung.docroot.as_deref().unwrap_or("?"))
+                format!("http: {} request(s), docroot {}, {HTTP_SKIP_NOTE}", rung.requests.len(), rung.docroot.as_deref().unwrap_or("?"))
             } else {
                 let mut s = format!("{} command(s)", rung.commands.len());
                 if !rung.artifacts.is_empty() {
@@ -1859,7 +2158,7 @@ mod tests {
         let l7 = fx.file.rung.iter().find(|r| r.id == "L7").unwrap();
         assert!(l7.http);
         assert_eq!(l7.docroot.as_deref(), Some("public"));
-        assert_eq!(l7.requests.len(), 2);
+        assert_eq!(l7.requests.len(), 4);
         assert!(fx.file.fixture.allowlist.is_some(), "fixture-level allowlist declared");
     }
 

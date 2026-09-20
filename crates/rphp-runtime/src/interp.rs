@@ -93,6 +93,8 @@ pub struct Interp {
     /// Lowercased name → id.
     pub(crate) native_index: HashMap<Box<[u8]>, NativeId>,
     pub(crate) constants: HashMap<Box<[u8]>, Value>,
+    /// Constants php deprecates: the text after `Constant X is deprecated`.
+    pub(crate) deprecated_constants: HashMap<Box<[u8]>, &'static str>,
     /// The names `define()` added, so `get_defined_constants(true)` can put
     /// them under php's `user` category (the engine's own are `Core`).
     pub(crate) user_constants: Vec<Box<[u8]>>,
@@ -160,11 +162,24 @@ pub struct Interp {
     /// until the first bytes reach the SAPI (after that php never asks
     /// again).
     pub(crate) pending_site: Option<(String, u32)>,
-    /// The response headers a SAPI would send, in php's order (`headers_list`).
-    pub headers: Vec<(String, String)>,
-    /// `http_response_code()`: 0 until something sets it, which in the CLI
-    /// means php answers `false`.
-    pub response_code: i64,
+    /// The response head (`header()`, `http_response_code()`), shared with
+    /// the SAPI's sink, which sends it ahead of the first output byte.
+    pub head: crate::output::SharedHead,
+    /// The request's header fields as received, in order and with their
+    /// original spelling (`getallheaders()`); empty outside a web SAPI.
+    pub request_headers: Vec<(String, String)>,
+    /// The raw request body (`php://input`); `None` outside a web SAPI.
+    pub request_body: Option<std::sync::Arc<[u8]>>,
+    /// Where `log_errors` entries go (`PHP Warning:  …`): stderr when
+    /// `None`, else the SAPI's log (`php -S` stamps each line).
+    pub error_log: Option<Box<dyn FnMut(&str)>>,
+    /// The request's start time (`$_SERVER['REQUEST_TIME_FLOAT']`), which
+    /// `setcookie()`'s `Max-Age` counts from; `None` = the clock.
+    pub request_time: Option<f64>,
+    /// The temporary files this request's uploads landed in (`$_FILES`):
+    /// what `is_uploaded_file()` checks, removed at request end unless
+    /// `move_uploaded_file()` took one.
+    pub uploaded_files: Vec<PathBuf>,
     /// The `set_exception_handler` stack (`Null` = none).
     pub exception_handler: Vec<Value>,
     /// `register_shutdown_function` callbacks with their bound arguments.
@@ -209,6 +224,7 @@ impl Interp {
             natives: Vec::new(),
             native_index: HashMap::new(),
             constants: HashMap::new(),
+            deprecated_constants: HashMap::new(),
             user_constants: Vec::new(),
             units: Vec::new(),
             funcs: Vec::new(),
@@ -237,8 +253,12 @@ impl Interp {
             error_handler: Vec::new(),
             output_started: None,
             pending_site: None,
-            headers: Vec::new(),
-            response_code: 0,
+            head: crate::output::SharedHead::default(),
+            request_headers: Vec::new(),
+            request_body: None,
+            error_log: None,
+            request_time: None,
+            uploaded_files: Vec::new(),
             exception_handler: Vec::new(),
             shutdown: Vec::new(),
             last_error: None,
@@ -304,6 +324,22 @@ impl Interp {
     pub fn load_module(&mut self, module: Module) -> Result<(), Unwind> {
         let main = self.load_unit(module)?;
         self.main_func = Some(main);
+        Ok(())
+    }
+
+    /// Run a php-source prelude: a unit the SAPI declares before the script
+    /// (pieces of the standard library written in php). Its classes count
+    /// as internal afterwards, and no `{main}` is left loaded.
+    pub fn run_prelude(&mut self, module: Module) -> Result<(), Unwind> {
+        let before = self.classes.len();
+        self.load_module(module)?;
+        self.run_main()?;
+        self.main_func = None;
+        for i in before..self.classes.len() {
+            if let Some(c) = Rc::get_mut(&mut self.classes[i]) {
+                c.internal = true;
+            }
+        }
         Ok(())
     }
 

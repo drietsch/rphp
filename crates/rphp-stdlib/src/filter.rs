@@ -7,7 +7,7 @@
 //! the part callers actually depend on (Symfony's `ParameterBag::getInt`
 //! leans on it), so it is modelled exactly.
 
-use rphp_runtime::{nf, Ctx, NativeFn, NativeResult, Registry};
+use rphp_runtime::{nf, Ctx, NativeFn, NativeResult, Registry, Unwind};
 use rphp_value::{Array, ArrayKey, Str, Value};
 
 /// This extension's registry contribution (see `lib.rs`).
@@ -41,7 +41,11 @@ const SANITIZE_NUMBER_FLOAT: i64 = 520;
 const SANITIZE_ADD_SLASHES: i64 = 523;
 const SANITIZE_FULL_SPECIAL_CHARS: i64 = 522;
 
+const CALLBACK: i64 = 1024;
 const NULL_ON_FAILURE: i64 = 134_217_728;
+const REQUIRE_SCALAR: i64 = 33_554_432;
+const REQUIRE_ARRAY: i64 = 16_777_216;
+const FORCE_ARRAY: i64 = 67_108_864;
 const FLAG_ALLOW_OCTAL: i64 = 1;
 const FLAG_ALLOW_HEX: i64 = 2;
 const FLAG_ALLOW_FRACTION: i64 = 4096;
@@ -129,10 +133,76 @@ impl Opts {
 }
 
 /// `filter_var(mixed $value, int $filter = FILTER_DEFAULT, array|int $options = 0): mixed`
-fn filter_var(_ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+fn filter_var(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let id = args.get(1).map_or(DEFAULT, Value::to_int);
     let opts = Opts::parse(args.get(2));
-    Ok(apply(&args[0], id, &opts))
+    let value = args[0].deref().into_owned();
+    // `FILTER_CALLBACK`: the `options` callable maps the value (or every
+    // leaf of an array).
+    if id == CALLBACK {
+        let callback = args
+            .get(2)
+            .and_then(|v| match &*v.deref() {
+                Value::Array(a) => a.get_deref(&ArrayKey::str(b"options")),
+                _ => None,
+            })
+            .unwrap_or(Value::Null);
+        if !ctx.is_callable(&callback) {
+            return Err(Unwind::type_error("filter_var(): Option must be a valid callback"));
+        }
+        return apply_callback(ctx, &value, &callback);
+    }
+    // The array flags: `REQUIRE_ARRAY` filters every leaf of an array (a
+    // scalar fails), `FORCE_ARRAY` wraps a scalar first, and an array
+    // without either fails (`REQUIRE_SCALAR` is the default).
+    let is_array = matches!(value, Value::Array(_));
+    if opts.flags & (REQUIRE_ARRAY | FORCE_ARRAY) != 0 {
+        if !is_array && opts.flags & FORCE_ARRAY != 0 {
+            let mut a = Array::new();
+            a.push(apply(&value, id, &opts));
+            return Ok(Value::Array(a));
+        }
+        if !is_array {
+            return Ok(opts.failure());
+        }
+        return Ok(apply_deep(&value, id, &opts));
+    }
+    if is_array && opts.flags & REQUIRE_SCALAR == 0 {
+        return Ok(opts.failure());
+    }
+    if is_array {
+        return Ok(opts.failure());
+    }
+    Ok(apply(&value, id, &opts))
+}
+
+/// A filter over every leaf of a (nested) array.
+fn apply_deep(value: &Value, id: i64, o: &Opts) -> Value {
+    match value {
+        Value::Array(a) => {
+            let mut out = Array::new();
+            for (k, v) in a.iter() {
+                out.set(k.clone(), apply_deep(&v.deref().into_owned(), id, o));
+            }
+            Value::Array(out)
+        }
+        leaf => apply(leaf, id, o),
+    }
+}
+
+/// `FILTER_CALLBACK` over a value or every leaf of an array; the value
+/// reaches the callback as a string, as php hands it over.
+fn apply_callback(ctx: &mut Ctx, value: &Value, callback: &Value) -> NativeResult {
+    match value {
+        Value::Array(a) => {
+            let mut out = Array::new();
+            for (k, v) in a.iter() {
+                out.set(k.clone(), apply_callback(ctx, &v.deref().into_owned(), callback)?);
+            }
+            Ok(Value::Array(out))
+        }
+        leaf => ctx.call_value(callback, &[Value::string(&leaf.to_php_bytes())]),
+    }
 }
 
 /// Run one filter over one value.
@@ -407,7 +477,6 @@ pub(crate) fn register_constants(r: &mut Registry) {
         ("FILTER_VALIDATE_MAC", VALIDATE_MAC),
         ("FILTER_DEFAULT", DEFAULT),
         ("FILTER_UNSAFE_RAW", UNSAFE_RAW),
-        ("FILTER_SANITIZE_STRING", SANITIZE_STRING),
         ("FILTER_SANITIZE_ENCODED", SANITIZE_ENCODED),
         ("FILTER_SANITIZE_SPECIAL_CHARS", SANITIZE_SPECIAL_CHARS),
         ("FILTER_SANITIZE_FULL_SPECIAL_CHARS", SANITIZE_FULL_SPECIAL_CHARS),
@@ -416,6 +485,9 @@ pub(crate) fn register_constants(r: &mut Registry) {
         ("FILTER_SANITIZE_NUMBER_INT", SANITIZE_NUMBER_INT),
         ("FILTER_SANITIZE_NUMBER_FLOAT", SANITIZE_NUMBER_FLOAT),
         ("FILTER_SANITIZE_ADD_SLASHES", SANITIZE_ADD_SLASHES),
+        ("FILTER_CALLBACK", CALLBACK),
+        ("FILTER_THROW_ON_FAILURE", 268_435_456),
+        ("FILTER_FLAG_EMAIL_UNICODE", 1_048_576),
         ("FILTER_FLAG_NONE", 0),
         ("FILTER_NULL_ON_FAILURE", NULL_ON_FAILURE),
         ("FILTER_FLAG_ALLOW_OCTAL", FLAG_ALLOW_OCTAL),
@@ -449,5 +521,12 @@ pub(crate) fn register_constants(r: &mut Registry) {
         ("INPUT_ENV", 4),
     ] {
         r.constant(name, Value::Int(v));
+    }
+    for name in ["FILTER_SANITIZE_STRING", "FILTER_SANITIZE_STRIPPED"] {
+        r.deprecated_constant(
+            name,
+            Value::Int(SANITIZE_STRING),
+            " since 8.1, use htmlspecialchars() instead",
+        );
     }
 }

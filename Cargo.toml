@@ -14,6 +14,7 @@ members = [
     "crates/rphp-stdlib",
     "crates/rphp-runtime",
     "crates/rphp-sapi-cli",
+    "crates/rphp-sapi-server",
     "crates/rphp-ext-api",
     "crates/rphp-test",
     "crates/rphp-tokenizer",
@@ -48,6 +49,7 @@ rphp-compiler = { path = "crates/rphp-compiler" }
 rphp-stdlib = { path = "crates/rphp-stdlib" }
 rphp-runtime = { path = "crates/rphp-runtime" }
 rphp-sapi-cli = { path = "crates/rphp-sapi-cli" }
+rphp-sapi-server = { path = "crates/rphp-sapi-server" }
 rphp-ext-api = { path = "crates/rphp-ext-api" }
 rphp-test = { path = "crates/rphp-test" }
 rphp-tokenizer = { path = "crates/rphp-tokenizer" }

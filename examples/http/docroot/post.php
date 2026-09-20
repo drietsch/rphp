@@ -1,0 +1,2 @@
+<?php var_export(['M' => $_SERVER['REQUEST_METHOD'], 'CT' => $_SERVER['CONTENT_TYPE'] ?? null, 'CL' => $_SERVER['CONTENT_LENGTH'] ?? null, 'HCT' => $_SERVER['HTTP_CONTENT_TYPE'] ?? null, 'POST' => $_POST, 'GET' => $_GET, 'FILES' => $_FILES, 'REQUEST' => $_REQUEST, 'input' => file_get_contents('php://input'), 'input2' => file_get_contents('php://input')]); echo "\n";
+if ($_FILES) { foreach ($_FILES as $f) { if (is_array($f['tmp_name'])) continue; echo "tmp exists: ", var_export(is_file($f['tmp_name']), true), " content=", file_get_contents($f['tmp_name']), "\n"; } }

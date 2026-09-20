@@ -300,6 +300,11 @@ pub struct Hooks {
     pub get: Option<FuncId>,
     /// The `set { … }` hook.
     pub set: Option<FuncId>,
+    /// php's *virtual* property: no hook body mentions `$this->name`, so
+    /// there is no backing value — a read without a `get` hook and a write
+    /// without a `set` hook are errors, and the property has no slot to
+    /// dump or serialize.
+    pub is_virtual: bool,
 }
 
 /// A property declaration (promoted constructor parameters are *also* listed

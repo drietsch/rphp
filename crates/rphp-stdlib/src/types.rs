@@ -281,6 +281,10 @@ pub(crate) fn is_countable(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 pub(crate) fn is_callable(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let v = args[0].deref().into_owned();
     let syntax_only = args.get(1).is_some_and(Value::to_bool);
+    // php loads the class a `['C', 'm']` / `'C::m'` names before deciding.
+    if !syntax_only {
+        ctx.autoload_callable(&v)?;
+    }
     let (callable, name): (bool, Vec<u8>) = match &v {
         Value::Closure(_) => (true, b"Closure::__invoke".to_vec()),
         Value::Str(s) => {

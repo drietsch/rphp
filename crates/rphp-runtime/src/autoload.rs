@@ -58,6 +58,39 @@ impl Interp {
         Ok(())
     }
 
+    /// Autoload the class a callable names before it is resolved: the
+    /// `[ 'Class', 'method' ]` and `'Class::method'` forms (php resolves
+    /// both through `zend_is_callable`, which loads the class).
+    pub fn autoload_callable(&mut self, v: &Value) -> Result<(), Unwind> {
+        if self.autoloaders.is_empty() {
+            return Ok(());
+        }
+        let class: Option<Vec<u8>> = match &*v.deref() {
+            Value::Array(a) if a.len() == 2 => match a.iter().next().map(|(_, v)| v.deref().into_owned()) {
+                Some(Value::Str(c)) => Some(c.as_bytes().to_vec()),
+                _ => None,
+            },
+            Value::Str(s) => {
+                let b = s.as_bytes();
+                b.windows(2).position(|w| w == b"::").map(|p| b[..p].to_vec())
+            }
+            _ => None,
+        };
+        if let Some(c) = class {
+            let lower = c.to_ascii_lowercase();
+            if !matches!(lower.as_slice(), b"self" | b"static" | b"parent") {
+                self.lookup_class(&c)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// [`Interp::is_callable`] after autoloading the class the value names.
+    pub fn is_callable_autoload(&mut self, v: &Value) -> Result<bool, Unwind> {
+        self.autoload_callable(v)?;
+        Ok(self.is_callable(v))
+    }
+
     /// `lookup_class` with php's `Class "X" not found` when nothing declares
     /// it — the form every call site that *requires* a class wants.
     pub fn lookup_class_or_error(&mut self, name: &[u8]) -> Result<u32, Unwind> {

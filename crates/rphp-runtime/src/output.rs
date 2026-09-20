@@ -77,6 +77,30 @@ impl ObLevel {
     }
 }
 
+/// The response head a web SAPI sends ahead of the first output byte:
+/// `header()`'s list, `http_response_code()`, and whether the SAPI has
+/// written them yet. Shared between the interpreter (whose natives fill it)
+/// and the SAPI's [`OutputSink`] (which sends it), hence the handle.
+#[derive(Default, Debug)]
+pub struct ResponseHead {
+    /// `http_response_code()`: 0 until something sets it.
+    pub code: i64,
+    /// A status line the script set itself (`header('HTTP/1.1 404 Nope')`),
+    /// sent verbatim in place of the one built from `code`.
+    pub status_line: Option<String>,
+    /// The header fields in php's order: `(name, full line)`.
+    pub headers: Vec<(String, String)>,
+    /// Whether the script set a `Content-Type` (else the SAPI appends
+    /// `default_mimetype; charset=default_charset`).
+    pub has_content_type: bool,
+    /// Set by the SAPI once the head went out (`flush()` under `php -S`
+    /// sends it even while the output buffers still hold every byte).
+    pub sent: bool,
+}
+
+/// The shared handle to a [`ResponseHead`].
+pub type SharedHead = std::sync::Arc<std::sync::Mutex<ResponseHead>>;
+
 /// The output stack: `ob_*` levels over a sink, plus the level-0 staging
 /// buffer natives write into.
 pub struct OutputStack {
@@ -108,10 +132,16 @@ impl OutputStack {
         self.sink = sink;
     }
 
-    /// `echo`: append to the active level, or write straight through.
+    /// `echo`: append to the active level, or write straight through. A
+    /// level opened with a chunk size and no user handler (the
+    /// `output_buffering=4096` level a web SAPI starts every request with)
+    /// passes its bytes down each time it holds that many.
     pub fn write(&mut self, bytes: &[u8]) {
         if let Some(top) = self.levels.last_mut() {
             top.buf.extend_from_slice(bytes);
+            if top.callback.is_none() && top.chunk_size > 0 && top.buf.len() >= top.chunk_size {
+                self.flush_chunk();
+            }
         } else {
             self.flush_pending();
             self.sent = self.sent || !bytes.is_empty();
@@ -119,10 +149,32 @@ impl OutputStack {
         }
     }
 
+    /// Pass the top level's buffer down to the level below or the sink,
+    /// keeping the level open (`ob_flush()` for a level with no handler).
+    fn flush_chunk(&mut self) {
+        let n = self.levels.len();
+        let bytes = std::mem::take(&mut self.levels[n - 1].buf);
+        if bytes.is_empty() {
+            return;
+        }
+        if n >= 2 {
+            self.levels[n - 2].buf.extend_from_slice(&bytes);
+        } else {
+            self.sent = true;
+            self.sink.write(&bytes);
+        }
+    }
+
     /// Whether anything has reached the SAPI yet — php's "headers already
     /// sent". Output held in an `ob_*` level has *not* been sent.
     pub fn sent(&self) -> bool {
         self.sent
+    }
+
+    /// Never report a first send: the SAPI sent the head on its own, so
+    /// php has no output to blame later.
+    pub fn forget_first_send(&mut self) {
+        self.first_send_seen = true;
     }
 
     /// True exactly once: on the call after the first bytes reached the sink,
@@ -154,6 +206,13 @@ impl OutputStack {
             } else {
                 self.sent = self.sent || !bytes.is_empty();
                 self.sink.write(&bytes);
+            }
+        }
+        // Natives append to the top level through `buf()`; the chunk rule
+        // is applied here, on the flush that follows every such write.
+        if let Some(top) = self.levels.last() {
+            if top.callback.is_none() && top.chunk_size > 0 && top.buf.len() >= top.chunk_size {
+                self.flush_chunk();
             }
         }
     }
@@ -308,3 +367,4 @@ mod tests {
         assert_eq!(out.top_contents().unwrap(), b"top");
     }
 }
+

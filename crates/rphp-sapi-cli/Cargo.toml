@@ -9,6 +9,7 @@ repository.workspace = true
 # Running goes through rphp-embed only (ADR-014); the front-end crates are
 # used directly by the `--emit=tokens|ast` dumps and `-l`.
 rphp-embed.workspace = true
+rphp-sapi-server.workspace = true
 rphp-source.workspace = true
 rphp-hir.workspace = true
 rphp-span.workspace = true

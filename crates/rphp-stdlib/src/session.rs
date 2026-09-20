@@ -559,8 +559,19 @@ fn session_start(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         ))?;
         return Ok(Value::Bool(false));
     }
+    // The id: set ahead by `session_id()`, else the request's cookie, else
+    // a fresh one. php publishes it (`Set-Cookie`) unless it came from the
+    // cookie.
     let id = with_state(|s| s.id.clone());
-    let id = if id.is_empty() { new_id(ctx)? } else { id };
+    let mut from_cookie = false;
+    let id = if !id.is_empty() {
+        id
+    } else if let Some(c) = cookie_id(ctx) {
+        from_cookie = true;
+        c
+    } else {
+        new_id(ctx)?
+    };
     call_handler(
         ctx,
         "open",
@@ -589,11 +600,107 @@ fn session_start(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     set_session_array(ctx, decoded);
     let site = (ctx.current_file(), ctx.current_line());
     with_state(|s| {
-        s.id = id;
+        s.id = id.clone();
         s.status = Status::Active;
         s.started_at = Some(site);
     });
+    if !from_cookie {
+        send_cookie(ctx, &id)?;
+    }
+    send_cache_limiter(ctx);
     Ok(Value::Bool(true))
+}
+
+/// The id the request's cookie carries (`session.use_cookies`), if any.
+fn cookie_id(ctx: &mut Ctx) -> Option<Vec<u8>> {
+    if !ctx.ini.bool("session.use_cookies") {
+        return None;
+    }
+    let name = ini(ctx, "session.name");
+    let cookies = ctx.globals.get(b"_COOKIE")?;
+    let v = cookies.borrow().clone();
+    let Value::Array(a) = v else { return None };
+    let id = a.get(&ArrayKey::str(name.as_bytes()))?.to_php_bytes();
+    if id.is_empty() || !id.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b',') {
+        return None;
+    }
+    Some(id)
+}
+
+/// `Set-Cookie: <session.name>=<id>; …` from the `session.cookie_*`
+/// settings (php's `php_session_send_cookie`).
+fn send_cookie(ctx: &mut Ctx, id: &[u8]) -> Result<(), Unwind> {
+    if !ctx.ini.bool("session.use_cookies") {
+        return Ok(());
+    }
+    let name = ini(ctx, "session.name");
+    let lifetime = ctx.ini.int("session.cookie_lifetime");
+    let mut opts = Array::new();
+    if lifetime > 0 {
+        let now = ctx.request_time.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0)
+        }) as i64;
+        opts.set(ArrayKey::str(b"expires"), Value::Int(now + lifetime));
+    }
+    for (key, ini_name) in [
+        ("path", "session.cookie_path"),
+        ("domain", "session.cookie_domain"),
+        ("samesite", "session.cookie_samesite"),
+    ] {
+        let v = ini(ctx, ini_name);
+        if !v.is_empty() {
+            opts.set(ArrayKey::str(key.as_bytes()), Value::string(v.as_bytes()));
+        }
+    }
+    for (key, ini_name) in [
+        ("secure", "session.cookie_secure"),
+        ("httponly", "session.cookie_httponly"),
+        ("partitioned", "session.cookie_partitioned"),
+    ] {
+        if ctx.ini.bool(ini_name) {
+            opts.set(ArrayKey::str(key.as_bytes()), Value::Bool(true));
+        }
+    }
+    ctx.call_function(
+        b"setcookie",
+        &[Value::string(name.as_bytes()), Value::string(id), Value::Array(opts)],
+    )?;
+    Ok(())
+}
+
+/// The `session.cache_limiter` headers (`php_session_cache_limiter`).
+fn send_cache_limiter(ctx: &mut Ctx) {
+    let limiter = ini(ctx, "session.cache_limiter");
+    let expire = ctx.ini.int("session.cache_expire") * 60;
+    let now = ctx.request_time.unwrap_or(0.0) as i64;
+    let lines: Vec<String> = match limiter.as_str() {
+        "nocache" => vec![
+            "Expires: Thu, 19 Nov 1981 08:52:00 GMT".to_string(),
+            "Cache-Control: no-store, no-cache, must-revalidate".to_string(),
+            "Pragma: no-cache".to_string(),
+        ],
+        "public" => vec![
+            format!("Expires: {}", crate::head::http_date(now + expire)),
+            format!("Cache-Control: public, max-age={expire}"),
+            format!("Last-Modified: {}", crate::head::http_date(now)),
+        ],
+        "private" => vec![
+            "Expires: Thu, 19 Nov 1981 08:52:00 GMT".to_string(),
+            format!("Cache-Control: private, max-age={expire}"),
+            format!("Last-Modified: {}", crate::head::http_date(now)),
+        ],
+        "private_no_expire" => vec![
+            format!("Cache-Control: private, max-age={expire}"),
+            format!("Last-Modified: {}", crate::head::http_date(now)),
+        ],
+        _ => Vec::new(),
+    };
+    for line in lines {
+        crate::head::add_header(ctx, &line, true);
+    }
 }
 
 /// `session_write_close(): bool` (and its `session_commit` alias)
@@ -681,6 +788,7 @@ fn session_regenerate_id(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     }
     let id = new_id(ctx)?;
     with_state(|s| s.id = id.clone());
+    send_cookie(ctx, &id)?;
     let data = session_array(ctx);
     if let Some(bytes) = encode(ctx, &data, who)? {
         handler_write(ctx, &id, &bytes)?;

@@ -1,0 +1,1 @@
+<?php echo "x"; var_dump(headers_sent()); flush(); var_dump(headers_sent()); header('X-After-Flush: 1'); echo str_repeat('y', 5000); var_dump(headers_sent()); header('X-After-Big: 1'); var_dump(ini_get('output_buffering'), ini_get('implicit_flush'), ini_get('html_errors'), ini_get('display_errors'), ini_get('log_errors'), ini_get('error_log'));

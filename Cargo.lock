@@ -1292,9 +1292,21 @@ dependencies = [
  "rphp-hir",
  "rphp-intern",
  "rphp-parser",
+ "rphp-sapi-server",
  "rphp-source",
  "rphp-span",
  "rphp-tokenizer",
+]
+
+[[package]]
+name = "rphp-sapi-server"
+version = "0.0.0"
+dependencies = [
+ "jiff",
+ "rphp-embed",
+ "rphp-runtime",
+ "rphp-stdlib",
+ "rphp-value",
 ]
 
 [[package]]

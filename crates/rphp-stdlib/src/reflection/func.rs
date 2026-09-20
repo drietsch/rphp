@@ -100,6 +100,15 @@ pub(crate) fn info(ctx: &Ctx, t: &FnTarget) -> Result<Info, Unwind> {
                 ..empty
             })
         }
+        FnTarget::Hook { fid, decl } => {
+            let f = ctx.func(*fid).clone();
+            Ok(Info {
+                name: f.f.name_bytes.clone(),
+                class: Some(*decl),
+                func: Some(f),
+                ..empty
+            })
+        }
         FnTarget::Method { cid, name } => {
             let m = ctx.resolve_method(*cid, name).ok_or_else(|| {
                 refl_error(format!(
@@ -187,6 +196,21 @@ pub(crate) fn make_method(ctx: &mut Ctx, m: &Rc<MethodDef>, on: u32) -> Result<V
     let o = new_reflector(ctx, "ReflectionMethod", st)?;
     o.set(b"name", Value::string(&m.name));
     let class = ctx.class(m.decl).name.clone();
+    o.set(b"class", Value::string(&class));
+    Ok(Value::Object(o))
+}
+
+/// A `ReflectionMethod` over a property hook: php names it `$prop::get`
+/// and files it under the declaring class.
+pub(crate) fn make_hook_method(ctx: &mut Ctx, fid: u32, decl: u32) -> Result<Value, Unwind> {
+    let name = ctx.func(fid).f.name_bytes.clone();
+    let st = FnState {
+        target: FnTarget::Hook { fid, decl },
+        this: None,
+    };
+    let o = new_reflector(ctx, "ReflectionMethod", st)?;
+    o.set(b"name", Value::string(&name));
+    let class = ctx.class(decl).name.clone();
     o.set(b"class", Value::string(&class));
     Ok(Value::Object(o))
 }
@@ -974,7 +998,7 @@ fn function_get_closure(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> N
 fn callable_value(ctx: &Ctx, t: &FnTarget) -> Result<Value, Unwind> {
     Ok(match t {
         FnTarget::Closure(c) => Value::Closure(c.clone()),
-        FnTarget::User(id) => Value::string(&ctx.func(*id).f.name_bytes),
+        FnTarget::User(id) | FnTarget::Hook { fid: id, .. } => Value::string(&ctx.func(*id).f.name_bytes),
         FnTarget::Native(id) => Value::string(ctx.native(*id).name.as_bytes()),
         FnTarget::Method { cid, name } => {
             let mut s = ctx.class(*cid).name.to_vec();

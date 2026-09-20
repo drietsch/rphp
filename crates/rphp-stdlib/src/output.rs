@@ -455,6 +455,7 @@ mod tests {
             decl_class: 0,
             decl_class_name: Rc::from(decl.as_bytes()),
             ty: None,
+            is_virtual: false,
         }
     }
 

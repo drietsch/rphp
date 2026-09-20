@@ -56,7 +56,7 @@ pub use frame::{
     format_float_precision, trace_arg, CallTarget, Frame, FrameKind, NativeTarget, PendingCall,
     RetTarget, TraceOpts,
 };
-pub use ini::{parse_bool, IniEntry, IniTable, CORE_DEFAULTS};
+pub use ini::{parse_bool, IniEntry, IniTable, CORE_DEFAULTS, SERVER_DEFAULTS};
 pub use interp::{
     CompileFailure, CompileHook, ExtState, Interp, SapiKind, MAX_FRAMES, MAX_REENTRY_DEPTH,
 };
@@ -71,7 +71,8 @@ pub use class::{
     PropHooks, PropInfo, PropSpec, StaticPropInfo, WellKnown,
 };
 pub use output::{
-    NullSink, ObLevel, OutputSink, OutputStack, SharedBuffer, PHP_OUTPUT_HANDLER_CLEAN,
+    NullSink, ObLevel, OutputSink, OutputStack, ResponseHead, SharedBuffer, SharedHead,
+    PHP_OUTPUT_HANDLER_CLEAN,
     PHP_OUTPUT_HANDLER_CLEANABLE, PHP_OUTPUT_HANDLER_DISABLED, PHP_OUTPUT_HANDLER_FINAL,
     PHP_OUTPUT_HANDLER_FLUSH, PHP_OUTPUT_HANDLER_FLUSHABLE, PHP_OUTPUT_HANDLER_PROCESSED,
     PHP_OUTPUT_HANDLER_REMOVABLE, PHP_OUTPUT_HANDLER_START, PHP_OUTPUT_HANDLER_STARTED,

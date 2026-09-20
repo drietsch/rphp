@@ -29,6 +29,8 @@ USAGE:
     rphp run <file.php>                             run a PHP script
 
 OPTIONS:
+    -S <host>:<port>                 run the built-in web server (`php -S`)
+    -t <docroot>                     the server's document root (default: the working directory)
     -d key[=value]                   set an ini directive (repeatable; `-d display_errors=0`)
     -f <file>                        the script to run
     -r <code>                        run <code> without the opening `<?php` tag
@@ -63,6 +65,10 @@ struct Cli {
     code: Option<String>,
     ini: Vec<(String, String)>,
     script_args: Vec<String>,
+    /// `-S host:port`: run the web server instead of a script.
+    serve: Option<String>,
+    /// `-t docroot`.
+    docroot: Option<String>,
 }
 
 /// Parse `args` (excluding argv[0]); `Err(code)` when help was printed (0)
@@ -88,7 +94,7 @@ fn parse_args(args: &[String]) -> Result<Cli, i32> {
             "run" if cli.code.is_none() => {}
             "-l" | "--lint" => cli.lint_only = true,
             "-n" => {}
-            "-d" | "-r" | "-f" => {
+            "-d" | "-r" | "-f" | "-S" | "-t" => {
                 let Some(v) = args.get(i) else {
                     eprintln!("rphp: `{a}` needs an argument\n");
                     eprint!("{USAGE}");
@@ -110,7 +116,7 @@ fn parse_args(args: &[String]) -> Result<Cli, i32> {
                     }
                 });
             }
-            _ if a.starts_with("-d") || a.starts_with("-r") || a.starts_with("-f") => {
+            _ if a.starts_with("-d") || a.starts_with("-r") || a.starts_with("-f") || a.starts_with("-S") || a.starts_with("-t") => {
                 let (flag, v) = a.split_at(2);
                 apply_option(&mut cli, flag, v);
             }
@@ -142,6 +148,8 @@ fn apply_option(cli: &mut Cli, flag: &str, value: &str) {
             cli.ini.push((k, v));
         }
         "-r" => cli.code = Some(value.to_string()),
+        "-S" => cli.serve = Some(value.to_string()),
+        "-t" => cli.docroot = Some(value.to_string()),
         _ => cli.file = Some(value.to_string()),
     }
 }
@@ -159,6 +167,17 @@ pub fn run(args: Vec<String>) -> i32 {
         Ok(cli) => cli,
         Err(code) => return code,
     };
+
+    // `-S host:port [-t docroot] [router.php]`: the built-in web server
+    // (SAPI-3); a positional file is the router.
+    if let Some(listen) = &cli.serve {
+        return rphp_sapi_server::run(rphp_sapi_server::ServerOptions {
+            listen: listen.clone(),
+            docroot: cli.docroot.clone().map(PathBuf::from),
+            router: cli.file.clone().map(PathBuf::from),
+            ini: cli.ini.clone(),
+        });
+    }
 
     if let Some(code) = &cli.code {
         if cli.lint_only || cli.emit.is_some() {

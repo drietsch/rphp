@@ -22,6 +22,16 @@ pub struct IniTable {
 /// (`display_errors`, `output_buffering`, `implicit_flush`,
 /// `max_execution_time`, `html_errors`, `register_argc_argv` carry the CLI
 /// SAPI's `INI_DEFAULT` overrides — see `sapi/cli/php_cli.c`.)
+/// What the built-in web server (`php -S`, `cli-server`) sets differently
+/// from the CLI: the `main.c` defaults the CLI overrides, as `php -n -S`
+/// reports them.
+pub const SERVER_DEFAULTS: &[(&str, &str)] = &[
+    ("html_errors", "1"),
+    ("implicit_flush", "0"),
+    ("max_execution_time", "30"),
+    ("register_argc_argv", "0"),
+];
+
 pub const CORE_DEFAULTS: &[(&str, &str)] = &[
     ("display_errors", "1"),
     ("display_startup_errors", "1"),
@@ -40,6 +50,9 @@ pub const CORE_DEFAULTS: &[(&str, &str)] = &[
     ("fatal_error_backtraces", "1"),
     ("output_buffering", "0"),
     ("output_handler", ""),
+    ("upload_tmp_dir", ""),
+    ("enable_post_data_reading", "1"),
+    ("auto_globals_jit", "1"),
     ("implicit_flush", "1"),
     ("max_execution_time", "0"),
     ("max_input_time", "-1"),

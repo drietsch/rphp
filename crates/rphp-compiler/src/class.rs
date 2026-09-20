@@ -552,11 +552,13 @@ impl<'m> MemberLower<'_, 'm> {
         if hooks.is_empty() {
             return None;
         }
-        let prop: Box<[u8]> = self.interner().resolve(prop?).into();
+        let prop_id = prop?;
+        let prop: Box<[u8]> = self.interner().resolve(prop_id).into();
         let scope = self.scope;
         let mut out = Hooks {
             get: None,
             set: None,
+            is_virtual: !hooks.iter().any(|h| hook_mentions_prop(h, prop_id, self.interner())),
         };
         for h in hooks {
             let f = compile_hook(self.mx, self.diags, &prop, ty, h, scope);
@@ -700,4 +702,57 @@ pub(crate) fn bc_vis(v: AstVis) -> Visibility {
         AstVis::Protected => Visibility::Protected,
         AstVis::Private => Visibility::Private,
     }
+}
+
+/// Whether a hook's body reads or writes `$this->name` — what makes php
+/// give the property a backing value (a `set => expr;` shorthand is one
+/// implicitly, and the HIR spells it out as the assignment).
+fn hook_mentions_prop(h: &Hook, prop: IdentId, interner: &Interner) -> bool {
+    use rphp_ast::v2::visit::{walk_expr, walk_stmt};
+    use rphp_ast::v2::{HookBody, MemberName};
+    struct Scan<'a> {
+        prop: IdentId,
+        interner: &'a Interner,
+        found: bool,
+    }
+    impl Visitor for Scan<'_> {
+        fn visit_stmt(&mut self, s: &Stmt) {
+            if !self.found {
+                walk_stmt(self, s);
+            }
+        }
+        fn visit_expr(&mut self, e: &Expr) {
+            if self.found {
+                return;
+            }
+            if let Expr::Prop { obj, name: MemberName::Ident(n, _), .. } = e {
+                if *n == self.prop {
+                    if let Expr::Var(v, _) = &**obj {
+                        if self.interner.resolve(*v) == b"this" {
+                            self.found = true;
+                            return;
+                        }
+                    }
+                }
+            }
+            walk_expr(self, e);
+        }
+    }
+    let mut scan = Scan { prop, interner, found: false };
+    match &h.body {
+        HookBody::Abstract => {}
+        HookBody::Expr(e) => {
+            // `set => expr;` assigns the backing value by definition.
+            if h.kind == HookKind::Set {
+                return true;
+            }
+            scan.visit_expr(e);
+        }
+        HookBody::Block(stmts) => {
+            for s in stmts {
+                scan.visit_stmt(s);
+            }
+        }
+    }
+    scan.found
 }

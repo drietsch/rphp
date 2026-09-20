@@ -22,6 +22,8 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("file", 1, Some(3), file),
     nf!("readfile", 1, Some(3), readfile),
     nf!("unlink", 1, Some(2), unlink),
+    nf!("is_uploaded_file", 1, Some(1), is_uploaded_file),
+    nf!("move_uploaded_file", 2, Some(2), move_uploaded_file),
     nf!("copy", 2, Some(3), copy),
     nf!("rename", 2, Some(3), rename),
     nf!("stream_resolve_include_path", 1, Some(1), stream_resolve_include_path),
@@ -145,6 +147,11 @@ const FILE_APPEND: i64 = 8;
 
 /// `file_get_contents(string $filename, ...): string|false`
 fn file_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // `php://input` is the request body, readable any number of times.
+    if args[0].to_php_bytes().as_slice() == b"php://input" {
+        let body = ctx.request_body.as_deref().map(<[u8]>::to_vec).unwrap_or_default();
+        return Ok(Value::Str(Str::from_vec(body)));
+    }
     let p = arg_path(ctx, &args[0]);
     match fs::read(&p) {
         Ok(b) => Ok(Value::Str(Str::from_vec(b))),
@@ -277,6 +284,41 @@ fn unlink(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Err(e) => {
             let shown = String::from_utf8_lossy(&args[0].to_php_bytes()).into_owned();
             ctx.warn(&format!("unlink({shown}): {}", crate::filestat::io_text(&e)))?;
+            Ok(Value::Bool(false))
+        }
+    }
+}
+
+/// `is_uploaded_file(string $filename): bool` — whether the path is one
+/// of this request's uploads, spelled exactly as `$_FILES` spells it.
+fn is_uploaded_file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let name = String::from_utf8_lossy(&args[0].to_php_bytes()).into_owned();
+    Ok(Value::Bool(ctx.uploaded_files.iter().any(|f| f.to_string_lossy() == name)))
+}
+
+/// `move_uploaded_file(string $from, string $to): bool` — a rename (a copy
+/// and unlink across devices) of an upload, which is then no longer one;
+/// `false` without a word for anything that is not an upload.
+fn move_uploaded_file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let from_name = String::from_utf8_lossy(&args[0].to_php_bytes()).into_owned();
+    let Some(i) = ctx.uploaded_files.iter().position(|f| f.to_string_lossy() == from_name) else {
+        return Ok(Value::Bool(false));
+    };
+    let from = arg_path(ctx, &args[0]);
+    let to = arg_path(ctx, &args[1]);
+    let moved = fs::rename(&from, &to).or_else(|_| fs::copy(&from, &to).and_then(|_| fs::remove_file(&from)));
+    invalidate(ctx, &from);
+    invalidate(ctx, &to);
+    match moved {
+        Ok(()) => {
+            ctx.uploaded_files.remove(i);
+            Ok(Value::Bool(true))
+        }
+        Err(_) => {
+            let to_shown = String::from_utf8_lossy(&args[1].to_php_bytes()).into_owned();
+            ctx.warn(&format!(
+                "move_uploaded_file(): Unable to move \"{from_name}\" to \"{to_shown}\""
+            ))?;
             Ok(Value::Bool(false))
         }
     }
@@ -425,14 +467,21 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             "stderr" => Sink::Stderr,
             _ => Sink::Buffer,
         };
+        // `php://input` opens on a copy of the request body.
+        let input = rest == "input";
+        let buf = if input {
+            ctx.request_body.as_deref().map(<[u8]>::to_vec).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         Stream {
-            buf: Vec::new(),
+            buf,
             pos: 0,
             path: None,
             append,
             sink,
             readable: sink == Sink::Buffer,
-            writable: sink != Sink::Buffer || writable,
+            writable: !input && (sink != Sink::Buffer || writable),
             eof: false,
             dirty: false,
             // php's memory streams are always binary.

@@ -296,6 +296,7 @@ impl Interp {
             readonly: true,
             hooks: None,
             doc: None,
+            attrs: Vec::new(),
             default: PropDefault::Value(Value::Uninit),
         }];
         if let Some(ty) = value_ty {
@@ -304,6 +305,7 @@ impl Interp {
                 vis: Visibility::Public,
                 set_vis: None,
                 doc: None,
+                attrs: Vec::new(),
                 ty: Some(ty),
                 readonly: true,
                 hooks: None,

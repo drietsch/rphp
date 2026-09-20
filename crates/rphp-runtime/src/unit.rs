@@ -394,6 +394,7 @@ impl Interp {
                 ty: p.ty.clone(),
                 readonly: p.readonly,
                 doc: p.doc.clone(),
+                attrs: p.attrs.clone(),
                 hooks: p.hooks.as_ref().map(rebase),
                 default: prop_default(p),
             })
@@ -472,6 +473,7 @@ impl Interp {
         let spec = ClassSpec {
             used_traits: Vec::new(),
             doc: decl.doc.clone(),
+            attrs: decl.attrs.clone(),
             name: stub.name.clone(),
             kind: decl.kind,
             flags: decl.flags,

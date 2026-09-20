@@ -21,8 +21,7 @@ use rphp_ast::v2::{
 };
 use rphp_bytecode::{
     BuiltinType, CaptureDesc, Class as BcClass, ClassId, CodeAddr, Const, FnFlags, FuncId, Function,
-    InitRef, NameConst, NameRef, Op, ParamDef, PromotedProp, Reg, StaticVar, TypeDecl,
-};
+    InitRef, NameConst, NameRef, Op, ParamDef, PromotedProp, Reg, StaticVar, TypeDecl, AttrDef, AttrTarget,};
 use rphp_diagnostics::Diagnostic;
 use rphp_intern::{IdentId, Interner};
 use rphp_span::Span;
@@ -172,6 +171,8 @@ pub(crate) struct FnSpec<'a> {
     /// The `/** … */` immediately before the declaration, which
     /// `ReflectionFunctionAbstract::getDocComment()` answers with.
     pub(crate) doc: Option<IdentId>,
+    /// The `#[...]` groups before the declaration.
+    pub(crate) attrs: &'a [rphp_ast::v2::AttrGroup],
 }
 
 /// An enclosing loop or `switch`, for `break N` / `continue N`.
@@ -692,7 +693,7 @@ impl<'a> FnCompiler<'a> {
                 default,
                 ty: p.ty.as_ref().map(|t| self.lower_type(t)),
                 promoted: promotion,
-                attrs: Vec::new(),
+                attrs: self.compile_attrs(&p.attrs, AttrTarget::Parameter),
             });
         }
         // Promotion outside a class is a compile-time fatal the front end
@@ -716,6 +717,45 @@ impl<'a> FnCompiler<'a> {
 
     /// A constant-expression initializer: a pool constant when the expression
     /// is a literal, otherwise a zero-argument thunk in the sink evaluated in
+    /// Lower `#[Foo(1, x: 2)]` groups into the compiled form Reflection
+    /// reads. Each argument becomes an [`InitRef`] against *this* function's
+    /// constant pool (or a thunk in its unit), which is what
+    /// `ReflectionAttribute::getArguments()` resolves it through. php never
+    /// evaluates an attribute's arguments until then, and neither does this.
+    pub(crate) fn compile_attrs(
+        &mut self,
+        groups: &[rphp_ast::v2::AttrGroup],
+        target: AttrTarget,
+    ) -> Vec<AttrDef> {
+        let mut out = Vec::new();
+        for g in groups {
+            for a in &g.attrs {
+                let name: Box<[u8]> = {
+                    let id = match a.name.resolved {
+                        Some(rphp_ast::v2::Resolved::Class { fqn, .. }) => fqn,
+                        _ => a.name.text,
+                    };
+                    self.interner().resolve(id).into()
+                };
+                let mut args = Vec::new();
+                for arg in &a.args {
+                    let init = self.compile_init(&arg.value);
+                    let named = arg
+                        .name
+                        .map(|n| Box::from(self.interner().resolve(n)));
+                    args.push((named, init));
+                }
+                out.push(AttrDef {
+                    name,
+                    args,
+                    target,
+                    line: self.mx.line(a.span.lo),
+                });
+            }
+        }
+        out
+    }
+
     /// this function's class scope.
     pub(crate) fn compile_init(&mut self, e: &Expr) -> InitRef {
         if let Some(v) = crate::class::const_default(e, self.mx.interner) {
@@ -745,7 +785,7 @@ impl<'a> FnCompiler<'a> {
     /// by-reference ones) and the current `$this`/scope at runtime.
     pub(crate) fn compile_closure_expr(&mut self, c: &Closure) -> Reg {
         let uses: Vec<(IdentId, bool)> = c.uses.iter().map(|u| (u.name, u.by_ref)).collect();
-        self.compile_closure(&c.params, &uses, ClosureBody::Stmts(&c.body), c.span, c.static_, c.ret.as_ref(), c.doc)
+        self.compile_closure(&c.params, &uses, ClosureBody::Stmts(&c.body), c.span, c.static_, c.ret.as_ref(), c.doc, &c.attrs)
     }
 
     /// Lower `fn (...) => e`: the free variables of `e` are captured by value
@@ -755,7 +795,7 @@ impl<'a> FnCompiler<'a> {
             .into_iter()
             .map(|id| (id, false))
             .collect();
-        self.compile_closure(&f.params, &uses, ClosureBody::ReturnExpr(&f.body), f.span, f.static_, f.ret.as_ref(), f.doc)
+        self.compile_closure(&f.params, &uses, ClosureBody::ReturnExpr(&f.body), f.span, f.static_, f.ret.as_ref(), f.doc, &f.attrs)
     }
 
     fn compile_closure(
@@ -767,6 +807,7 @@ impl<'a> FnCompiler<'a> {
         is_static: bool,
         ret: Option<&rphp_ast::v2::Type>,
         doc: Option<IdentId>,
+        attrs: &[rphp_ast::v2::AttrGroup],
     ) -> Reg {
         let line = self.mx.line(span.lo);
         // php 8.4+: `{closure:<enclosing>:<line>}` where the enclosing scope is
@@ -824,7 +865,9 @@ impl<'a> FnCompiler<'a> {
             }
         }
         fc.emit(Op::Ret { src: None });
+        let attrs = fc.compile_attrs(attrs, AttrTarget::Function);
         let mut f = fc.finish(name.into(), defs, span);
+        f.attrs = attrs;
         f.doc = doc.map(|d| Box::from(self.interner().resolve(d)));
         self.mx.sink.borrow_mut().fill(id, f);
         let dst = self.alloc_temp();
@@ -850,6 +893,7 @@ pub(crate) fn compile_function(
         is_static,
         ret,
         doc,
+        attrs,
     } = spec;
     let id = mx.sink.borrow_mut().reserve();
     let name_bytes: Box<[u8]> = mx.interner.resolve(name).into();
@@ -878,7 +922,16 @@ pub(crate) fn compile_function(
     // Always terminate with a fall-through return so every code path (and every
     // branch target that lands at the textual end) has a valid `Ret`.
     fc.emit(Op::Ret { src: None });
+    let attrs = fc.compile_attrs(
+        attrs,
+        if cur_class.is_some() {
+            AttrTarget::Method
+        } else {
+            AttrTarget::Function
+        },
+    );
     let mut f = fc.finish(name_bytes, defs, span);
+    f.attrs = attrs;
     f.doc = doc.map(|d| Box::from(mx.interner.resolve(d)));
     mx.sink.borrow_mut().fill(id, f);
     id

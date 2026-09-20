@@ -18,10 +18,6 @@
 //!
 //! **Known divergences**, all upstream of this module:
 //!
-//! * `getAttributes()` is always empty (`getDocComment()` answers the real
-//!   docblock since the compiler carries it):
-//!   the compiler drops both, and the runtime's compiled class declaration
-//!   (`rphp_bytecode::Class`) has no field for either.
 //! * `getEndLine()` is always `false` for the same reason — that declaration
 //!   records only the first line.
 //! * php interleaves static and instance properties in source order within
@@ -846,9 +842,11 @@ fn get_doc_comment(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Native
 /// **Engine gap.** Class attributes never reach the runtime: the compiler
 /// drops every `#[...]` group and `rphp_bytecode::Class` has no `attrs`
 /// field, so the list is always empty.
-fn get_attributes(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    cid_of(this(o)?)?;
-    Ok(list(Vec::new()))
+fn get_attributes(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let cid = cid_of(this(o)?)?;
+    let attrs = ctx.class(cid).attrs.clone();
+    let infos = super::common::attr_list!(&attrs, super::common::AttrOwner::Class(cid));
+    super::attrs::filtered(ctx, infos, args)
 }
 
 // ---- ReflectionEnum --------------------------------------------------------

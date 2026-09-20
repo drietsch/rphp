@@ -1323,7 +1323,7 @@ impl FnCompiler<'_> {
                 match value {
                     Expr::Var(id, _) if !self.is_this(*id) => {
                         let dst = self.var_reg(*id);
-                        self.emit(Op::RefElem { dst, arr: src, key });
+                        self.emit(Op::RefElem { dst, arr: src, key: Some(key) });
                     }
                     other => unsupported(self.diags, other.span(), "by-reference destructuring into a non-variable"),
                 }
@@ -1361,6 +1361,19 @@ impl FnCompiler<'_> {
     fn compile_ref_source(&mut self, value: &Expr) -> Option<Reg> {
         let src: Reg = match value {
             Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => self.var_reg(*id),
+            // `&$a[]`: php appends a fresh null element and binds to it.
+            Expr::Index { base, index: None, .. } => {
+                let plan = self.plan_chain(base)?;
+                let (handle, wbs) = self.plan_fetch_w(&plan);
+                let dst = self.alloc_temp();
+                self.emit(Op::RefElem {
+                    dst,
+                    arr: handle,
+                    key: None,
+                });
+                self.emit_writebacks(wbs);
+                dst
+            }
             Expr::Index {
                 base,
                 index: Some(index),
@@ -1391,7 +1404,7 @@ impl FnCompiler<'_> {
                         self.emit(Op::RefElem {
                             dst,
                             arr: handle,
-                            key,
+                            key: Some(key),
                         });
                         self.emit_writebacks(wbs);
                         dst

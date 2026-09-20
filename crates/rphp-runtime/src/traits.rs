@@ -606,6 +606,7 @@ impl Interp {
                     ty: p.ty.clone(),
                     readonly: p.readonly,
                     doc: p.doc.clone(),
+                    attrs: p.attrs.clone(),
                     hooks: p.hooks,
                     default: p.default.clone(),
                 });

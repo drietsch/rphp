@@ -183,6 +183,9 @@ pub struct PropInfo {
     pub default: PropDefault,
     /// The `/** … */` immediately before the declaration.
     pub doc: Option<Box<[u8]>>,
+    /// The `#[...]` attributes on the declaration, as the compiler left
+    /// them (arguments are unevaluated initializers).
+    pub attrs: Vec<rphp_bytecode::AttrDef>,
 }
 
 /// A property's `get`/`set` hooks, as **process-wide** function ids (the
@@ -213,6 +216,8 @@ pub struct PropSpec {
     pub default: PropDefault,
     /// The `/** … */` immediately before the declaration.
     pub doc: Option<Box<[u8]>>,
+    /// The `#[...]` attributes on the declaration.
+    pub attrs: Vec<rphp_bytecode::AttrDef>,
 }
 
 impl PropSpec {
@@ -222,6 +227,7 @@ impl PropSpec {
             name,
             vis,
             doc: None,
+            attrs: Vec::new(),
             set_vis: None,
             ty: None,
             readonly: false,
@@ -477,6 +483,9 @@ pub struct ClassDef {
     /// The `/** … */` immediately before the declaration, which
     /// `ReflectionClass::getDocComment()` answers with.
     pub doc: Option<Box<[u8]>>,
+    /// The `#[...]` attributes on the declaration, which
+    /// `ReflectionClass::getAttributes()` answers with.
+    pub attrs: Vec<rphp_bytecode::AttrDef>,
     /// The unit that compiled the class (user classes), for `declare_class`.
     pub unit: Option<Rc<crate::unit::UnitRt>>,
     /// Static properties in declaration order (own and inherited).
@@ -525,6 +534,7 @@ impl ClassDef {
             linked: false,
             internal: false,
             doc: None,
+            attrs: Vec::new(),
             unit: None,
             static_props: Vec::new(),
             static_index: HashMap::new(),
@@ -627,6 +637,8 @@ pub struct ClassSpec {
     pub used_traits: Vec<u32>,
     /// The `/** … */` immediately before the declaration.
     pub doc: Option<Box<[u8]>>,
+    /// The `#[...]` attributes on the declaration.
+    pub attrs: Vec<rphp_bytecode::AttrDef>,
 }
 
 /// One own class constant of a [`ClassSpec`].
@@ -670,6 +682,7 @@ impl Interp {
         let ClassSpec {
             used_traits,
             doc,
+            attrs,
             name,
             kind,
             flags,
@@ -690,6 +703,7 @@ impl Interp {
         let mut def = ClassDef::stub(id, &name, kind, flags, declared_at);
         def.internal = internal;
         def.doc = doc;
+        def.attrs = attrs;
         def.linked = true;
         if let Some(pid) = parent {
             let p = self.classes[pid as usize].clone();
@@ -795,6 +809,7 @@ impl Interp {
                         hooks: ps.hooks,
                         default: ps.default,
                         doc: ps.doc,
+                        attrs: ps.attrs,
                     });
                 }
             }

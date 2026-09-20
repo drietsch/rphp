@@ -36,6 +36,8 @@ pub struct PropDef {
     pub default_thunk: Option<FuncId>,
     /// The `/** … */` immediately before the declaration.
     pub doc: Option<Box<[u8]>>,
+    /// The `#[...]` groups before the declaration.
+    pub attrs: Vec<AttrDef>,
 }
 
 impl PropDef {
@@ -48,6 +50,7 @@ impl PropDef {
             is_static: false,
             readonly: false,
             doc: None,
+            attrs: Vec::new(),
             set_vis: None,
             ty: None,
             hooks: None,
@@ -70,12 +73,16 @@ pub struct ClassConstDef {
     pub value: Option<Value>,
     /// The initializer thunk, when it is not.
     pub thunk: Option<FuncId>,
+    /// The `#[...]` groups before the declaration.
+    pub attrs: Vec<AttrDef>,
 }
 
 /// E6: one case of an enum declaration.
 #[derive(Clone, Debug)]
 pub struct EnumCaseDef {
     pub name: Box<[u8]>,
+    /// The `#[...]` groups before the case.
+    pub attrs: Vec<AttrDef>,
     /// The backing value, when the initializer folds to a literal (`None` for
     /// a pure enum, and for a case whose value is a constant *expression*).
     pub value: Option<Value>,
@@ -135,6 +142,8 @@ pub struct Class {
     pub name_bytes: Box<[u8]>,
     /// The `/** … */` immediately before the declaration.
     pub doc: Option<Box<[u8]>>,
+    /// The `#[...]` groups before the declaration.
+    pub attrs: Vec<AttrDef>,
     pub parent: Option<ClassId>,
     pub props: Vec<PropDef>,
     pub methods: Vec<Method>,
@@ -171,6 +180,7 @@ impl Class {
             name,
             name_bytes: Box::from(name_bytes),
             doc: None,
+            attrs: Vec::new(),
             parent: None,
             props: Vec::new(),
             methods: Vec::new(),

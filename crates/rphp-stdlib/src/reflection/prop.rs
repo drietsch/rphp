@@ -12,9 +12,9 @@
 //!
 //! **Known divergences**, all upstream of this module:
 //!
-//! * `getAttributes()` is always empty and `getDocComment()` always `false`:
-//!   the runtime's compiled property and class-constant declarations
-//!   (`rphp_bytecode::PropDef` / `ClassConstDef`) carry neither.
+//! * `ReflectionClassConstant::getAttributes()` is still empty: the
+//!   compiler lowers a constant's attributes, but the runtime's class
+//!   constant carries neither them nor a docblock yet.
 //! * php refuses `setValue()` on an initialized `readonly` property with
 //!   `Cannot modify readonly property C::$p`; the write path used here goes
 //!   straight to the slot and does not raise it.
@@ -530,9 +530,14 @@ fn prop_doc_comment(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Nativ
 }
 
 /// `ReflectionProperty::getAttributes(?string $name = null, int $flags = 0): array`
-fn prop_get_attributes(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    let _: PropState = state(this(o)?)?;
-    Ok(list(Vec::new()))
+fn prop_get_attributes(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
+    let s: PropState = state(this(o)?)?;
+    let attrs = match locate(ctx, &s) {
+        Decl::Instance(i) => ctx.class(s.cid).props[i].attrs.clone(),
+        Decl::Static(_) | Decl::Dynamic => Vec::new(),
+    };
+    let infos = super::common::attr_list!(&attrs, super::common::AttrOwner::Class(s.cid));
+    super::attrs::filtered(ctx, infos, args)
 }
 
 // ---- ReflectionClassConstant and the enum cases ----------------------------

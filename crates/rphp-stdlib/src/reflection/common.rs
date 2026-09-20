@@ -135,9 +135,20 @@ pub(crate) struct AttrInfo {
     pub target: i64,
     /// Whether the same attribute class occurs more than once on that place.
     pub repeated: bool,
-    /// The function whose constant pool and unit the argument initializers
-    /// resolve against.
-    pub owner: FnTarget,
+    /// What the argument initializers resolve against.
+    pub owner: AttrOwner,
+}
+
+/// Where an attribute's argument initializers live.
+///
+/// A function's (or parameter's) attribute resolves through that function's
+/// constant pool and unit. A class-level attribute has no function to hold a
+/// pool, so the compiler makes every one of its arguments a **thunk** in the
+/// class's unit, and the class is what it resolves against.
+#[derive(Clone)]
+pub(crate) enum AttrOwner {
+    Fn(FnTarget),
+    Class(u32),
 }
 
 /// An initializer the compiler left behind: either an index into the owner's
@@ -520,7 +531,7 @@ pub(crate) fn sig(min: u8, max: Option<u8>) -> NativeMethod {
 macro_rules! attr_list {
     ($attrs:expr, $owner:expr) => {{
         let attrs = $attrs;
-        let owner: crate::reflection::common::FnTarget = $owner;
+        let owner: crate::reflection::common::AttrOwner = $owner;
         let lnames: Vec<Vec<u8>> = attrs.iter().map(|a| a.name.to_ascii_lowercase()).collect();
         let mut out: Vec<crate::reflection::common::AttrInfo> = Vec::new();
         for a in attrs.iter() {

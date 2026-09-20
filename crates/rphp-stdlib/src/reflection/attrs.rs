@@ -9,17 +9,14 @@
 //! php's is: an attribute reflector only ever comes from a `getAttributes()`
 //! call.
 //!
-//! **Engine gap: attributes never reach the runtime.** The parser records
-//! every `#[...]` group, but the compiler drops it (`rphp-compiler`'s
-//! function lowering stores `attrs: Vec::new()`) and the runtime's compiled
-//! *class* declaration has no `attrs` field at all. So every
-//! `getAttributes()` in this extension answers with an empty array today.
-//! The code below is written against the model rather than around it: it
-//! reads `Function::attrs` / `ParamDef::attrs` and resolves each argument
-//! through the owner's constant pool, so it starts answering the moment the
-//! compiler fills those in. The one piece that has no model at all is the
-//! attribute *class*'s own `#[Attribute(flags)]`, which
-//! [`attribute_flags`] therefore cannot find — see its doc comment.
+//! **Where the data comes from.** The compiler lowers every `#[...]` group
+//! into an `AttrDef` — the resolved class name, the arguments as
+//! unevaluated initializers, the target bit — on the function, parameter,
+//! class, property, class constant or enum case it decorates. A function's
+//! arguments resolve through that function's constant pool; a class-level
+//! attribute has no pool, so every one of its arguments is a thunk in the
+//! class's unit, run in the class's scope when `getArguments()` or
+//! `newInstance()` asks. php evaluates them just as lazily.
 
 use rphp_runtime::{
     nm, Callable, ClassFlags, Ctx, MethodBody, NativeResult, Registry, Unwind, Visibility,
@@ -153,9 +150,30 @@ fn get_arguments(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRe
 /// Evaluate an attribute's argument initializers against its owner's
 /// constant pool.
 fn arguments(ctx: &mut Ctx, a: &AttrInfo) -> Result<(Vec<Value>, Vec<(Box<[u8]>, Value)>), Unwind> {
-    let i = func::info(ctx, &a.owner)?;
     let mut pos = Vec::new();
     let mut named = Vec::new();
+    // A class-level attribute: every argument is a thunk in the class's
+    // unit, run in the class's own scope (`self::CONST` works).
+    if let super::common::AttrOwner::Class(cid) = a.owner {
+        let base = ctx.class(cid).unit.as_ref().map(|u| u.func_base);
+        for (name, init) in &a.args {
+            let v = match (init, base) {
+                (InitKey::Thunk(local), Some(base)) => {
+                    super::common::run_thunk(ctx, base + local, Some(cid))?
+                }
+                _ => Value::Null,
+            };
+            match name {
+                Some(n) => named.push((n.clone(), v)),
+                None => pos.push(v),
+            }
+        }
+        return Ok((pos, named));
+    }
+    let super::common::AttrOwner::Fn(target) = &a.owner else {
+        unreachable!("the class owner is handled above");
+    };
+    let i = func::info(ctx, target)?;
     for (name, init) in &a.args {
         let v = match init {
             InitKey::Const(idx) => i
@@ -179,16 +197,29 @@ fn arguments(ctx: &mut Ctx, a: &AttrInfo) -> Result<(Vec<Value>, Vec<(Box<[u8]>,
     Ok((pos, named))
 }
 
-/// The `flags` of an attribute class's own `#[Attribute(...)]` declaration.
+/// The `flags` of an attribute class's own `#[Attribute(...)]` declaration:
+/// `None` when the class does not carry one at all, which is what makes
+/// `newInstance()` raise php's `Attempting to use non-attribute class`.
 ///
-/// **Engine gap.** Class attributes do not exist in the runtime model, so
-/// there is nothing to read: the runtime's compiled class declaration
-/// (`rphp_bytecode::Class`) has no `attrs` field and the compiler would not
-/// fill one. Until it does, every class looks like a non-attribute class and
-/// [`new_instance`] raises php's `Attempting to use non-attribute class`
-/// error rather than inventing a permissive default.
-fn attribute_flags(_ctx: &Ctx, _cid: u32) -> Option<i64> {
-    None
+/// php's default is `TARGET_ALL`, and the flags argument — when there is one
+/// — is a constant expression the compiler left as a thunk.
+fn attribute_flags(ctx: &mut Ctx, cid: u32) -> Option<i64> {
+    let attrs = ctx.class(cid).attrs.clone();
+    let infos = super::common::attr_list!(&attrs, super::common::AttrOwner::Class(cid));
+    let found = infos
+        .into_iter()
+        .find(|a| a.name.eq_ignore_ascii_case(b"Attribute"))?;
+    if found.args.is_empty() {
+        return Some(TARGET_ALL);
+    }
+    match arguments(ctx, &found) {
+        Ok((pos, named)) => Some(
+            pos.first()
+                .or_else(|| named.iter().find(|(n, _)| n.as_ref() == b"flags").map(|(_, v)| v))
+                .map_or(TARGET_ALL, |v| v.to_int()),
+        ),
+        Err(_) => Some(TARGET_ALL),
+    }
 }
 
 /// `ReflectionAttribute::newInstance(): object`

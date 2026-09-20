@@ -41,9 +41,10 @@ use rphp_ast::v2::{
     Visibility as AstVis,
 };
 use rphp_bytecode::{
-    BuiltinType, Class as BcClass, ClassConstDef, ClassFlags, ClassId, ClassKind as BcClassKind,
-    EnumBackingType, EnumCaseDef, FuncId, Hooks, Method as BcMethod, PropDef,
-    TraitAdaptation as BcAdaptation, TraitUse as BcTraitUse, Visibility,
+    AttrDef, AttrTarget, BuiltinType, Class as BcClass, ClassConstDef, ClassFlags, ClassId,
+    ClassKind as BcClassKind, EnumBackingType, EnumCaseDef, FuncId, Hooks, InitRef,
+    Method as BcMethod, PropDef, TraitAdaptation as BcAdaptation, TraitUse as BcTraitUse,
+    Visibility,
 };
 use rphp_diagnostics::Diagnostic;
 use rphp_intern::{IdentId, Interner};
@@ -250,6 +251,13 @@ pub(crate) fn compile_class(
         enum_cases: Vec::new(),
         traits: Vec::new(),
     };
+    let class_attrs = lo.class_attrs(
+        &c.attrs,
+        match c.kind {
+            rphp_ast::v2::ClassKind::Enum { .. } => AttrTarget::Class,
+            _ => AttrTarget::Class,
+        },
+    );
     for m in &c.members {
         match m {
             Member::Prop(p) => lo.prop(p),
@@ -272,6 +280,7 @@ pub(crate) fn compile_class(
         name,
         name_bytes: interner.resolve(name).into(),
         doc: c.doc.map(|d| Box::from(interner.resolve(d))),
+        attrs: class_attrs,
         parent,
         props,
         methods,
@@ -339,6 +348,8 @@ impl<'m> MemberLower<'_, 'm> {
         // A hooked declaration names exactly one property (the front end
         // rejects `$a, $b { ... }`), so one compile serves every item.
         let hooks = self.hooks(&p.hooks, p.items.first().map(|i| i.name), p.ty.as_ref());
+        let prop_attrs = self.class_attrs(&p.attrs, AttrTarget::Property);
+        let it = self.interner();
         for (index, item) in p.items.iter().enumerate() {
             let (default, default_thunk) =
                 self.initializer(item.default.as_ref(), item.span, ty.is_some());
@@ -353,6 +364,7 @@ impl<'m> MemberLower<'_, 'm> {
                 doc: (index == 0)
                     .then(|| p.doc.map(|d| Box::from(it.resolve(d))))
                     .flatten(),
+                attrs: prop_attrs.clone(),
                 set_vis,
                 ty: ty.clone(),
                 hooks,
@@ -381,6 +393,7 @@ impl<'m> MemberLower<'_, 'm> {
                 is_static: md.modifiers.static_,
                 ret: md.ret.as_ref(),
                 doc: md.doc,
+                attrs: &md.attrs,
             },
         );
         self.methods.push(BcMethod {
@@ -408,9 +421,12 @@ impl<'m> MemberLower<'_, 'm> {
         let it = self.interner();
         let ty = param.ty.as_ref().map(|t| lower_type_at(it, t));
         let hooks = self.hooks(&param.hooks, Some(param.name), param.ty.as_ref());
+        let promoted_attrs = self.class_attrs(&param.attrs, AttrTarget::Property);
+        let it = self.interner();
         self.props.push(PropDef {
             name: it.resolve(param.name).into(),
             doc: None,
+            attrs: promoted_attrs,
             default: if ty.is_some() {
                 Value::Uninit
             } else {
@@ -428,6 +444,7 @@ impl<'m> MemberLower<'_, 'm> {
 
     /// `[modifiers] const [Type] A = 1, B = 2;`.
     fn class_const(&mut self, k: &ConstMember) {
+        let const_attrs = self.class_attrs(&k.attrs, AttrTarget::ClassConstant);
         let it = self.interner();
         let visibility = bc_vis(k.modifiers.vis.unwrap_or(AstVis::Public));
         let is_final = k.modifiers.final_;
@@ -446,6 +463,7 @@ impl<'m> MemberLower<'_, 'm> {
                 visibility,
                 is_final,
                 ty: ty.clone(),
+                attrs: const_attrs.clone(),
                 value,
                 thunk,
             });
@@ -454,6 +472,7 @@ impl<'m> MemberLower<'_, 'm> {
 
     /// `case NAME [= value];`.
     fn enum_case(&mut self, e: &EnumCase) {
+        let case_attrs = self.class_attrs(&e.attrs, AttrTarget::EnumCase);
         let it = self.interner();
         let (value, thunk) = match &e.value {
             None => (None, None),
@@ -471,6 +490,7 @@ impl<'m> MemberLower<'_, 'm> {
         };
         self.enum_cases.push(EnumCaseDef {
             name: it.resolve(e.name).into(),
+            attrs: case_attrs,
             value,
             thunk,
         });
@@ -546,6 +566,39 @@ impl<'m> MemberLower<'_, 'm> {
     /// A property default as the pair [`PropDef`] holds: the folded value when
     /// the initializer is a literal, otherwise a zero-argument thunk run in the
     /// class's scope on first use. A property with no initializer starts `null`
+    /// Lower `#[Foo(1, x: 2)]` groups attached to a class-level declaration.
+    ///
+    /// There is no function here to hold a constant pool, so every argument
+    /// becomes a **thunk** in the class's unit — `InitRef::Thunk` — which
+    /// `ReflectionAttribute::getArguments()` runs in the class's scope. php
+    /// evaluates an attribute's arguments only when they are asked for, so
+    /// nothing runs at declaration time either way.
+    fn class_attrs(
+        &mut self,
+        groups: &[rphp_ast::v2::AttrGroup],
+        target: AttrTarget,
+    ) -> Vec<AttrDef> {
+        let mut out = Vec::new();
+        for g in groups {
+            for a in &g.attrs {
+                let mut args = Vec::new();
+                for arg in &a.args {
+                    let t = compile_thunk_in(self.mx, self.diags, &arg.value, Some(self.scope));
+                    let named: Option<Box<[u8]>> =
+                        arg.name.map(|n| Box::from(self.interner().resolve(n)));
+                    args.push((named, InitRef::Thunk(t)));
+                }
+                out.push(AttrDef {
+                    name: class_fqn(&a.name, self.interner()).into(),
+                    args,
+                    target,
+                    line: self.mx.line(a.span.lo),
+                });
+            }
+        }
+        out
+    }
+
     /// when it is untyped and *uninitialized* when it has a declared type.
     fn initializer(
         &mut self,

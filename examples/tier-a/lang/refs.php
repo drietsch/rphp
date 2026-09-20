@@ -151,3 +151,26 @@ foreach ($values as $k => $value) {
 }
 $refs[1][0] = 'two';
 var_dump($values);
+
+// `&$a[]`: php appends a fresh null element and binds the reference to it —
+// the shape an event dispatcher uses to build a list of lazy closures.
+$appended = [1, 2];
+$slot = &$appended[];
+var_dump($appended);
+$slot = 'appended';
+var_dump($appended);
+$holder = new stdClass();
+$holder->list = ['k' => 1];
+$viaProp = &$holder->list[];
+$viaProp = 'via prop';
+var_dump($holder->list);
+$nested = [];
+$deep = &$nested['deep'][];
+$deep = 'deep';
+var_dump($nested);
+$lazy = [];
+foreach ([['a'], ['b']] as $listeners) {
+    $closure = &$lazy[];
+    $closure = static function () use ($listeners) { return $listeners; };
+}
+var_dump(count($lazy), ($lazy[0])(), ($lazy[1])());

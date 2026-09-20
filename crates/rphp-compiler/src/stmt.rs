@@ -470,7 +470,7 @@ impl FnCompiler<'_> {
                     let arr = self.compile_expr(base);
                     let key = self.compile_expr(index);
                     let dst = self.alloc_temp();
-                    self.emit(Op::RefElem { dst, arr, key });
+                    self.emit(Op::RefElem { dst, arr, key: Some(key) });
                     dst
                 }
                 Expr::Prop {

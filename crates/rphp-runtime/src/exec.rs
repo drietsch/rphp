@@ -682,8 +682,8 @@ impl Interp {
                     self.set(base, dst, taken);
                 }
                 Op::RefElem { dst, arr, key } => {
-                    let k = self.rd(base, key);
-                    let cell = self.elem_ref(base, arr, Some(&k))?;
+                    let k = key.map(|k| self.rd(base, k));
+                    let cell = self.elem_ref(base, arr, k.as_ref())?;
                     self.rebind(base, dst, cell);
                 }
                 Op::RefProp { dst, obj, name } => {

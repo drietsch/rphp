@@ -784,13 +784,15 @@ pub enum Op {
         dst: Reg,
         src: Reg,
     },
-    /// `$dst = &$arr[$key]`: turn the element (autovivified: null base becomes an
-    /// array, missing key becomes null) into a `Ref` in place and bind `dst` to
-    /// it. `ArrayAccess` objects raise the usual indirect-modification notice.
+    /// `$dst = &$arr[$key]` / `$dst = &$arr[]` (`key` `None`, which appends a
+    /// fresh null element first): turn the element (autovivified: null base
+    /// becomes an array, missing key becomes null) into a `Ref` in place and
+    /// bind `dst` to it. `ArrayAccess` objects raise the usual
+    /// indirect-modification notice.
     RefElem {
         dst: Reg,
         arr: Reg,
-        key: Reg,
+        key: Option<Reg>,
     },
     /// `$dst = &$obj->name`: as [`Op::RefElem`] for a property (declared or
     /// dynamic; `__get` results cannot be referenced).

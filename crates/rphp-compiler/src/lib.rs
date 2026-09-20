@@ -340,6 +340,7 @@ pub(crate) fn compile_nested_function(
             is_static: false,
             ret: f.ret.as_ref(),
             doc: f.doc,
+            attrs: &f.attrs,
         },
     )
 }

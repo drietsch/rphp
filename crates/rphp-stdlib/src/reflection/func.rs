@@ -519,7 +519,7 @@ fn get_attributes(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nati
     let t = target(this(o)?)?;
     let i = info(ctx, &t)?;
     let infos: Vec<AttrInfo> = match &i.func {
-        Some(f) => attr_list!(&f.f.attrs, t.clone()),
+        Some(f) => attr_list!(&f.f.attrs, super::common::AttrOwner::Fn(t.clone())),
         None => Vec::new(),
     };
     attrs::filtered(ctx, infos, args)
@@ -1376,7 +1376,7 @@ fn param_get_attributes(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -
     let (s, i) = param_of(ctx, this(o)?)?;
     let owner = s.owner.clone();
     let infos: Vec<AttrInfo> = match i.func.as_ref().and_then(|f| f.f.params.get(s.index)) {
-        Some(p) => attr_list!(&p.attrs, owner.clone()),
+        Some(p) => attr_list!(&p.attrs, super::common::AttrOwner::Fn(owner.clone())),
         None => Vec::new(),
     };
     attrs::filtered(ctx, infos, args)

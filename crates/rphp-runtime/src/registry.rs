@@ -492,6 +492,7 @@ impl ClassBuilder<'_> {
         let spec = ClassSpec {
             used_traits: Vec::new(),
             doc: None,
+            attrs: Vec::new(),
             name: Box::from(name.as_bytes()),
             kind,
             flags,

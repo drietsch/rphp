@@ -1025,3 +1025,17 @@ as php's does, a negative out-of-range string offset write is php's
 reads from the start. Corpus: `array/pop-shift.php`,
 `lang/byref-natives.php`, `lang/prop-append.php`,
 `string/offset-writes.php`.
+
+Fifth wave: the SPL containers mutate their backing arrays in place and
+`SplObjectStorage`/`WeakMap` index by object handle (bench README);
+`f(A::$p)` sends a static property by value unless the parameter is by
+reference (`Op::SendRefStaticProp`), so an uninitialized typed static read
+as an argument reports php's plain error; **php 8.4's `#[\Deprecated]`**
+on user functions, methods and class constants raises php's notice at
+the call site / on every fetch, with `since` and the message
+(`lang/deprecated-attribute.php`). Corpus: `spl/object-storage.php`,
+`lang/static-prop-sites.php`, `lang/class-const-sites.php`. Known:
+`SplQueue::dequeue` is O(n); `$r = &$arrayObject['k']` (a reference to an
+ArrayAccess element) is not supported; `self::` inside a closure declared
+outside any class is a compile error here (php resolves it at run time
+against the bound scope).

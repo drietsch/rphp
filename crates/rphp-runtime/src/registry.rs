@@ -552,7 +552,7 @@ impl ClassBuilder<'_> {
                     is_final: false,
                     ty: None,
                     init: PropDefault::Value(v),
-                    deprecated,
+                    deprecated: deprecated.map(Box::from),
                 })
                 .collect(),
             enum_cases: Vec::new(),

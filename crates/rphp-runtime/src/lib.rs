@@ -38,6 +38,7 @@ mod output;
 mod props;
 mod registry;
 mod resources;
+mod deprecation;
 mod statics;
 mod symtab;
 mod throwable;

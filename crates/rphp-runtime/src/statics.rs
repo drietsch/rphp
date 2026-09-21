@@ -207,6 +207,28 @@ impl Interp {
         info.ty.clone().map(|ty| (info.decl, ty))
     }
 
+    /// What a `Class::$name` site may cache after a slow-path access from
+    /// `scope` succeeded: the initialized cell, when the property is
+    /// visible from there (`None` leaves the site uncached).
+    pub(crate) fn static_prop_cache_entry(
+        &mut self,
+        cid: u32,
+        name: &[u8],
+        scope: Option<u32>,
+    ) -> Option<crate::unit::IcSlot> {
+        let class = self.classes[cid as usize].clone();
+        let &idx = class.static_index.get(name)?;
+        let info = &class.static_props[idx as usize];
+        if !info.ready.get() || !self.access_ok(info.vis, info.decl, scope) {
+            return None;
+        }
+        Some(crate::unit::IcSlot::StaticProp {
+            scope,
+            cell: info.cell.clone(),
+            ty: crate::unit::FastTy::of(info.ty.as_ref())?,
+        })
+    }
+
     /// php's error for reading a typed static property that has no value yet.
     fn uninit_static_error(&self, cid: u32, name: &[u8], by_ref: bool) -> Unwind {
         let class = self.classes[cid as usize].name_str();
@@ -301,7 +323,7 @@ impl Interp {
                 String::from_utf8_lossy(name)
             )));
         }
-        if let Some(note) = k.deprecated {
+        if let Some(note) = &k.deprecated {
             self.deprecated(&format!(
                 "Constant {}::{} is deprecated{note}",
                 self.classes[k.decl as usize].name_str(),
@@ -309,6 +331,12 @@ impl Interp {
             ))?;
         }
         self.eval_class_const(&k, name, spelling)
+    }
+
+    /// Whether `Class::NAME` carries a deprecation (php notices on every
+    /// access, so a site must not cache it).
+    pub(crate) fn class_const_deprecated(&self, cid: u32, name: &[u8]) -> bool {
+        self.classes[cid as usize].consts.get(name).is_some_and(|k| k.deprecated.is_some())
     }
 
     /// Evaluate a class constant's initializer once, in its declaring class's

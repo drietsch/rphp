@@ -87,6 +87,36 @@ fn arr_prop(o: &Object, name: &[u8]) -> Array {
     }
 }
 
+/// A declared array property **moved out** for an in-place change that
+/// [`set_arr_prop`] puts back (a clone would leave two handles and make
+/// every push copy the whole list).
+fn take_arr_prop(o: &Object, name: &[u8]) -> Array {
+    let taken = o.with_data_mut(|d| match d.get_mut(name) {
+        Some(Value::Ref(r)) => r.get(),
+        Some(slot) => std::mem::replace(slot, Value::Null),
+        None => Value::Null,
+    });
+    match taken {
+        Value::Array(a) => a,
+        _ => Array::new(),
+    }
+}
+
+fn set_arr_prop(o: &Object, name: &[u8], a: Array) {
+    o.set(name, Value::Array(a));
+}
+
+/// Element `i` (a raw list position) of a declared list property.
+fn list_elem(o: &Object, name: &[u8], i: i64) -> Option<Value> {
+    if i < 0 {
+        return None;
+    }
+    o.with_data(|d| match d.get(name) {
+        Some(Value::Array(a)) => a.get_deref(&ArrayKey::Int(i)),
+        _ => None,
+    })
+}
+
 /// The values of a declared list property, in order.
 fn list_prop(o: &Object, name: &[u8]) -> Vec<Value> {
     arr_prop(o, name)
@@ -224,53 +254,45 @@ fn dll_real_index(o: &Object, index: i64, len: usize) -> i64 {
 
 fn dll_push(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let mut items = list_prop(o, b"dllist");
-    items.push(args[0].deref().into_owned());
-    set_list_prop(o, b"dllist", &items);
+    let mut a = take_arr_prop(o, b"dllist");
+    a.push(args[0].deref().into_owned());
+    set_arr_prop(o, b"dllist", a);
     Ok(Value::Null)
 }
 
 fn dll_unshift(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let mut items = list_prop(o, b"dllist");
-    items.insert(0, args[0].deref().into_owned());
-    set_list_prop(o, b"dllist", &items);
+    let mut a = take_arr_prop(o, b"dllist");
+    a.unshift(vec![args[0].deref().into_owned()]);
+    set_arr_prop(o, b"dllist", a);
     Ok(Value::Null)
 }
 
 fn dll_pop(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let mut items = list_prop(o, b"dllist");
-    let v = items.pop().ok_or_else(|| dll_empty("pop from"))?;
-    set_list_prop(o, b"dllist", &items);
-    Ok(v)
+    let mut a = take_arr_prop(o, b"dllist");
+    let v = a.pop();
+    set_arr_prop(o, b"dllist", a);
+    v.map(Value::unref).ok_or_else(|| dll_empty("pop from"))
 }
 
 fn dll_shift(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let mut items = list_prop(o, b"dllist");
-    if items.is_empty() {
-        return Err(dll_empty("shift from"));
-    }
-    let v = items.remove(0);
-    set_list_prop(o, b"dllist", &items);
-    Ok(v)
+    let mut a = take_arr_prop(o, b"dllist");
+    let v = a.shift();
+    set_arr_prop(o, b"dllist", a);
+    v.map(Value::unref).ok_or_else(|| dll_empty("shift from"))
 }
 
 fn dll_top(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    list_prop(o, b"dllist")
-        .last()
-        .cloned()
-        .ok_or_else(|| dll_empty("peek at"))
+    let len = arr_prop(o, b"dllist").len() as i64;
+    list_elem(o, b"dllist", len - 1).ok_or_else(|| dll_empty("peek at"))
 }
 
 fn dll_bottom(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    list_prop(o, b"dllist")
-        .first()
-        .cloned()
-        .ok_or_else(|| dll_empty("peek at"))
+    list_elem(o, b"dllist", 0).ok_or_else(|| dll_empty("peek at"))
 }
 
 fn dll_count(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
@@ -318,31 +340,33 @@ fn dll_offset_exists(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> N
 fn dll_offset_get(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let index = int_arg(ctx, "SplDoublyLinkedList::offsetGet", 1, "index", &args[0])?;
-    let items = list_prop(o, b"dllist");
-    if index < 0 || index as usize >= items.len() {
+    let len = arr_prop(o, b"dllist").len();
+    if index < 0 || index as usize >= len {
         return Err(dll_range("offsetGet"));
     }
-    let at = dll_real_index(o, index, items.len());
-    Ok(items[at as usize].clone())
+    let at = dll_real_index(o, index, len);
+    Ok(list_elem(o, b"dllist", at).unwrap_or(Value::Null))
 }
 
 /// `offsetSet(?int $index, mixed $value): void` — a null index appends.
 fn dll_offset_set(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let value = args[1].deref().into_owned();
-    let mut items = list_prop(o, b"dllist");
     if matches!(&*args[0].deref(), Value::Null | Value::Uninit) {
-        items.push(value);
-        set_list_prop(o, b"dllist", &items);
+        let mut a = take_arr_prop(o, b"dllist");
+        a.push(value);
+        set_arr_prop(o, b"dllist", a);
         return Ok(Value::Null);
     }
     let index = int_arg(ctx, "SplDoublyLinkedList::offsetSet", 1, "index", &args[0])?;
-    if index < 0 || index as usize >= items.len() {
+    let len = arr_prop(o, b"dllist").len();
+    if index < 0 || index as usize >= len {
         return Err(dll_range("offsetSet"));
     }
-    let at = dll_real_index(o, index, items.len());
-    items[at as usize] = value;
-    set_list_prop(o, b"dllist", &items);
+    let at = dll_real_index(o, index, len);
+    let mut a = take_arr_prop(o, b"dllist");
+    a.set(ArrayKey::Int(at), value);
+    set_arr_prop(o, b"dllist", a);
     Ok(Value::Null)
 }
 
@@ -398,13 +422,8 @@ fn dll_valid(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
 
 fn dll_current(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let items = list_prop(o, b"dllist");
     let pos = with_state::<DllState, _>(o, |s| s.pos);
-    Ok(if pos >= 0 && (pos as usize) < items.len() {
-        items[pos as usize].clone()
-    } else {
-        Value::Null
-    })
+    Ok(list_elem(o, b"dllist", pos).unwrap_or(Value::Null))
 }
 
 fn dll_key(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
@@ -420,16 +439,17 @@ fn dll_next(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let flags = int_prop(o, b"flags");
     let lifo = flags & IT_MODE_LIFO != 0;
     if flags & IT_MODE_DELETE != 0 {
-        let mut items = list_prop(o, b"dllist");
-        if !items.is_empty() {
+        let mut a = take_arr_prop(o, b"dllist");
+        if !a.is_empty() {
             if lifo {
-                items.pop();
+                a.pop();
             } else {
-                items.remove(0);
+                a.shift();
             }
-            set_list_prop(o, b"dllist", &items);
         }
-        let pos = if lifo { items.len() as i64 - 1 } else { 0 };
+        let len = a.len();
+        set_arr_prop(o, b"dllist", a);
+        let pos = if lifo { len as i64 - 1 } else { 0 };
         with_state::<DllState, _>(o, |s| s.pos = pos);
         return Ok(Value::Null);
     }

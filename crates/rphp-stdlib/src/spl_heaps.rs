@@ -140,15 +140,6 @@ fn list_prop(o: &Object, name: &[u8]) -> Vec<Value> {
         .collect()
 }
 
-/// Write a `Vec<Value>` back as a packed list property.
-fn set_list_prop(o: &Object, name: &[u8], items: &[Value]) {
-    let mut a = Array::new();
-    for v in items {
-        a.push(v.clone());
-    }
-    o.set(name, Value::Array(a));
-}
-
 /// A declared int property.
 fn int_prop(o: &Object, name: &[u8]) -> i64 {
     o.get_deref(name).map_or(0, |v| v.to_int())
@@ -270,22 +261,52 @@ impl Cmp {
 /// parent compares less than the new element, then drops the element into
 /// the hole it left — so an element equal to its parent stays below it.
 fn heap_insert(ctx: &mut Ctx, o: &Object, kind: Kind, elem: Value) -> Result<(), Unwind> {
-    let mut e = list_prop(o, b"heap");
+    // The heap array is moved out and worked on in place (a clone would
+    // copy it per insert); `compare()` cannot see the property meanwhile,
+    // as php's heap storage is not a property either.
+    let mut e = take_heap(o);
     let mut cmp = Cmp::new(kind);
     let mut i = e.len();
     e.push(Value::Null);
-    while i > 0 {
-        let parent = (i - 1) / 2;
-        let up = e[parent].clone();
-        if cmp.call(ctx, o, &up, &elem) >= 0 {
-            break;
+    let r = (|| {
+        while i > 0 {
+            let parent = (i - 1) / 2;
+            let up = heap_at(&e, parent);
+            if cmp.call(ctx, o, &up, &elem) >= 0 {
+                break;
+            }
+            e.set(ArrayKey::Int(i as i64), up);
+            i = parent;
         }
-        e[i] = up;
-        i = parent;
-    }
-    e[i] = elem;
-    set_list_prop(o, b"heap", &e);
+        e.set(ArrayKey::Int(i as i64), elem);
+        Ok(())
+    })();
+    set_heap(o, e);
+    r?;
     cmp.finish(o)
+}
+
+/// Element `i` of the heap array.
+fn heap_at(e: &Array, i: usize) -> Value {
+    e.get_deref(&ArrayKey::Int(i as i64)).unwrap_or(Value::Null)
+}
+
+/// The heap array moved out of the `heap` property (null left behind) for
+/// an in-place change that [`set_heap`] puts back.
+fn take_heap(o: &Object) -> Array {
+    let taken = o.with_data_mut(|d| match d.get_mut(b"heap") {
+        Some(Value::Ref(r)) => r.get(),
+        Some(slot) => std::mem::replace(slot, Value::Null),
+        None => Value::Null,
+    });
+    match taken {
+        Value::Array(a) => a,
+        _ => Array::new(),
+    }
+}
+
+fn set_heap(o: &Object, a: Array) {
+    o.set(b"heap", Value::Array(a));
 }
 
 /// Remove and return the root. Both callers refuse an empty heap first; the
@@ -301,39 +322,44 @@ fn heap_insert(ctx: &mut Ctx, o: &Object, kind: Kind, elem: Value) -> Result<(),
 /// `0`, which breaks the loop. The stale read is therefore harmless, but it
 /// is a real `compare()` call that a counting subclass sees.
 fn heap_delete_top(ctx: &mut Ctx, o: &Object, kind: Kind) -> Result<Value, Unwind> {
-    let mut e = list_prop(o, b"heap");
+    let mut e = take_heap(o);
     let n0 = e.len();
     if n0 == 0 {
+        set_heap(o, e);
         return Ok(Value::Null);
     }
     let limit = (n0 - 1) / 2;
     let n = n0 - 1;
-    let top = e[0].clone();
-    let bottom = e[n].clone();
+    let top = heap_at(&e, 0);
+    let bottom = heap_at(&e, n);
     let mut cmp = Cmp::new(kind);
     let mut i = 0usize;
-    while i < limit {
-        let mut j = i * 2 + 1;
-        if j != n {
-            let (left, right) = (e[j].clone(), e[j + 1].clone());
-            if cmp.call(ctx, o, &right, &left) > 0 {
-                j += 1;
+    let r = (|| {
+        while i < limit {
+            let mut j = i * 2 + 1;
+            if j != n {
+                let (left, right) = (heap_at(&e, j), heap_at(&e, j + 1));
+                if cmp.call(ctx, o, &right, &left) > 0 {
+                    j += 1;
+                }
             }
+            let child = heap_at(&e, j);
+            if cmp.call(ctx, o, &bottom, &child) >= 0 {
+                break;
+            }
+            e.set(ArrayKey::Int(i as i64), child);
+            i = j;
         }
-        let child = e[j].clone();
-        if cmp.call(ctx, o, &bottom, &child) >= 0 {
-            break;
-        }
-        e[i] = child;
-        i = j;
-    }
-    e.truncate(n);
+        Ok(())
+    })();
+    e.pop();
     // `i == n` means the descent walked onto the removed slot; php writes
     // there too, past the live range, where nothing can observe it.
     if i < n {
-        e[i] = bottom;
+        e.set(ArrayKey::Int(i as i64), bottom);
     }
-    set_list_prop(o, b"heap", &e);
+    set_heap(o, e);
+    r?;
     cmp.finish(o)?;
     Ok(top)
 }

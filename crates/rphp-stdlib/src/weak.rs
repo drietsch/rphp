@@ -58,6 +58,14 @@ enum WeakKey {
 }
 
 impl WeakKey {
+    /// The object handle the key was made from.
+    fn id(&self) -> u32 {
+        match self {
+            WeakKey::Object(w) => w.id(),
+            WeakKey::Closure(w) => w.id(),
+        }
+    }
+
     fn upgrade(&self) -> Option<MapKey> {
         match self {
             WeakKey::Object(w) => w.upgrade().map(MapKey::Object),
@@ -74,22 +82,75 @@ impl WeakKey {
     }
 }
 
-/// A `WeakMap`'s entries, in insertion order. The key is weak; the value is
-/// held strongly, as php does.
+/// A `WeakMap`'s entries, in insertion order (`None` where one was
+/// removed), indexed by the key's object handle — handles are never
+/// reused within an interpreter, so a dead entry can never be mistaken
+/// for a new object's. The key is weak; the value is held strongly, as
+/// php does.
 #[derive(Default)]
-struct WeakMapState(Vec<(WeakKey, Value)>);
+struct WeakMapState {
+    entries: Vec<Option<(WeakKey, Value)>>,
+    index: hashbrown::HashMap<u32, usize>,
+}
 
 impl WeakMapState {
     /// Drop entries whose key has been collected. php does this eagerly from
-    /// the object's free handler; we have no such hook, so every observable
-    /// operation prunes first.
+    /// the object's free handler; we have no such hook, so the operations
+    /// that observe the whole map (`count`, iteration) prune first, and the
+    /// others when the dead outnumber the live.
     fn prune(&mut self) {
-        self.0.retain(|(k, _)| k.upgrade().is_some());
+        let old = std::mem::take(&mut self.entries);
+        self.index.clear();
+        for e in old.into_iter().flatten() {
+            if e.0.upgrade().is_some() {
+                self.index.insert(e.0.id(), self.entries.len());
+                self.entries.push(Some(e));
+            }
+        }
     }
 
-    /// The index of `key`'s entry, if present.
+    fn maybe_prune(&mut self) {
+        if self.entries.len() > 64 && self.entries.len() > 2 * self.index.len() {
+            self.prune();
+        }
+    }
+
+    /// The position of `key`'s entry, if present and alive.
     fn find(&self, key: &MapKey) -> Option<usize> {
-        self.0.iter().position(|(k, _)| k.is(key))
+        let i = *self.index.get(&key.id())?;
+        let (k, _) = self.entries.get(i)?.as_ref()?;
+        k.is(key).then_some(i)
+    }
+
+    fn value_at(&self, i: usize) -> Option<&Value> {
+        self.entries.get(i)?.as_ref().map(|(_, v)| v)
+    }
+
+    fn set(&mut self, key: &MapKey, value: Value) {
+        match self.find(key) {
+            Some(i) => {
+                if let Some(e) = self.entries[i].as_mut() {
+                    e.1 = value;
+                }
+            }
+            None => {
+                self.maybe_prune();
+                self.index.insert(key.id(), self.entries.len());
+                self.entries.push(Some((key.downgrade(), value)));
+            }
+        }
+    }
+
+    fn remove(&mut self, key: &MapKey) {
+        if let Some(i) = self.find(key) {
+            self.entries[i] = None;
+            self.index.remove(&key.id());
+        }
+    }
+
+    fn live(&mut self) -> usize {
+        self.prune();
+        self.entries.len()
     }
 }
 
@@ -211,11 +272,7 @@ fn weakref_get(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult
 fn weakmap_offset_get(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let key = key_arg(&args[0])?;
-    let found = with_state::<WeakMapState, _>(o, |s| {
-        s.prune();
-        let idx = s.find(&key);
-        idx.map(|i| s.0[i].1.clone())
-    });
+    let found = with_state::<WeakMapState, _>(o, |s| s.find(&key).and_then(|i| s.value_at(i).cloned()));
     found.ok_or_else(|| not_contained(ctx, &key))
 }
 
@@ -224,14 +281,7 @@ fn weakmap_offset_set(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Na
     let o = this(o)?;
     let key = key_arg(&args[0])?;
     let value = args[1].deref().into_owned();
-    with_state::<WeakMapState, _>(o, |s| {
-        s.prune();
-        let idx = s.find(&key);
-        match idx {
-            Some(i) => s.0[i].1 = value,
-            None => s.0.push((key.downgrade(), value)),
-        }
-    });
+    with_state::<WeakMapState, _>(o, |s| s.set(&key, value));
     Ok(Value::Null)
 }
 
@@ -239,10 +289,7 @@ fn weakmap_offset_set(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Na
 fn weakmap_offset_exists(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let key = key_arg(&args[0])?;
-    let found = with_state::<WeakMapState, _>(o, |s| {
-        s.prune();
-        s.find(&key).is_some()
-    });
+    let found = with_state::<WeakMapState, _>(o, |s| s.find(&key).is_some());
     Ok(Value::Bool(found))
 }
 
@@ -251,23 +298,14 @@ fn weakmap_offset_exists(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
 fn weakmap_offset_unset(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let key = key_arg(&args[0])?;
-    with_state::<WeakMapState, _>(o, |s| {
-        s.prune();
-        let idx = s.find(&key);
-        if let Some(i) = idx {
-            s.0.remove(i);
-        }
-    });
+    with_state::<WeakMapState, _>(o, |s| s.remove(&key));
     Ok(Value::Null)
 }
 
 /// `WeakMap::count(): int`
 fn weakmap_count(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let n = with_state::<WeakMapState, _>(o, |s| {
-        s.prune();
-        s.0.len()
-    });
+    let n = with_state::<WeakMapState, _>(o, |s| s.live());
     Ok(Value::Int(n as i64))
 }
 
@@ -278,8 +316,9 @@ fn weakmap_get_iterator(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> N
     let items = with_state::<WeakMapState, _>(o, |s| {
         s.prune();
         let out: Vec<(Value, Value)> = s
-            .0
+            .entries
             .iter()
+            .flatten()
             .filter_map(|(k, v)| k.upgrade().map(|k| (k.value(), v.clone())))
             .collect();
         out

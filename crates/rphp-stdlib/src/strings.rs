@@ -454,9 +454,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.len() > haystack.len() {
         return None;
     }
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    memchr::memmem::find(haystack, needle)
 }
 
 fn trim_impl(ctx: &mut Ctx, func: &str, args: &[Value], left: bool, right: bool) -> NativeResult {

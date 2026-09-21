@@ -237,6 +237,24 @@ impl Interp {
         } else {
             Vec::new()
         };
+        // php 8.4 `#[\Deprecated]`: the notice on every call, raised at
+        // the call site before the callee runs (the attribute is read once).
+        if func.deprecated.borrow().is_none() {
+            let note = crate::deprecation::deprecation_note(self, &func.f.attrs, &func.f.consts, &func.unit);
+            *func.deprecated.borrow_mut() = Some(note);
+        }
+        let note = func.deprecated.borrow().as_ref().and_then(|n| n.clone());
+        if let Some(note) = note {
+            let what = match func.class {
+                Some(_) if !func.f.flags.contains(FnFlags::CLOSURE) => "Method",
+                _ => "Function",
+            };
+            let msg = format!("{what} {}() is deprecated{note}", self.callable_display_name(&func));
+            if let Err(u) = self.deprecated(&msg) {
+                self.stack.truncate(args_base);
+                return Err(u);
+            }
+        }
         let num_regs = func.f.num_regs as usize;
         // A register starts *uninitialized*, not null: php's symbol table has
         // no entry for a variable that was never assigned, so

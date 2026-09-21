@@ -33,6 +33,10 @@ struct ContainerState {
     pos: usize,
     /// `ArrayObject::setIteratorClass`.
     iterator_class: Vec<u8>,
+    /// `SplObjectStorage`: object handle → position in the `storage` list,
+    /// rebuilt from the list when absent or stale (a rebuild of the list
+    /// drops it).
+    sos_index: Option<hashbrown::HashMap<u32, usize>>,
 }
 
 impl Default for ContainerState {
@@ -41,6 +45,7 @@ impl Default for ContainerState {
             flags: 0,
             pos: 0,
             iterator_class: b"ArrayIterator".to_vec(),
+            sos_index: None,
         }
     }
 }
@@ -73,6 +78,22 @@ fn storage(o: &Object) -> Array {
 /// Replace the backing array.
 fn set_storage(o: &Object, a: Array) {
     o.set(b"storage", Value::Array(a));
+}
+
+/// The backing array **moved out** of the property (null is left behind)
+/// for an in-place change that [`set_storage`] then puts back: a clone
+/// would leave two handles and make every `$ao[$k] = $v` copy the whole
+/// array.
+fn take_storage(o: &Object) -> Array {
+    let taken = o.with_data_mut(|d| match d.get_mut(b"storage") {
+        Some(Value::Ref(r)) => r.get(),
+        Some(slot) => std::mem::replace(slot, Value::Null),
+        None => Value::Null,
+    });
+    match taken {
+        Value::Array(a) => a,
+        _ => Array::new(),
+    }
 }
 
 /// An offset argument as an array key (php: `Illegal offset type` for an
@@ -177,7 +198,7 @@ fn offset_get(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeRe
 fn offset_set(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let value = args[1].deref().into_owned();
-    let mut a = storage(o);
+    let mut a = take_storage(o);
     match &*args[0].deref() {
         Value::Null | Value::Uninit => a.push(value),
         k => {
@@ -193,7 +214,7 @@ fn offset_set(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResu
 fn offset_unset(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let k = offset(&args[0])?;
-    let mut a = storage(o);
+    let mut a = take_storage(o);
     a.unset(&k);
     set_storage(o, a);
     Ok(Value::Null)
@@ -203,7 +224,7 @@ fn offset_unset(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeRe
 fn append(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let v = args[0].deref().into_owned();
-    let mut a = storage(o);
+    let mut a = take_storage(o);
     a.push(v);
     set_storage(o, a);
     Ok(Value::Null)
@@ -555,6 +576,52 @@ fn sos_store(o: &Object, items: &[(SosKey, Value)]) {
         a.push(Value::Array(e));
     }
     set_storage(o, a);
+    with_state(o, |s| s.sos_index = None);
+}
+
+/// The position of the entry for object handle `id` in the `storage`
+/// list, through the index (rebuilt when it does not match the list).
+fn sos_position(o: &Object, list: &Array, id: u32) -> Option<usize> {
+    with_state(o, |s| {
+        let stale = s.sos_index.as_ref().is_none_or(|ix| ix.len() != list.len());
+        if stale {
+            let mut ix = hashbrown::HashMap::with_capacity(list.len());
+            for (k, v) in list.iter() {
+                if let (ArrayKey::Int(i), Value::Array(e)) = (k, &*v.deref()) {
+                    if let Some(key) = e.get_deref(&ArrayKey::str(b"obj")).as_ref().and_then(SosKey::of) {
+                        ix.insert(key.id(), *i as usize);
+                    }
+                }
+            }
+            s.sos_index = Some(ix);
+        }
+        s.sos_index.as_ref().and_then(|ix| ix.get(&id).copied())
+    })
+}
+
+/// The `inf` of the entry at list position `i`.
+fn sos_info_at(list: &Array, i: usize) -> Option<Value> {
+    match list.get_deref(&ArrayKey::Int(i as i64))? {
+        Value::Array(e) => Some(e.get_deref(&ArrayKey::str(b"inf")).unwrap_or(Value::Null)),
+        _ => None,
+    }
+}
+
+/// The object of the entry at list position `i`.
+fn sos_object_at(list: &Array, i: usize) -> Option<Value> {
+    match list.get_deref(&ArrayKey::Int(i as i64))? {
+        Value::Array(e) => e.get_deref(&ArrayKey::str(b"obj")),
+        _ => None,
+    }
+}
+
+/// Set the `inf` of the entry at list position `i` in place.
+fn sos_set_info_at(o: &Object, i: usize, info: Value) {
+    let mut list = take_storage(o);
+    if let Some(Value::Array(e)) = list.get_mut(&ArrayKey::Int(i as i64)) {
+        e.set(ArrayKey::str(b"inf"), info);
+    }
+    set_storage(o, list);
 }
 
 /// An `$object` argument (every `SplObjectStorage` entry point takes one).
@@ -573,13 +640,28 @@ fn sos_offset_set(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Native
     let o = this(o)?;
     let key = sos_object_arg("offsetSet", &args[0])?;
     let info = args.get(1).map(|v| v.deref().into_owned()).unwrap_or(Value::Null);
-    let mut items = sos_load(o);
-    let found = items.iter().position(|(k, _)| k.same(&key));
-    match found {
-        Some(i) => items[i].1 = info,
-        None => items.push((key, info)),
+    let list = storage(o);
+    match sos_position(o, &list, key.id()) {
+        Some(i) => {
+            drop(list);
+            sos_set_info_at(o, i, info);
+        }
+        None => {
+            drop(list);
+            let mut list = take_storage(o);
+            let at = list.len();
+            let mut e = Array::new();
+            e.set(ArrayKey::str(b"obj"), key.value());
+            e.set(ArrayKey::str(b"inf"), info);
+            list.push(Value::Array(e));
+            set_storage(o, list);
+            with_state(o, |s| {
+                if let Some(ix) = s.sos_index.as_mut() {
+                    ix.insert(key.id(), at);
+                }
+            });
+        }
     }
-    sos_store(o, &items);
     Ok(Value::Null)
 }
 
@@ -587,9 +669,9 @@ fn sos_offset_set(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Native
 fn sos_offset_get(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let key = sos_object_arg("offsetGet", &args[0])?;
-    let items = sos_load(o);
-    match items.iter().find(|(k, _)| k.same(&key)) {
-        Some((_, info)) => Ok(info.clone()),
+    let list = storage(o);
+    match sos_position(o, &list, key.id()).and_then(|i| sos_info_at(&list, i)) {
+        Some(info) => Ok(info),
         None => Err(Unwind::exception("UnexpectedValueException", "Object not found")),
     }
 }
@@ -598,16 +680,19 @@ fn sos_offset_get(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Native
 fn sos_offset_exists(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let key = sos_object_arg("offsetExists", &args[0])?;
-    Ok(Value::Bool(sos_load(o).iter().any(|(k, _)| k.same(&key))))
+    let list = storage(o);
+    Ok(Value::Bool(sos_position(o, &list, key.id()).is_some()))
 }
 
-/// `offsetUnset(object $object): void`
+/// `offsetUnset(object $object): void` — the list is rebuilt without the
+/// entry (php's storage keeps no holes either).
 fn sos_offset_unset(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let key = sos_object_arg("offsetUnset", &args[0])?;
-    let mut items = sos_load(o);
-    let found = items.iter().position(|(k, _)| k.same(&key));
-    if let Some(i) = found {
+    let list = storage(o);
+    if let Some(i) = sos_position(o, &list, key.id()) {
+        drop(list);
+        let mut items = sos_load(o);
         items.remove(i);
         sos_store(o, &items);
     }
@@ -617,7 +702,7 @@ fn sos_offset_unset(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nati
 /// `count(int $mode = COUNT_NORMAL): int`
 fn sos_count(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    Ok(Value::Int(sos_load(o).len() as i64))
+    Ok(Value::Int(storage(o).len() as i64))
 }
 
 /// `getHash(object $object): string` — php's `spl_object_hash` shape: the
@@ -707,9 +792,7 @@ fn sos_remove_all_except(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) 
 fn sos_get_info(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let pos = with_state(o, |s| s.pos);
-    Ok(sos_load(o)
-        .get(pos)
-        .map_or(Value::Null, |(_, inf)| inf.clone()))
+    Ok(sos_info_at(&storage(o), pos).unwrap_or(Value::Null))
 }
 
 /// `setInfo(mixed $info): void`
@@ -717,10 +800,8 @@ fn sos_set_info(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeRe
     let o = this(o)?;
     let pos = with_state(o, |s| s.pos);
     let info = args[0].deref().into_owned();
-    let mut items = sos_load(o);
-    if pos < items.len() {
-        items[pos].1 = info;
-        sos_store(o, &items);
+    if pos < storage(o).len() {
+        sos_set_info_at(o, pos, info);
     }
     Ok(Value::Null)
 }
@@ -734,7 +815,7 @@ fn sos_rewind(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult 
 fn sos_valid(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let pos = with_state(o, |s| s.pos);
-    Ok(Value::Bool(pos < sos_load(o).len()))
+    Ok(Value::Bool(pos < storage(o).len()))
 }
 
 fn sos_key(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
@@ -745,9 +826,7 @@ fn sos_key(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
 fn sos_current(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let pos = with_state(o, |s| s.pos);
-    Ok(sos_load(o)
-        .get(pos)
-        .map_or(Value::Null, |(obj, _)| obj.value()))
+    Ok(sos_object_at(&storage(o), pos).unwrap_or(Value::Null))
 }
 
 fn sos_next(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
@@ -760,7 +839,7 @@ fn sos_next(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
 fn sos_seek(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let want = args[0].to_int();
-    let len = sos_load(o).len() as i64;
+    let len = storage(o).len() as i64;
     if want < 0 || want >= len {
         return Err(Unwind::exception(
             "OutOfBoundsException",

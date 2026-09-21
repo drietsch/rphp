@@ -1285,7 +1285,8 @@ impl FnCompiler<'_> {
                     return self.null_temp();
                 };
                 let v = self.value_reg(value);
-                self.emit(Op::AssignStaticProp { class, name, src: v });
+                let ic = self.ic();
+                self.emit(Op::AssignStaticProp { class, name, src: v, ic });
                 v
             }
             other => {
@@ -1698,10 +1699,12 @@ impl FnCompiler<'_> {
                     var: cur,
                     src,
                 });
+                let ic = self.ic();
                 self.emit(Op::AssignStaticProp {
                     class,
                     name,
                     src: cur,
+                    ic,
                 });
                 if want {
                     // A typed static property coerces on the way in, so the
@@ -1859,7 +1862,8 @@ impl FnCompiler<'_> {
                 let lassign = self.here();
                 self.patch(jassign, lassign);
                 let v = self.compile_expr(value);
-                self.emit(Op::AssignStaticProp { class, name, src: v });
+                let ic = self.ic();
+                self.emit(Op::AssignStaticProp { class, name, src: v, ic });
                 self.emit(Op::Move { dst: res, src: v });
                 let lend = self.here();
                 self.patch(jend, lend);
@@ -2061,10 +2065,12 @@ impl FnCompiler<'_> {
                     pre,
                     inc,
                 });
+                let ic = self.ic();
                 self.emit(Op::AssignStaticProp {
                     class,
                     name,
                     src: cur,
+                    ic,
                 });
                 res.unwrap_or(cur)
             }
@@ -2656,17 +2662,13 @@ impl FnCompiler<'_> {
                 let name = self.member_name_ref(name);
                 self.emit(Op::SendRefProp { pos, obj, name });
             }
-            // No `SendRefStaticProp` op — but a static property *is* a shared
-            // cell, so binding a register to it and sending that register
-            // covers both directions: `SendVar` passes the cell itself to a
-            // by-reference parameter and a dereferenced copy otherwise.
+            // `f(A::$p)`: the runtime decides, per the resolved parameter,
+            // between the shared cell and a plain read.
             Expr::StaticProp { class, name, span } => {
                 let Some((class, name)) = self.static_prop_ref(class, name, *span) else {
                     return;
                 };
-                let var = self.alloc_temp();
-                self.emit(Op::RefStaticProp { dst: var, class, name });
-                self.emit(Op::SendVar { pos, var });
+                self.emit(Op::SendRefStaticProp { pos, class, name });
             }
             // `f($obj->list['k'])`, `f($a['x']['y'])`: php decides at
             // runtime, per the resolved parameter, between fetching the

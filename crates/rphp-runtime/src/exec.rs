@@ -7,6 +7,8 @@
 //! `call_value`, or the SAPI for the entry `{main}`.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::rc::Rc;
 use rphp_bytecode::{
     AssignOpKind, ClassRef, ClassRefKind, Const, FinallyState, FnFlags, IncludeKind, InitRef,
     NameRef, NameRefKind, Op, Visibility,
@@ -230,6 +232,55 @@ impl Interp {
         true
     }
 
+    /// The cell a `Class::$name` site cached, when the site names its class
+    /// statically (a named class, or `self` from the same scope) with a
+    /// constant name.
+    #[inline]
+    fn static_prop_cached(
+        &self,
+        func: &crate::unit::FuncRt,
+        fi: usize,
+        class: ClassRef,
+        name: NameRef,
+        ic: u16,
+    ) -> Option<Rc<RefCell<Value>>> {
+        if !matches!(class.kind(), ClassRefKind::Named(_) | ClassRefKind::SelfKw)
+            || !matches!(name.kind(), NameRefKind::Const(_))
+        {
+            return None;
+        }
+        match func.ics.borrow().get(ic as usize)? {
+            crate::unit::IcSlot::StaticProp { scope, cell, .. } if *scope == self.frames[fi].scope => {
+                Some(cell.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Remember the cell a `Class::$name` site resolved (see
+    /// [`Interp::static_prop_cached`]).
+    fn fill_static_prop_cache(
+        &mut self,
+        func: &crate::unit::FuncRt,
+        class: ClassRef,
+        name: NameRef,
+        ic: u16,
+        cid: u32,
+        n: &[u8],
+        scope: Option<u32>,
+    ) {
+        if !matches!(class.kind(), ClassRefKind::Named(_) | ClassRefKind::SelfKw)
+            || !matches!(name.kind(), NameRefKind::Const(_))
+        {
+            return;
+        }
+        if let Some(e) = self.static_prop_cache_entry(cid, n, scope) {
+            if let Some(slot) = func.ics.borrow_mut().get_mut(ic as usize) {
+                *slot = e;
+            }
+        }
+    }
+
     /// A member name operand as bytes.
     fn member_name<'f>(&self, func: &'f crate::unit::FuncRt, base: usize, name: NameRef) -> Result<Cow<'f, [u8]>, Unwind> {
         Ok(match name.kind() {
@@ -254,7 +305,14 @@ impl Interp {
         let fi = self.frames.len() - 1;
         match class.kind() {
             ClassRefKind::Named(k) => {
-                // `new A`, `A::m()`, `A::$p`, `A::C` all autoload (E7).
+                // A declared class answers from its lowercased name in the
+                // constant pool (no allocation); `new A`, `A::m()`, `A::$p`,
+                // `A::C` all autoload otherwise (E7).
+                if let Const::Name(n) = &func.f.consts[k as usize] {
+                    if let Some(&id) = self.class_index.get(&*n.lower) {
+                        return Ok(id);
+                    }
+                }
                 let name = self.name_bytes(func, k);
                 self.lookup_class_or_error(&name)
             }
@@ -324,6 +382,11 @@ impl Interp {
     fn resolve_class_ref_quiet(&mut self, func: &crate::unit::FuncRt, base: usize, class: ClassRef) -> Result<Option<u32>, Unwind> {
         match class.kind() {
             ClassRefKind::Named(k) => {
+                if let Const::Name(n) = &func.f.consts[k as usize] {
+                    if let Some(&id) = self.class_index.get(&*n.lower) {
+                        return Ok(Some(id));
+                    }
+                }
                 let name = self.name_bytes(func, k);
                 Ok(self.class_by_name(&name))
             }
@@ -1543,6 +1606,17 @@ impl Interp {
                     };
                     self.send(fi, v);
                 }
+                Op::SendRefStaticProp { pos, class, name } => {
+                    let cid = self.resolve_class_ref(&func, base, class)?;
+                    let n = self.member_name(&func, base, name)?;
+                    let scope = self.frames[fi].scope;
+                    let v = if self.pending_by_ref(fi, pos as usize) {
+                        Value::Ref(self.ref_static_prop(cid, &n, scope)?)
+                    } else {
+                        self.fetch_static_prop(cid, &n, scope)?
+                    };
+                    self.send(fi, v);
+                }
                 Op::SendUnpack { src } => {
                     let v = self.rd(base, src);
                     let Value::Array(a) = v else {
@@ -1971,7 +2045,24 @@ impl Interp {
                         ))?;
                     }
                 }
-                Op::FetchClassConst { dst, class, name, .. } => {
+                Op::FetchClassConst { dst, class, name, ic } => {
+                    // A site over a named class (or `self`) with a constant
+                    // name that already fetched the value keeps it.
+                    let cacheable = matches!(class.kind(), ClassRefKind::Named(_) | ClassRefKind::SelfKw)
+                        && matches!(name.kind(), NameRefKind::Const(_));
+                    if cacheable {
+                        let hit = match func.ics.borrow().get(ic as usize) {
+                            Some(crate::unit::IcSlot::ClassConst { scope, value }) if *scope == self.frames[fi].scope => {
+                                Some(value.clone())
+                            }
+                            _ => None,
+                        };
+                        if let Some(v) = hit {
+                            self.set(base, dst, v);
+                            pc += 1;
+                            continue;
+                        }
+                    }
                     let n = self.member_name(&func, base, name)?;
                     if n.as_ref() == b"class" {
                         // `X::class` never looks the class up: a name yields
@@ -2010,23 +2101,54 @@ impl Interp {
                             let spelling = self.class_ref_spelling(&func, cid, class);
                             self.class_const_spelled(cid, &n, scope, &spelling)?
                         };
+                        // A deprecated constant keeps its notice per access;
+                        // anything else is remembered by the site.
+                        if cacheable && !self.class_const_deprecated(cid, &n) {
+                            if let Some(slot) = func.ics.borrow_mut().get_mut(ic as usize) {
+                                *slot = crate::unit::IcSlot::ClassConst { scope, value: v.clone() };
+                            }
+                        }
                         self.set(base, dst, v);
                     }
                 }
-                Op::FetchStaticProp { dst, class, name, .. } => {
+                Op::FetchStaticProp { dst, class, name, ic } => {
+                    // A site over a named class (or `self`) that already
+                    // resolved the cell reads it directly.
+                    if let Some(cell) = self.static_prop_cached(&func, fi, class, name, ic) {
+                        let v = cell.borrow().clone().unref();
+                        if !v.is_uninit() {
+                            self.set(base, dst, v);
+                            pc += 1;
+                            continue;
+                        }
+                    }
                     let cid = self.resolve_class_ref(&func, base, class)?;
                     let n = self.member_name(&func, base, name)?;
                     let scope = self.frames[fi].scope;
                     let v = self.fetch_static_prop(cid, &n, scope)?;
+                    self.fill_static_prop_cache(&func, class, name, ic, cid, &n, scope);
                     self.set(base, dst, v);
                 }
-                Op::AssignStaticProp { class, name, src } => {
+                Op::AssignStaticProp { class, name, src, ic } => {
+                    if let Some(cell) = self.static_prop_cached(&func, fi, class, name, ic) {
+                        let ty = match func.ics.borrow().get(ic as usize) {
+                            Some(crate::unit::IcSlot::StaticProp { ty, .. }) => *ty,
+                            _ => crate::unit::FastTy::Any,
+                        };
+                        let v = self.rd(base, src);
+                        if ty.accepts(&v) {
+                            Value::assign(&mut cell.borrow_mut(), v);
+                            pc += 1;
+                            continue;
+                        }
+                    }
                     let cid = self.resolve_class_ref(&func, base, class)?;
                     let n = self.member_name(&func, base, name)?;
                     let scope = self.frames[fi].scope;
                     let strict = self.frames[fi].strict;
                     let v = self.rd(base, src);
                     self.assign_static_prop(cid, &n, scope, v, strict)?;
+                    self.fill_static_prop_cache(&func, class, name, ic, cid, &n, scope);
                 }
                 Op::RefStaticProp { dst, class, name } => {
                     let cid = self.resolve_class_ref(&func, base, class)?;

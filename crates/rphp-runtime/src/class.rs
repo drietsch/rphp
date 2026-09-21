@@ -435,9 +435,9 @@ pub struct ClassConst {
     pub ty: Option<TypeDecl>,
     /// Lazy value.
     pub state: RefCell<ConstState>,
-    /// php deprecates the constant: the text after `Constant C::X is
-    /// deprecated`, raised on every fetch.
-    pub deprecated: Option<&'static str>,
+    /// `#[\Deprecated]`: the text after `Constant C::X is deprecated`,
+    /// raised on every fetch.
+    pub deprecated: Option<Box<str>>,
 }
 
 /// What an enum's cases are backed by.
@@ -700,7 +700,7 @@ pub struct ConstSpec {
     /// The initializer, evaluated on first use.
     pub init: PropDefault,
     /// See [`ClassConst::deprecated`].
-    pub deprecated: Option<&'static str>,
+    pub deprecated: Option<Box<str>>,
 }
 
 /// One own method of a [`ClassSpec`].
@@ -923,7 +923,7 @@ impl Interp {
                     is_final: c.is_final,
                     ty: c.ty,
                     state: RefCell::new(ConstState::Pending(c.init)),
-                    deprecated: c.deprecated,
+                    deprecated: c.deprecated.clone(),
                 }),
             );
         }

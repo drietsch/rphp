@@ -72,6 +72,14 @@ pub enum IcSlot {
     /// of `class` from calling scope `scope` (visible, not abstract, not a
     /// `__call` trampoline), so a hit pushes the call without the lookup.
     Method { class: u32, scope: Option<u32>, method: Rc<crate::class::MethodDef> },
+    /// `A::$p` / `self::$p` (a named class or the frame's own): the shared
+    /// storage cell this site resolved from calling scope `scope`, already
+    /// initialized and visible; `ty` is what a write may store as it is.
+    StaticProp { scope: Option<u32>, cell: Rc<RefCell<Value>>, ty: FastTy },
+    /// `A::X` / `self::X` with a constant name: the evaluated value this
+    /// site resolved from calling scope `scope` (a class constant, once
+    /// evaluated, never changes).
+    ClassConst { scope: Option<u32>, value: Value },
 }
 
 /// The declared type of a cached property slot as an assignment can check
@@ -143,6 +151,9 @@ pub struct FuncRt {
     /// Register → variable name (the inverse of `Function::var_names`), for
     /// symbol-table rebinding.
     pub reg_names: Vec<Option<Box<[u8]>>>,
+    /// `#[\Deprecated]` on the function: `None` not looked at yet,
+    /// `Some(None)` not deprecated, `Some(Some(note))` the notice's tail.
+    pub deprecated: RefCell<Option<Option<Box<str>>>>,
 }
 
 impl FuncRt {
@@ -258,6 +269,7 @@ impl Interp {
             let class = f.in_class.map(|c| class_base + c);
             let ics = vec![IcSlot::Empty; f.ic_count as usize];
             let statics = vec![None; f.statics.len()];
+            let deprecated = RefCell::new(if f.attrs.is_empty() { Some(None) } else { None });
             self.funcs.push(Rc::new(FuncRt {
                 id: func_base + i as u32,
                 f,
@@ -266,6 +278,7 @@ impl Interp {
                 statics: RefCell::new(statics),
                 class,
                 reg_names,
+                deprecated,
             }));
         }
         for (i, c) in unit.decls.iter().enumerate() {
@@ -478,10 +491,14 @@ impl Interp {
                 )
             })
             .collect();
-        let consts = decl
-            .consts
-            .iter()
-            .map(|c| crate::class::ConstSpec {
+        let mut consts = Vec::with_capacity(decl.consts.len());
+        for c in &decl.consts {
+            let deprecated = if c.attrs.is_empty() {
+                None
+            } else {
+                crate::deprecation::deprecation_note(self, &c.attrs, &[], &unit)
+            };
+            consts.push(crate::class::ConstSpec {
                 name: c.name.clone(),
                 vis: c.visibility,
                 is_final: c.is_final,
@@ -490,9 +507,9 @@ impl Interp {
                     Some(t) => PropDefault::Thunk(unit.func_base + t),
                     None => PropDefault::Value(c.value.clone().unwrap_or(Value::Null)),
                 },
-                deprecated: None,
-            })
-            .collect();
+                deprecated,
+            });
+        }
         let enum_cases = decl
             .enum_cases
             .iter()

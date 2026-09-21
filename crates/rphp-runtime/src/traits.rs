@@ -709,7 +709,7 @@ impl Interp {
                     is_final: c.is_final,
                     ty: c.ty.clone(),
                     init,
-                    deprecated: c.deprecated,
+                    deprecated: c.deprecated.clone(),
                 });
                 sigs.insert(c.name.clone(), sig);
             }

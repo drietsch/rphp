@@ -52,7 +52,7 @@ impl Closure {
 
     /// A non-owning handle (`WeakMap` keys, `WeakReference`).
     pub fn downgrade(&self) -> WeakClosure {
-        WeakClosure(Rc::downgrade(&self.0))
+        WeakClosure(Rc::downgrade(&self.0), self.id())
     }
 
     /// The compiled-function id this closure invokes.
@@ -91,12 +91,17 @@ impl fmt::Debug for Closure {
 
 /// A non-owning handle onto a closure (see [`Closure::downgrade`]).
 #[derive(Clone)]
-pub struct WeakClosure(Weak<ClosureData>);
+pub struct WeakClosure(Weak<ClosureData>, u32);
 
 impl WeakClosure {
     /// The closure, if it is still alive.
     pub fn upgrade(&self) -> Option<Closure> {
         self.0.upgrade().map(Closure)
+    }
+
+    /// The handle of the closure this points at.
+    pub fn id(&self) -> u32 {
+        self.1
     }
 
     /// Whether this weak handle points at `c`.

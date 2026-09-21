@@ -708,6 +708,15 @@ pub enum Op {
         obj: Reg,
         name: NameRef,
     },
+    /// Pass `Class::$name` as argument `pos`: the shared cell if the
+    /// parameter is by-ref (php's "Cannot access uninitialized … by
+    /// reference" for a typed property with no value), else its value
+    /// (the plain read and its own error).
+    SendRefStaticProp {
+        pos: u16,
+        class: ClassRef,
+        name: NameRef,
+    },
     /// Branch to `target` unless the innermost pending call takes positional
     /// argument `pos` by reference: php's `FETCH_*_FUNC_ARG` decision, made
     /// once here so a nested place (`f($this->list['k'])`) is fetched for
@@ -998,6 +1007,7 @@ pub enum Op {
         class: ClassRef,
         name: NameRef,
         src: Reg,
+        ic: u16,
     },
     /// `dst = obj->name` (read, with an inline cache): declared-slot or dynamic
     /// property, `__get` fallback, "Undefined property" warning, visibility

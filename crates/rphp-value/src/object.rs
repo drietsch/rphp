@@ -1067,7 +1067,7 @@ impl Object {
 
     /// A non-owning handle (`WeakReference`, `WeakMap` keys, the GC registry).
     pub fn downgrade(&self) -> WeakObject {
-        WeakObject(Rc::downgrade(&self.0))
+        WeakObject(Rc::downgrade(&self.0), self.id())
     }
 }
 
@@ -1091,12 +1091,18 @@ impl fmt::Debug for Object {
 
 /// A non-owning handle onto an object; `upgrade` fails once the object is gone.
 #[derive(Clone)]
-pub struct WeakObject(Weak<RefCell<ObjectData>>);
+pub struct WeakObject(Weak<RefCell<ObjectData>>, u32);
 
 impl WeakObject {
     /// The object, if it is still alive.
     pub fn upgrade(&self) -> Option<Object> {
         self.0.upgrade().map(Object)
+    }
+
+    /// The handle of the object this points at (kept past its death, so
+    /// a map can index dead entries too).
+    pub fn id(&self) -> u32 {
+        self.1
     }
 
     /// Whether this weak handle points at `obj`.

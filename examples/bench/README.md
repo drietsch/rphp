@@ -128,3 +128,20 @@ were 1000× and more were not constant factors):
 The ratios that remain are constant factors (2–10×): the native call
 boundary, `serialize`, `htmlspecialchars`, generators (Twig renders
 through them: 6× php per yield).
+
+Fifth wave (still 2026-09-21): the SPL containers rebuilt their backing
+array per operation — `SplObjectStorage` (77 s for 20k attaches; php
+1.5 ms), `ArrayObject` (22 s for 100k writes), `SplStack`/`SplQueue`/the
+heaps (4 s for 20k), `WeakMap` (0.9 s) — and work on it in place now,
+`SplObjectStorage` and `WeakMap` indexed by object handle (30 ms, 40 ms,
+16 ms / 65 ms, 24 ms). `str_contains`/`strpos` searched byte by byte
+(`memchr::memmem` now: 1.45 s → 64 ms for 500k searches of a 1 KB
+string). Static properties and class constants got inline caches
+(`IcSlot::StaticProp`, `IcSlot::ClassConst`; a named class also resolves
+from its prelowercased name without allocating): 54 → 29 ms and
+55 → 30 ms per 500k (php 1.6 / 1.3).
+
+Left as known: `SplQueue::dequeue` is O(n) (the list is an array that
+renumbers on shift; a deque would make it O(1)), and the native call
+boundary itself (~100 ns against php's 2 ns) sets the floor for every
+small builtin.

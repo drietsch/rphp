@@ -49,7 +49,7 @@ use rphp_ast::v2::{
     TempId, UnOp,
 };
 use rphp_bytecode::{
-    AssignOpKind, CastKind, ClassRef, Const, IncludeKind as BcInclude, NameRef, Op, Reg,
+    AssignOpKind, CastKind, ClassRef, Const, FnFlags, IncludeKind as BcInclude, NameRef, Op, Reg,
 };
 use rphp_diagnostics::Diagnostic;
 use rphp_intern::IdentId;
@@ -685,31 +685,35 @@ impl FnCompiler<'_> {
         }
     }
 
-    /// Lower a class reference operand. `self`/`parent` outside a class are
-    /// compile errors (as in PHP); a dynamic reference evaluates to a
-    /// register.
+    /// Lower a class reference operand. `self`/`parent`/`static` outside a
+    /// class are compile errors (as in PHP) — except inside a closure,
+    /// which may be bound to a class later (`Closure::bind`): there the
+    /// reference resolves at run time against the bound scope, and php's
+    /// "Cannot access …" error comes when there is none. A dynamic
+    /// reference evaluates to a register.
     pub(crate) fn class_ref(&mut self, class: &AstClassRef, span: Span) -> Option<ClassRef> {
+        let runtime_scope = self.cur_class.is_some() || self.flags.contains(FnFlags::CLOSURE);
         Some(match class {
             AstClassRef::Named(name) => {
                 let k = self.class_name_const(name);
                 ClassRef::named(k)
             }
             AstClassRef::SelfKw(_) => {
-                if self.cur_class.is_none() {
+                if !runtime_scope {
                     self.scope_error("Cannot use \"self\" when no class scope is active", span);
                     return None;
                 }
                 ClassRef::SELF_KW
             }
             AstClassRef::Parent(_) => {
-                if self.cur_class.is_none() {
+                if !runtime_scope {
                     self.scope_error("Cannot use \"parent\" when no class scope is active", span);
                     return None;
                 }
                 ClassRef::PARENT
             }
             AstClassRef::Static(_) => {
-                if self.cur_class.is_none() {
+                if !runtime_scope {
                     self.scope_error("Cannot use \"static\" when no class scope is active", span);
                     return None;
                 }

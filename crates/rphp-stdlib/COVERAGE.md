@@ -1034,8 +1034,11 @@ as an argument reports php's plain error; **php 8.4's `#[\Deprecated]`**
 on user functions, methods and class constants raises php's notice at
 the call site / on every fetch, with `since` and the message
 (`lang/deprecated-attribute.php`). Corpus: `spl/object-storage.php`,
-`lang/static-prop-sites.php`, `lang/class-const-sites.php`. Known:
-`SplQueue::dequeue` is O(n); `$r = &$arrayObject['k']` (a reference to an
-ArrayAccess element) is not supported; `self::` inside a closure declared
-outside any class is a compile error here (php resolves it at run time
-against the bound scope).
+`lang/static-prop-sites.php`, `lang/class-const-sites.php`. Then two more php rules: `self`/`parent`/`static` inside a closure
+declared outside any class compile to run-time references (php's
+`Cannot access "self" when no class scope is active` unbound, the bound
+scope after `Closure::bind()`; `lang/closure-scope.php`), and `&$o[$k]`
+on an `ArrayAccess` object hands out an `ArrayObject`'s own storage
+element, a by-reference `offsetGet()`'s cell, or a copy with php's
+"Indirect modification" notice (`lang/arrayaccess-refs.php`). Known:
+`SplQueue::dequeue` is O(n).

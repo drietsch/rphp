@@ -316,13 +316,15 @@ impl Interp {
                 let name = self.name_bytes(func, k);
                 self.lookup_class_or_error(&name)
             }
+            // (A closure declared outside any class reaches these at run
+            // time; php's wording then is "Cannot access …".)
             ClassRefKind::SelfKw => self.frames[fi]
                 .scope
-                .ok_or_else(|| Unwind::error("Cannot use \"self\" when no class scope is active")),
+                .ok_or_else(|| Unwind::error("Cannot access \"self\" when no class scope is active")),
             ClassRefKind::Parent => {
                 let scope = self.frames[fi]
                     .scope
-                    .ok_or_else(|| Unwind::error("Cannot use \"parent\" when no class scope is active"))?;
+                    .ok_or_else(|| Unwind::error("Cannot access \"parent\" when no class scope is active"))?;
                 self.classes[scope as usize].parent.ok_or_else(|| {
                     Unwind::error("Cannot use \"parent\" when current class scope has no parent")
                 })
@@ -330,7 +332,7 @@ impl Interp {
             ClassRefKind::Static => self.frames[fi]
                 .static_class
                 .or(self.frames[fi].scope)
-                .ok_or_else(|| Unwind::error("Cannot use \"static\" when no class scope is active")),
+                .ok_or_else(|| Unwind::error("Cannot access \"static\" when no class scope is active")),
             ClassRefKind::Reg(r) => match self.rd(base, r) {
                 Value::Object(o) => Ok(o.class_id()),
                 // `$closure::fromCallable(…)`: the `Closure` class.
@@ -971,7 +973,17 @@ impl Interp {
                 }
                 Op::RefElem { dst, arr, key } => {
                     let k = key.map(|k| self.rd(base, k));
-                    let cell = self.elem_ref(base, arr, k.as_ref())?;
+                    // `&$o[$k]` on an `ArrayAccess` object: a reference into
+                    // an `ArrayObject`'s own storage, a by-reference
+                    // `offsetGet()`'s cell, or php's notice and a copy.
+                    let object = match &*self.raw(base, arr).deref() {
+                        Value::Object(o) if self.is_array_access(o) => Some(o.clone()),
+                        _ => None,
+                    };
+                    let cell = match object {
+                        Some(o) => self.dim_ref_object(&o, k.unwrap_or(Value::Null))?,
+                        None => self.elem_ref(base, arr, k.as_ref())?,
+                    };
                     self.rebind(base, dst, cell);
                 }
                 Op::RefProp { dst, obj, name } => {
@@ -1574,7 +1586,14 @@ impl Interp {
                     }
                     let k = self.rd(base, key);
                     let v = if self.pending_by_ref(fi, pos as usize) {
-                        Value::Ref(self.elem_ref(base, arr, Some(&k))?)
+                        let object = match &*self.raw(base, arr).deref() {
+                            Value::Object(o) if self.is_array_access(o) => Some(o.clone()),
+                            _ => None,
+                        };
+                        match object {
+                            Some(o) => Value::Ref(self.dim_ref_object(&o, k.clone())?),
+                            None => Value::Ref(self.elem_ref(base, arr, Some(&k))?),
+                        }
                     } else {
                         let container = self.rd(base, arr);
                         // `f($o[$k])` reads through `ArrayAccess` like any
@@ -2082,6 +2101,12 @@ impl Interp {
                                     )))
                                 }
                             },
+                            // `self::class`/`static::class` in a closure
+                            // nobody bound: php's own wording.
+                            ClassRefKind::SelfKw | ClassRefKind::Static if self.frames[fi].scope.is_none() => {
+                                let word = if class.kind() == ClassRefKind::SelfKw { "self" } else { "static" };
+                                return Err(Unwind::error(format!("Cannot use \"{word}\" in the global scope")));
+                            }
                             _ => {
                                 let cid = self.resolve_class_ref(&func, base, class)?;
                                 Value::string(&self.classes[cid as usize].name)
@@ -2797,6 +2822,27 @@ impl Interp {
             ))?;
         }
         Ok(v)
+    }
+
+    /// `&$o[$key]` on an `ArrayAccess` object (see `Op::RefElem`).
+    fn dim_ref_object(&mut self, o: &Object, key: Value) -> Result<PhpRef, Unwind> {
+        if self.has_dim_storage(o) {
+            // The element of the backing array itself, autovivified: what
+            // php's `ArrayObject` hands out for `&$ao['k']`.
+            if let Some(k) = array_key(&key) {
+                let cell = o.with_data_mut(|d| match d.get_mut(b"storage") {
+                    Some(Value::Array(a)) => Some(a.get_ref(k)),
+                    _ => None,
+                });
+                if let Some(cell) = cell {
+                    return Ok(cell);
+                }
+            }
+        }
+        match self.fetch_dim_w_object(o, key, false)? {
+            Value::Ref(r) => Ok(r),
+            v => Ok(PhpRef::new(v)),
+        }
     }
 
     /// `&$arr[$key]`: the element's reference cell (autovivified).

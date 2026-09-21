@@ -445,6 +445,14 @@ pub struct Function {
     /// symbol-table binding, `compact`/`extract`/`get_defined_vars`, and
     /// debugging. A register appears at most once.
     pub var_names: Vec<(Box<[u8]>, Reg)>,
+    /// The constant pool as values (`consts[k].to_value()`), shared with
+    /// every request's [`FuncRt`](../rphp_runtime) so a request's load of
+    /// the function allocates nothing for it. [`Function::derive_tables`]
+    /// fills it; a producer that forgets leaves it empty and the runtime
+    /// derives it on load.
+    pub const_values: std::rc::Rc<[rphp_value::Value]>,
+    /// Register → variable name (the inverse of `var_names`), likewise.
+    pub reg_names: std::rc::Rc<[Option<Box<[u8]>>]>,
     /// Source line of each op, parallel to `code` (same length), or empty when
     /// the producer has no line information yet.
     pub lines: Vec<u32>,
@@ -487,6 +495,8 @@ impl Default for Function {
             captures: Vec::new(),
             statics: Vec::new(),
             var_names: Vec::new(),
+            const_values: std::rc::Rc::from(Vec::new()),
+            reg_names: std::rc::Rc::from(Vec::new()),
             lines: Vec::new(),
             ic_count: 0,
             doc: None,
@@ -527,6 +537,25 @@ impl Function {
             .iter()
             .take_while(|p| p.default.is_none() && !p.variadic)
             .count()
+    }
+
+    /// Fill the derived tables (`const_values`, `reg_names`) from the pool
+    /// and the variable names. The compiler calls it once per function;
+    /// the runtime calls it on a function whose producer did not.
+    pub fn derive_tables(&mut self) {
+        self.const_values = self.consts.iter().map(Const::to_value).collect::<Vec<_>>().into();
+        let mut reg_names: Vec<Option<Box<[u8]>>> = vec![None; self.num_regs as usize];
+        for (name, reg) in &self.var_names {
+            if let Some(slot) = reg_names.get_mut(*reg as usize) {
+                *slot = Some(name.clone());
+            }
+        }
+        self.reg_names = reg_names.into();
+    }
+
+    /// Whether [`Function::derive_tables`] has run (or nothing needs it).
+    pub fn tables_derived(&self) -> bool {
+        self.const_values.len() == self.consts.len() && self.reg_names.len() == self.num_regs as usize
     }
 
     /// The source line of the op at `pc`, if line information is present.

@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Forwarded to the runtime: per-function op counts at request end.
+profile = ["rphp-runtime/profile"]
+
 [dependencies]
 rphp-span.workspace = true
 rphp-source.workspace = true

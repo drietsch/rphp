@@ -178,7 +178,7 @@ fn mangled(class: &[u8], prop: &[u8]) -> ArrayKey {
     name.extend_from_slice(class);
     name.push(0);
     name.extend_from_slice(prop);
-    ArrayKey::Str(name.into_boxed_slice())
+    ArrayKey::Str(name.into())
 }
 
 /// php's weak `int` parameter coercion with php's diagnostics: a numeric

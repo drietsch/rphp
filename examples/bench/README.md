@@ -179,5 +179,36 @@ before anything observable happens, and the call re-runs on the full
 path with a frame — so traces, error handlers and side effects are
 exactly the full path's. An object argument goes to the full path
 outright (it may need fitting to the parameter). 59 ns per call now
-(the copy kept for the retry costs ~10 of them); user calls (88 ns,
-php 11) are next.
+(the copy kept for the retry costs ~10 of them).
+
+User calls (88 → 70 ns, php 11): a call or return no longer leaves
+`run_frame` and re-enters it through `run_until` (the frame switch is a
+`continue 'frames` that reloads the locals), the per-function facts a
+call needs (`required`, `has_typed_params`) are computed at link, and the
+return value is moved rather than cloned into the caller's register.
+
+Array keys: `ArrayKey::Str` holds the `Str` itself (a refcount bump per
+`$a[$k]`, never a copy of the bytes) and hashes through the string's
+cached hash, so a key looked up twice is hashed once — string-keyed reads
+6M: 1134 → 854 ms (php 177), a `foreach` copy of 300 string keys × 2000:
+87 → 35 ms (php 9.5). Class/function/method lookups lowercase their query
+on the stack (`with_lowercase`) instead of allocating. The per-request
+load of a unit no longer rebuilds each function's constant and
+register-name tables (`Function::derive_tables`, computed once at compile
+time and shared).
+
+**The demo page, measured properly.** `rphp -S` serving symfony/demo's
+`/en/blog/` costs **192 ms of CPU per request against php's 26.5 ms**
+(`ps -o utime,stime` over 20 requests; wall clock is dominated on this
+machine by `open()` — the profiler's `index.csv` and Monolog's log take
+5–20 ms to open right after being written, for php too). The `profile`
+cargo feature (`cargo build --release -p rphp --features profile`) prints
+at request end the functions that executed the most ops and the natives
+that took the most inclusive time: 5.0 M ops per request, 46 % of them in
+Symfony's dev-mode `DebugClassLoader` (`checkAnnotations`/`parsePhpDoc`
+over 608 classes, as in php); the natives' inclusive time is spread thin
+(`class_exists` 20 ms over 1435 calls, autoloads included; `serialize`
+4 ms; Reflection and pcre under 3 ms each). The remaining 7× is the
+interpreter's per-op cost on real code — property fetches, method calls,
+string building — at ~20 ns per op, and the allocator behind it
+(`malloc`/`free` are ~20 % of the samples).

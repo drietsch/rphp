@@ -493,7 +493,7 @@ pub(crate) fn array_change_key_case(_: &mut Ctx, args: &mut [Value]) -> NativeRe
         let nk = match k {
             ArrayKey::Str(s) => {
                 let b = if upper { s.to_ascii_uppercase() } else { s.to_ascii_lowercase() };
-                ArrayKey::Str(b.into_boxed_slice())
+                ArrayKey::Str(b.into())
             }
             other => other.clone(),
         };

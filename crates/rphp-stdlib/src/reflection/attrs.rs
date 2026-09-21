@@ -142,7 +142,7 @@ fn get_arguments(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRe
         out.push(v);
     }
     for (k, v) in named {
-        out.set(ArrayKey::Str(k), v);
+        out.set(ArrayKey::Str(k.into()), v);
     }
     Ok(Value::Array(out))
 }

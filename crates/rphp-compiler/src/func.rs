@@ -804,7 +804,7 @@ impl<'a> FnCompiler<'a> {
         if params.last().is_some_and(|p| p.variadic) {
             self.flags |= FnFlags::VARIADIC;
         }
-        Function {
+        let mut f = Function {
             name: IdentId(0),
             name_bytes,
             num_params,
@@ -822,6 +822,8 @@ impl<'a> FnCompiler<'a> {
             captures: self.captures,
             statics: self.statics,
             var_names,
+            const_values: std::rc::Rc::from(Vec::new()),
+            reg_names: std::rc::Rc::from(Vec::new()),
             lines: self.lines,
             ic_count: self.ic_count,
             doc: None,
@@ -829,7 +831,9 @@ impl<'a> FnCompiler<'a> {
             decl_line,
             end_line,
             in_class: self.cur_class.map(|(c, _)| c),
-        }
+        };
+        f.derive_tables();
+        f
     }
 
     // ---- parameters -----------------------------------------------------------

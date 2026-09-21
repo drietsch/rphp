@@ -226,7 +226,7 @@ impl Interp {
             out.extend(table.into_iter().map(|(k, v)| {
                 let name: Box<[u8]> = match k {
                     rphp_value::ArrayKey::Int(i) => i.to_string().into_bytes().into_boxed_slice(),
-                    rphp_value::ArrayKey::Str(s) => s,
+                    rphp_value::ArrayKey::Str(s) => Box::from(s.as_bytes()),
                 };
                 (name, v, rphp_value::Vis::Public, None)
             }));

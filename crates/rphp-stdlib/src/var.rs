@@ -209,7 +209,7 @@ fn export(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, level: usize, seen: &mut 
                         .props_snapshot()
                         .into_iter()
                         .filter(|(_, v, _)| !v.is_uninit())
-                        .map(|(n, v, _)| (ArrayKey::Str(n), v))
+                        .map(|(n, v, _)| (ArrayKey::Str(n.into()), v))
                         .collect();
                     props.extend(ctx.native_property_table(o).unwrap_or_default());
                     props

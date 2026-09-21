@@ -9,6 +9,10 @@ repository.workspace = true
 name = "rphp"
 path = "src/main.rs"
 
+[features]
+# Forwarded to the runtime: per-function op counts at request end.
+profile = ["rphp-sapi-cli/profile"]
+
 [dependencies]
 rphp-sapi-cli.workspace = true
 

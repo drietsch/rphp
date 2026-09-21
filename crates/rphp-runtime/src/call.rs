@@ -158,11 +158,10 @@ impl Interp {
         let variadic = func.f.flags.contains(FnFlags::VARIADIC);
         let declared = if variadic { np.saturating_sub(1) } else { np };
         let mut extra_named = Vec::new();
-        let mut used_named = false;
+        let used_named = !named.is_empty();
         // Named arguments land in their parameter's slot; gaps stay `Uninit`
         // so `RecvInit` fills their defaults.
         for (name, v) in named {
-            used_named = true;
             let pos = func
                 .f
                 .params
@@ -204,7 +203,7 @@ impl Interp {
         // Arity: every required parameter must have been passed. The check
         // is decided here but raised once the frame exists (php raises it
         // from the callee's RECV, so the callee shows in the trace).
-        let required = func.f.required_params();
+        let required = func.required;
         let passed_total = self.stack.len() - args_base;
         let mut arity_error: Option<Unwind> = None;
         for i in 0..required.min(declared) {
@@ -246,11 +245,16 @@ impl Interp {
         };
         // php 8.4 `#[\Deprecated]`: the notice on every call, raised at
         // the call site before the callee runs (the attribute is read once).
-        if func.deprecated.borrow().is_none() {
-            let note = crate::deprecation::deprecation_note(self, &func.f.attrs, &func.f.consts, &func.unit);
-            *func.deprecated.borrow_mut() = Some(note);
-        }
-        let note = func.deprecated.borrow().as_ref().and_then(|n| n.clone());
+        // (Looked at once per function; the common answer is "not".)
+        let cached = func.deprecated.borrow().clone();
+        let note = match cached {
+            Some(n) => n,
+            None => {
+                let n = crate::deprecation::deprecation_note(self, &func.f.attrs, &func.f.consts, &func.unit);
+                *func.deprecated.borrow_mut() = Some(n.clone());
+                n
+            }
+        };
         if let Some(note) = note {
             let what = match func.class {
                 Some(_) if !func.f.flags.contains(FnFlags::CLOSURE) => "Method",
@@ -338,8 +342,7 @@ impl Interp {
             self.stack.truncate(f.base);
             return Err(u);
         }
-        let has_types = func.f.params.iter().any(|p| p.ty.is_some());
-        if has_types {
+        if func.has_typed_params {
             let argc = self.frames.last().expect("frame").argc;
             if let Err(u) = self.verify_params(&func, args_base, argc, caller_strict, caller_site) {
                 // Raised from the callee's RECV like the arity error.
@@ -476,10 +479,14 @@ impl Interp {
             frame.extra_mut().extra_named = extra_named;
         }
         self.frames.push(frame);
+        #[cfg(feature = "profile")]
+        let started = std::time::Instant::now();
         let r = {
             let mut ctx = Ctx(self);
             (f.handler)(&mut ctx, args)
         };
+        #[cfg(feature = "profile")]
+        self.profile_native(f.name, started.elapsed());
         // The cells get their arrays back before the fault site is
         // captured, so a trace shows `Array`, not what was taken out.
         Interp::write_back_native_args(args, cells);
@@ -776,6 +783,8 @@ impl Interp {
         let cells = Interp::unwrap_native_args(&key, args, |i| nm.is_by_ref(i));
         let silence = self.silence;
         let copy = self.frame_args_for(args, &cells);
+        #[cfg(feature = "profile")]
+        let profile_key = format!("{}::{}", self.classes[m.decl as usize].name_str(), String::from_utf8_lossy(&m.name));
         let mut frame = Frame::native_method(m, this.clone(), copy, silence);
         if !cells.is_empty() {
             frame.extra_mut().ref_cells = cells.clone();
@@ -784,10 +793,14 @@ impl Interp {
             frame.extra_mut().extra_named = extra_named;
         }
         self.frames.push(frame);
+        #[cfg(feature = "profile")]
+        let started = std::time::Instant::now();
         let r = {
             let mut ctx = Ctx(self);
             (nm.handler)(&mut ctx, this.as_ref(), args)
         };
+        #[cfg(feature = "profile")]
+        self.profile_native_owned(profile_key, started.elapsed());
         // The cells get their arrays back before the fault site is
         // captured, so a trace shows `Array`, not what was taken out.
         Interp::write_back_native_args(args, cells);

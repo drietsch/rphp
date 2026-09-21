@@ -957,7 +957,7 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             ("PHP", "MEMORY".to_string(), true)
         };
         let mut out = Array::new();
-        let mut set = |k: &str, v: Value| out.set(ArrayKey::Str(Box::from(k.as_bytes())), v);
+        let mut set = |k: &str, v: Value| out.set(ArrayKey::str(k.as_bytes()), v);
         set("timed_out", Value::Bool(false));
         set("blocked", Value::Bool(true));
         set("eof", Value::Bool(s.eof));

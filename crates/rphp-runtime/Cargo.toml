@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Count the ops each function executes and print the top of the table at
+# request end (`RPHP_PROFILE` is not consulted: a feature keeps the
+# counter out of the release binary's hot loop).
+profile = []
+
 [dependencies]
 hashbrown.workspace = true
 jiff.workspace = true

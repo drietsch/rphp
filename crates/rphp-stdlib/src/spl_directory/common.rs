@@ -42,7 +42,11 @@ pub(crate) struct Dir {
     /// `GlobIterator`: the whole match paths, which carry their own
     /// directory part (php reads that back out of the glob stream, so
     /// `getPath()` follows the cursor).
-    pub entries: Vec<Vec<u8>>,
+    ///
+    /// Shared: the iterator's every method starts from a copy of the
+    /// state, and a directory listing copied per step made a walk
+    /// quadratic.
+    pub entries: std::rc::Rc<Vec<Vec<u8>>>,
     /// The cursor into [`Dir::entries`]; `entries.len()` means exhausted,
     /// which is php's empty `d_name`.
     pub pos: usize,
@@ -424,7 +428,7 @@ pub(crate) fn mangled(class: &[u8], prop: &[u8]) -> rphp_value::ArrayKey {
     name.extend_from_slice(class);
     name.push(0);
     name.extend_from_slice(prop);
-    rphp_value::ArrayKey::Str(name.into_boxed_slice())
+    rphp_value::ArrayKey::Str(name.into())
 }
 
 /// The array php's `get_debug_info` builds, which `__debugInfo()` returns

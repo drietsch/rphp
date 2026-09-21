@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Forwarded to the runtime: per-function op counts at request end.
+profile = ["rphp-embed/profile"]
+
 [dependencies]
 # Running goes through rphp-embed only (ADR-014); the front-end crates are
 # used directly by the `--emit=tokens|ast` dumps and `-l`.

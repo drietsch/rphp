@@ -154,7 +154,7 @@ fn stat_array(vals: &[i64; 13]) -> Array {
         a.push(Value::Int(*v));
     }
     for (i, key) in STAT_KEYS.iter().enumerate() {
-        a.set(ArrayKey::Str(Box::from(key.as_bytes())), Value::Int(vals[i]));
+        a.set(ArrayKey::str(key.as_bytes()), Value::Int(vals[i]));
     }
     a
 }
@@ -947,7 +947,7 @@ impl Meta {
 
 /// One string out of a meta-data array.
 fn meta_str(a: &Array, key: &str) -> String {
-    a.get(&ArrayKey::Str(Box::from(key.as_bytes())))
+    a.get(&ArrayKey::str(key.as_bytes()))
         .map(|v| String::from_utf8_lossy(&v.to_php_bytes()).into_owned())
         .unwrap_or_default()
 }
@@ -978,7 +978,7 @@ fn stream_meta(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Meta, Unwind> {
         plainfile: meta_str(&a, "wrapper_type") == "plainfile",
         buffered: kind == "MEMORY" || kind == "TEMP",
         eof: a
-            .get(&ArrayKey::Str(Box::from(&b"eof"[..])))
+            .get(&ArrayKey::str(b"eof"))
             .is_some_and(Value::to_bool),
     })
 }
@@ -1419,12 +1419,12 @@ mod tests {
         assert_eq!(a.get(&ArrayKey::Int(0)).map(Value::to_int), Some(1));
         assert_eq!(a.get(&ArrayKey::Int(12)).map(Value::to_int), Some(13));
         assert_eq!(
-            a.get(&ArrayKey::Str(Box::from(&b"blocks"[..])))
+            a.get(&ArrayKey::str(b"blocks"))
                 .map(Value::to_int),
             Some(13)
         );
         assert_eq!(
-            a.get(&ArrayKey::Str(Box::from(&b"dev"[..]))).map(Value::to_int),
+            a.get(&ArrayKey::str(b"dev")).map(Value::to_int),
             Some(1)
         );
     }

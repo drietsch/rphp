@@ -14,15 +14,34 @@ use hashbrown::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
-use crate::{PhpRef, Value};
+use crate::{PhpRef, Str, Value};
 
 /// A normalized array key. PHP coerces array keys to either an `int` or a byte
 /// string: integer-valued strings become `int` keys (`$a["5"]` is `$a[5]`),
 /// `bool`/`null`/`float` keys coerce per the rules in [`array_key`].
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+///
+/// A string key *shares* the string value it came from (`$a[$k]` clones a
+/// refcount, never the bytes) and hashes through the string's cached hash,
+/// so a key looked up twice is hashed once — php's interned-string keys.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ArrayKey {
     Int(i64),
-    Str(Box<[u8]>),
+    Str(Str),
+}
+
+impl std::hash::Hash for ArrayKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            ArrayKey::Int(i) => {
+                state.write_u8(0);
+                state.write_i64(*i);
+            }
+            ArrayKey::Str(s) => {
+                state.write_u8(1);
+                state.write_u64(s.hash64());
+            }
+        }
+    }
 }
 
 impl ArrayKey {
@@ -30,14 +49,14 @@ impl ArrayKey {
     pub fn to_value(&self) -> Value {
         match self {
             ArrayKey::Int(i) => Value::Int(*i),
-            ArrayKey::Str(b) => Value::string(b),
+            ArrayKey::Str(s) => Value::Str(s.clone()),
         }
     }
 
     /// A string key from bytes (no integer normalization; use [`array_key`]
     /// for that).
     pub fn str(bytes: &[u8]) -> ArrayKey {
-        ArrayKey::Str(Box::from(bytes))
+        ArrayKey::Str(Str::new(bytes))
     }
 }
 
@@ -49,11 +68,11 @@ pub fn array_key(v: &Value) -> Option<ArrayKey> {
     Some(match v {
         Value::Int(i) => ArrayKey::Int(*i),
         Value::Bool(b) => ArrayKey::Int(*b as i64),
-        Value::Null | Value::Uninit => ArrayKey::Str(Box::from(&b""[..])),
+        Value::Null | Value::Uninit => ArrayKey::Str(Str::new(b"")),
         Value::Float(_) => ArrayKey::Int(v.to_int()),
         Value::Str(s) => match canonical_int_key(s.as_bytes()) {
             Some(i) => ArrayKey::Int(i),
-            None => ArrayKey::Str(Box::from(s.as_bytes())),
+            None => ArrayKey::Str(s.clone()),
         },
         Value::Resource(r) => ArrayKey::Int(i64::from(r.id())),
         Value::Ref(r) => return array_key(&r.borrow()),

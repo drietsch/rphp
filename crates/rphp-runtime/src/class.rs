@@ -624,11 +624,7 @@ impl ClassDef {
 
     /// The method with this (case-insensitive) name, own or inherited.
     pub fn method(&self, name: &[u8]) -> Option<&Rc<MethodDef>> {
-        if name.iter().any(u8::is_ascii_uppercase) {
-            self.methods.get(name.to_ascii_lowercase().as_slice())
-        } else {
-            self.methods.get(name)
-        }
+        crate::unit::with_lowercase(name, |key| self.methods.get(key))
     }
 
     /// The declared instance property `name`.

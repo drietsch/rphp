@@ -159,7 +159,7 @@ fn open_dir(
         s.file_name = None;
         s.path = path;
         let mut d = Dir {
-            entries,
+            entries: std::rc::Rc::new(entries),
             pos: 0,
             index: 0,
             flags,
@@ -212,7 +212,7 @@ fn di_rewind(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult
     let st = with_fs(o, |s| {
         if let Some(d) = &mut s.dir {
             if let Some(names) = fresh {
-                d.entries = names;
+                d.entries = std::rc::Rc::new(names);
             }
             d.pos = 0;
             d.index = 0;

@@ -92,7 +92,12 @@ impl Interp {
         base: usize,
         reg: u16,
     ) -> Result<(), Unwind> {
-        if !self.raw(base, reg).deref().is_uninit() {
+        let undefined = match self.raw(base, reg) {
+            Value::Uninit => true,
+            Value::Ref(cell) => cell.borrow().is_uninit(),
+            _ => false,
+        };
+        if !undefined {
             return Ok(());
         }
         let name = func
@@ -633,6 +638,13 @@ impl Interp {
 
     /// Execute the top frame's ops until it switches frames.
     fn run_frame(&mut self, stop_depth: usize) -> Result<Switch, Unwind> {
+        // A call, include, eval or return that leaves a bytecode frame on
+        // top switches to it here (`continue 'frames`) rather than through
+        // `run_until`: the locals below are the top frame's.
+        'frames: loop {
+        if self.frames.len() <= stop_depth {
+            return Ok(Switch::Continue);
+        }
         let fi = self.frames.len() - 1;
         let func = self.frames[fi]
             .func
@@ -642,7 +654,17 @@ impl Interp {
         let mut pc = self.frames[fi].pc;
         let code = &func.f.code;
         let vc = func.f.var_count;
+        #[cfg(feature = "profile")]
+        {
+            let (ops, calls) = func.profile.get();
+            func.profile.set((ops, calls + u64::from(pc == 0)));
+        }
         loop {
+            #[cfg(feature = "profile")]
+            {
+                let (ops, calls) = func.profile.get();
+                func.profile.set((ops + 1, calls));
+            }
             if rphp_value::has_pending_destructors() {
                 // ADR-017: objects whose last handle dropped during the
                 // previous op get their `__destruct` now.
@@ -654,7 +676,10 @@ impl Interp {
                 self.frames[fi].pc = pc;
                 let strict = self.frames[fi].strict;
                 let v = self.verify_return(&func, None, strict)?;
-                return self.do_return(v, stop_depth);
+                match self.do_return(v, stop_depth)? {
+                    Switch::Continue => continue 'frames,
+                    done => return Ok(done),
+                }
             };
             self.frames[fi].pc = pc;
             match op {
@@ -1716,7 +1741,7 @@ impl Interp {
                             }
                             rphp_value::ArrayKey::Str(s) => {
                                 let p = self.frames[fi].pending.last_mut().expect("pending");
-                                p.named.push((s.clone(), val.deref().into_owned()));
+                                p.named.push((Box::from(s.as_bytes()), val.deref().into_owned()));
                             }
                         }
                     }
@@ -1864,7 +1889,7 @@ impl Interp {
                             // and region lookups use it); `do_return`
                             // advances it when the callee returns.
                             self.activate(pending, FrameKind::Normal, ret, symtab, closure)?;
-                            return Ok(Switch::Continue);
+                            continue 'frames;
                         }
                     }
                 }
@@ -1913,7 +1938,10 @@ impl Interp {
                     } else {
                         v.unwrap_or(Value::Null)
                     };
-                    return self.do_return(v, stop_depth);
+                    match self.do_return(v, stop_depth)? {
+                    Switch::Continue => continue 'frames,
+                    done => return Ok(done),
+                }
                 }
                 Op::RetRef { var } => {
                     // `function &f() { return $place; }`: the caller receives
@@ -1925,7 +1953,10 @@ impl Interp {
                         let strict = self.frames[fi].strict;
                         self.verify_return(&func, Some(cell.get()), strict)?;
                     }
-                    return self.do_return(Value::Ref(cell), stop_depth);
+                    match self.do_return(Value::Ref(cell), stop_depth)? {
+                        Switch::Continue => continue 'frames,
+                        done => return Ok(done),
+                    }
                 }
                 Op::RetRefTemp { src } => {
                     self.notice("Only variable references should be returned by reference")?;
@@ -1936,7 +1967,10 @@ impl Interp {
                     } else {
                         v
                     };
-                    return self.do_return(Value::Ref(PhpRef::new(v)), stop_depth);
+                    match self.do_return(Value::Ref(PhpRef::new(v)), stop_depth)? {
+                        Switch::Continue => continue 'frames,
+                        done => return Ok(done),
+                    }
                 }
 
                 // --- prologue ---
@@ -2440,7 +2474,7 @@ impl Interp {
                 Op::Include { dst, path, kind } => {
                     let p = self.rd(base, path).to_php_bytes();
                     if self.include_file(&p, kind, base + dst as usize)? {
-                        return Ok(Switch::Continue);
+                        continue 'frames;
                     }
                 }
                 Op::Eval { dst, src } => {
@@ -2448,7 +2482,7 @@ impl Interp {
                     // `eval.rs` compiles the string and pushes its frame.
                     self.stack[base + dst as usize] = Value::Null;
                     if self.eval_code(&code, base + dst as usize)? {
-                        return Ok(Switch::Continue);
+                        continue 'frames;
                     }
                 }
                 Op::Yield { dst, key, val } => {
@@ -2504,7 +2538,10 @@ impl Interp {
                             } else {
                                 v
                             };
-                            return self.do_return(v, stop_depth);
+                            match self.do_return(v, stop_depth)? {
+                    Switch::Continue => continue 'frames,
+                    done => return Ok(done),
+                }
                         }
                         Some(FinallyState::Jump) => {
                             let k = self.rd(base, payload).to_int();
@@ -2551,6 +2588,7 @@ impl Interp {
                 }
             }
             pc += 1;
+        }
         }
     }
 
@@ -2677,11 +2715,19 @@ impl Interp {
                 top.pc += 1;
             }
         }
+        let done = f.kind == FrameKind::ReentryBoundary || self.frames.len() <= stop_depth;
         match f.ret {
             RetTarget::Discard => {}
             RetTarget::Reg(abs) => {
                 if abs < self.stack.len() {
-                    self.stack[abs] = v.clone();
+                    // The value is moved into the register unless the
+                    // boundary also wants it.
+                    if done {
+                        self.stack[abs] = v.clone();
+                    } else {
+                        Value::overwrite(&mut self.stack[abs], v);
+                        return Ok(Switch::Continue);
+                    }
                 }
             }
             RetTarget::New { reg, obj } => {
@@ -2690,7 +2736,7 @@ impl Interp {
                 }
             }
         }
-        if f.kind == FrameKind::ReentryBoundary || self.frames.len() <= stop_depth {
+        if done {
             return Ok(Switch::Done(v));
         }
         Ok(Switch::Continue)

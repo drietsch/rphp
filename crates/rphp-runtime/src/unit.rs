@@ -149,15 +149,21 @@ pub struct FuncRt {
     /// The declaring class (process-wide id) for methods.
     pub class: Option<u32>,
     /// Register → variable name (the inverse of `Function::var_names`), for
-    /// symbol-table rebinding.
-    pub reg_names: Vec<Option<Box<[u8]>>>,
+    /// symbol-table rebinding (shared with the compiled function).
+    pub reg_names: Rc<[Option<Box<[u8]>>]>,
     /// `#[\Deprecated]` on the function: `None` not looked at yet,
     /// `Some(None)` not deprecated, `Some(Some(note))` the notice's tail.
     pub deprecated: RefCell<Option<Option<Box<str>>>>,
     /// The constant pool as values, for constant operands
     /// (`CONST_OPERAND`) and `LoadConst`: a table entry that has no value
-    /// form is null here.
-    pub const_values: Vec<Value>,
+    /// form is null here (shared with the compiled function).
+    pub const_values: Rc<[Value]>,
+    /// `Function::required_params()`, computed once (every call reads it).
+    pub required: usize,
+    /// Ops executed and calls made, under the `profile` feature.
+    pub profile: std::cell::Cell<(u64, u64)>,
+    /// Whether any parameter is typed (else `activate` skips the check).
+    pub has_typed_params: bool,
 }
 
 impl FuncRt {
@@ -177,6 +183,24 @@ impl FuncRt {
     pub fn line_at(&self, pc: usize) -> u32 {
         self.f.line_at(pc).unwrap_or(0)
     }
+}
+
+/// Run `f` on the ASCII-lowercased `name` without allocating for the
+/// usual short identifier (a class, function or method name): the key
+/// tables are lowercased, and every lookup lowercases its query.
+#[inline]
+pub(crate) fn with_lowercase<R>(name: &[u8], f: impl FnOnce(&[u8]) -> R) -> R {
+    if !name.iter().any(u8::is_ascii_uppercase) {
+        return f(name);
+    }
+    if name.len() <= 128 {
+        let mut buf = [0u8; 128];
+        let b = &mut buf[..name.len()];
+        b.copy_from_slice(name);
+        b.make_ascii_lowercase();
+        return f(b);
+    }
+    f(&name.to_ascii_lowercase())
 }
 
 impl Interp {
@@ -212,15 +236,13 @@ impl Interp {
 
     /// Look a (case-insensitive) function name up in the user function table.
     pub fn user_function(&self, name: &[u8]) -> Option<u32> {
-        let key = name.to_ascii_lowercase();
-        self.func_index.get(key.as_slice()).copied()
+        with_lowercase(name, |key| self.func_index.get(key).copied())
     }
 
     /// Look a (case-insensitive) class name up (no autoload yet).
     pub fn class_by_name(&self, name: &[u8]) -> Option<u32> {
         let name = name.strip_prefix(b"\\").unwrap_or(name);
-        let key = name.to_ascii_lowercase();
-        self.class_index.get(key.as_slice()).copied()
+        with_lowercase(name, |key| self.class_index.get(key).copied())
     }
 
     /// Whether `class` is `ancestor`, descends from it or implements it
@@ -264,17 +286,23 @@ impl Interp {
             decls: classes,
         });
         for (i, f) in funcs.into_iter().enumerate() {
-            let mut reg_names: Vec<Option<Box<[u8]>>> = vec![None; f.num_regs as usize];
-            for (name, reg) in &f.var_names {
-                if let Some(slot) = reg_names.get_mut(*reg as usize) {
-                    *slot = Some(name.clone());
-                }
-            }
+            // A producer that skipped the derived tables (a hand-built
+            // function) gets them here, on a copy of its own.
+            let f = if f.tables_derived() {
+                f
+            } else {
+                let mut own = (*f).clone();
+                own.derive_tables();
+                Rc::new(own)
+            };
+            let reg_names = f.reg_names.clone();
+            let const_values = f.const_values.clone();
             let class = f.in_class.map(|c| class_base + c);
             let ics = vec![IcSlot::Empty; f.ic_count as usize];
             let statics = vec![None; f.statics.len()];
             let deprecated = RefCell::new(if f.attrs.is_empty() { Some(None) } else { None });
-            let const_values = f.consts.iter().map(|c| c.to_value()).collect();
+            let required = f.required_params();
+            let has_typed_params = f.params.iter().any(|p| p.ty.is_some());
             self.funcs.push(Rc::new(FuncRt {
                 id: func_base + i as u32,
                 f,
@@ -285,6 +313,9 @@ impl Interp {
                 reg_names,
                 deprecated,
                 const_values,
+                required,
+                has_typed_params,
+                profile: std::cell::Cell::new((0, 0)),
             }));
         }
         for (i, c) in unit.decls.iter().enumerate() {
@@ -611,12 +642,16 @@ impl Interp {
         let id = def.id;
         let lname = def.lname.clone();
         self.well_known.record(&lname, id);
+        // A class already published (a native re-registered under its id, an
+        // anonymous class declared again) keeps its place in the order.
+        let published = self.class_index.contains_key(&lname)
+            || (id as usize) < self.classes.len() && self.classes[id as usize].linked;
         if id as usize == self.classes.len() {
             self.classes.push(Rc::new(def));
         } else {
             self.classes[id as usize] = Rc::new(def);
         }
-        if !self.class_order.contains(&id) {
+        if !published {
             self.class_order.push(id);
         }
         self.class_index.insert(lname, id);

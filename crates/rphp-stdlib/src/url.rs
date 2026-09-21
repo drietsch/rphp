@@ -397,7 +397,7 @@ pub(crate) fn http_build_query(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
             let mut a = Array::new();
             for (name, v, vis) in o.props_snapshot() {
                 if vis == rphp_value::Vis::Public {
-                    a.set(ArrayKey::Str(name), v);
+                    a.set(ArrayKey::Str(name.into()), v);
                 }
             }
             build_query(&mut out, &a, &prefix, &sep, raw, None)
@@ -446,7 +446,7 @@ fn build_query(out: &mut Vec<u8>, a: &Array, num_prefix: &[u8], sep: &[u8], raw:
                 let mut inner = Array::new();
                 for (name, pv, vis) in o.props_snapshot() {
                     if vis == rphp_value::Vis::Public {
-                        inner.set(ArrayKey::Str(name), pv);
+                        inner.set(ArrayKey::Str(name.into()), pv);
                     }
                 }
                 build_query(out, &inner, num_prefix, sep, raw, Some(&key));

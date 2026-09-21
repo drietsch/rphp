@@ -330,7 +330,7 @@ impl Interp {
             packed.push(a.deref().into_owned());
         }
         for (k, v) in named {
-            packed.set(ArrayKey::Str(k), v.deref().into_owned());
+            packed.set(ArrayKey::Str(k.into()), v.deref().into_owned());
         }
         let call_args = [Value::string(&m.name), Value::Array(packed)];
         let static_class = match &this {

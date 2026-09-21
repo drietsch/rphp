@@ -393,7 +393,7 @@ fn get_iterator(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRes
 fn elements_and_props(o: &Object) -> Array {
     let mut out = elements(o);
     for (name, value, _) in o.props_snapshot() {
-        out.set(ArrayKey::Str(name), value);
+        out.set(ArrayKey::Str(name.into()), value);
     }
     out
 }

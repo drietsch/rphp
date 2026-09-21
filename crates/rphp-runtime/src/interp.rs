@@ -241,6 +241,8 @@ pub struct Interp {
     pub last_error: Option<LastError>,
     /// `@` nesting depth.
     pub silence: u32,
+    /// Under the `profile` feature: inclusive time and calls per native.
+    pub profile_natives: HashMap<String, (std::time::Duration, u64)>,
     /// A `FnFlags::LIGHT` native is running without a frame: a
     /// diagnostic it emits cannot be attributed, so `emit_error` aborts
     /// the call with `Unwind::Retry` and the engine re-runs it on the
@@ -304,6 +306,63 @@ const LIGHT_NATIVES: &[&str] = &[
 ];
 
 impl Interp {
+    /// Under the `profile` feature: record one native call's inclusive time.
+    #[cfg(feature = "profile")]
+    pub(crate) fn profile_native(&mut self, name: &str, took: std::time::Duration) {
+        let e = self.profile_natives.entry(name.to_string()).or_default();
+        e.0 += took;
+        e.1 += 1;
+    }
+
+    #[cfg(feature = "profile")]
+    pub(crate) fn profile_native_owned(&mut self, name: String, took: std::time::Duration) {
+        let e = self.profile_natives.entry(name).or_default();
+        e.0 += took;
+        e.1 += 1;
+    }
+
+    /// Under the `profile` feature: the functions that executed the most
+    /// ops this request, and the natives that took the most inclusive
+    /// time, to stderr.
+    pub fn dump_profile(&self) {
+        if !cfg!(feature = "profile") {
+            return;
+        }
+        let mut natives: Vec<(&String, &(std::time::Duration, u64))> = self.profile_natives.iter().collect();
+        natives.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        let total: std::time::Duration = natives.iter().map(|(_, (d, _))| *d).sum();
+        eprintln!("== natives: {:.1} ms inclusive in {} natives", total.as_secs_f64() * 1e3, natives.len());
+        for (name, (d, calls)) in natives.iter().take(45) {
+            eprintln!("{:9.2} ms {calls:>8} calls  {name}", d.as_secs_f64() * 1e3);
+        }
+        let mut rows: Vec<(u64, u64, String)> = self
+            .funcs
+            .iter()
+            .map(|f| {
+                let (ops, calls) = f.profile.get();
+                let name = match f.class {
+                    Some(cid) => format!(
+                        "{}::{}",
+                        String::from_utf8_lossy(&self.classes[cid as usize].name),
+                        String::from_utf8_lossy(&f.f.name_bytes)
+                    ),
+                    None if f.f.name_bytes.is_empty() => format!("{{main}} {}", f.unit.file),
+                    None => String::from_utf8_lossy(&f.f.name_bytes).into_owned(),
+                };
+                (ops, calls, name)
+            })
+            .filter(|(ops, _, _)| *ops > 0)
+            .collect();
+        rows.sort_by(|a, b| b.0.cmp(&a.0));
+        let total: u64 = rows.iter().map(|r| r.0).sum();
+        eprintln!("== profile: {total} ops in {} functions", rows.len());
+        for (ops, calls, name) in rows.iter().take(60) {
+            eprintln!("{ops:>10} ops {calls:>8} calls {:5.1}%  {name}", 100.0 * *ops as f64 / total as f64);
+        }
+    }
+}
+
+impl Interp {
     /// A bare interpreter writing to `sink`: no natives, no constants, the
     /// core ini defaults, `error_reporting = E_ALL`, and the engine class
     /// `stdClass`. The SAPI (rphp-embed) populates it through
@@ -331,6 +390,7 @@ impl Interp {
             vec_pool: Vec::new(),
             stack: Vec::new(),
             light_native: false,
+            profile_natives: HashMap::new(),
             reentry_depth: 0,
             included: HashSet::new(),
             generators: Vec::new(),
@@ -485,8 +545,7 @@ impl Interp {
 
     /// Resolve a (case-insensitive) function name to its native id.
     pub fn native_by_name(&self, name: &[u8]) -> Option<NativeId> {
-        let key = name.to_ascii_lowercase();
-        self.native_index.get(key.as_slice()).copied()
+        crate::unit::with_lowercase(name, |key| self.native_index.get(key).copied())
     }
 
     /// The descriptor of a registered native.

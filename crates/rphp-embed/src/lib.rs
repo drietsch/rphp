@@ -705,6 +705,7 @@ fn is_php_compile_fatal(code: &str, message: &str) -> bool {
 /// so every one ends here.
 pub fn request_shutdown(interp: &mut Interp) {
     rphp_stdlib::request_shutdown(interp);
+    interp.dump_profile();
 }
 
 /// Evaluate PHP source through the full parse → compile → run pipeline on an

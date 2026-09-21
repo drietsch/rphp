@@ -55,7 +55,7 @@ pub(crate) fn call_user_func_array(ctx: &mut Ctx, args: &mut [Value]) -> NativeR
                 }
                 positional.push(v.clone());
             }
-            ArrayKey::Str(s) => named.push((s.clone(), v.clone())),
+            ArrayKey::Str(s) => named.push((Box::from(s.as_bytes()), v.clone())),
         }
     }
     if named.is_empty() {

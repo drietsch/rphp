@@ -175,8 +175,9 @@ impl FnCompiler<'_> {
                 _ => {
                     let make = binary_op(*op).expect("every remaining operator lowers");
                     let mark = self.temp_top;
-                    let a = self.compile_expr(lhs);
-                    let b = self.compile_expr(rhs);
+                    // A literal operand is named from the pool, not loaded.
+                    let a = self.operand(lhs);
+                    let b = self.operand(rhs);
                     self.free_to(mark);
                     let dst = self.alloc_temp();
                     self.emit(make(dst, a, b));
@@ -896,7 +897,11 @@ impl FnCompiler<'_> {
         self.nullsafe.push(NullsafeCtx { jumps: Vec::new() });
         let saved = self.in_nullsafe;
         self.in_nullsafe = true;
+        // Past a `?->` the chain may be skipped: its assignments (an
+        // argument's) are conditional.
+        let before = self.assigned_snapshot();
         let r = self.compile_expr(e);
+        self.restore_assigned(&before);
         self.in_nullsafe = saved;
         let ctx = self.nullsafe.pop().expect("nullsafe ctx");
         self.emit(Op::Move { dst: res, src: r });
@@ -1180,6 +1185,8 @@ impl FnCompiler<'_> {
                 let r = self.value_reg(value);
                 self.store_var(dst, r);
                 self.free_to(mark);
+                // Assigned from here on (the value's own reads came first).
+                self.mark_assigned(*id);
                 dst
             }
             Expr::Var(id, span) => {
@@ -1479,6 +1486,9 @@ impl FnCompiler<'_> {
             Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => {
                 let dst = self.var_reg(*id);
                 self.emit(Op::AssignRef { dst, src });
+                // Bound to a cell: a read answers (null at worst) without
+                // php's warning.
+                self.mark_assigned(*id);
                 self.free_to(mark);
                 dst
             }
@@ -1566,9 +1576,12 @@ impl FnCompiler<'_> {
         };
         match target {
             Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => {
-                let var = self.var_reg(*id);
                 let mark = self.temp_top;
                 let src = self.compile_expr(value);
+                // php reads the variable after the operand: an undefined one
+                // warns there and counts as null.
+                let var = self.read_var(*id);
+                self.mark_assigned(*id);
                 self.emit(Op::AssignOp { op: kind, var, src });
                 self.free_to(mark);
                 var
@@ -1747,7 +1760,9 @@ impl FnCompiler<'_> {
                 let c = self.alloc_temp();
                 self.emit(Op::IssetVar { dst: c, var });
                 let jset = self.emit(Op::JmpIfTrue { cond: c, target: 0 });
+                let before = self.assigned_snapshot();
                 let v = self.compile_expr(value);
+                self.restore_assigned(&before);
                 self.store_var(var, v);
                 let lend = self.here();
                 self.patch(jset, lend);
@@ -1785,7 +1800,9 @@ impl FnCompiler<'_> {
                 let jend = self.jmp_fwd();
                 let lassign = self.here();
                 self.patch(jassign, lassign);
+                let before = self.assigned_snapshot();
                 let v = self.compile_expr(value);
+                self.restore_assigned(&before);
                 match plan {
                     Some(plan) => {
                         let (handle, wbs) = self.plan_fetch_w(&plan);
@@ -1832,7 +1849,9 @@ impl FnCompiler<'_> {
                 let jend = self.jmp_fwd();
                 let lassign = self.here();
                 self.patch(jassign, lassign);
+                let before = self.assigned_snapshot();
                 let v = self.compile_expr(value);
+                self.restore_assigned(&before);
                 let ic = self.ic();
                 self.emit(Op::AssignProp {
                     obj: o,
@@ -1865,7 +1884,9 @@ impl FnCompiler<'_> {
                 let jend = self.jmp_fwd();
                 let lassign = self.here();
                 self.patch(jassign, lassign);
+                let before = self.assigned_snapshot();
                 let v = self.compile_expr(value);
+                self.restore_assigned(&before);
                 let ic = self.ic();
                 self.emit(Op::AssignStaticProp { class, name, src: v, ic });
                 self.emit(Op::Move { dst: res, src: v });
@@ -1939,7 +1960,10 @@ impl FnCompiler<'_> {
     fn compile_incdec(&mut self, target: &Expr, pre: bool, inc: bool, want: bool) -> Reg {
         match target {
             Expr::Var(id, _) if !self.is_this(*id) && !self.is_globals(*id) => {
-                let var = self.var_reg(*id);
+                // An undefined variable warns and counts as null (`++` makes
+                // it 1, `--` leaves it null).
+                let var = self.read_var(*id);
+                self.mark_assigned(*id);
                 let dst = if want { Some(self.alloc_temp()) } else { None };
                 self.emit(Op::IncDec { var, dst, pre, inc });
                 dst.unwrap_or(var)
@@ -2229,8 +2253,11 @@ impl FnCompiler<'_> {
             target: 0,
         });
         self.free_to(mark);
-        // True path: dst = (bool) b, via double logical-negation.
+        // True path: dst = (bool) b, via double logical-negation. What `b`
+        // assigns, it assigns conditionally.
+        let before = self.assigned_snapshot();
         let rb = self.compile_expr(rhs);
+        self.restore_assigned(&before);
         self.emit(Op::Not { dst, src: rb });
         self.emit(Op::Not { dst, src: dst });
         self.free_to(mark);
@@ -2255,7 +2282,9 @@ impl FnCompiler<'_> {
         });
         self.free_to(mark);
         // Fall-through path: lhs was falsy -> result = (bool) b.
+        let before = self.assigned_snapshot();
         let rb = self.compile_expr(rhs);
+        self.restore_assigned(&before);
         self.emit(Op::Not { dst, src: rb });
         self.emit(Op::Not { dst, src: dst });
         self.free_to(mark);
@@ -2282,7 +2311,9 @@ impl FnCompiler<'_> {
         self.free_to(mark);
         let lelse = self.here();
         self.patch(jelse, lelse);
+        let before = self.assigned_snapshot();
         let r = self.compile_expr(rhs);
+        self.restore_assigned(&before);
         self.emit(Op::Move { dst: res, src: r });
         self.free_to(mark);
         let lend = self.here();
@@ -2296,6 +2327,7 @@ impl FnCompiler<'_> {
         let mark = self.temp_top;
         let c = self.compile_expr(cond);
         let jelse = self.emit(Op::JmpIfFalse { cond: c, target: 0 });
+        let before = self.assigned_snapshot();
         match then {
             Some(then) => {
                 let t = self.compile_expr(then);
@@ -2309,7 +2341,9 @@ impl FnCompiler<'_> {
         self.free_to(mark);
         let lelse = self.here();
         self.patch(jelse, lelse);
+        self.restore_assigned(&before);
         let e = self.compile_expr(else_);
+        self.restore_assigned(&before);
         self.emit(Op::Move { dst: res, src: e });
         self.free_to(mark);
         let lend = self.here();
@@ -2554,7 +2588,9 @@ impl FnCompiler<'_> {
             starts.push(self.here());
             self.mark_line(a.span);
             let m = self.temp_top;
+            let before = self.assigned_snapshot();
             let r = self.compile_expr(&a.body);
+            self.restore_assigned(&before);
             self.emit(Op::Move { dst: res, src: r });
             self.free_to(m);
             ends.push(self.jmp_fwd());
@@ -2723,7 +2759,8 @@ impl FnCompiler<'_> {
                 unsupported(self.diags, *span, "`[]` append as an argument");
             }
             other => {
-                let src = self.compile_expr(other);
+                // A literal argument is sent from the pool, not loaded first.
+                let src = self.operand(other);
                 self.emit(Op::SendVal { pos, src });
             }
         }

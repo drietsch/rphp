@@ -142,6 +142,13 @@ impl Interp {
             CallTarget::User { func, .. } => func,
             _ => unreachable!("activate on a non-user target"),
         };
+        // User code under a frameless native (a `__toString`, a callback)
+        // would run without the native's frame on the stack: re-run the
+        // native on the full path instead, before anything of the user's
+        // has run.
+        if self.light_native {
+            return Err(Unwind::Retry);
+        }
         if self.frames.len() >= MAX_FRAMES {
             return Err(Unwind::error(format!(
                 "Maximum function nesting level of '{MAX_FRAMES}' reached, aborting!"

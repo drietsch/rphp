@@ -410,6 +410,12 @@ pub struct Function {
     pub num_params: u16,
     /// Total registers this frame needs (params occupy `0 .. num_params`).
     pub num_regs: u16,
+    /// Registers `0 .. var_count` are the named variables (params, captures,
+    /// locals), which may hold a reference cell; the rest are temporaries,
+    /// which never do. An op whose result register is a variable's stores
+    /// *through* a cell (`$x = …` where `$x` is by-reference), where a
+    /// temporary is simply overwritten.
+    pub var_count: u16,
     pub code: Vec<Op>,
     pub consts: Vec<Const>,
     /// For a closure body: the registers that captured variables bind to, in
@@ -468,6 +474,7 @@ impl Default for Function {
             name_bytes: Box::from(&b""[..]),
             num_params: 0,
             num_regs: 0,
+            var_count: 0,
             code: Vec::new(),
             consts: Vec::new(),
             capture_regs: Vec::new(),

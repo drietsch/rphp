@@ -236,6 +236,19 @@ pub enum IncludeKind {
 /// only evaluates and assigns the right-hand side when the target is unset or
 /// null (the compiler emits the short-circuit branch; the op itself is the
 /// assignment).
+/// The comparison an [`Op::JmpUnless`] makes (the `Cmp*` ops, by name).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum CmpKind {
+    Eq,
+    Ne,
+    Identical,
+    NotIdentical,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum AssignOpKind {
     /// `+=`
@@ -518,6 +531,15 @@ pub enum Op {
         cond: Reg,
         target: CodeAddr,
     },
+    /// Jump to `target` unless `a <kind> b` holds — a comparison and the
+    /// `JmpIfFalse` on its result fused, php's smart branch. The operands
+    /// may be constants ([`CONST_OPERAND`](crate::CONST_OPERAND)).
+    JmpUnless {
+        kind: CmpKind,
+        a: Reg,
+        b: Reg,
+        target: CodeAddr,
+    },
 
     // --- calls (M0 form; superseded by the Init*/Send*/DoCall sequence below) ---
     /// Call `func` with `argc` args staged in `base ..= base+argc-1`; result -> `dst`.
@@ -672,7 +694,8 @@ pub enum Op {
     /// occur in ascending `pos` order). Used when the argument is not a
     /// variable/element/property; passing to a by-reference parameter raises
     /// `Error: X(): Argument #n could not be passed by reference` (compiler
-    /// catches the literal cases as a fatal error where PHP does).
+    /// catches the literal cases as a fatal error where PHP does). `src` may
+    /// be a constant operand ([`CONST_OPERAND`](crate::CONST_OPERAND)).
     SendVal {
         pos: u16,
         src: Reg,
@@ -908,6 +931,13 @@ pub enum Op {
     /// binding (the cell itself survives for other holders).
     UnsetVar {
         var: Reg,
+    },
+    /// `unset($$name)`: remove the entry named by the string in `name` from
+    /// the frame's symbol table, and reset the frame's own register of that
+    /// name, if it has one, as [`Op::UnsetVar`] would. The frame is
+    /// `NEEDS_SYMTAB`.
+    UnsetDynVar {
+        name: Reg,
     },
     /// `unset($arr[$key])`: remove the key (tombstone); silent if absent;
     /// `ArrayAccess::offsetUnset` on objects; `Error` on strings.
@@ -1349,6 +1379,81 @@ const _: () = assert!(
     std::mem::size_of::<Op>() <= 16,
     "Op must stay within 16 bytes (plan E11)"
 );
+impl Op {
+    /// The register an op computes its result into, for the ops whose
+    /// result can be redirected to a variable's register (`$x = $a + $b`
+    /// computes straight into `$x`, see `Function::var_count`): the
+    /// operators, a constant load, an element or property read.
+    pub fn result_reg(&self) -> Option<Reg> {
+        match self {
+            Op::LoadConst { dst, .. }
+            | Op::Add { dst, .. }
+            | Op::Sub { dst, .. }
+            | Op::Mul { dst, .. }
+            | Op::Div { dst, .. }
+            | Op::Mod { dst, .. }
+            | Op::Pow { dst, .. }
+            | Op::Neg { dst, .. }
+            | Op::Concat { dst, .. }
+            | Op::ArrayGet { dst, .. }
+            | Op::CmpEq { dst, .. }
+            | Op::CmpNe { dst, .. }
+            | Op::CmpIdentical { dst, .. }
+            | Op::CmpNotIdentical { dst, .. }
+            | Op::CmpLt { dst, .. }
+            | Op::CmpLe { dst, .. }
+            | Op::CmpGt { dst, .. }
+            | Op::CmpGe { dst, .. }
+            | Op::Spaceship { dst, .. }
+            | Op::Not { dst, .. }
+            | Op::FetchProp { dst, .. }
+            | Op::BitAnd { dst, .. }
+            | Op::BitOr { dst, .. }
+            | Op::BitXor { dst, .. }
+            | Op::Shl { dst, .. }
+            | Op::Shr { dst, .. }
+            | Op::BitNot { dst, .. }
+            | Op::Plus { dst, .. } => Some(*dst),
+            _ => None,
+        }
+    }
+
+    /// Redirect the result of an op [`Op::result_reg`] answers for.
+    pub fn set_result_reg(&mut self, r: Reg) {
+        match self {
+            Op::LoadConst { dst, .. }
+            | Op::Add { dst, .. }
+            | Op::Sub { dst, .. }
+            | Op::Mul { dst, .. }
+            | Op::Div { dst, .. }
+            | Op::Mod { dst, .. }
+            | Op::Pow { dst, .. }
+            | Op::Neg { dst, .. }
+            | Op::Concat { dst, .. }
+            | Op::ArrayGet { dst, .. }
+            | Op::CmpEq { dst, .. }
+            | Op::CmpNe { dst, .. }
+            | Op::CmpIdentical { dst, .. }
+            | Op::CmpNotIdentical { dst, .. }
+            | Op::CmpLt { dst, .. }
+            | Op::CmpLe { dst, .. }
+            | Op::CmpGt { dst, .. }
+            | Op::CmpGe { dst, .. }
+            | Op::Spaceship { dst, .. }
+            | Op::Not { dst, .. }
+            | Op::FetchProp { dst, .. }
+            | Op::BitAnd { dst, .. }
+            | Op::BitOr { dst, .. }
+            | Op::BitXor { dst, .. }
+            | Op::Shl { dst, .. }
+            | Op::Shr { dst, .. }
+            | Op::BitNot { dst, .. }
+            | Op::Plus { dst, .. } => *dst = r,
+            _ => {}
+        }
+    }
+}
+
 const _: () = assert!(std::mem::size_of::<ClassRef>() == 4);
 const _: () = assert!(std::mem::size_of::<NameRef>() == 4);
 const _: () = assert!(std::mem::size_of::<InitRef>() == 8);

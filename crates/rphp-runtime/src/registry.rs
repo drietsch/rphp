@@ -169,6 +169,10 @@ pub enum Unwind {
     /// `exit(code)` / a fatal error: unwind to the top and end the request
     /// with this exit code.
     Exit(i32),
+    /// A `FnFlags::LIGHT` native reached for what the frameless path does
+    /// not give it (a diagnostic, the calling frame): the engine re-runs
+    /// the call on the full path. Never escapes `DoCall`.
+    Retry,
 }
 
 impl Unwind {
@@ -240,7 +244,7 @@ impl Unwind {
         match self {
             Unwind::Pending(p) => Some(p.message.clone()),
             Unwind::Throw(o) => o.get_deref(b"message").map(|v| v.to_php_string()),
-            Unwind::Exit(_) => None,
+            Unwind::Exit(_) | Unwind::Retry => None,
         }
     }
 
@@ -258,7 +262,7 @@ impl Unwind {
         match self {
             Unwind::Pending(p) => Some(p.kind.class_name().to_string()),
             Unwind::Throw(o) => Some(String::from_utf8_lossy(o.layout().class_name()).into_owned()),
-            Unwind::Exit(_) => None,
+            Unwind::Exit(_) | Unwind::Retry => None,
         }
     }
 
@@ -278,6 +282,7 @@ impl Unwind {
             }
             Unwind::Pending(p) => format!("Uncaught {}: {}", p.kind.class_name(), p.message),
             Unwind::Exit(code) => format!("exit({code})"),
+            Unwind::Retry => "retry".to_string(),
         }
     }
 }
@@ -292,6 +297,7 @@ impl fmt::Debug for Unwind {
             ),
             Unwind::Pending(p) => f.debug_tuple("Pending").field(p).finish(),
             Unwind::Exit(c) => f.debug_tuple("Exit").field(c).finish(),
+            Unwind::Retry => f.write_str("Retry"),
         }
     }
 }

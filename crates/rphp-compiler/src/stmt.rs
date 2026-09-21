@@ -73,20 +73,11 @@ impl FnCompiler<'_> {
     pub(crate) fn compile_stmt(&mut self, s: &Stmt) {
         self.mark_line(s.span());
         // A statement that branches makes the linear walk say nothing about
-        // what ran, so what is known to be assigned is forgotten around it.
-        // Erring this way only costs a comparison at run time.
-        if matches!(
-            s,
-            Stmt::If { .. }
-                | Stmt::While { .. }
-                | Stmt::DoWhile { .. }
-                | Stmt::For { .. }
-                | Stmt::Foreach { .. }
-                | Stmt::Switch { .. }
-                | Stmt::Try { .. }
-                | Stmt::Goto { .. }
-                | Stmt::Label { .. }
-        ) {
+        // what its body assigned, so the set of assigned variables comes
+        // back to what it was around it (`FnCompiler::assigned`); a label
+        // or `goto` says nothing at all. Erring this way only costs a
+        // comparison at run time.
+        if matches!(s, Stmt::Goto { .. } | Stmt::Label { .. }) {
             self.forget_assigned();
         }
         let branching = matches!(
@@ -99,6 +90,13 @@ impl FnCompiler<'_> {
                 | Stmt::Switch { .. }
                 | Stmt::Try { .. }
         );
+        if branching {
+            self.branch_bases.push(self.assigned_snapshot());
+            // Without structure, nothing carries into the construct either.
+            if !self.structured_assign {
+                self.forget_assigned();
+            }
+        }
         match s {
             Stmt::Echo { args, .. } => {
                 for a in args {
@@ -136,10 +134,7 @@ impl FnCompiler<'_> {
                 let top = self.temp_top;
                 self.release_temps(mark, Some(rc));
                 self.set_top(top);
-                let jf = self.emit(Op::JmpIfFalse {
-                    cond: rc,
-                    target: 0,
-                });
+                let jf = self.jump_if_false(rc);
                 self.free_to(mark);
                 self.push_loop(false);
                 self.compile_nested(body);
@@ -191,10 +186,7 @@ impl FnCompiler<'_> {
                     let top = self.temp_top;
                     self.release_temps(mark, Some(rc));
                     self.set_top(top);
-                    jf = Some(self.emit(Op::JmpIfFalse {
-                        cond: rc,
-                        target: 0,
-                    }));
+                    jf = Some(self.jump_if_false(rc));
                     self.free_to(mark);
                 }
                 self.push_loop(false);
@@ -326,6 +318,8 @@ impl FnCompiler<'_> {
             Stmt::StaticVar { vars, .. } => {
                 for v in vars {
                     let reg = self.var_reg(v.name);
+                    // Bound to its cell from here on.
+                    self.mark_assigned(v.name);
                     let idx = self.statics.len() as u16;
                     let name: Box<[u8]> = self.interner().resolve(v.name).into();
                     // A literal initializer is a pool constant bound in one
@@ -423,8 +417,17 @@ impl FnCompiler<'_> {
         }
         // Whatever the body assigned was assigned *conditionally*.
         if branching {
-            self.forget_assigned();
+            let base = self.branch_bases.pop().expect("pushed above");
+            self.restore_assigned(&base);
         }
+    }
+
+    /// Enter an alternative of the innermost branching statement (`else`, a
+    /// `case`, a `catch`, `finally`): only what was assigned before the
+    /// statement is assigned here.
+    pub(crate) fn enter_alternative(&mut self) {
+        let base = self.branch_bases.last().cloned().unwrap_or_default();
+        self.restore_assigned(&base);
     }
 
     /// `if (cond) then [elseif (c) body]* [else body]`. Each `elseif` is
@@ -443,10 +446,7 @@ impl FnCompiler<'_> {
         let top = self.temp_top;
         self.release_temps(mark, Some(rc));
         self.set_top(top);
-        let jf = self.emit(Op::JmpIfFalse {
-            cond: rc,
-            target: 0,
-        });
+        let jf = self.jump_if_false(rc);
         self.free_to(mark);
         self.compile_nested(then);
         let has_else = !elseifs.is_empty() || else_.is_some();
@@ -458,6 +458,8 @@ impl FnCompiler<'_> {
         let jend = self.jmp_fwd();
         let lelse = self.here();
         self.patch(jf, lelse);
+        // The `then` branch's assignments are not this branch's.
+        self.enter_alternative();
         match elseifs.split_first() {
             Some((first, rest)) => {
                 self.mark_line(first.span);
@@ -622,6 +624,9 @@ impl FnCompiler<'_> {
         let mut starts = Vec::with_capacity(cases.len());
         for c in cases {
             starts.push(self.here());
+            // A case is entered from the dispatch, not only by falling
+            // through the one above.
+            self.enter_alternative();
             self.compile_nested(&c.body);
         }
         let lend = self.here();
@@ -660,6 +665,15 @@ impl FnCompiler<'_> {
             Expr::Var(id, _) if !self.is_this(*id) => {
                 let var = self.var_reg(*id);
                 self.emit(Op::UnsetVar { var });
+                self.assigned.remove(id);
+            }
+            Expr::VarVar { name, .. } => {
+                let mark = self.temp_top;
+                let name = self.compile_expr(name);
+                self.emit(Op::UnsetDynVar { name });
+                self.free_to(mark);
+                // Any local may be the one named.
+                self.forget_assigned();
             }
             Expr::Index {
                 base,

@@ -46,7 +46,7 @@ pub use func::{
     Function, InitRef, ParamDef, PromotedProp, StaticVar,
 };
 pub use op::{
-    AssignOpKind, CastKind, ClassRef, ClassRefKind, FinallyState, IncludeKind, NameRef,
+    AssignOpKind, CastKind, ClassRef, ClassRefKind, CmpKind, FinallyState, IncludeKind, NameRef,
     NameRefKind, Op,
 };
 pub use types::{BuiltinType, TypeDecl};
@@ -56,6 +56,12 @@ use rphp_value::Vis;
 
 /// A register index within a frame.
 pub type Reg = u16;
+/// An operand register at or above this names a **constant** instead:
+/// `r - CONST_OPERAND` indexes the function's pool. Only the arithmetic,
+/// bitwise, string and comparison ops (and [`Op::JmpUnless`]) take
+/// constant operands, so `$i + 1` and `$i < 10` need no `LoadConst`; the
+/// compiler falls back to one past the pool's 32768th entry.
+pub const CONST_OPERAND: Reg = 0x8000;
 /// An index into a function's (or a [`ClassDecl`]'s) constant pool.
 pub type ConstIdx = u32;
 /// An index into `Module::funcs` / `CompiledUnit::funcs`.

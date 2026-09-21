@@ -1103,3 +1103,32 @@ and — through `get_debug_info` / `__debugInfo()` — the dumps). Landed:
 Corpus: `spl/property-purposes.php`, `spl/container-compare.php`,
 `spl/container-state.php`, `lang/debug-info.php`. Known: `debug_zval_dump()`
 is not implemented (its refcounts could never match).
+
+## Interpreter performance, sixth wave: the per-op cost (2026-09-21)
+
+The compiler side of the bench README's sixth wave, and the php rules it
+had to get right on the way (`lang/undefined-variable-paths.php`):
+`Undefined variable` is judged by what really ran — what a branch assigns
+is only conditionally assigned after it, what was assigned before a
+branch stays assigned inside and after it, an `unset()` anywhere in the
+body (or `$$name`, `include`, `eval`, `goto`) disables the carry-over, a
+`switch` case and a `catch`/`finally` body start from what was assigned
+before the statement, an arrow function's implicit capture of an
+undefined variable warns inside the body (a `use` capture does not:
+php warned at creation), and `$x .= …`/`$x += …`/`$x++` on an undefined
+variable warn where they read it. `unset($$name)` works
+(`Op::UnsetDynVar`). Bytecode: `CONST_OPERAND` operands, `JmpUnless`,
+`Function::var_count`, `Op::result_reg`. The frameless native path
+(`FnFlags::LIGHT`, bench README) is covered by `lang/light-natives.php`.
+
+Two gaps that probing it exposed, both on the full path too: **php's
+scalar parameter parsing for natives is not implemented** — `strlen([])`
+answers 5 (php: `TypeError … must be of type string, array given`) and
+`strlen(null)` says nothing (php 8.1's "Passing null to parameter #1
+(\$string) of type string is deprecated"); the generated arginfo table
+has the types, so a generic `zend_parse_parameters` layer at the call
+boundary is the fix. And a `TypeError` php throws while *parsing* a
+native's arguments carries a trace without the native's own frame
+(`#0 {main}` for `count(1)` at the top level), where an exception the
+function throws later (`intdiv(1, 0)`) has it; the engine puts the frame
+in both.

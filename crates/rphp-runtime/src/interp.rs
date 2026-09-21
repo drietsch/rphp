@@ -17,7 +17,7 @@ use crate::errors::E_ALL;
 use crate::frame::{Frame, FrameKind, RetTarget};
 use crate::ini::IniTable;
 use crate::output::{OutputStack, SharedBuffer};
-use crate::registry::{NativeFn, NativeId, Unwind};
+use crate::registry::{FnFlags, NativeFn, NativeId, Unwind};
 use crate::resources::ResourceTable;
 use crate::symtab::Symtab;
 use crate::class::{ClassDef, WellKnown};
@@ -241,6 +241,11 @@ pub struct Interp {
     pub last_error: Option<LastError>,
     /// `@` nesting depth.
     pub silence: u32,
+    /// A `FnFlags::LIGHT` native is running without a frame: a
+    /// diagnostic it emits cannot be attributed, so `emit_error` aborts
+    /// the call with `Unwind::Retry` and the engine re-runs it on the
+    /// full path.
+    pub light_native: bool,
     /// Per-extension state slots.
     pub ext: ExtState,
     /// The resource table.
@@ -266,6 +271,37 @@ pub struct Interp {
     pub(crate) in_error_handler: bool,
     test_buf: Option<SharedBuffer>,
 }
+
+/// The builtins that take the frameless call path (`FnFlags::LIGHT`):
+/// functions of their arguments alone, the ones that dominate call counts
+/// in real code. A name here must not reach for the calling frame, call
+/// back, write output or modify its arguments; anything it emits or throws
+/// re-runs the call on the full path.
+const LIGHT_NATIVES: &[&str] = &[
+    "strlen", "count", "sizeof", "abs", "max", "min", "intdiv", "floor", "ceil", "round",
+    "is_int", "is_integer", "is_long", "is_float", "is_double", "is_string", "is_bool",
+    "is_array", "is_object", "is_null", "is_numeric", "is_scalar", "is_iterable",
+    "is_countable", "gettype", "get_debug_type", "intval", "floatval", "boolval",
+    "strval", "strtolower", "strtoupper", "ucfirst", "lcfirst", "ucwords", "trim",
+    "ltrim", "rtrim", "str_repeat", "str_replace", "str_ireplace", "substr", "strpos",
+    "stripos", "strrpos", "strripos", "str_contains", "str_starts_with", "str_ends_with",
+    "strstr", "stristr", "strrchr", "substr_count", "str_pad", "strrev", "strcmp",
+    "strcasecmp", "strncmp", "strncasecmp", "implode", "join", "explode", "sprintf",
+    "nl2br", "htmlspecialchars", "htmlentities", "addslashes", "stripslashes",
+    "chr", "ord", "dechex", "hexdec", "decbin", "bindec", "decoct", "octdec",
+    "array_key_exists", "key_exists", "in_array", "array_search", "array_keys",
+    "array_values", "array_merge", "array_slice", "array_reverse", "array_flip",
+    "array_key_first", "array_key_last", "array_is_list", "array_sum", "array_product",
+    "array_unique", "array_fill", "array_fill_keys", "array_combine", "array_pad",
+    "array_column", "array_chunk", "range", "md5", "sha1", "crc32", "hash",
+    "base64_encode", "base64_decode", "bin2hex", "hex2bin", "urlencode", "urldecode",
+    "rawurlencode", "rawurldecode", "json_encode", "ctype_digit", "ctype_alpha",
+    "ctype_alnum", "ctype_space", "ctype_upper", "ctype_lower", "ctype_xdigit",
+    "mb_strlen", "mb_substr", "mb_strtolower", "mb_strtoupper", "mb_strpos",
+    "str_split", "wordwrap", "number_format", "fmod", "sqrt", "pow", "log", "exp",
+    "sin", "cos", "tan", "pi", "is_nan", "is_finite", "is_infinite", "spl_object_id",
+    "spl_object_hash", "array_map_keys_placeholder",
+];
 
 impl Interp {
     /// A bare interpreter writing to `sink`: no natives, no constants, the
@@ -294,6 +330,7 @@ impl Interp {
             frames: Vec::new(),
             vec_pool: Vec::new(),
             stack: Vec::new(),
+            light_native: false,
             reentry_depth: 0,
             included: HashSet::new(),
             generators: Vec::new(),
@@ -430,8 +467,11 @@ impl Interp {
     }
 
     /// Register a native; a re-registered name keeps its id.
-    pub fn register_native(&mut self, f: NativeFn) -> NativeId {
+    pub fn register_native(&mut self, mut f: NativeFn) -> NativeId {
         let key: Box<[u8]> = f.name.as_bytes().to_ascii_lowercase().into_boxed_slice();
+        if f.by_ref == 0 && LIGHT_NATIVES.iter().any(|n| n.as_bytes() == &*key) {
+            f.flags |= FnFlags::LIGHT;
+        }
         if let Some(&id) = self.native_index.get(&key) {
             self.natives[id.0 as usize] = f;
             return id;
@@ -497,6 +537,7 @@ impl Interp {
                 }
             },
             Unwind::Throw(o) => self.uncaught_object(o),
+            Unwind::Retry => unreachable!("a light native's retry never leaves DoCall"),
         }
     }
 
@@ -528,7 +569,7 @@ impl Interp {
                     match u {
                         Unwind::Throw(e) => self.render_uncaught_object(&e),
                         Unwind::Pending(p) => self.render_uncaught(&p),
-                        Unwind::Exit(_) => unreachable!("handled above"),
+                        Unwind::Exit(_) | Unwind::Retry => unreachable!("handled above"),
                     }
                     255
                 }

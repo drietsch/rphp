@@ -365,6 +365,9 @@ fn compile_main(
     );
     fc.at_top_level = true;
     fc.is_main = true;
+    // The top level's variables live in the symbol table, where included
+    // files and `$GLOBALS` reach them: nothing stays assigned across a branch.
+    fc.structured_assign = false;
     fc.flags |= rphp_bytecode::FnFlags::NEEDS_SYMTAB;
     fc.emit(Op::BindSymtab);
     fc.bind_auto_globals();

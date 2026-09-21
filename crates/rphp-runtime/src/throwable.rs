@@ -308,7 +308,7 @@ impl Interp {
                     let inner = match &u {
                         Unwind::Throw(e) => self.throwable_to_string(e),
                         Unwind::Pending(p) => format!("{}: {}", p.kind.class_name(), p.message),
-                        Unwind::Exit(_) => String::new(),
+                        Unwind::Exit(_) | Unwind::Retry => String::new(),
                     };
                     format!(
                         "{inner} in exception handling during call to {}::__toString()",

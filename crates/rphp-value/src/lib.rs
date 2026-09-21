@@ -227,7 +227,30 @@ impl Value {
         let v = v.unref();
         match slot {
             Value::Ref(r) => r.set(v),
-            _ => *slot = v,
+            _ => Value::overwrite(slot, v),
+        }
+    }
+
+    /// Whether dropping the value does anything (a handle to release).
+    #[inline]
+    pub fn needs_drop(&self) -> bool {
+        !matches!(
+            self,
+            Value::Null | Value::Uninit | Value::Bool(_) | Value::Int(_) | Value::Float(_)
+        )
+    }
+
+    /// `*slot = v` without a call into the drop glue for a scalar old
+    /// value — the interpreter's every register write, where the old
+    /// value is a number more often than not.
+    #[inline]
+    pub fn overwrite(slot: &mut Value, v: Value) {
+        let old = std::mem::replace(slot, v);
+        if old.needs_drop() {
+            drop(old);
+        } else {
+            // Owns nothing: forgetting it is free, and skips the glue.
+            std::mem::forget(old);
         }
     }
 

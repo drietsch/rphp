@@ -102,17 +102,18 @@ fn main_binds_its_symtab_and_returns_one() {
 }
 
 #[test]
-fn variable_stores_go_through_assign_through_ref() {
+fn variable_stores_compute_into_the_variable_or_assign_through_ref() {
     let m = compile_ok("<?php $x = 5; echo $x;");
     let main = m.func(0);
     // $x is register 0 (the only variable, no params) and is named.
     assert_eq!(main.var_names, vec![(Box::from(&b"x"[..]), 0)]);
+    assert_eq!(main.var_count, 1);
     assert!(main.code.iter().any(|op| matches!(op, Op::Echo { src: 0 })));
-    assert!(main
-        .code
-        .iter()
-        .any(|op| matches!(op, Op::AssignThroughRef { dst: 0, .. })));
-    // $x = $x + 1: the old value is read before the result lands.
+    // The constant is loaded straight into the variable's register (the
+    // runtime stores through its cell when it is bound by reference).
+    assert!(main.code.iter().any(|op| matches!(op, Op::LoadConst { dst: 0, .. })));
+    assert!(!main.code.iter().any(|op| matches!(op, Op::AssignThroughRef { dst: 0, .. })));
+    // $x = $x + 1: the sum is computed into $x, reading the old value.
     let m = compile_ok("<?php $x = $x + 1;");
     let add = m
         .func(0)
@@ -124,7 +125,13 @@ fn variable_stores_go_through_assign_through_ref() {
         })
         .expect("expected an Add");
     assert!(add.1 == 0 || add.2 == 0);
-    assert_ne!(add.0, 0);
+    assert_eq!(add.0, 0);
+    // A value that arrives through a merge point (a ternary's two arms)
+    // still goes through the explicit store.
+    let m = compile_ok("<?php $x = $c ? 1 : 2; $y = $x;");
+    let main = m.func(0);
+    assert!(main.code.iter().any(|op| matches!(op, Op::AssignThroughRef { dst: 0, .. })));
+    assert!(main.code.iter().any(|op| matches!(op, Op::AssignThroughRef { dst: 2, src: 0 })));
 }
 
 #[test]

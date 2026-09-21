@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
-use rphp_bytecode::{
+use rphp_bytecode::{CmpKind, CONST_OPERAND, 
     AssignOpKind, ClassRef, ClassRefKind, Const, FinallyState, FnFlags, IncludeKind, InitRef,
     NameRef, NameRefKind, Op, Visibility,
 };
@@ -18,7 +18,7 @@ use rphp_value::{array_key, Object, PhpRef, Str, Value};
 use crate::class::MethodBody;
 use crate::frame::{CallTarget, FrameKind, IterState, PendingCall, RetTarget};
 use crate::ops::value_name;
-use crate::registry::Unwind;
+use crate::registry::{Ctx, FnFlags as NativeFlags, Unwind};
 use crate::symtab::Symtab;
 use crate::Interp;
 
@@ -117,7 +117,24 @@ impl Interp {
 
     #[inline]
     fn set(&mut self, base: usize, r: u16, v: Value) {
-        self.stack[base + r as usize] = v;
+        Value::overwrite(&mut self.stack[base + r as usize], v);
+    }
+
+    /// Store an op's result into its result register: through the reference
+    /// cell when the register is a variable's (`Function::var_count`) that
+    /// is bound by reference — the compiler computes `$x = $a + $b` straight
+    /// into `$x` — else over whatever the register held (a temporary never
+    /// holds a cell).
+    #[inline]
+    fn put(&mut self, base: usize, var_count: u16, r: u16, v: Value) {
+        let slot = &mut self.stack[base + r as usize];
+        if r < var_count {
+            if let Value::Ref(cell) = slot {
+                cell.set(v);
+                return;
+            }
+        }
+        Value::overwrite(slot, v);
     }
 
     /// Run `f` on the storage slot register `r` denotes: the cell behind a
@@ -176,7 +193,27 @@ impl Interp {
     }
 
     fn const_value(&self, func: &crate::unit::FuncRt, k: u32) -> Value {
-        func.f.consts[k as usize].to_value()
+        func.const_values[k as usize].clone()
+    }
+
+    /// An arithmetic/comparison operand: the register, or the pool
+    /// constant a register at or above `CONST_OPERAND` names.
+    #[inline]
+    fn operand<'a>(&'a self, func: &'a crate::unit::FuncRt, base: usize, r: u16) -> &'a Value {
+        if r >= CONST_OPERAND {
+            &func.const_values[(r - CONST_OPERAND) as usize]
+        } else {
+            &self.stack[base + r as usize]
+        }
+    }
+
+    /// [`Self::operand`] read by value, a reference cell dereferenced.
+    #[inline]
+    fn rd_operand(&self, func: &crate::unit::FuncRt, base: usize, r: u16) -> Value {
+        match self.operand(func, base, r) {
+            Value::Ref(cell) => cell.get(),
+            v => v.clone(),
+        }
     }
 
     fn name_bytes<'f>(&self, func: &'f crate::unit::FuncRt, k: u32) -> Cow<'f, [u8]> {
@@ -604,6 +641,7 @@ impl Interp {
         let base = self.frames[fi].base;
         let mut pc = self.frames[fi].pc;
         let code = &func.f.code;
+        let vc = func.f.var_count;
         loop {
             if rphp_value::has_pending_destructors() {
                 // ADR-017: objects whose last handle dropped during the
@@ -623,7 +661,7 @@ impl Interp {
                 // --- moves / constants ---
                 Op::LoadConst { dst, k } => {
                     let v = self.const_value(&func, k);
-                    self.set(base, dst, v);
+                    self.put(base, vc, dst, v);
                 }
                 Op::LoadNull { dst } => self.set(base, dst, Value::Null),
                 Op::FreeTemps { from, to } => {
@@ -653,36 +691,36 @@ impl Interp {
                 }
 
                 // --- arithmetic ---
-                Op::Add { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Add)?,
-                Op::Sub { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Sub)?,
-                Op::Mul { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Mul)?,
-                Op::Div { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Div)?,
-                Op::Mod { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Mod)?,
-                Op::Pow { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Pow)?,
-                Op::Concat { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Concat)?,
-                Op::BitAnd { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::BitAnd)?,
-                Op::BitOr { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::BitOr)?,
-                Op::BitXor { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::BitXor)?,
-                Op::Shl { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Shl)?,
-                Op::Shr { dst, a, b } => self.arith(base, dst, a, b, AssignOpKind::Shr)?,
+                Op::Add { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::Add)?,
+                Op::Sub { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::Sub)?,
+                Op::Mul { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::Mul)?,
+                Op::Div { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::Div)?,
+                Op::Mod { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::Mod)?,
+                Op::Pow { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::Pow)?,
+                Op::Concat { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::Concat)?,
+                Op::BitAnd { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::BitAnd)?,
+                Op::BitOr { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::BitOr)?,
+                Op::BitXor { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::BitXor)?,
+                Op::Shl { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::Shl)?,
+                Op::Shr { dst, a, b } => self.arith(&func, base, vc, dst, a, b, AssignOpKind::Shr)?,
                 Op::Neg { dst, src } => {
                     let v = self.rd(base, src);
                     let r = self.unary_neg(&v)?;
-                    self.set(base, dst, r);
+                    self.put(base, vc, dst, r);
                 }
                 Op::Plus { dst, src } => {
                     let v = self.rd(base, src);
                     let r = self.unary_plus(&v)?;
-                    self.set(base, dst, r);
+                    self.put(base, vc, dst, r);
                 }
                 Op::BitNot { dst, src } => {
                     let v = self.rd(base, src);
                     let r = self.bit_not(&v)?;
-                    self.set(base, dst, r);
+                    self.put(base, vc, dst, r);
                 }
                 Op::Not { dst, src } => {
                     let v = self.rd(base, src);
-                    self.set(base, dst, v.not());
+                    self.put(base, vc, dst, v.not());
                 }
                 Op::ConcatN { dst, base: b0, n } => {
                     let mut out = Vec::new();
@@ -799,12 +837,38 @@ impl Interp {
                     self.assign_prop(&o, &name, r)?;
                 }
                 Op::IncDec { var, dst, pre, inc } => {
+                    // An integer in the register: no diagnostics to consider.
                     if let Value::Int(i) = self.raw(base, var) {
                         let i = *i;
                         if let Some(n) = if inc { i.checked_add(1) } else { i.checked_sub(1) } {
                             self.set(base, var, Value::Int(n));
                             if let Some(d) = dst {
                                 self.set(base, d, Value::Int(if pre { n } else { i }));
+                            }
+                            pc += 1;
+                            continue;
+                        }
+                    }
+                    // Behind a cell (a global's, a static's): the same, in
+                    // place.
+                    if let Value::Ref(cell) = self.raw(base, var) {
+                        let cell = cell.clone();
+                        let stepped = cell.update(|v| match v {
+                            Value::Int(i) => {
+                                let old = *i;
+                                match if inc { old.checked_add(1) } else { old.checked_sub(1) } {
+                                    Some(n) => {
+                                        *i = n;
+                                        Some((old, n))
+                                    }
+                                    None => None,
+                                }
+                            }
+                            _ => None,
+                        });
+                        if let Some((old, n)) = stepped {
+                            if let Some(d) = dst {
+                                self.set(base, d, Value::Int(if pre { n } else { old }));
                             }
                             pc += 1;
                             continue;
@@ -831,7 +895,7 @@ impl Interp {
                         }
                         _ => self.array_get(&container, &k)?,
                     };
-                    self.set(base, dst, v);
+                    self.put(base, vc, dst, v);
                 }
                 Op::FetchElemRW { dst, base: b, key } => {
                     let container = self.rd(base, b);
@@ -1050,6 +1114,18 @@ impl Interp {
                         if let Some(name) = func.reg_name(var) {
                             symtab.with_mut(|t| t.remove(name));
                         }
+                    }
+                }
+                Op::UnsetDynVar { name } => {
+                    let n = self.rd(base, name).to_php_bytes();
+                    if let Some(symtab) = self.frames[fi].extra().symtab.clone() {
+                        symtab.with_mut(|t| t.remove(&n));
+                    }
+                    // The frame's own variable of that name shares the
+                    // table's cell: drop its binding like `unset($x)`.
+                    let reg = func.f.var_names.iter().find(|(v, _)| **v == *n).map(|(_, r)| *r);
+                    if let Some(reg) = reg {
+                        self.set(base, reg, Value::Uninit);
                     }
                 }
                 Op::UnsetElem { arr, key } => {
@@ -1272,70 +1348,46 @@ impl Interp {
 
                 // --- comparison ---
                 Op::CmpEq { dst, a, b } => {
-                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
-                        self.set(base, dst, Value::Bool(l == r));
-                        pc += 1;
-                        continue;
-                    }
-                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
-                    self.set(base, dst, Value::Bool(l.loose_eq(&r)));
+                    let r = self.compare(&func, base, CmpKind::Eq, a, b)?;
+                    self.put(base, vc, dst, Value::Bool(r));
                 }
                 Op::CmpNe { dst, a, b } => {
-                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
-                        self.set(base, dst, Value::Bool(l != r));
-                        pc += 1;
-                        continue;
-                    }
-                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
-                    self.set(base, dst, Value::Bool(!l.loose_eq(&r)));
+                    let r = self.compare(&func, base, CmpKind::Ne, a, b)?;
+                    self.put(base, vc, dst, Value::Bool(r));
                 }
                 Op::CmpIdentical { dst, a, b } => {
-                    let r = self.raw(base, a).identical(self.raw(base, b));
-                    self.set(base, dst, Value::Bool(r));
+                    let r = self.compare(&func, base, CmpKind::Identical, a, b)?;
+                    self.put(base, vc, dst, Value::Bool(r));
                 }
                 Op::CmpNotIdentical { dst, a, b } => {
-                    let r = !self.raw(base, a).identical(self.raw(base, b));
-                    self.set(base, dst, Value::Bool(r));
+                    let r = self.compare(&func, base, CmpKind::NotIdentical, a, b)?;
+                    self.put(base, vc, dst, Value::Bool(r));
                 }
                 Op::CmpLt { dst, a, b } => {
-                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
-                        self.set(base, dst, Value::Bool(l < r));
-                        pc += 1;
-                        continue;
-                    }
-                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
-                    self.set(base, dst, Value::Bool(l.lt(&r)));
+                    let r = self.compare(&func, base, CmpKind::Lt, a, b)?;
+                    self.put(base, vc, dst, Value::Bool(r));
                 }
                 Op::CmpLe { dst, a, b } => {
-                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
-                        self.set(base, dst, Value::Bool(l <= r));
-                        pc += 1;
-                        continue;
-                    }
-                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
-                    self.set(base, dst, Value::Bool(l.le(&r)));
+                    let r = self.compare(&func, base, CmpKind::Le, a, b)?;
+                    self.put(base, vc, dst, Value::Bool(r));
                 }
                 Op::CmpGt { dst, a, b } => {
-                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
-                        self.set(base, dst, Value::Bool(l > r));
-                        pc += 1;
-                        continue;
-                    }
-                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
-                    self.set(base, dst, Value::Bool(l.gt(&r)));
+                    let r = self.compare(&func, base, CmpKind::Gt, a, b)?;
+                    self.put(base, vc, dst, Value::Bool(r));
                 }
                 Op::CmpGe { dst, a, b } => {
-                    if let Some((l, r)) = fast_numbers(self.raw(base, a), self.raw(base, b)) {
-                        self.set(base, dst, Value::Bool(l >= r));
-                        pc += 1;
+                    let r = self.compare(&func, base, CmpKind::Ge, a, b)?;
+                    self.put(base, vc, dst, Value::Bool(r));
+                }
+                Op::JmpUnless { kind, a, b, target } => {
+                    if !self.compare(&func, base, kind, a, b)? {
+                        pc = target as usize;
                         continue;
                     }
-                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
-                    self.set(base, dst, Value::Bool(l.ge(&r)));
                 }
                 Op::Spaceship { dst, a, b } => {
-                    let (l, r) = self.cmp_operands(self.rd(base, a), self.rd(base, b))?;
-                    self.set(base, dst, Value::Int(l.spaceship(&r)));
+                    let (l, r) = self.cmp_operands(self.rd_operand(&func, base, a), self.rd_operand(&func, base, b))?;
+                    self.put(base, vc, dst, Value::Int(l.spaceship(&r)));
                 }
 
                 // --- control flow ---
@@ -1557,7 +1609,7 @@ impl Interp {
                     });
                 }
                 Op::SendVal { pos, src } => {
-                    let v = self.rd(base, src);
+                    let v = self.rd_operand(&func, base, src);
                     let by_ref = self.pending_by_ref(fi, pos as usize);
                     if by_ref {
                         let msg = self.by_ref_message(fi, pos as usize);
@@ -1728,6 +1780,44 @@ impl Interp {
                                 named,
                                 ..
                             } = pending;
+                            // The frameless path for a `LIGHT` builtin: the
+                            // handler over the argument window and nothing
+                            // else. Anything it emits, throws, or would run
+                            // of the user's makes it `Retry` on the full
+                            // path, with the arguments put back.
+                            let f = self.natives[id.0 as usize];
+                            let light = f.flags.contains(NativeFlags::LIGHT)
+                                && named.is_empty()
+                                && f.accepts(argc)
+                                // An object argument is the full path's to
+                                // fit to the parameter (`__toString`).
+                                && !self.stack[args_base..args_base + argc]
+                                    .iter()
+                                    .any(|a| matches!(a, Value::Object(_) | Value::Closure(_)));
+                            if light {
+                                let mut args = self.take_vec();
+                                args.extend(self.stack.drain(args_base..args_base + argc));
+                                // The handler may coerce its arguments in
+                                // place; the full path must see the originals.
+                                let mut saved = self.take_vec();
+                                saved.extend(args.iter().cloned());
+                                self.light_native = true;
+                                let r = (f.handler)(&mut Ctx(self), &mut args);
+                                self.light_native = false;
+                                self.give_vec(args);
+                                match r {
+                                    Ok(v) => {
+                                        self.give_vec(saved);
+                                        self.stack[abs] = v;
+                                        pc += 1;
+                                        continue;
+                                    }
+                                    Err(_) => {
+                                        self.stack.extend(saved.drain(..));
+                                        self.give_vec(saved);
+                                    }
+                                }
+                            }
                             let r = self.call_native_window(id, args_base, argc, named)?;
                             self.stack[abs] = r;
                         }
@@ -2266,7 +2356,7 @@ impl Interp {
                     let constant = matches!(name.kind(), NameRefKind::Const(_));
                     let cached = if constant { self.prop_read_cached(&func, fi, base, obj, ic) } else { None };
                     if let Some(v) = cached {
-                        self.set(base, dst, v);
+                        self.put(base, vc, dst, v);
                     } else {
                         let o = self.rd(base, obj);
                         let n = self.member_name(&func, base, name)?;
@@ -2279,7 +2369,7 @@ impl Interp {
                                 }
                             }
                         }
-                        self.set(base, dst, v);
+                        self.put(base, vc, dst, v);
                     }
                 }
                 Op::AssignProp { obj, name, src, ic } => {
@@ -2499,17 +2589,77 @@ impl Interp {
     }
 
     /// `dst = a OP b` for the binary operators.
-    fn arith(&mut self, base: usize, dst: u16, a: u16, b: u16, op: AssignOpKind) -> Result<(), Unwind> {
-        // Two numbers in the registers: no clone, no diagnostics to consider.
-        if let Some(r) = fast_arith(op, self.raw(base, a), self.raw(base, b)) {
-            self.set(base, dst, r);
+    #[allow(clippy::too_many_arguments)]
+    fn arith(
+        &mut self,
+        func: &crate::unit::FuncRt,
+        base: usize,
+        vc: u16,
+        dst: u16,
+        a: u16,
+        b: u16,
+        op: AssignOpKind,
+    ) -> Result<(), Unwind> {
+        // Two numbers in the operands (a reference cell looked through: a
+        // global's, a static's): no diagnostics to consider.
+        let fast = {
+            let x = self.operand(func, base, a);
+            let y = self.operand(func, base, b);
+            match (x, y) {
+                (Value::Ref(_), _) | (_, Value::Ref(_)) => fast_arith(op, &x.deref(), &y.deref()),
+                _ => fast_arith(op, x, y),
+            }
+        };
+        if let Some(r) = fast {
+            self.put(base, vc, dst, r);
             return Ok(());
         }
-        let x = self.rd(base, a);
-        let y = self.rd(base, b);
+        let x = self.rd_operand(func, base, a);
+        let y = self.rd_operand(func, base, b);
         let r = self.binary_op(op, &x, &y)?;
-        self.set(base, dst, r);
+        self.put(base, vc, dst, r);
         Ok(())
+    }
+
+    /// The verdict of a comparison op, for [`Op::JmpUnless`] and the `Cmp*`
+    /// ops: numbers compare without a clone, anything else through php's
+    /// operand conversions.
+    #[inline]
+    fn compare(&mut self, func: &crate::unit::FuncRt, base: usize, kind: CmpKind, a: u16, b: u16) -> Result<bool, Unwind> {
+        match kind {
+            CmpKind::Identical => return Ok(self.operand(func, base, a).identical(self.operand(func, base, b))),
+            CmpKind::NotIdentical => return Ok(!self.operand(func, base, a).identical(self.operand(func, base, b))),
+            _ => {}
+        }
+        let fast = {
+            let x = self.operand(func, base, a);
+            let y = self.operand(func, base, b);
+            match (x, y) {
+                (Value::Ref(_), _) | (_, Value::Ref(_)) => fast_numbers(&x.deref(), &y.deref()),
+                _ => fast_numbers(x, y),
+            }
+        };
+        if let Some((l, r)) = fast {
+            return Ok(match kind {
+                CmpKind::Eq => l == r,
+                CmpKind::Ne => l != r,
+                CmpKind::Lt => l < r,
+                CmpKind::Le => l <= r,
+                CmpKind::Gt => l > r,
+                CmpKind::Ge => l >= r,
+                CmpKind::Identical | CmpKind::NotIdentical => unreachable!(),
+            });
+        }
+        let (l, r) = self.cmp_operands(self.rd_operand(func, base, a), self.rd_operand(func, base, b))?;
+        Ok(match kind {
+            CmpKind::Eq => l.loose_eq(&r),
+            CmpKind::Ne => !l.loose_eq(&r),
+            CmpKind::Lt => l.lt(&r),
+            CmpKind::Le => l.le(&r),
+            CmpKind::Gt => l.gt(&r),
+            CmpKind::Ge => l.ge(&r),
+            CmpKind::Identical | CmpKind::NotIdentical => unreachable!(),
+        })
     }
 
     /// Return `v` from the top frame: pop it, release its registers, deliver

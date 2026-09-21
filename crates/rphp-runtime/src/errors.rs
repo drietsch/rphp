@@ -243,6 +243,9 @@ impl Interp {
     /// `Err` when a user handler throws, or when the level is fatal
     /// (`Unwind::Exit(255)` after display).
     pub fn emit_error(&mut self, level: ErrLevel, message: &str) -> Result<(), Unwind> {
+        if self.light_native {
+            return Err(Unwind::Retry);
+        }
         let file = self.current_file().to_string();
         let line = self.current_line();
         self.emit_error_at(level, message, &file, line)
@@ -256,6 +259,9 @@ impl Interp {
         file: &str,
         line: u32,
     ) -> Result<(), Unwind> {
+        if self.light_native {
+            return Err(Unwind::Retry);
+        }
         self.emit_error_full(level, message, file, line, true)
     }
 

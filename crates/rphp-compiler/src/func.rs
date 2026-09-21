@@ -20,12 +20,14 @@ use rphp_ast::v2::{
     Resolved, Stmt, TempId, Type, TypeKind, Visibility as AstVis,
 };
 use rphp_bytecode::{
-    BuiltinType, CaptureDesc, Class as BcClass, ClassId, CodeAddr, Const, FnFlags, FuncId, Function,
-    InitRef, NameConst, NameRef, Op, ParamDef, PromotedProp, Reg, StaticVar, TypeDecl, AttrDef, AttrTarget,};
+    AttrDef, AttrTarget, BuiltinType, CaptureDesc, Class as BcClass, ClassId, CmpKind, CodeAddr,
+    Const, FnFlags, FuncId, Function, InitRef, NameConst, NameRef, Op, ParamDef, PromotedProp, Reg,
+    StaticVar, TypeDecl, CONST_OPERAND,
+};
 use rphp_diagnostics::Diagnostic;
 use rphp_intern::{IdentId, Interner};
 use rphp_span::Span;
-use rphp_value::Str;
+use rphp_value::{Str, Value};
 
 use crate::class::{bc_vis, class_fqn};
 use crate::{regs, unsupported, CompileOptions};
@@ -231,10 +233,22 @@ pub(crate) struct FnCompiler<'a> {
     /// above them.
     pub(crate) vars: HashMap<IdentId, Reg>,
     /// Variables known to hold a value at the point being compiled, so a read
-    /// of one needs no `Op::CheckVar`. Assignments add to it; anything that
-    /// branches clears it, which is the conservative answer (an extra check
-    /// only costs a comparison, a missing one loses php's warning).
+    /// of one needs no `Op::CheckVar`. Assignments add to it. What a branch
+    /// assigns is only conditionally assigned after it, so a branching
+    /// construct restores the set it started with at every alternative entry
+    /// (`else`, a `case`, a `catch`) and at its end — and what was assigned
+    /// *before* the construct stays assigned throughout it, since nothing in
+    /// a body without `unset()` can take a local's value away
+    /// ([`Self::structured_assign`]). Erring is only ever an extra check.
     pub(crate) assigned: std::collections::HashSet<IdentId>,
+    /// Whether the set above survives a branch (see there): false at the
+    /// top level, where other files and `$GLOBALS` reach the variables, and
+    /// in a body that can lose a local (`BodyFacts::may_lose_vars`). When
+    /// false a branch clears the set, the conservative answer.
+    pub(crate) structured_assign: bool,
+    /// For each enclosing branching statement, the set assigned before it
+    /// (what an alternative entry comes back to; `stmt.rs`).
+    pub(crate) branch_bases: Vec<std::collections::HashSet<IdentId>>,
     /// The register `$this` is loaded into, when the body reads it.
     pub(crate) this_reg: Option<Reg>,
     /// Current top of the temporary stack (next free temp register).
@@ -250,6 +264,11 @@ pub(crate) struct FnCompiler<'a> {
     pub(crate) dirty_hi: Reg,
     /// Registers below this are named variables; the rest are temporaries.
     pub(crate) var_count: Reg,
+    /// The highest code address a jump can land on (every label taken with
+    /// [`Self::here`]): an op after it is reached only through the op before
+    /// it, which is what lets [`Self::store_var`] fold the store into the
+    /// producer.
+    pub(crate) max_label: usize,
     /// High-water mark: total registers the frame needs.
     pub(crate) num_regs: Reg,
     /// Closure captures (`Function::captures`).
@@ -348,14 +367,23 @@ impl<'a> FnCompiler<'a> {
             at_top_level: false,
             is_main: false,
             vars,
-            // A captured variable holds its value before the body runs.
-            assigned: captures.iter().map(|&(c, _)| c).collect(),
+            // A `use` capture holds its value before the body runs (php
+            // warned at the closure's creation and bound null for an
+            // undefined one); an arrow function's implicit capture of an
+            // undefined variable is simply not made, so its reads warn.
+            assigned: match body {
+                ClosureBody::Stmts(_) => captures.iter().map(|&(c, _)| c).collect(),
+                ClosureBody::ReturnExpr(_) => std::collections::HashSet::new(),
+            },
+            structured_assign: !facts.needs_symtab && !facts.may_lose_vars,
+            branch_bases: Vec::new(),
             this_reg,
             temp_top: var_count,
             temp_peak: var_count,
             dirty_lo: Reg::MAX,
             dirty_hi: 0,
             var_count,
+            max_label: 0,
             num_regs: var_count,
             captures: capture_descs,
             statics: Vec::new(),
@@ -420,7 +448,9 @@ impl<'a> FnCompiler<'a> {
         }
     }
 
-    pub(crate) fn here(&self) -> CodeAddr {
+    /// The address of the next op — taken as a label a jump will land on.
+    pub(crate) fn here(&mut self) -> CodeAddr {
+        self.max_label = self.code.len();
         self.code.len() as CodeAddr
     }
 
@@ -429,6 +459,7 @@ impl<'a> FnCompiler<'a> {
             Op::Jmp { target: t }
             | Op::JmpIfTrue { target: t, .. }
             | Op::JmpIfFalse { target: t, .. }
+            | Op::JmpUnless { target: t, .. }
             | Op::JmpUnlessArgByRef { target: t, .. }
             | Op::IterNext { target: t, .. }
             | Op::BindStaticOrJmp { target: t, .. }
@@ -501,6 +532,56 @@ impl<'a> FnCompiler<'a> {
         k
     }
 
+    /// An operand for an arithmetic/comparison op: a literal goes into the
+    /// pool and is named as a constant operand ([`CONST_OPERAND`]), anything
+    /// else is compiled into a register.
+    pub(crate) fn operand(&mut self, e: &Expr) -> Reg {
+        if let Some(v) = crate::stmt::literal_value(e, self.mx.interner) {
+            let c = match v {
+                Value::Null => Const::Null,
+                Value::Bool(b) => Const::Bool(b),
+                Value::Int(i) => Const::Int(i),
+                Value::Float(f) => Const::Float(f),
+                Value::Str(s) => Const::Str(s),
+                _ => return self.compile_expr(e),
+            };
+            let k = self.push_const(c);
+            if k < u32::from(CONST_OPERAND) {
+                return CONST_OPERAND | k as Reg;
+            }
+        }
+        self.compile_expr(e)
+    }
+
+    /// `JmpIfFalse` on `cond`, fused with the comparison that just computed
+    /// it into a temporary ([`Op::JmpUnless`]) when nothing else can reach
+    /// this point. Returns the jump's index, to be patched.
+    pub(crate) fn jump_if_false(&mut self, cond: Reg) -> usize {
+        if cond >= self.var_count && cond < CONST_OPERAND && self.max_label < self.code.len() {
+            let fused = match self.code.last() {
+                Some(Op::CmpEq { dst, a, b }) if *dst == cond => Some((CmpKind::Eq, *a, *b)),
+                Some(Op::CmpNe { dst, a, b }) if *dst == cond => Some((CmpKind::Ne, *a, *b)),
+                Some(Op::CmpIdentical { dst, a, b }) if *dst == cond => Some((CmpKind::Identical, *a, *b)),
+                Some(Op::CmpNotIdentical { dst, a, b }) if *dst == cond => {
+                    Some((CmpKind::NotIdentical, *a, *b))
+                }
+                Some(Op::CmpLt { dst, a, b }) if *dst == cond => Some((CmpKind::Lt, *a, *b)),
+                Some(Op::CmpLe { dst, a, b }) if *dst == cond => Some((CmpKind::Le, *a, *b)),
+                Some(Op::CmpGt { dst, a, b }) if *dst == cond => Some((CmpKind::Gt, *a, *b)),
+                Some(Op::CmpGe { dst, a, b }) if *dst == cond => Some((CmpKind::Ge, *a, *b)),
+                _ => None,
+            };
+            if let Some((kind, a, b)) = fused {
+                self.code.pop();
+                if self.mx.line_of.is_some() {
+                    self.lines.pop();
+                }
+                return self.emit(Op::JmpUnless { kind, a, b, target: 0 });
+            }
+        }
+        self.emit(Op::JmpIfFalse { cond, target: 0 })
+    }
+
     /// A fresh inline-cache slot.
     pub(crate) fn ic(&mut self) -> u16 {
         let ic = self.ic_count;
@@ -559,6 +640,25 @@ impl<'a> FnCompiler<'a> {
         self.assigned.clear();
     }
 
+    /// The set to come back to at a branch's alternative entries and end:
+    /// what is assigned now when the body is structured, nothing otherwise.
+    pub(crate) fn assigned_snapshot(&self) -> std::collections::HashSet<IdentId> {
+        if self.structured_assign {
+            self.assigned.clone()
+        } else {
+            std::collections::HashSet::new()
+        }
+    }
+
+    /// Come back to a snapshot (see [`Self::assigned_snapshot`]).
+    pub(crate) fn restore_assigned(&mut self, snapshot: &std::collections::HashSet<IdentId>) {
+        if self.structured_assign {
+            self.assigned.clone_from(snapshot);
+        } else {
+            self.assigned.clear();
+        }
+    }
+
     /// Whether `id` is the superglobal `$GLOBALS`.
     pub(crate) fn is_globals(&self, id: IdentId) -> bool {
         self.mx.interner.resolve(id) == b"GLOBALS"
@@ -614,9 +714,22 @@ impl<'a> FnCompiler<'a> {
     /// possible reference binding (`AssignThroughRef`), which also
     /// dereferences the source. A plain register behaves like `Move`.
     pub(crate) fn store_var(&mut self, dst: Reg, src: Reg) {
-        if dst != src {
-            self.emit(Op::AssignThroughRef { dst, src });
+        if dst == src {
+            return;
         }
+        // The value was just computed into a temporary by the last op, and
+        // nothing jumps past that op to here: compute straight into the
+        // variable instead (the runtime stores through a reference cell for
+        // a variable register, `Function::var_count`).
+        if src >= self.var_count && self.max_label < self.code.len() {
+            if let Some(op) = self.code.last_mut() {
+                if op.result_reg() == Some(src) {
+                    op.set_result_reg(dst);
+                    return;
+                }
+            }
+        }
+        self.emit(Op::AssignThroughRef { dst, src });
     }
 
     /// Report an unsupported construct and yield a `null` temporary so
@@ -695,6 +808,7 @@ impl<'a> FnCompiler<'a> {
             name: IdentId(0),
             name_bytes,
             num_params,
+            var_count: self.var_count,
             num_regs: self.num_regs,
             code: self.code,
             consts: self.consts,

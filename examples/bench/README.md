@@ -141,7 +141,43 @@ string). Static properties and class constants got inline caches
 from its prelowercased name without allocating): 54 → 29 ms and
 55 → 30 ms per 500k (php 1.6 / 1.3).
 
-Left as known: `SplQueue::dequeue` is O(n) (the list is an array that
-renumbers on shift; a deque would make it O(1)), and the native call
-boundary itself (~100 ns against php's 2 ns) sets the floor for every
-small builtin.
+`SplQueue` is a deque since the property-purposes batch (200k
+enqueue/dequeue: 105 ms, php 9 ms).
+
+Sixth wave, the interpreter's per-op cost (`interp-loop.php`,
+2026-09-21). A counted loop with one addition ran 10 ops per iteration
+where php runs 4, at 40 ns (php 2.8): every read of a local was preceded
+by a `CheckVar` (the compiler forgot what was assigned at every branch),
+every literal went through a `LoadConst` into a temporary, the result of
+every operator was moved into its variable by a second op, and every
+register write called the drop glue. Now: the compiler carries definite
+assignment across branches when nothing in the body can `unset()` a
+local (`FnCompiler::structured_assign`; each alternative of an `if`,
+`switch`, `try` comes back to the set assigned before it, and so does the
+end), a literal operand names the pool directly
+(`rphp_bytecode::CONST_OPERAND`, for the operators, comparisons and
+`SendVal`), an operator computes straight into the variable it is
+assigned to (`store_var` folds the store into the producer when nothing
+jumps between them; `Function::var_count` tells the runtime which
+registers may hold a reference cell to store through), a comparison
+feeding a branch is one `JmpUnless`, and a scalar's overwrite skips the
+drop (`Value::overwrite`). The loop is php's 4 ops now, at 17 ns
+(6×, from 14×); at the top level, where every variable is a symbol-table
+cell, 26 ns (from 108: the fast paths look through the cell).
+
+The native call boundary: `abs()` cost 90 ns per call against php's 6.5
+(`strlen`/`count` are dedicated opcodes in php) — a frame push with a
+copy of the arguments, the pooled argument vector, the object-parameter
+check, the named-argument binding, the fault-site capture, the flush.
+The builtins that dominate call counts (`Interp::LIGHT_NATIVES`,
+`FnFlags::LIGHT`: `strlen`, `count`, `abs`, `max`, the `is_*`, the string
+and array functions of their arguments alone) now take a **frameless
+path** in `DoCall`: the handler runs over the argument window and
+nothing else; a diagnostic it would emit, an exception, or any user code
+it would run (`__toString`, a callback) aborts it with `Unwind::Retry`
+before anything observable happens, and the call re-runs on the full
+path with a frame — so traces, error handlers and side effects are
+exactly the full path's. An object argument goes to the full path
+outright (it may need fitting to the parameter). 59 ns per call now
+(the copy kept for the retry costs ~10 of them); user calls (88 ns,
+php 11) are next.

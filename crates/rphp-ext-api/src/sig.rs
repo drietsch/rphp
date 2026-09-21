@@ -159,6 +159,13 @@ bitflags! {
         const NODISCARD = 1 << 5;
         /// `#[\Deprecated]`: emit `E_DEPRECATED` on call.
         const DEPRECATED = 1 << 6;
+        /// Takes the engine's frameless call path: a function of its
+        /// arguments alone — no callback, no output, no by-reference
+        /// parameter, nothing it reads from the calling frame — whose
+        /// handler leaves its arguments as they were. Anything it emits
+        /// (a warning, a deprecation) or throws makes the engine re-run
+        /// the call on the full path, with a frame for the trace.
+        const LIGHT = 1 << 7;
     }
 }
 

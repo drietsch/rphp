@@ -103,6 +103,7 @@ impl Interp {
                 }
             },
             Unwind::Throw(o) => o,
+            Unwind::Retry => unreachable!("a light native's retry never leaves DoCall"),
         };
         loop {
             if self.frames.len() <= stop_depth {

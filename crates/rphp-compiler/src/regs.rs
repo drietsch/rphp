@@ -36,6 +36,12 @@ pub(crate) struct BodyFacts {
     /// whole function a generator (E8) — php decides this at compile time,
     /// and calling it builds a `Generator` instead of running the body.
     pub(crate) is_generator: bool,
+    /// A local can lose its value somewhere in the body — `unset($x)`, or a
+    /// `goto`/label that makes the statement order say nothing about what
+    /// ran — so "assigned by now" cannot be carried across a branch. (A
+    /// symbol table, `needs_symtab`, means the same: `unset($$n)` and an
+    /// included file's `unset($x)` reach the locals.)
+    pub(crate) may_lose_vars: bool,
 }
 
 /// Assign a permanent register to every variable a body names, in first-use
@@ -91,6 +97,16 @@ impl Visitor for VarCollector<'_> {
                         ensure_var(v, self.vars, self.next);
                     }
                 }
+                walk_stmt(self, s);
+            }
+            Stmt::Unset { targets, .. } => {
+                if targets.iter().any(|t| matches!(t, Expr::Var(..) | Expr::VarVar { .. })) {
+                    self.facts.may_lose_vars = true;
+                }
+                walk_stmt(self, s);
+            }
+            Stmt::Goto { .. } | Stmt::Label { .. } => {
+                self.facts.may_lose_vars = true;
                 walk_stmt(self, s);
             }
             _ => walk_stmt(self, s),

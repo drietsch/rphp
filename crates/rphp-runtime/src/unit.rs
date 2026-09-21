@@ -154,6 +154,10 @@ pub struct FuncRt {
     /// `#[\Deprecated]` on the function: `None` not looked at yet,
     /// `Some(None)` not deprecated, `Some(Some(note))` the notice's tail.
     pub deprecated: RefCell<Option<Option<Box<str>>>>,
+    /// The constant pool as values, for constant operands
+    /// (`CONST_OPERAND`) and `LoadConst`: a table entry that has no value
+    /// form is null here.
+    pub const_values: Vec<Value>,
 }
 
 impl FuncRt {
@@ -270,6 +274,7 @@ impl Interp {
             let ics = vec![IcSlot::Empty; f.ic_count as usize];
             let statics = vec![None; f.statics.len()];
             let deprecated = RefCell::new(if f.attrs.is_empty() { Some(None) } else { None });
+            let const_values = f.consts.iter().map(|c| c.to_value()).collect();
             self.funcs.push(Rc::new(FuncRt {
                 id: func_base + i as u32,
                 f,
@@ -279,6 +284,7 @@ impl Interp {
                 class,
                 reg_names,
                 deprecated,
+                const_values,
             }));
         }
         for (i, c) in unit.decls.iter().enumerate() {

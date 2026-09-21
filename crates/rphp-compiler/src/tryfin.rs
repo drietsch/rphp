@@ -145,6 +145,12 @@ impl FnCompiler<'_> {
                 .collect();
             let dst = c.var.map(|v| self.var_reg(v));
             self.mark_line(c.span);
+            // The body may have thrown before any of its assignments; the
+            // caught variable itself is bound on entry.
+            self.enter_alternative();
+            if let Some(v) = c.var {
+                self.mark_assigned(v);
+            }
             self.compile_nested(&c.body);
             self.emit_normal_exit(has_finally, &mut end_jumps);
             clauses.push(CatchClause { types, handler, dst });
@@ -163,6 +169,9 @@ impl FnCompiler<'_> {
             for j in ctx.entry_jumps {
                 self.patch(j, entry);
             }
+            // Reached from the body's every exit, including a throw before
+            // any of its assignments.
+            self.enter_alternative();
             self.compile_nested(fbody);
             let k = self.push_const(Const::JumpTable(targets));
             self.emit(Op::FinallyEnd {

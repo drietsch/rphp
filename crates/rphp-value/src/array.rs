@@ -369,6 +369,121 @@ impl Array {
         Some(v)
     }
 
+    /// `array_pop`: remove and return the last element. The next append
+    /// index steps back when the popped key was the one before it (php's
+    /// `nNextFreeElement` rule), the internal pointer rewinds, and a
+    /// packed array stays packed.
+    pub fn pop(&mut self) -> Option<Value> {
+        if self.0.live == 0 {
+            return None;
+        }
+        let data = Rc::make_mut(&mut self.0);
+        // Trailing tombstones go first; the last live entry is at the end.
+        while matches!(data.entries.last(), Some(None)) {
+            data.entries.pop();
+        }
+        let (k, v) = data.entries.pop()??;
+        data.live -= 1;
+        if !data.packed {
+            data.index.remove(&k);
+        }
+        // php: popping the element the next append would have followed
+        // steps the append index back by one — and only then.
+        if let ArrayKey::Int(i) = k {
+            if i + 1 == data.next_int {
+                data.next_int = i;
+            }
+        }
+        data.pos = data.next_live(0).unwrap_or(data.entries.len());
+        Some(v)
+    }
+
+    /// `array_shift`: remove and return the first element, renumbering the
+    /// integer keys from 0 (string keys stay) as php does. The internal
+    /// pointer rewinds.
+    pub fn shift(&mut self) -> Option<Value> {
+        if self.0.live == 0 {
+            return None;
+        }
+        let data = Rc::make_mut(&mut self.0);
+        let first = data.next_live(0)?;
+        let (_, v) = data.entries[first].take()?;
+        data.live -= 1;
+        if data.packed {
+            // Positions are the keys: remove, then renumber the stored keys.
+            data.entries.remove(first);
+            for (i, e) in data.entries.iter_mut().enumerate() {
+                if let Some((k, _)) = e {
+                    *k = ArrayKey::Int(i as i64);
+                }
+            }
+            data.next_int = data.entries.len() as i64;
+        } else {
+            let old = std::mem::take(&mut data.entries);
+            let mut entries: Vec<Entry> = Vec::with_capacity(data.live);
+            data.index.clear();
+            let mut next = 0i64;
+            for e in old.into_iter().flatten() {
+                let (k, v) = e;
+                let k = match k {
+                    ArrayKey::Int(_) => {
+                        let k = ArrayKey::Int(next);
+                        next += 1;
+                        k
+                    }
+                    s => s,
+                };
+                data.index.insert(k.clone(), entries.len());
+                entries.push(Some((k, v)));
+            }
+            data.entries = entries;
+            data.next_int = next;
+        }
+        data.pos = 0;
+        Some(v)
+    }
+
+    /// `array_unshift`: prepend `values`, renumbering the integer keys from
+    /// 0 (string keys stay); the internal pointer rewinds.
+    pub fn unshift(&mut self, values: Vec<Value>) {
+        let data = Rc::make_mut(&mut self.0);
+        let old = std::mem::take(&mut data.entries);
+        let mut entries: Vec<Entry> = Vec::with_capacity(data.live + values.len());
+        data.index.clear();
+        let mut next = 0i64;
+        let mut all_int = true;
+        for v in values {
+            entries.push(Some((ArrayKey::Int(next), v)));
+            next += 1;
+        }
+        for (k, v) in old.into_iter().flatten() {
+            let k = match k {
+                ArrayKey::Int(_) => {
+                    let k = ArrayKey::Int(next);
+                    next += 1;
+                    k
+                }
+                s => {
+                    all_int = false;
+                    s
+                }
+            };
+            entries.push(Some((k, v)));
+        }
+        data.live = entries.len();
+        data.packed = all_int;
+        if !all_int {
+            for (i, e) in entries.iter().enumerate() {
+                if let Some((k, _)) = e {
+                    data.index.insert(k.clone(), i);
+                }
+            }
+        }
+        data.entries = entries;
+        data.next_int = next;
+        data.pos = 0;
+    }
+
     // ----- iteration -----
 
     /// Entries in insertion order (tombstones skipped), values as stored.

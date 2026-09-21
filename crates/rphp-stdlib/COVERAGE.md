@@ -1011,3 +1011,17 @@ one site meeting a dynamic name, several classes, an `unset()` slot, a
 reference-bound slot, a coerced type, readonly and asymmetric slots, and
 a shadowed private property — and everything else by the differential
 corpus and the ladder as before.
+
+Later the same day, the algorithmic traps (`examples/bench/README.md`,
+fourth wave): `.=` copying the whole string, every by-reference native
+call copying its array, `unset($a[$k])` copying the array — each of them
+quadratic in a loop and each fixed at the value or call boundary rather
+than per function. Behaviour notes made on the way: `array_pop` steps the
+append index back only when the popped key was the one before it (php's
+`nNextFreeElement` rule), `array_shift` renumbers integer keys and keeps
+string keys, a by-reference native's callback (`usort`) sees the array
+as php's does, a negative out-of-range string offset write is php's
+`Warning: Illegal string offset N` (it was an Error), `fopen(…, 'a+')`
+reads from the start. Corpus: `array/pop-shift.php`,
+`lang/byref-natives.php`, `lang/prop-append.php`,
+`string/offset-writes.php`.

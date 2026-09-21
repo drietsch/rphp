@@ -95,6 +95,9 @@ pub enum SetNotice {
     FalseToArray,
     /// `Only the first byte will be assigned to the string offset`.
     FirstByteOnly,
+    /// `Illegal string offset N`: a negative offset before the start;
+    /// the string is left as it was.
+    IllegalStringOffset(i64),
 }
 
 impl Interp {
@@ -716,27 +719,20 @@ impl Interp {
                         value_name(&k)
                     )));
                 }
-                let mut bytes = s.as_bytes().to_vec();
                 let mut i = k.to_int();
                 if i < 0 {
-                    i += bytes.len() as i64;
+                    i += s.len() as i64;
                     if i < 0 {
-                        return Err(Unwind::error(format!(
-                            "Illegal string offset {}",
-                            k.to_int()
-                        )));
+                        return Ok(SetNotice::IllegalStringOffset(k.to_int()));
                     }
                 }
                 let v = value.to_php_bytes();
                 if v.is_empty() {
                     return Err(Unwind::error("Cannot assign an empty string to a string offset"));
                 }
-                let i = i as usize;
-                while bytes.len() <= i {
-                    bytes.push(b' ');
-                }
-                bytes[i] = v[0];
-                *slot = Value::Str(Str::from_vec(bytes));
+                // In place when the string is held here alone (php writes
+                // a refcount-1 string's byte without copying it).
+                s.set_byte(i as usize, v[0]);
                 if v.len() > 1 {
                     return Ok(SetNotice::FirstByteOnly);
                 }

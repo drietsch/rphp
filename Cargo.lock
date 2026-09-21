@@ -1422,6 +1422,7 @@ dependencies = [
  "crc32c",
  "crc32fast",
  "encoding_rs",
+ "hashbrown 0.16.1",
  "jiff",
  "md-5 0.10.6",
  "md2",

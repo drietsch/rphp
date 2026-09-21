@@ -405,14 +405,6 @@ impl Interp {
         }
     }
 
-    /// The frame's copy of a native's arguments, from the pool.
-    #[inline]
-    fn frame_args_copy(&mut self, args: &[Value]) -> Vec<Value> {
-        let mut v = self.take_vec();
-        v.extend_from_slice(args);
-        v
-    }
-
     /// Pop a native frame, returning its argument vector to the pool.
     #[inline]
     fn pop_native_frame(&mut self) {
@@ -448,17 +440,9 @@ impl Interp {
             return Err(Unwind::argument_count_error(f.arity_message(args.len())));
         }
         self.coerce_object_params(f.name, args)?;
-        let mut cells: Vec<(usize, PhpRef)> = Vec::new();
-        for (i, a) in args.iter_mut().enumerate() {
-            if let Value::Ref(r) = a {
-                if f.is_by_ref(i) {
-                    cells.push((i, r.clone()));
-                }
-                *a = r.get();
-            }
-        }
+        let cells = Interp::unwrap_native_args(f.name, args, |i| f.is_by_ref(i));
         let silence = self.silence;
-        let copy = self.frame_args_copy(args);
+        let copy = self.frame_args_for(args, &cells);
         let mut frame = Frame::native(id, copy, silence);
         if !cells.is_empty() {
             frame.extra_mut().ref_cells = cells.clone();
@@ -471,14 +455,75 @@ impl Interp {
             let mut ctx = Ctx(self);
             (f.handler)(&mut ctx, args)
         };
+        // The cells get their arrays back before the fault site is
+        // captured, so a trace shows `Array`, not what was taken out.
+        Interp::write_back_native_args(args, cells);
         let r = self.locate_fault(r);
         self.pop_native_frame();
         self.silence = silence;
-        for (i, cell) in cells {
-            cell.set(args[i].clone());
-        }
         self.out.flush_pending();
         r
+    }
+
+    /// Unwrap the `Ref` cells among a native's arguments: a by-reference
+    /// position keeps its cell (for the write-back) and, when the cell
+    /// holds an array and the native takes no callback, **takes** the
+    /// array out of it for the call — the handler then owns the only
+    /// handle and mutates in place, where a clone would have made
+    /// `array_pop($a)` copy `$a` every time. A native with a callback
+    /// (`usort`, `array_walk`) works on a copy instead, so its callback
+    /// sees the variable as php's does; a cell two positions share is
+    /// only read, so both see the same value.
+    fn unwrap_native_args(name: &str, args: &mut [Value], by_ref: impl Fn(usize) -> bool) -> Vec<(usize, PhpRef)> {
+        let mut cells: Vec<(usize, PhpRef)> = Vec::new();
+        let shared = |i: usize, r: &PhpRef, args: &[Value]| {
+            args.iter().enumerate().any(|(j, a)| j != i && matches!(a, Value::Ref(o) if o.ptr_eq(r)))
+        };
+        let mut takes_callback: Option<bool> = None;
+        for i in 0..args.len() {
+            let Value::Ref(r) = &args[i] else { continue };
+            let r = r.clone();
+            let taken = if by_ref(i) {
+                cells.push((i, r.clone()));
+                let callback = *takes_callback.get_or_insert_with(|| {
+                    crate::native_args::native_arginfo(name).is_some_and(|row| {
+                        row.iter().any(|(_, ty, _)| ty.is_some_and(|t| t.contains("callable")))
+                    })
+                });
+                let can_take = !callback && !shared(i, &r, args) && matches!(&*r.borrow(), Value::Array(_));
+                if can_take {
+                    r.update(|v| std::mem::replace(v, Value::Null))
+                } else {
+                    r.get()
+                }
+            } else {
+                r.get()
+            };
+            args[i] = taken;
+        }
+        cells
+    }
+
+    /// The frame's copy of a native's arguments (traces, `func_get_args`
+    /// through a callback): a by-reference position holds its cell, so the
+    /// trace shows the variable as it is — and no second handle on the
+    /// array the handler is working on.
+    fn frame_args_for(&mut self, args: &[Value], cells: &[(usize, PhpRef)]) -> Vec<Value> {
+        let mut v = self.take_vec();
+        for (i, a) in args.iter().enumerate() {
+            match cells.iter().find(|(p, _)| *p == i) {
+                Some((_, cell)) => v.push(Value::Ref(cell.clone())),
+                None => v.push(a.clone()),
+            }
+        }
+        v
+    }
+
+    /// Write a native's by-reference results back into their cells.
+    fn write_back_native_args(args: &mut [Value], cells: Vec<(usize, PhpRef)>) {
+        for (i, cell) in cells {
+            cell.set(std::mem::replace(&mut args[i], Value::Null));
+        }
     }
 
     /// php's argument parser on an object argument: a parameter declared
@@ -697,17 +742,15 @@ impl Interp {
             );
             self.coerce_object_params(&key, args)?;
         }
-        let mut cells: Vec<(usize, PhpRef)> = Vec::new();
-        for (i, a) in args.iter_mut().enumerate() {
-            if let Value::Ref(r) = a {
-                if nm.is_by_ref(i) {
-                    cells.push((i, r.clone()));
-                }
-                *a = r.get();
-            }
-        }
+        // (The name is only needed when a reference is passed.)
+        let key = if args.iter().any(|a| matches!(a, Value::Ref(_))) {
+            format!("{}::{}", self.classes[m.decl as usize].name_str(), String::from_utf8_lossy(&m.name))
+        } else {
+            String::new()
+        };
+        let cells = Interp::unwrap_native_args(&key, args, |i| nm.is_by_ref(i));
         let silence = self.silence;
-        let copy = self.frame_args_copy(args);
+        let copy = self.frame_args_for(args, &cells);
         let mut frame = Frame::native_method(m, this.clone(), copy, silence);
         if !cells.is_empty() {
             frame.extra_mut().ref_cells = cells.clone();
@@ -720,12 +763,12 @@ impl Interp {
             let mut ctx = Ctx(self);
             (nm.handler)(&mut ctx, this.as_ref(), args)
         };
+        // The cells get their arrays back before the fault site is
+        // captured, so a trace shows `Array`, not what was taken out.
+        Interp::write_back_native_args(args, cells);
         let r = self.locate_fault(r);
         self.pop_native_frame();
         self.silence = silence;
-        for (i, cell) in cells {
-            cell.set(args[i].clone());
-        }
         self.out.flush_pending();
         r
     }

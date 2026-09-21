@@ -14,9 +14,12 @@ use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::rc::Rc;
 
-/// The heap block behind a [`Str`].
+/// The heap block behind a [`Str`]. The bytes keep a `Vec`'s spare
+/// capacity so that a uniquely held string grows in place under `.=`
+/// (php appends to a refcount-1 string without copying; copying made
+/// `$out .= $line` quadratic).
 struct StrData {
-    bytes: Box<[u8]>,
+    bytes: Vec<u8>,
     /// FNV-1a hash of `bytes`, computed on first use. `0` means "not computed
     /// yet" (a computed hash of zero is stored as `1`).
     hash: Cell<u64>,
@@ -29,16 +32,52 @@ pub struct Str(Rc<StrData>);
 impl Str {
     /// Build a string by copying `bytes`.
     pub fn new(bytes: &[u8]) -> Self {
-        Str::from_boxed(Box::from(bytes))
+        Str::from_vec(bytes.to_vec())
     }
 
     /// Build a string from an owned byte vector without re-copying.
     pub fn from_vec(bytes: Vec<u8>) -> Self {
-        Str::from_boxed(bytes.into_boxed_slice())
+        Str(Rc::new(StrData { bytes, hash: Cell::new(0) }))
     }
 
-    fn from_boxed(bytes: Box<[u8]>) -> Self {
-        Str(Rc::new(StrData { bytes, hash: Cell::new(0) }))
+    /// Set byte `i`, padding with spaces up to it (php's string offset
+    /// write) — in place when this handle is the only one.
+    pub fn set_byte(&mut self, i: usize, b: u8) {
+        match Rc::get_mut(&mut self.0) {
+            Some(d) => {
+                if d.bytes.len() <= i {
+                    d.bytes.resize(i + 1, b' ');
+                }
+                d.bytes[i] = b;
+                d.hash.set(0);
+            }
+            None => {
+                let mut v = self.as_bytes().to_vec();
+                if v.len() <= i {
+                    v.resize(i + 1, b' ');
+                }
+                v[i] = b;
+                *self = Str::from_vec(v);
+            }
+        }
+    }
+
+    /// Append `more` — in place when this handle is the only one (php's
+    /// `.=` on a string nobody else holds), else into a new string with
+    /// room to grow.
+    pub fn push_bytes(&mut self, more: &[u8]) {
+        match Rc::get_mut(&mut self.0) {
+            Some(d) => {
+                d.bytes.extend_from_slice(more);
+                d.hash.set(0);
+            }
+            None => {
+                let mut v = Vec::with_capacity((self.len() + more.len()) * 2);
+                v.extend_from_slice(self.as_bytes());
+                v.extend_from_slice(more);
+                *self = Str::from_vec(v);
+            }
+        }
     }
 
     /// The bytes.
@@ -130,7 +169,7 @@ impl From<String> for Str {
 
 impl From<Box<[u8]>> for Str {
     fn from(b: Box<[u8]>) -> Self {
-        Str::from_boxed(b)
+        Str::from_vec(b.into_vec())
     }
 }
 

@@ -98,3 +98,33 @@ interpretation of Symfony's code — callbacks, Twig's generator-rendered
 templates — with `open(2)` of the log and profiler files (4–6 ms each on
 this machine, php pays the same), class linking per request (~12 %: php
 without opcache re-links too), and `serialize()` of the profiler data.
+
+Fourth wave — **algorithmic** traps, found by timing loops of a few hundred
+thousand operations against php (`/tmp`-style scripts; the ratios that
+were 1000× and more were not constant factors):
+
+- `$s .= $x` copied the whole string every time (21 s for 300k appends of
+  a short line; php 12 ms): `Str` now keeps a `Vec` and appends in place
+  when the handle is unique (`Str::push_bytes`), which `AssignOp`,
+  `$o->prop .= …` (declared or dynamic property) and string offset writes
+  (`$s[$i] = 'x'`) use. 53 ms now.
+- Every by-reference native call copied its array: `array_pop($a)` in a
+  loop was O(n²) (195 s for 100k pops of a 200k array; php 1 ms). The
+  call boundary now **takes** a by-reference array out of its cell for
+  the call (the handler holds the only handle) and puts it back after;
+  a native with a callback (`usort`, `array_walk`) keeps copy semantics
+  so its callback sees the variable as php's does. `array_pop`,
+  `array_shift`, `array_unshift`, `end`/`reset`/`next`/`prev` work on
+  the array in place (`Array::pop/shift/unshift`, the pointer moves)
+  instead of rebuilding it: 30 ms, 4 s (php's own shift is O(n): 2.8 s),
+  330 ms, 57 ms.
+- `unset($a[$k])` held a clone of the container across the unset, so a
+  `foreach ($a as $k => $v) unset($a[$k])` loop copied the array per
+  element (996 s for 200k; php 4 ms): 56 ms now. `in_array`/
+  `array_search`/`array_keys` compared through the engine's operand
+  conversion for every element (35×): only an object beside a scalar
+  needs it now. `array_slice` snapshotted the whole array per call.
+
+The ratios that remain are constant factors (2–10×): the native call
+boundary, `serialize`, `htmlspecialchars`, generators (Twig renders
+through them: 6× php per yield).

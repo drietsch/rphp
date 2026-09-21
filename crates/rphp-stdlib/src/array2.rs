@@ -891,7 +891,9 @@ pub(crate) fn key(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// Shared body of the pointer movers: mutate the array in place and write it
 /// back, returning the element under the new position (or `false`).
 fn move_pointer(func: &str, args: &mut [Value], f: impl FnOnce(&mut Array) -> Option<Value>) -> NativeResult {
-    let mut arr = want_array(func, &args[0])?.clone();
+    // The array is moved out and back so the pointer moves in place (a
+    // clone would copy the whole array to move it).
+    let mut arr = crate::arrays::take_array(func, args)?;
     let r = f(&mut arr).unwrap_or(Value::Bool(false));
     args[0] = Value::Array(arr);
     Ok(r)

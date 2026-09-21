@@ -794,6 +794,18 @@ impl Object {
         self.0.borrow().slots[usize::from(i)].clone()
     }
 
+    /// Move declared slot `i`'s value out, leaving null behind (for an
+    /// in-place operation that stores the result back with
+    /// [`Object::set_slot`]); a reference binding is left in place and
+    /// its value copied instead.
+    pub fn take_slot(&self, i: u16) -> Value {
+        let mut d = self.0.borrow_mut();
+        match &mut d.slots[usize::from(i)] {
+            Value::Ref(r) => r.get(),
+            slot => std::mem::replace(slot, Value::Null),
+        }
+    }
+
     /// Assign declared slot `i` by value (writing through a binding).
     pub fn set_slot(&self, i: u16, value: Value) {
         let mut d = self.0.borrow_mut();
@@ -822,6 +834,30 @@ impl Object {
     /// `&$o->name` over declared and dynamic properties.
     pub fn prop_ref(&self, name: &[u8]) -> PhpRef {
         self.0.borrow_mut().prop_ref(name)
+    }
+
+    /// Append `more` to dynamic property `name` when it holds a string (in
+    /// place when nothing else holds the string, through a reference
+    /// binding if there is one); `false` leaves everything as it was.
+    pub fn dyn_append_str(&self, name: &[u8], more: &[u8]) -> bool {
+        let mut d = self.0.borrow_mut();
+        let Some(slot) = d.dyn_props.as_mut().and_then(|p| p.get_mut(name)) else {
+            return false;
+        };
+        match slot {
+            Value::Str(s) => {
+                s.push_bytes(more);
+                true
+            }
+            Value::Ref(r) => r.update(|v| match v {
+                Value::Str(s) => {
+                    s.push_bytes(more);
+                    true
+                }
+                _ => false,
+            }),
+            _ => false,
+        }
     }
 
     /// Read dynamic property `name` as stored.

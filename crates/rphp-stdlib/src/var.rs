@@ -240,8 +240,29 @@ pub(crate) fn serialize(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 struct SerState {
     precision: i64,
     n: i64,
-    objects: Vec<(u32, i64)>,
+    /// Object handle → slot (a profile serializes thousands of objects).
+    objects: hashbrown::HashMap<u32, i64>,
     refs: Vec<(PhpRef, i64)>,
+}
+
+/// Append a decimal integer (php's `smart_str_append_long`: no `format!`
+/// allocation per number).
+fn push_int(out: &mut Vec<u8>, i: i64) {
+    let mut buf = [0u8; 20];
+    let mut n = i.unsigned_abs();
+    let mut pos = buf.len();
+    loop {
+        pos -= 1;
+        buf[pos] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    if i < 0 {
+        out.push(b'-');
+    }
+    out.extend_from_slice(&buf[pos..]);
 }
 
 impl SerState {
@@ -255,11 +276,11 @@ impl SerState {
                 if let Value::Object(o) = &*inner {
                     // A reference to an object is tracked as the object.
                     let id = o.id();
-                    if let Some(&(_, n)) = self.objects.iter().find(|(i, _)| *i == id) {
+                    if let Some(&n) = self.objects.get(&id) {
                         self.n -= 1;
                         return n;
                     }
-                    self.objects.push((id, self.n));
+                    self.objects.insert(id, self.n);
                     return 0;
                 }
                 drop(inner);
@@ -273,10 +294,10 @@ impl SerState {
             }
             Value::Object(o) => {
                 let id = o.id();
-                if let Some(&(_, n)) = self.objects.iter().find(|(i, _)| *i == id) {
+                if let Some(&n) = self.objects.get(&id) {
                     return n;
                 }
-                self.objects.push((id, self.n));
+                self.objects.insert(id, self.n);
                 0
             }
             _ => 0,
@@ -286,7 +307,7 @@ impl SerState {
 
 fn ser_len_str(out: &mut Vec<u8>, s: &[u8]) {
     out.extend_from_slice(b"s:");
-    out.extend_from_slice(s.len().to_string().as_bytes());
+    push_int(out, s.len() as i64);
     out.extend_from_slice(b":\"");
     out.extend_from_slice(s);
     out.extend_from_slice(b"\";");
@@ -327,11 +348,15 @@ fn ser(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, st: &mut SerState) -> Result
     if seen != 0 {
         match v {
             Value::Ref(_) => {
-                out.extend_from_slice(format!("R:{seen};").as_bytes());
+                out.extend_from_slice(b"R:");
+                push_int(out, seen);
+                out.push(b';');
                 return Ok(());
             }
             Value::Object(_) => {
-                out.extend_from_slice(format!("r:{seen};").as_bytes());
+                out.extend_from_slice(b"r:");
+                push_int(out, seen);
+                out.push(b';');
                 return Ok(());
             }
             _ => {}
@@ -348,7 +373,11 @@ fn ser(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, st: &mut SerState) -> Result
     match v {
         Value::Null | Value::Uninit => out.extend_from_slice(b"N;"),
         Value::Bool(b) => out.extend_from_slice(if *b { b"b:1;" } else { b"b:0;" }),
-        Value::Int(i) => out.extend_from_slice(format!("i:{i};").as_bytes()),
+        Value::Int(i) => {
+            out.extend_from_slice(b"i:");
+            push_int(out, *i);
+            out.push(b';');
+        }
         Value::Float(f) => {
             out.extend_from_slice(b"d:");
             out.extend_from_slice(php_gcvt(*f, st.precision, b'E').as_bytes());
@@ -356,10 +385,16 @@ fn ser(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, st: &mut SerState) -> Result
         }
         Value::Str(s) => ser_len_str(out, s.as_bytes()),
         Value::Array(a) => {
-            out.extend_from_slice(format!("a:{}:{{", a.len()).as_bytes());
+            out.extend_from_slice(b"a:");
+            push_int(out, a.len() as i64);
+            out.extend_from_slice(b":{");
             for (k, val) in a.iter() {
                 match k {
-                    ArrayKey::Int(i) => out.extend_from_slice(format!("i:{i};").as_bytes()),
+                    ArrayKey::Int(i) => {
+                        out.extend_from_slice(b"i:");
+                        push_int(out, *i);
+                        out.push(b';');
+                    }
                     ArrayKey::Str(s) => ser_len_str(out, s),
                 }
                 ser(ctx, out, val, st)?;
@@ -397,12 +432,20 @@ fn ser(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, st: &mut SerState) -> Result
                     )));
                 };
                 let a = a.clone();
-                out.extend_from_slice(format!("O:{}:\"", class.len()).as_bytes());
+                out.extend_from_slice(b"O:");
+                push_int(out, class.len() as i64);
+                out.extend_from_slice(b":\"");
                 out.extend_from_slice(&class);
-                out.extend_from_slice(format!("\":{}:{{", a.len()).as_bytes());
+                out.extend_from_slice(b"\":");
+                push_int(out, a.len() as i64);
+                out.extend_from_slice(b":{");
                 for (k, val) in a.iter() {
                     match k {
-                        ArrayKey::Int(i) => out.extend_from_slice(format!("i:{i};").as_bytes()),
+                        ArrayKey::Int(i) => {
+                        out.extend_from_slice(b"i:");
+                        push_int(out, *i);
+                        out.push(b';');
+                    }
                         ArrayKey::Str(k) => ser_len_str(out, k),
                     }
                     ser(ctx, out, val, st)?;
@@ -447,7 +490,9 @@ fn ser(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, st: &mut SerState) -> Result
                 }
                 props = kept;
             }
-            out.extend_from_slice(format!("O:{}:\"", class.len()).as_bytes());
+            out.extend_from_slice(b"O:");
+                push_int(out, class.len() as i64);
+                out.extend_from_slice(b":\"");
             out.extend_from_slice(&class);
             out.extend_from_slice(format!("\":{}:{{", props.len()).as_bytes());
             for (_, name, val) in &props {

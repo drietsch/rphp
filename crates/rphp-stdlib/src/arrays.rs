@@ -150,15 +150,29 @@ pub(crate) fn in_array(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         let hit = if strict {
             needle.identical(v)
         } else {
-            // `==`, with php's object-beside-number notice and conversion.
-            let (l, r) = ctx.cmp_operands(needle.clone(), v.clone())?;
-            l.loose_eq(&r)
+            loose_hit(ctx, &needle, v)?
         };
         if hit {
             return Ok(Value::Bool(true));
         }
     }
     Ok(Value::Bool(false))
+}
+
+/// `$needle == $v` for the searching functions: the value comparison
+/// directly unless an object sits beside a number or a string, which is
+/// the one case the engine has to convert first (`cmp_operands`).
+fn loose_hit(ctx: &mut Ctx, needle: &Value, v: &Value) -> Result<bool, Unwind> {
+    let object_beside_scalar = |a: &Value, b: &Value| {
+        matches!(a, Value::Object(_)) && matches!(b, Value::Int(_) | Value::Float(_) | Value::Str(_))
+    };
+    let both_objects = matches!(needle, Value::Object(_)) && matches!(&*v.deref(), Value::Object(_));
+    let vv = v.deref();
+    if object_beside_scalar(needle, &vv) || object_beside_scalar(&vv, needle) || both_objects {
+        let (l, r) = ctx.cmp_operands(needle.clone(), v.clone())?;
+        return Ok(l.loose_eq(&r));
+    }
+    Ok(needle.loose_eq(&vv))
 }
 
 pub(crate) fn array_key_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
@@ -196,9 +210,7 @@ pub(crate) fn array_keys(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             let hit = if strict {
                 needle.identical(v)
             } else {
-                // `==`, with php's object-beside-number notice and conversion.
-                let (l, r) = ctx.cmp_operands(needle.clone(), v.clone())?;
-                l.loose_eq(&r)
+                loose_hit(ctx, needle, v)?
             };
             if !hit {
                 continue;
@@ -588,8 +600,16 @@ fn append_reindexed(out: &mut Array, src: &Array) {
 pub(crate) fn array_slice(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_slice", &args[0])?;
     let n = arr.len() as i64;
-    // Snapshot once; `Array::iter()` is single-pass and we index it by position.
-    let entries: Vec<(&ArrayKey, &Value)> = arr.iter().collect();
+    // A pristine list is indexed by position directly; anything else is
+    // snapshotted once (`Array::iter()` is single-pass).
+    let entries: Vec<(&ArrayKey, &Value)> = if arr.is_pristine_list() { Vec::new() } else { arr.iter().collect() };
+    let entry = |i: usize| -> (&ArrayKey, &Value) {
+        if entries.is_empty() {
+            arr.raw_entry(i).expect("a pristine list has no tombstones")
+        } else {
+            entries[i]
+        }
+    };
 
     // Resolve the start offset (a negative offset counts from the end).
     let mut start = args[1].to_int();
@@ -616,7 +636,7 @@ pub(crate) fn array_slice(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut out = Array::new();
     let mut i = start;
     while i < end {
-        let (k, v) = entries[i as usize];
+        let (k, v) = entry(i as usize);
         match (preserve, k) {
             // Integer keys are renumbered unless preservation is requested;
             // string keys are always kept.
@@ -718,8 +738,7 @@ pub(crate) fn array_search(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         let hit = if strict {
             needle.identical(v)
         } else {
-            let (l, r) = ctx.cmp_operands(needle.clone(), v.clone())?;
-            l.loose_eq(&r)
+            loose_hit(ctx, &needle, v)?
         };
         if hit {
             return Ok(k.to_value());
@@ -1146,37 +1165,43 @@ pub(crate) fn array_push(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Int(count))
 }
 
+/// The array argument in place: taken out of `args[0]` (so the handler
+/// holds the only handle and mutates without copying) and put back by the
+/// caller. php's TypeError for anything else.
+pub(crate) fn take_array(func: &str, args: &mut [Value]) -> Result<Array, Unwind> {
+    match std::mem::replace(&mut args[0], Value::Null) {
+        Value::Array(a) => Ok(a),
+        other => {
+            let msg = format!(
+                "{func}(): Argument #1 ($array) must be of type array, {} given",
+                rphp_runtime::value_name(&other)
+            );
+            args[0] = other;
+            Err(Unwind::type_error(msg))
+        }
+    }
+}
+
 pub(crate) fn array_pop(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let mut entries = take_entries("array_pop", &args[0])?;
-    let popped = entries.pop().map(|(_, v)| v);
-    // Keys are preserved (no renumber); the next-append index resets to max+1,
-    // which rebuilding via `set` reproduces.
-    args[0] = rebuild(entries, false);
-    Ok(popped.unwrap_or(Value::Null))
+    let mut a = take_array("array_pop", args)?;
+    let popped = a.pop();
+    args[0] = Value::Array(a);
+    Ok(popped.map_or(Value::Null, Value::unref))
 }
 
 pub(crate) fn array_shift(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let mut entries = take_entries("array_shift", &args[0])?;
-    if entries.is_empty() {
-        return Ok(Value::Null);
-    }
-    let (_, first) = entries.remove(0);
-    // array_shift renumbers integer keys, keeps string keys.
-    args[0] = rebuild(entries, true);
-    Ok(first)
+    let mut a = take_array("array_shift", args)?;
+    let first = a.shift();
+    args[0] = Value::Array(a);
+    Ok(first.map_or(Value::Null, Value::unref))
 }
 
 pub(crate) fn array_unshift(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let existing = take_entries("array_unshift", &args[0])?;
-    let mut combined: Vec<(ArrayKey, Value)> =
-        args[1..].iter().map(|v| (ArrayKey::Int(0), v.clone())).collect();
-    combined.extend(existing);
-    // Prepended values plus existing integer keys are renumbered from 0.
-    args[0] = rebuild(combined, true);
-    let count = match &args[0] {
-        Value::Array(a) => a.len() as i64,
-        _ => 0,
-    };
+    let mut a = take_array("array_unshift", args)?;
+    let values: Vec<Value> = args[1..].iter().map(|v| v.deref().into_owned()).collect();
+    a.unshift(values);
+    let count = a.len() as i64;
+    args[0] = Value::Array(a);
     Ok(Value::Int(count))
 }
 

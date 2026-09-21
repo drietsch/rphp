@@ -11,7 +11,7 @@ use rphp_bytecode::{
     AssignOpKind, ClassRef, ClassRefKind, Const, FinallyState, FnFlags, IncludeKind, InitRef,
     NameRef, NameRefKind, Op, Visibility,
 };
-use rphp_value::{array_key, Object, PhpRef, Value};
+use rphp_value::{array_key, Object, PhpRef, Str, Value};
 
 use crate::class::MethodBody;
 use crate::frame::{CallTarget, FrameKind, IterState, PendingCall, RetTarget};
@@ -642,6 +642,12 @@ impl Interp {
                         pc += 1;
                         continue;
                     }
+                    // `$s .= …` onto a string appends in place (see
+                    // `Str::push_bytes`); anything else concatenates anew.
+                    if op == AssignOpKind::Concat && self.append_in_place(base, var, src) {
+                        pc += 1;
+                        continue;
+                    }
                     let cur = self.rd(base, var);
                     let rhs = self.rd(base, src);
                     let r = self.binary_op(op, &cur, &rhs)?;
@@ -677,6 +683,50 @@ impl Interp {
                 Op::AssignOpProp { op, obj, name, src } => {
                     let o = self.rd(base, obj);
                     let name = self.member_name(&func, base, name)?;
+                    // `$o->buf .= $s` appends in place when the property is
+                    // a plainly visible string slot (see `Str::push_bytes`).
+                    if op == AssignOpKind::Concat {
+                        if let Value::Object(ob) = &o {
+                            let scope = self.frames[fi].scope;
+                            let slot = match self.prop_cache_entry(ob, &name, scope, true) {
+                                Some(crate::unit::IcSlot::PropWrite { slot, ty, .. })
+                                    if ty.accepts(&Value::Str(Str::new(b""))) =>
+                                {
+                                    Some(slot)
+                                }
+                                _ => None,
+                            };
+                            let rhs = match self.raw(base, src).deref().as_ref() {
+                                Value::Str(s) => Some(s.clone()),
+                                Value::Int(i) => Some(Str::from_vec(i.to_string().into_bytes())),
+                                _ => None,
+                            };
+                            match (slot, rhs) {
+                                (Some(slot), Some(rhs)) => {
+                                    // (The probe's handle must be gone before
+                                    // the take, or the append copies.)
+                                    let is_str = matches!(ob.slot(slot), Value::Str(_));
+                                    if is_str {
+                                        if let Value::Str(mut s) = ob.take_slot(slot) {
+                                            s.push_bytes(rhs.as_bytes());
+                                            ob.set_slot(slot, Value::Str(s));
+                                            pc += 1;
+                                            continue;
+                                        }
+                                    }
+                                }
+                                // An existing dynamic property is written
+                                // directly (magic only meets an absent one).
+                                (None, Some(rhs)) if !ob.is_lazy() && self.class_of(ob).prop(&name).is_none() => {
+                                    if ob.dyn_append_str(&name, rhs.as_bytes()) {
+                                        pc += 1;
+                                        continue;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     let cur = self.fetch_prop(&o, &name)?;
                     let rhs = self.rd(base, src);
                     let r = self.binary_op(op, &cur, &rhs)?;
@@ -924,15 +974,17 @@ impl Interp {
                 }
                 Op::UnsetElem { arr, key } => {
                     let k = self.rd(base, key);
-                    // E6: `unset($o[$k])` is `offsetUnset($k)`.
-                    let container = self.rd(base, arr);
-                    if let Value::Object(o) = &*container.deref() {
-                        if self.is_array_access(o) {
-                            let o = o.clone();
-                            self.offset_unset(&o, &k)?;
-                            pc += 1;
-                            continue;
-                        }
+                    // E6: `unset($o[$k])` is `offsetUnset($k)`. (Looked at
+                    // without keeping a handle on an array container: the
+                    // unset below would copy it.)
+                    let object = match &*self.raw(base, arr).deref() {
+                        Value::Object(o) if self.is_array_access(o) => Some(o.clone()),
+                        _ => None,
+                    };
+                    if let Some(o) = object {
+                        self.offset_unset(&o, &k)?;
+                        pc += 1;
+                        continue;
                     }
                     self.with_slot(base, arr, |slot| match slot {
                         Value::Array(a) => {
@@ -2260,6 +2312,40 @@ impl Interp {
         }
     }
 
+    /// `var .= src` when `var` holds a string and `src` a string or an
+    /// integer: the bytes are appended to the string in the register (or
+    /// in its reference cell) and `true` is returned; any other operand
+    /// pair is left to the general path.
+    fn append_in_place(&mut self, base: usize, var: u16, src: u16) -> bool {
+        let rhs: Str = match self.raw(base, src) {
+            Value::Str(s) => s.clone(),
+            Value::Int(i) => Str::from_vec(i.to_string().into_bytes()),
+            Value::Ref(r) => match &*r.borrow() {
+                Value::Str(s) => s.clone(),
+                Value::Int(i) => Str::from_vec(i.to_string().into_bytes()),
+                _ => return false,
+            },
+            _ => return false,
+        };
+        match &mut self.stack[base + var as usize] {
+            Value::Str(s) => {
+                s.push_bytes(rhs.as_bytes());
+                true
+            }
+            Value::Ref(cell) => {
+                let cell = cell.clone();
+                cell.update(|v| match v {
+                    Value::Str(s) => {
+                        s.push_bytes(rhs.as_bytes());
+                        true
+                    }
+                    _ => false,
+                })
+            }
+            _ => false,
+        }
+    }
+
     /// `dst = a OP b` for the binary operators.
     fn arith(&mut self, base: usize, dst: u16, a: u16, b: u16, op: AssignOpKind) -> Result<(), Unwind> {
         // Two numbers in the registers: no clone, no diagnostics to consider.
@@ -2490,6 +2576,9 @@ impl Interp {
             }
             crate::ops::SetNotice::FirstByteOnly => {
                 self.warn("Only the first byte will be assigned to the string offset")?;
+            }
+            crate::ops::SetNotice::IllegalStringOffset(i) => {
+                self.warn(&format!("Illegal string offset {i}"))?;
             }
         }
         Ok(())

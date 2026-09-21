@@ -432,12 +432,31 @@ impl Interp {
     /// `skip` frames are dropped from the top (a native that builds its own
     /// trace skips itself), `limit` caps the entries (0 = all).
     pub fn build_trace(&self, opts: TraceOpts) -> Array {
-        let frames = &self.frames;
+        // The stack as php shows it: a generator body serving a `yield
+        // from` chain sits above the (parked) bodies delegating to it,
+        // outermost first, each "called" at the other's `yield from`.
+        let mut frames: Vec<&Frame> = Vec::with_capacity(self.frames.len());
+        for f in &self.frames {
+            if let Some(g) = f.extra.as_ref().and_then(|e| e.generator) {
+                let mut chain: Vec<&Frame> = Vec::new();
+                let mut cur = g;
+                while let Some(p) = self.generators.get(cur as usize).and_then(|s| s.delegated_by()) {
+                    match self.generators[p as usize].parked_frame() {
+                        Some(pf) => chain.push(pf),
+                        None => break,
+                    }
+                    cur = p;
+                }
+                frames.extend(chain.into_iter().rev());
+            }
+            frames.push(f);
+        }
+        let frames = &frames;
         let mut out = Array::new();
         let mut skipped = 0usize;
         let mut n = 0usize;
         for i in (1..frames.len()).rev() {
-            let callee = &frames[i];
+            let callee = frames[i];
             if callee.kind == FrameKind::Internal {
                 continue;
             }
@@ -453,7 +472,7 @@ impl Interp {
             if opts.limit != 0 && n >= opts.limit {
                 break;
             }
-            let caller = &frames[i - 1];
+            let caller = frames[i - 1];
             let mut entry = Array::new();
             if caller.is_user() {
                 entry.set(ArrayKey::str(b"file"), Value::string(self.frame_file(caller).as_bytes()));

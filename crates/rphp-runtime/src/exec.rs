@@ -706,6 +706,8 @@ impl Interp {
         // A call, include, eval or return that leaves a bytecode frame on
         // top switches to it here (`continue 'frames`) rather than through
         // `run_until`: the locals below are the top frame's.
+        #[cfg(feature = "profile")]
+        let mut prev_op: Option<(&'static str, std::time::Instant, std::time::Duration)> = None;
         'frames: loop {
         if self.frames.len() <= stop_depth {
             return Ok(Switch::Continue);
@@ -724,20 +726,28 @@ impl Interp {
             let (ops, calls) = func.profile.get();
             func.profile.set((ops, calls + u64::from(pc == 0)));
         }
-        #[cfg(feature = "profile")]
-        let mut prev_op: Option<(&'static str, std::time::Instant, std::time::Duration)> = None;
         loop {
+            // An op that switched frames (a call, a return) is recorded here
+            // by the next frame's first op, so its own time is the switch.
+            // One clock reading ends the previous op and starts the next,
+            // so the bookkeeping between them is the next op's, never the
+            // enclosing op's (whose exclusive time would otherwise gather
+            // the profiler's own cost over every nested op).
             #[cfg(feature = "profile")]
             {
                 let (ops, calls) = func.profile.get();
                 func.profile.set((ops + 1, calls));
+                let now = std::time::Instant::now();
                 if let Some((kind, started, nested_before)) = prev_op.take() {
-                    let inclusive = started.elapsed();
+                    let inclusive = now.saturating_duration_since(started);
                     let nested = self.profile_nested - nested_before;
-                    let e = self.profile_ops.entry(kind.to_string()).or_default();
+                    let e = self.profile_ops.entry(kind).or_default();
                     e.0 += inclusive.saturating_sub(nested);
                     e.1 += 1;
                     self.profile_nested = nested_before + inclusive;
+                }
+                if let Some(o) = code.get(pc) {
+                    prev_op = Some((op_kind_name(o), now, self.profile_nested));
                 }
             }
             if rphp_value::has_pending_destructors() {
@@ -745,12 +755,6 @@ impl Interp {
                 // previous op get their `__destruct` now.
                 self.frames[fi].pc = pc;
                 self.run_pending_destructors()?;
-            }
-            #[cfg(feature = "profile")]
-            {
-                if let Some(o) = code.get(pc) {
-                    prev_op = Some((op_kind_name(o), std::time::Instant::now(), self.profile_nested));
-                }
             }
             let Some(&op) = code.get(pc) else {
                 // Falling off the end is an implicit `return null`.
@@ -1397,6 +1401,23 @@ impl Interp {
                         IterState::Native { obj, iter, pos, by_ref } => Some((obj.clone(), *iter, *pos, *by_ref)),
                         _ => None,
                     };
+                    #[cfg(feature = "profile")]
+                    {
+                        let kind = match &self.frames[fi].extra().iters[idx].1 {
+                            IterState::Array { .. } => "IterNext:array",
+                            IterState::Native { .. } => "IterNext:native",
+                            IterState::ByRef { cell, .. } => match &*cell.borrow() {
+                                Value::Object(o) if self.generator_id(o).is_some() => "IterNext:generator",
+                                Value::Object(_) => "IterNext:user-iterator",
+                                _ => "IterNext:byref-array",
+                            },
+                            IterState::Empty => "IterNext:empty",
+                        };
+                        let e = self.profile_ops.entry(kind).or_default();
+                        e.1 += 1;
+                    }
+                    #[cfg(feature = "profile")]
+                    let step_started = std::time::Instant::now();
                     let step = if let Some((o, it, pos, by_ref)) = native {
                         if let IterState::Native { pos, .. } = &mut self.frames[fi].extra_mut().iters[idx].1 {
                             *pos += 1;
@@ -1469,6 +1490,22 @@ impl Interp {
                             }
                         }
                     };
+                    #[cfg(feature = "profile")]
+                    {
+                        let kind = match &self.frames[fi].extra().iters[idx].1 {
+                            IterState::Array { .. } => "IterStep:array",
+                            IterState::Native { .. } => "IterStep:native",
+                            IterState::ByRef { cell, .. } => match &*cell.borrow() {
+                                Value::Object(o) if self.generator_id(o).is_some() => "IterStep:generator",
+                                Value::Object(_) => "IterStep:user-iterator",
+                                _ => "IterStep:byref-array",
+                            },
+                            IterState::Empty => "IterStep:empty",
+                        };
+                        let e = self.profile_ops.entry(kind).or_default();
+                        e.0 += step_started.elapsed();
+                        e.1 += 1;
+                    }
                     match step {
                         None => {
                             pc = target as usize;
@@ -2657,6 +2694,12 @@ impl Interp {
                         Some(FinallyState::Return) => {
                             let v = self.rd(base, payload);
                             self.set(base, state, Value::Int(0));
+                            // A `return` out of a generator's `try`/`finally`
+                            // finishes the generator, as `GenReturn` does.
+                            if let Some(gid) = self.frames[fi].extra().generator {
+                                self.finish_generator(gid, v);
+                                return Ok(Switch::Done(Value::Null));
+                            }
                             let v = if func.f.ret_ty.is_some() {
                                 let strict = self.frames[fi].strict;
                                 self.verify_return(&func, Some(v), strict)?
@@ -2664,9 +2707,9 @@ impl Interp {
                                 v
                             };
                             match self.do_return(v, stop_depth)? {
-                    Switch::Continue => continue 'frames,
-                    done => return Ok(done),
-                }
+                                Switch::Continue => continue 'frames,
+                                done => return Ok(done),
+                            }
                         }
                         Some(FinallyState::Jump) => {
                             let k = self.rd(base, payload).to_int();

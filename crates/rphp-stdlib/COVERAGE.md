@@ -1179,3 +1179,34 @@ A property default that is a thunk (`= self::X`, `= E::Case`) is
 evaluated once per class and copied into every instance
 (`ClassDef::default_cache`, php's `zend_update_class_constants`); it was
 a function call per `new`.
+
+## `yield from` chains, and the profile's frame switches (2026-09-21)
+
+A `yield from` used to route every step through the outer generator:
+resuming the root resumed its body, whose `yield from` op resumed the
+inner one, and so on down — a `run_until` per level per step, and an
+exception thrown at the leaf unwound through each level's own frame.
+Now a generator tree is php's delegation tree (`Delegate::Gen`,
+`GeneratorState::delegated_by`, `Generator::leaf_of`): a resume of the
+root runs the innermost body directly; when a leaf finishes, its return
+value completes the `yield from` above it and that body resumes; an
+exception out of a leaf surfaces at each delegator's `yield from`
+(`throw_up`), where its `catch`/`finally` run in order; `current()`,
+`key()`, `send()`, `throw()` on the root read and drive the leaf; a
+trace taken inside the chain shows every parked generator as a frame
+(`build_trace` walks `delegated_by`). With it: a `return` out of a
+generator's `try`/`finally` finishes the generator (the finally ran,
+then `do_return` looked for a caller frame that was not there), and
+`yield from` a finished generator is php's `Error` "Generator passed to
+yield from was aborted without proper return and is unable to continue".
+Corpus: `lang/generator-chains.php` (exit 255 — it ends on that fatal).
+Depth-4 chain, 200k steps: 31 ms (php 5).
+
+The `profile` feature's exclusive per-op table had charged the ops that
+switch frames (a user call, a return) to nobody, and its own bookkeeping
+between two ops to the innermost op that had a nested run — so a
+generator step on the demo page read as 12 µs when it is ~115 ns. An op
+that switches frames is now recorded by the next frame's first op (so
+`DoCall` counts user calls too, and `Ret` appears), one clock reading
+ends an op and starts the next, and `IterNext:<kind>` /
+`IterStep:<kind>` rows split the iteration ops by what they step.

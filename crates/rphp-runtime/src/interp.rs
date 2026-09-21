@@ -249,7 +249,7 @@ pub struct Interp {
     /// Under the `profile` feature: time and count per op kind (inclusive
     /// of what the op calls into — a `DoCall` includes the callee's run
     /// only up to the frame switch, since the loop times one op at a time).
-    pub profile_ops: HashMap<String, (std::time::Duration, u64)>,
+    pub profile_ops: HashMap<&'static str, (std::time::Duration, u64)>,
     /// Under the `profile` feature: the inclusive time of every op timed
     /// so far, which an enclosing op subtracts to get its own (exclusive)
     /// time — a native's callback, a generator's body run inside `IterNext`.
@@ -339,7 +339,7 @@ impl Interp {
         if !cfg!(feature = "profile") {
             return;
         }
-        let mut ops: Vec<(&String, &(std::time::Duration, u64))> = self.profile_ops.iter().collect();
+        let mut ops: Vec<(&&'static str, &(std::time::Duration, u64))> = self.profile_ops.iter().collect();
         ops.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
         let total_ops: std::time::Duration = ops.iter().map(|(_, (d, _))| *d).sum();
         eprintln!("== ops by kind (exclusive): {:.1} ms in the dispatch loop", total_ops.as_secs_f64() * 1e3);
@@ -349,6 +349,9 @@ impl Interp {
                 d.as_secs_f64() * 1e3,
                 d.as_nanos() as f64 / (*n).max(1) as f64
             );
+        }
+        for (name, (_, n)) in ops.iter().filter(|(name, _)| name.contains(':')) {
+            eprintln!("          {n:>9} ops  {name}");
         }
         let mut natives: Vec<(&String, &(std::time::Duration, u64))> = self.profile_natives.iter().collect();
         natives.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));

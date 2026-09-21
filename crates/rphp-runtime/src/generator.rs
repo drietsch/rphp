@@ -40,10 +40,14 @@ pub enum GenStatus {
 
 /// What `yield from` is currently delegating to.
 enum Delegate {
-    /// An array or `Traversable` snapshot, by position.
-    Values { items: Vec<(Value, Value)>, pos: usize },
-    /// Another generator, by object.
-    Gen(Object),
+    /// An array or `Traversable` snapshot, by position; `fresh` until the
+    /// first value has been published (the first resume does not advance).
+    Values { items: Vec<(Value, Value)>, pos: usize, fresh: bool },
+    /// Another generator, by object and index. While it runs, the outer
+    /// body stays parked: a resume of the outer resumes the innermost
+    /// generator of the chain directly (php's "leaf"), and the outer's
+    /// `current()`/`key()` are the leaf's.
+    Gen(u32),
 }
 
 /// A parked generator body.
@@ -69,9 +73,24 @@ pub struct GeneratorState {
     delegate_dst: Option<u16>,
     /// An exception to throw at the resumption point (`Generator::throw()`).
     pending_throw: Option<Value>,
+    /// The generator whose `yield from` this one is serving, while it is:
+    /// the leaf's yields are its values, its return the value of that
+    /// `yield from`, its exceptions surface at that op, and a trace shows
+    /// it beneath the leaf.
+    delegated_by: Option<u32>,
 }
 
 impl GeneratorState {
+    /// The parked frame, while the body is suspended.
+    pub(crate) fn parked_frame(&self) -> Option<&Frame> {
+        self.frame.as_ref()
+    }
+
+    /// The generator whose `yield from` this one serves.
+    pub(crate) fn delegated_by(&self) -> Option<u32> {
+        self.delegated_by
+    }
+
     fn new(frame: Frame, regs: Vec<Value>) -> GeneratorState {
         GeneratorState {
             frame: Some(frame),
@@ -85,6 +104,7 @@ impl GeneratorState {
             delegate: None,
             delegate_dst: None,
             pending_throw: None,
+            delegated_by: None,
         }
     }
 }
@@ -126,8 +146,9 @@ impl Interp {
             let mut out = Vec::new();
             self.ensure_started(iid)?;
             while self.generators[iid as usize].status != GenStatus::Finished {
+                let leaf = self.leaf_of(iid);
                 let (k, v) = {
-                    let g = &self.generators[iid as usize];
+                    let g = &self.generators[leaf as usize];
                     (g.current_key.clone(), g.current_val.clone())
                 };
                 out.push((k, v));
@@ -159,8 +180,9 @@ impl Interp {
             let mut out = Vec::new();
             self.ensure_started(iid)?;
             while self.generators[iid as usize].status != GenStatus::Finished {
+                let leaf = self.leaf_of(iid);
                 let (k, v) = {
-                    let g = &self.generators[iid as usize];
+                    let g = &self.generators[leaf as usize];
                     (g.current_key.clone(), g.current_val.clone())
                 };
                 out.push((k, v));
@@ -279,9 +301,27 @@ impl Interp {
         g.current_val = Value::Null;
     }
 
+    /// The innermost generator of `idx`'s `yield from` chain: the one
+    /// whose body runs on a resume and whose pair is `current()`/`key()`.
+    /// A generator delegating to a snapshot (`Values`) is its own leaf.
+    fn leaf_of(&self, idx: u32) -> u32 {
+        let mut cur = idx;
+        for _ in 0..1024 {
+            match &self.generators[cur as usize].delegate {
+                Some(Delegate::Gen(inner)) => cur = *inner,
+                _ => break,
+            }
+        }
+        cur
+    }
+
     /// Run the generator until it yields, returns or throws.
     ///
-    /// `sent` is the value the parked `yield` expression evaluates to.
+    /// `sent` is the value the parked `yield` expression evaluates to. A
+    /// generator in a `yield from` chain is resumed at the chain's leaf;
+    /// when a leaf finishes, its return value completes the `yield from`
+    /// of the generator above it, which runs on — until something yields
+    /// or the root finishes.
     fn resume(&mut self, idx: u32, sent: Value) -> Result<(), Unwind> {
         match self.generators[idx as usize].status {
             GenStatus::Finished => return Ok(()),
@@ -290,15 +330,88 @@ impl Interp {
             }
             _ => {}
         }
-        // Drive a `yield from` delegate first: while it has values, the outer
-        // body stays parked.
-        if self.step_delegate(idx, &sent)? {
-            return Ok(());
+        let mut sent = Some(sent);
+        loop {
+            let leaf = self.leaf_of(idx);
+            // `Generator::throw()` lands in the innermost body.
+            if leaf != idx {
+                if let Some(t) = self.generators[idx as usize].pending_throw.take() {
+                    self.generators[leaf as usize].pending_throw = Some(t);
+                }
+            }
+            // A snapshot delegate publishes its next pair without running
+            // anything; exhausted, it completes the `yield from`.
+            let exhausted = match self.generators[leaf as usize].delegate.as_mut() {
+                Some(Delegate::Values { items, pos, fresh }) => {
+                    if *fresh {
+                        *fresh = false;
+                    } else {
+                        *pos += 1;
+                    }
+                    if *pos < items.len() {
+                        let (k, v) = items[*pos].clone();
+                        let g = &mut self.generators[leaf as usize];
+                        g.current_key = k;
+                        g.current_val = v;
+                        g.status = GenStatus::Suspended;
+                        return Ok(());
+                    }
+                    true
+                }
+                _ => false,
+            };
+            let value = if exhausted {
+                self.generators[leaf as usize].delegate = None;
+                Value::Null
+            } else {
+                sent.take().unwrap_or(Value::Null)
+            };
+            // A finished leaf with a delegator: that `yield from` completes
+            // with the leaf's return value, and the delegator's body runs.
+            let (body, value) = if self.generators[leaf as usize].status == GenStatus::Finished {
+                let Some(parent) = self.generators[leaf as usize].delegated_by.take() else {
+                    return Ok(());
+                };
+                let ret = self.generators[leaf as usize].return_val.clone();
+                self.generators[parent as usize].delegate = None;
+                let dst = self.generators[parent as usize].delegate_dst.take();
+                self.generators[parent as usize].resume_dst = dst;
+                (parent, ret)
+            } else {
+                // The leaf's body (or, for an exhausted snapshot, the body
+                // that was delegating to it).
+                let dst = if exhausted {
+                    self.generators[leaf as usize].delegate_dst.take()
+                } else {
+                    self.generators[leaf as usize].resume_dst.take()
+                };
+                self.generators[leaf as usize].resume_dst = dst;
+                (leaf, value)
+            };
+            self.run_body(body, value)?;
+            // Yielded a pair: done. Parked for a delegation, or finished
+            // while serving one: round again, from the new leaf (or up).
+            let g = &self.generators[body as usize];
+            if g.status == GenStatus::Suspended && g.delegate.is_none() {
+                return Ok(());
+            }
+            if g.status == GenStatus::Finished && g.delegated_by.is_none() {
+                return Ok(());
+            }
         }
+    }
 
+    /// Push `idx`'s parked frame with `value` in its resume register and
+    /// run it until it yields, delegates, returns or throws. An exception
+    /// out of the body finishes it and, when the body was serving a
+    /// `yield from`, surfaces at that op in the delegator (whose `try` may
+    /// catch it; then that body runs on), and so on up the chain.
+    fn run_body(&mut self, idx: u32, value: Value) -> Result<(), Unwind> {
         let (mut frame, mut regs, dst, throw) = {
             let g = &mut self.generators[idx as usize];
-            let frame = g.frame.take().expect("parked frame");
+            let Some(frame) = g.frame.take() else {
+                return Ok(());
+            };
             let regs = std::mem::take(&mut g.regs);
             g.status = GenStatus::Running;
             (frame, regs, g.resume_dst.take(), g.pending_throw.take())
@@ -309,7 +422,7 @@ impl Interp {
         if let Some(d) = dst {
             let abs = base + d as usize;
             if abs < self.stack.len() {
-                self.stack[abs] = sent;
+                self.stack[abs] = value;
             }
         }
         let depth = self.frames.len();
@@ -319,24 +432,70 @@ impl Interp {
             frame.pc = frame.pc.saturating_sub(1);
         }
         self.frames.push(frame);
+        let mut result = Ok(());
         if let Some(e) = throw {
             let u = Unwind::Throw(match e {
                 Value::Object(o) => o,
                 other => return Err(Unwind::error(format!("Cannot throw {other:?}"))),
             });
-            match self.dispatch_unwind(u, depth) {
-                Ok(()) => {}
-                Err(u) => {
-                    self.force_finish(idx);
-                    return Err(u);
-                }
+            if let Err(u) = self.dispatch_unwind(u, depth) {
+                result = Err(u);
             }
         }
-        match self.run_until(depth) {
-            Ok(_) => Ok(()),
+        if result.is_ok() {
+            result = self.run_until(depth).map(|_| ());
+        }
+        match result {
+            Ok(()) => Ok(()),
             Err(u) => {
                 self.force_finish(idx);
-                Err(u)
+                self.throw_up(idx, u)
+            }
+        }
+    }
+
+    /// An exception out of a finished body: rethrown at the `yield from`
+    /// of the generator it was serving, whose body runs on when it catches
+    /// it; otherwise on up the chain, out of the root at last.
+    fn throw_up(&mut self, from: u32, mut u: Unwind) -> Result<(), Unwind> {
+        let mut cur = from;
+        loop {
+            let Some(parent) = self.generators[cur as usize].delegated_by.take() else {
+                return Err(u);
+            };
+            {
+                let g = &mut self.generators[parent as usize];
+                g.delegate = None;
+                g.delegate_dst = None;
+            }
+            // Unpark the parent on its `yield from` op.
+            let Some(mut frame) = self.generators[parent as usize].frame.take() else {
+                return Err(u);
+            };
+            let mut regs = std::mem::take(&mut self.generators[parent as usize].regs);
+            self.generators[parent as usize].status = GenStatus::Running;
+            let base = self.stack.len();
+            frame.base = base;
+            frame.pc = frame.pc.saturating_sub(1);
+            self.stack.append(&mut regs);
+            let depth = self.frames.len();
+            self.frames.push(frame);
+            match self.dispatch_unwind(u, depth) {
+                // Caught: the parent runs on to its next yield or its end.
+                Ok(()) => match self.run_until(depth) {
+                    Ok(_) => return Ok(()),
+                    Err(u2) => {
+                        self.force_finish(parent);
+                        u = u2;
+                        cur = parent;
+                    }
+                },
+                // Not caught: the dispatch popped the parent's frame.
+                Err(u2) => {
+                    self.force_finish(parent);
+                    u = u2;
+                    cur = parent;
+                }
             }
         }
     }
@@ -349,176 +508,12 @@ impl Interp {
         g.status = GenStatus::Finished;
         g.current_key = Value::Null;
         g.current_val = Value::Null;
+        g.delegate = None;
+        g.delegate_dst = None;
     }
 
-    /// Advance a `yield from` delegate. Returns `true` when the delegate
-    /// produced a value, leaving the outer body parked.
-    fn step_delegate(&mut self, idx: u32, sent: &Value) -> Result<bool, Unwind> {
-        let has = self.generators[idx as usize].delegate.is_some();
-        if !has {
-            return Ok(false);
-        }
-        // Advance, then publish whatever the delegate is now on.
-        let started = self.generators[idx as usize].status != GenStatus::NotStarted;
-        let done = match self.generators[idx as usize].delegate.as_mut() {
-            Some(Delegate::Values { items, pos }) => {
-                if started {
-                    *pos += 1;
-                }
-                let (p, n) = (*pos, items.len());
-                if p < n {
-                    let (k, v) = items[p].clone();
-                    let g = &mut self.generators[idx as usize];
-                    g.current_key = k;
-                    g.current_val = v;
-                    g.status = GenStatus::Suspended;
-                    return Ok(true);
-                }
-                true
-            }
-            Some(Delegate::Gen(inner)) => {
-                let inner = inner.clone();
-                let Some(iid) = self.generator_id(&inner) else {
-                    return Err(Unwind::error("yield from: not a generator"));
-                };
-                // The outer body is unparked while the inner runs: a trace
-                // shows `gen()` beneath `inner()`, and an exception out of
-                // the inner surfaces at the `yield from`, where the outer's
-                // own `try` may catch it.
-                let unparked = {
-                    let g = &mut self.generators[idx as usize];
-                    g.frame.take().map(|mut frame| {
-                        let regs = std::mem::take(&mut g.regs);
-                        g.status = GenStatus::Running;
-                        let base = self.stack.len();
-                        frame.base = base;
-                        // Back on the `yield from` op itself, so a `try`
-                        // around it covers what the delegate throws.
-                        frame.pc -= 1;
-                        self.stack.extend(regs);
-                        let depth = self.frames.len();
-                        self.frames.push(frame);
-                        (base, depth)
-                    })
-                };
-                // `Generator::throw()` lands in the innermost delegate.
-                if let Some(t) = self.generators[idx as usize].pending_throw.take() {
-                    self.generators[iid as usize].pending_throw = Some(t);
-                }
-                let stepped = if started {
-                    self.resume(iid, sent.clone())
-                } else {
-                    // First touch of the delegate: run the inner generator to
-                    // its first `yield` before reading `current`.
-                    self.ensure_started(iid)
-                };
-                let repark = |it: &mut Interp| {
-                    if let Some((base, _)) = unparked {
-                        let mut frame = it.frames.pop().expect("outer generator frame");
-                        frame.pc += 1;
-                        let regs = it.stack.split_off(base);
-                        let g = &mut it.generators[idx as usize];
-                        g.frame = Some(frame);
-                        g.regs = regs;
-                    }
-                };
-                if let Err(u) = stepped {
-                    let Some((base, depth)) = unparked else {
-                        return Err(u);
-                    };
-                    {
-                        let g = &mut self.generators[idx as usize];
-                        g.delegate = None;
-                        g.delegate_dst = None;
-                    }
-                    return match self.dispatch_unwind(u, depth) {
-                        // Caught inside the outer body: it runs on to its
-                        // next `yield` or its end.
-                        Ok(()) => match self.run_until(depth) {
-                            Ok(_) => Ok(true),
-                            Err(u) => {
-                                self.force_finish(idx);
-                                Err(u)
-                            }
-                        },
-                        // Not caught: the dispatch popped the outer frame.
-                        Err(u) => {
-                            let _ = base;
-                            self.force_finish(idx);
-                            Err(u)
-                        }
-                    };
-                }
-                repark(self);
-                if self.generators[iid as usize].status == GenStatus::Finished {
-                    self.generators[idx as usize].status = GenStatus::Suspended;
-                    true
-                } else {
-                    let (k, v) = {
-                        let ig = &self.generators[iid as usize];
-                        (ig.current_key.clone(), ig.current_val.clone())
-                    };
-                    let g = &mut self.generators[idx as usize];
-                    g.current_key = k;
-                    g.current_val = v;
-                    g.status = GenStatus::Suspended;
-                    return Ok(true);
-                }
-            }
-            None => true,
-        };
-        if done {
-            // The delegate is exhausted: its result becomes the value of the
-            // `yield from` expression and the outer body continues.
-            let result = match self.generators[idx as usize].delegate.take() {
-                Some(Delegate::Gen(inner)) => match self.generator_id(&inner) {
-                    Some(iid) => self.generators[iid as usize].return_val.clone(),
-                    None => Value::Null,
-                },
-                _ => Value::Null,
-            };
-            let dst = self.generators[idx as usize].delegate_dst.take();
-            self.generators[idx as usize].resume_dst = dst;
-            // Feed the delegate's result in as the value of `yield from` and
-            // let the outer body run on.
-            self.resume_with(idx, result)?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    /// `resume` without the delegate check, used once a `yield from` ends.
-    fn resume_with(&mut self, idx: u32, value: Value) -> Result<(), Unwind> {
-        let (mut frame, regs, dst) = {
-            let g = &mut self.generators[idx as usize];
-            let Some(frame) = g.frame.take() else {
-                return Ok(());
-            };
-            let regs = std::mem::take(&mut g.regs);
-            g.status = GenStatus::Running;
-            (frame, regs, g.resume_dst.take())
-        };
-        let base = self.stack.len();
-        frame.base = base;
-        self.stack.extend(regs);
-        if let Some(d) = dst {
-            let abs = base + d as usize;
-            if abs < self.stack.len() {
-                self.stack[abs] = value;
-            }
-        }
-        let depth = self.frames.len();
-        self.frames.push(frame);
-        match self.run_until(depth) {
-            Ok(_) => Ok(()),
-            Err(u) => {
-                self.force_finish(idx);
-                Err(u)
-            }
-        }
-    }
-
-    /// Begin a `yield from` over `src`, parking the outer body.
+    /// Begin a `yield from` over `src`: the outer body parks, and the
+    /// resume that brought it here goes on into the delegate.
     pub(crate) fn begin_yield_from(
         &mut self,
         idx: u32,
@@ -529,14 +524,33 @@ impl Interp {
             Value::Array(a) => Delegate::Values {
                 items: a.iter().map(|(k, v)| (k.to_value(), v.deref().into_owned())).collect(),
                 pos: 0,
+                fresh: true,
             },
-            Value::Object(o) if self.generator_id(o).is_some() => Delegate::Gen(o.clone()),
-            Value::Object(o) => {
-                // Any other Traversable: snapshot it through the ordinary
-                // iteration protocol.
-                let items = self.iterate_object_pairs(o)?;
-                Delegate::Values { items, pos: 0 }
-            }
+            Value::Object(o) => match self.generator_id(o) {
+                Some(iid) => {
+                    if self.generators[iid as usize].status == GenStatus::Running || iid == idx {
+                        return Err(Unwind::error("Impossible to yield from the Generator being currently run"));
+                    }
+                    // php refuses a generator whose body is already gone,
+                    // return value or not.
+                    if self.generators[iid as usize].status == GenStatus::Finished {
+                        return Err(Unwind::error(
+                            "Generator passed to yield from was aborted without proper return and is unable to continue",
+                        ));
+                    }
+                    if self.generators[iid as usize].delegated_by.is_some() {
+                        return Err(Unwind::error("Cannot use \"yield from\" with a generator that is already delegated to"));
+                    }
+                    self.generators[iid as usize].delegated_by = Some(idx);
+                    Delegate::Gen(iid)
+                }
+                None => {
+                    // Any other Traversable: snapshot it through the
+                    // ordinary iteration protocol.
+                    let items = self.iterate_object_pairs(o)?;
+                    Delegate::Values { items, pos: 0, fresh: true }
+                }
+            },
             other => {
                 return Err(Unwind::error(format!(
                     "Can use \"yield from\" only with arrays and Traversables, {} given",
@@ -544,24 +558,18 @@ impl Interp {
                 )))
             }
         };
-        // Park the outer body; the delegate drives the next `current()`.
+        // Park the outer body after the op; `resume` carries on into the
+        // delegate.
         let mut frame = self.frames.pop().expect("generator frame");
         frame.pc += 1;
         let regs = self.stack.split_off(frame.base);
-        {
-            let g = &mut self.generators[idx as usize];
-            g.frame = Some(frame);
-            g.regs = regs;
-            g.delegate = Some(delegate);
-            g.delegate_dst = Some(dst);
-            g.resume_dst = None;
-            g.status = GenStatus::NotStarted;
-        }
-        // Publish the delegate's first value (or fall straight through when
-        // it is empty).
-        if !self.step_delegate(idx, &Value::Null)? {
-            self.generators[idx as usize].status = GenStatus::Suspended;
-        }
+        let g = &mut self.generators[idx as usize];
+        g.frame = Some(frame);
+        g.regs = regs;
+        g.delegate = Some(delegate);
+        g.delegate_dst = Some(dst);
+        g.resume_dst = None;
+        g.status = GenStatus::Suspended;
         Ok(())
     }
 
@@ -575,18 +583,20 @@ impl Interp {
         Ok(())
     }
 
-    /// `Generator::current()`
+    /// `Generator::current()` — the leaf's, while a `yield from` runs.
     pub fn generator_current(&mut self, o: &Object) -> Result<Value, Unwind> {
         let idx = self.gen_idx(o)?;
         self.ensure_started(idx)?;
-        Ok(self.generators[idx as usize].current_val.clone())
+        let leaf = self.leaf_of(idx);
+        Ok(self.generators[leaf as usize].current_val.clone())
     }
 
     /// `Generator::key()`
     pub fn generator_key(&mut self, o: &Object) -> Result<Value, Unwind> {
         let idx = self.gen_idx(o)?;
         self.ensure_started(idx)?;
-        Ok(self.generators[idx as usize].current_key.clone())
+        let leaf = self.leaf_of(idx);
+        Ok(self.generators[leaf as usize].current_key.clone())
     }
 
     /// `Generator::next()`
@@ -603,7 +613,8 @@ impl Interp {
         // yield is the one that receives the sent value.
         self.ensure_started(idx)?;
         self.resume(idx, v)?;
-        Ok(self.generators[idx as usize].current_val.clone())
+        let leaf = self.leaf_of(idx);
+        Ok(self.generators[leaf as usize].current_val.clone())
     }
 
     /// `Generator::valid()`
@@ -645,7 +656,8 @@ impl Interp {
         }
         self.generators[idx as usize].pending_throw = Some(e);
         self.resume(idx, Value::Null)?;
-        Ok(self.generators[idx as usize].current_val.clone())
+        let leaf = self.leaf_of(idx);
+        Ok(self.generators[leaf as usize].current_val.clone())
     }
 
     fn gen_idx(&mut self, o: &Object) -> Result<u32, Unwind> {

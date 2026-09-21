@@ -229,3 +229,20 @@ ops at ~5 ns. Next in that order: generators resumed inside the dispatch
 loop (`continue 'frames` instead of a nested `run_until`), and the
 per-request loading — ~900 units linked and ~600 classes declared per
 request, php's opcache keeps both.
+
+**Correction, the same evening.** The 1.2 µs generator step was the
+profiler's: the ops that switch frames (a user call, its return) were
+never recorded, and the bookkeeping between two ops landed in the
+exclusive time of the innermost op with a nested run — `IterNext` for
+Twig's generators, over every op they render. With the switches
+recorded and one clock reading per op boundary, the same request reads
+`IterNext` 1.8 ms at 115 ns a step, `DoCall` 21 ms over 64k calls
+(natives' bodies and the user-call switch), `Include` 5.3 ms at 5.2 µs
+a file (`load_unit`), `DeclareClass` 3 ms at 4.8 µs a class, `Ret`
+108 ns. A plain generator step measured by wall clock: 1M `yield`s
+104 ms against php's 18 (a `for` loop of the same length: 16 vs 3);
+`yield from` chains resume the leaf directly now (php's delegation tree
+instead of a `run_until` per level per step), depth 4: 31 ms/200k
+(php 5). The order stands: the per-request loading, then the natives'
+bodies — `array_sum` over 50 elements is 1.1 µs (php 80 ns) because
+the array helpers clone every entry into a `Vec` first.

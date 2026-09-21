@@ -53,6 +53,7 @@ This is the single index of record. Each architecture-decision record (ADR) stat
 | 033 | SAPI order CLI → `rphp -S` → FastCGI; thread-per-connection; `Request`/`OutputSink`/`Response` contract | Deviation (§17/§18) | Proposed |
 | 034 | Differential oracle: pinned `php -n` ini, byte-exact stdout, closed divergence categories, ladder fixtures, ratcheting `.phpt` baselines | Deviation (§20) | Proposed |
 | 035 | PDO deferred until L7 is green; SQLite first; pure-Rust drivers by default | Roadmap | Proposed |
+| 036 | An interrupt polled at safepoints (backward jumps, frame activation); `max_execution_time` / `set_time_limit()` arm a wall-clock deadline on it | Deviation (§10.3/§17) | Proposed |
 
 ---
 
@@ -422,6 +423,18 @@ ADR-014 … ADR-035 were appended as one batch from the approved Symfony-8 roadm
 **Rationale.** Sequencing by the ladder puts PDO exactly where the first app needs it and lets the driver decision be made against a working request path rather than a spec.
 
 **Status.** Proposed (roadmap 2026-09-17). Narrows ADR-012 (sequencing and driver order; first-class status unchanged). Closes O-2 as "SQLite first". **Affected:** `08-stdlib-ext.md` (§15.5 PDO, O-2).
+
+---
+
+## ADR-036 — An interrupt polled at safepoints; `max_execution_time` and `set_time_limit()` arm a wall-clock deadline on it
+
+**Context.** 06 §safepoints and 10 §20.6 specify `max_execution_time` enforced at safepoints and an interrupt flag; neither existed: `set_time_limit()` returned `true` and did nothing, and a runaway script could only be stopped by killing the process. A host embedding the engine (a server, a sandbox worker) needs to cancel a running request — a disconnected client, a deadline, a drain — without owning the interpreter's thread.
+
+**Decision.** `rphp-runtime` gains `Interrupt`, a cloneable, thread-safe flag on every `Interp` (`it.interrupt`), and two **safepoints** that poll it with one relaxed load: a **backward jump** (`Jmp`/`JmpIfTrue`/`JmpIfFalse` whose target is not past the current op — every loop's back edge) and **frame activation** (recursion without a loop). A raised interrupt becomes php's fatal at the next safepoint — `Interp::interrupted()` renders `Fatal error: <reason> in <file> on line <N>` and unwinds with exit 255 — and the take is **one-shot**: the flag clears as the fatal is raised, so shutdown functions and destructors run; a host wanting a grace period raises again. A process-wide timer thread arms deadlines on interrupts (`Interrupt::raise_after`, an RAII `Deadline`); `Interp::set_time_limit(seconds)` uses it with php's message (`Maximum execution time of N second(s) exceeded`), `set_time_limit()` calls it, and the embed layer arms `max_execution_time` at interpreter creation (30 under a web SAPI, 0 on the CLI — php's defaults). Natives are not interrupted mid-call: cooperative, like php's own timer, which fires between opcodes.
+
+**Rationale.** One flag and two check sites cover every unbounded PHP loop and recursion at the cost of a predictable load per back edge; the deadline is wall-clock (php counts CPU time on Unix) because the wall clock is what a server has to protect. `examples/tier-a/lang/time-limit.php` is byte-identical to php, including the fatal's location, the stack trace and the shutdown function that still runs.
+
+**Status.** Proposed (2026-09-21, for the guardian-runner host). Implements the interrupt of 06 and the `max_execution_time` enforcement of 10 §20.6 ahead of the arena/`memory_limit` work; the fuel counter those sections also name is not included. **Affected:** `06-interpreter.md` (safepoints), `10-testing.md` (§20.6).
 
 ---
 

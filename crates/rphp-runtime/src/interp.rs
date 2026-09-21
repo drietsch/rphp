@@ -279,6 +279,11 @@ pub struct Interp {
     pub cwd: PathBuf,
     /// The creating SAPI.
     pub sapi: SapiKind,
+    /// The host's interrupt, polled at safepoints (backward jumps, frame
+    /// activation); a raised interrupt becomes a fatal at the next one.
+    pub interrupt: crate::interrupt::Interrupt,
+    /// The armed `max_execution_time` / `set_time_limit()` deadline.
+    pub deadline: Option<crate::interrupt::Deadline>,
     /// `declare(strict_types=1)` default for units that do not declare it.
     pub strict_default: bool,
     pub(crate) in_error_handler: bool,
@@ -457,6 +462,8 @@ impl Interp {
             script_name: String::from("Command line code"),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             sapi: SapiKind::Embed,
+            interrupt: crate::interrupt::Interrupt::new(),
+            deadline: None,
             strict_default: false,
             in_error_handler: false,
             test_buf: None,
@@ -700,5 +707,27 @@ impl Interp {
             let _ = self.ob_flush_top(true);
         }
         self.out.flush_sink();
+    }
+}
+
+impl Interp {
+    /// The interrupt fired at a safepoint: php's fatal, with the reason the
+    /// host gave. One-shot — the flag clears here so shutdown functions and
+    /// destructors can run; the host may raise it again for a grace period.
+    pub fn interrupted(&mut self) -> Unwind {
+        let reason = self.interrupt.take().unwrap_or_else(|| "Execution interrupted by the host".to_string());
+        self.fatal(&reason)
+    }
+
+    /// `max_execution_time` / `set_time_limit(int $seconds)`: (re)arm a
+    /// wall-clock deadline of `seconds` from now; `0` disarms. php counts
+    /// CPU time on Unix; the wall clock is what protects a server, and it is
+    /// what the concept's limits are stated in.
+    pub fn set_time_limit(&mut self, seconds: u64) {
+        self.deadline = None;
+        if seconds > 0 {
+            let reason = format!("Maximum execution time of {seconds} second{} exceeded", if seconds == 1 { "" } else { "s" });
+            self.deadline = Some(self.interrupt.raise_after(std::time::Duration::from_secs(seconds), reason));
+        }
     }
 }

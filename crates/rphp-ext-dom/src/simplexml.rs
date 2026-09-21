@@ -660,6 +660,7 @@ const PROPS: NativeProps = NativeProps {
     unset: Some(unset_prop),
     list: Some(property_table),
     debug: Some(debug_table),
+    cast: None,
 };
 
 // ---- dimensions ------------------------------------------------------------

@@ -307,6 +307,24 @@ impl Array {
         data.insert_new(key, value);
     }
 
+    /// Insert or overwrite the *slot* under `key`: an existing reference
+    /// element is replaced, not written through — `zend_hash_update`, which
+    /// is how `ArrayObject::offsetSet()` stores (a `&$ao['k']` taken earlier
+    /// keeps the old value). COW as in [`set`].
+    ///
+    /// [`set`]: Array::set
+    pub fn set_slot(&mut self, key: ArrayKey, value: Value) {
+        let value = value.unref();
+        let data = Rc::make_mut(&mut self.0);
+        if let Some(i) = data.lookup(&key) {
+            if let Some((_, slot)) = data.entries[i].as_mut() {
+                *slot = value;
+            }
+            return;
+        }
+        data.insert_new(key, value);
+    }
+
     /// Bind `key` to the reference cell `r` (`$a[k] = &$x`), replacing any
     /// previous binding rather than writing through it.
     pub fn set_ref(&mut self, key: ArrayKey, r: PhpRef) {

@@ -220,23 +220,16 @@ impl Interp {
         for (n, v) in dyns {
             out.push((n, v, rphp_value::Vis::Public, None));
         }
-        // A native class's computed table (php's `get_properties`) comes
-        // first, as the engine's own handlers run before the slots.
+        // A native class's computed table (php's `get_properties`) follows
+        // the standard properties, as the engine's handlers add to them.
         if let Some(table) = self.native_property_table(o) {
-            let mut native: Vec<PropEntry> = table
-                .into_iter()
-                .map(|(k, v)| {
-                    let name: Box<[u8]> = match k {
-                        rphp_value::ArrayKey::Int(i) => {
-                            i.to_string().into_bytes().into_boxed_slice()
-                        }
-                        rphp_value::ArrayKey::Str(s) => s,
-                    };
-                    (name, v, rphp_value::Vis::Public, None)
-                })
-                .collect();
-            native.extend(out);
-            out = native;
+            out.extend(table.into_iter().map(|(k, v)| {
+                let name: Box<[u8]> = match k {
+                    rphp_value::ArrayKey::Int(i) => i.to_string().into_bytes().into_boxed_slice(),
+                    rphp_value::ArrayKey::Str(s) => s,
+                };
+                (name, v, rphp_value::Vis::Public, None)
+            }));
         }
         Ok(out)
     }
@@ -684,15 +677,30 @@ impl Interp {
         Some(list(self, o))
     }
 
+    /// The table a native class shows `(array)`, `var_export()` and
+    /// `json_encode()` instead of its properties (php's
+    /// `get_properties_for` on those purposes): `None` when the class has
+    /// no such table and the standard one applies.
+    pub fn native_cast_table(&mut self, o: &Object) -> Option<Vec<(rphp_value::ArrayKey, Value)>> {
+        let np = self.class_of(o).native_props?;
+        let cast = np.cast?;
+        Some(cast(self, o))
+    }
+
     /// What a dump shows for a native class (php's `get_debug_info`): the
-    /// `debug` hook, else the property table, else the declared names.
-    pub fn native_debug_table(&mut self, o: &Object) -> Option<Vec<(rphp_value::ArrayKey, Value)>> {
+    /// `debug` hook's table, which is the *whole* table (`true`); else the
+    /// property table, else the declared names, either of which the dump
+    /// appends to the standard properties (`false`).
+    pub fn native_debug_table(
+        &mut self,
+        o: &Object,
+    ) -> Option<(bool, Vec<(rphp_value::ArrayKey, Value)>)> {
         let np = self.class_of(o).native_props?;
         if let Some(debug) = np.debug {
-            return Some(debug(self, o));
+            return Some((true, debug(self, o)));
         }
         if let Some(list) = np.list {
-            return Some(list(self, o));
+            return Some((false, list(self, o)));
         }
         let mut out = Vec::new();
         for name in np.names {
@@ -700,7 +708,7 @@ impl Interp {
                 out.push((rphp_value::ArrayKey::str(name.as_bytes()), v));
             }
         }
-        Some(out)
+        Some((false, out))
     }
 
     pub(crate) fn prop_holder(&mut self, obj: &Value, name: &[u8]) -> Result<Object, Unwind> {

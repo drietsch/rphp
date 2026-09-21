@@ -33,8 +33,8 @@ pub use closure::{Closure, WeakClosure};
 pub use object::{display_class_name, mangled_key};
 pub use object::{
     has_pending_destructors, take_pending_destructors, CastHandler, CastTarget, DynProps, Layout,
-    LazyKind, LazyState, ObjFlags, Object, ObjectData, ObjectIdAllocator, Payload, PropEntry,
-    PropMeta, Vis, WeakObject,
+    LazyKind, LazyState, NativeCompare, ObjFlags, Object, ObjectData, ObjectIdAllocator, Payload,
+    PropEntry, PropMeta, Vis, WeakObject,
 };
 pub use refs::PhpRef;
 pub use resource::{Resource, ResourceCell, CLOSED_KIND};
@@ -107,6 +107,14 @@ fn object_spaceship(a: &Object, b: &Object) -> i64 {
     }
     if a.class_id() != b.class_id() {
         return 1;
+    }
+    // A native container orders by its contents first (php's
+    // `compare_objects` handler); only an undecided one goes on to the
+    // properties.
+    if let Some(cmp) = a.layout().compare() {
+        if let Some(r) = cmp(a, b) {
+            return r;
+        }
     }
     let pair = (a.id(), b.id());
     let recursive = COMPARING.with(|c| c.borrow().contains(&pair));

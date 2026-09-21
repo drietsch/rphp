@@ -43,6 +43,12 @@ pub type NativeInit = fn(&mut Interp, &Object) -> Result<(), Unwind>;
 /// silently.
 pub type PayloadClone = fn(&mut Interp, &Object, &Object) -> Result<(), Unwind>;
 
+/// The `dim_ref` hook of a native `ArrayAccess` class whose elements are
+/// real storage (`ArrayObject`): the cell behind `$o[$key]`, autovivified,
+/// for `&$o[$key]` and a by-reference argument. `None` when the key is
+/// not one the storage can hold.
+pub type NativeDimRef = fn(&Object, &rphp_value::ArrayKey) -> Option<rphp_value::PhpRef>;
+
 /// A native class's computed properties — php's `prop_handler` table (the
 /// DOM's `nodeName`, `ownerDocument`, …): declared nowhere in the slot
 /// layout, read and written through these hooks, inherited by user
@@ -63,9 +69,18 @@ pub struct NativeProps {
     /// `json_encode()`, `get_object_vars()` and `foreach`; absent, the
     /// class contributes nothing there.
     pub list: Option<NativePropTable>,
-    /// php's `get_debug_info`: what `var_dump()`/`print_r()` show; absent,
-    /// `list`, else `names` read through `get`.
+    /// php's `get_debug_info`: the *whole* table `var_dump()`/`print_r()`
+    /// show — a hook that wants the standard properties listed starts
+    /// from [`Interp::std_property_table`]; absent, the standard
+    /// properties followed by `list`, else by `names` read through `get`.
+    /// A class with a `__debugInfo()` method is dumped through that
+    /// instead.
     pub debug: Option<NativePropTable>,
+    /// php's `get_properties_for` on `ARRAY_CAST`, `VAR_EXPORT` and `JSON`:
+    /// the *whole* table those three see instead of the standard
+    /// properties (`ArrayObject`'s storage, `SplFixedArray`'s elements
+    /// behind the properties); absent, the standard table plus `list`.
+    pub cast: Option<NativePropTable>,
 }
 
 /// A [`NativeProps`] read hook.
@@ -512,6 +527,11 @@ pub struct ClassDef {
     pub payload_clone: Option<PayloadClone>,
     /// The native computed properties (own or inherited).
     pub native_props: Option<NativeProps>,
+    /// The native `==`/`<=>` ordering (own or inherited); also on the
+    /// layout, where the value-level comparison finds it.
+    pub native_compare: Option<rphp_value::NativeCompare>,
+    /// The native element-reference hook (own or inherited).
+    pub dim_ref: Option<NativeDimRef>,
     /// The instance layout, shared by every instance.
     pub layout: Rc<Layout>,
     /// The unit that declared the class and the declaration line, for
@@ -573,6 +593,8 @@ impl ClassDef {
             native_init: None,
             payload_clone: None,
             native_props: None,
+            native_compare: None,
+            dim_ref: None,
             layout: Rc::new(Layout::empty(Rc::from(name))),
             declared_at,
             linked: false,
@@ -666,6 +688,10 @@ pub struct ClassSpec {
     pub payload_clone: Option<PayloadClone>,
     /// The native computed properties (own).
     pub native_props: Option<NativeProps>,
+    /// The native `==`/`<=>` ordering (own).
+    pub native_compare: Option<rphp_value::NativeCompare>,
+    /// The native element-reference hook (own).
+    pub dim_ref: Option<NativeDimRef>,
     /// Where it was declared.
     pub declared_at: Option<(std::sync::Arc<str>, u32)>,
     /// Registered by the engine / an extension.
@@ -741,6 +767,8 @@ impl Interp {
             native_init,
             payload_clone,
             native_props,
+            native_compare,
+            dim_ref,
             declared_at,
             internal,
             static_props,
@@ -791,6 +819,8 @@ impl Interp {
             def.native_init = p.native_init;
             def.payload_clone = p.payload_clone;
             def.native_props = p.native_props;
+            def.native_compare = p.native_compare;
+            def.dim_ref = p.dim_ref;
             // Static properties are inherited by *sharing* the parent's cell:
             // `B::$n` and `A::$n` are one location unless B redeclares it.
             def.static_props = p.static_props.clone();
@@ -977,6 +1007,12 @@ impl Interp {
         if let Some(np) = native_props {
             def.native_props = Some(np);
         }
+        if let Some(f) = native_compare {
+            def.native_compare = Some(f);
+        }
+        if let Some(f) = dim_ref {
+            def.dim_ref = Some(f);
+        }
         // php implicitly implements `Stringable` for any class that declares
         // `__toString()`, so `$o instanceof Stringable` and a `Stringable`
         // parameter type both accept it without the class saying so.
@@ -1021,7 +1057,11 @@ impl Interp {
                 is_virtual: p.hooks.is_some_and(|h| h.is_virtual),
             })
             .collect();
-        def.layout = Rc::new(Layout::new(Rc::from(&name[..]), metas));
+        let mut layout = Layout::new(Rc::from(&name[..]), metas);
+        if let Some(f) = def.native_compare {
+            layout = layout.with_compare(f);
+        }
+        def.layout = Rc::new(layout);
         Ok(def)
     }
 

@@ -2,9 +2,10 @@
 //! with `SplMinHeap` / `SplMaxHeap`, and the `SplPriorityQueue` that repeats
 //! the same machinery over `data`/`priority` pairs.
 //!
-//! **Where the state lives.** php exposes all three parts of a heap's state
-//! through private properties, and `var_dump` / `print_r` show them, so they
-//! are real private slots here and dump byte for byte:
+//! **Where the state lives.** php keeps a heap's state out of the property
+//! table — `(array)`, `get_object_vars()`, Reflection and `==` see none of
+//! it — and shows it only through `__debugInfo()`, as three private-looking
+//! entries:
 //!
 //! ```text
 //! object(SplMinHeap)#1 (3) {
@@ -14,9 +15,13 @@
 //! }
 //! ```
 //!
-//! `SplPriorityQueue` is **not** a subclass of `SplHeap` — it declares its
-//! own three slots, so its dump says `"SplPriorityQueue":private`, its
-//! `flags` start at `EXTR_DATA` rather than `0`, and its elements are
+//! So the state lives in the instance's native [`Payload`] ([`HeapState`])
+//! and `__debugInfo()` builds that table — the standard properties of a
+//! user subclass first, then the three entries — which the dumpers print.
+//!
+//! `SplPriorityQueue` is **not** a subclass of `SplHeap` — it has its own
+//! state, so its dump says `"SplPriorityQueue":private`, its `flags` start
+//! at `EXTR_DATA` rather than `0`, and its elements are
 //! `["data" => …, "priority" => …]` arrays.
 //!
 //! **The ordering is observable.** php's is a sift-up/sift-down binary heap
@@ -39,27 +44,17 @@
 //!
 //! **Known divergences.**
 //!
-//! * `(array)` of a heap yields the mangled private keys here and `[]` in
-//!   php, which answers `get_properties_for(ARRAY_CAST)` with nothing and
-//!   only fills the debug view.
 //! * `SplHeap::compare` is `abstract protected` in php but `abstract public`
 //!   here: [`ClassBuilder::abstract_method`](rphp_runtime::ClassBuilder::abstract_method)
 //!   takes no visibility. Overriding it with either visibility links, but
 //!   `$heap->compare(1, 2)` from outside the class answers instead of
 //!   raising php's `Error: Call to protected method …`.
-//! * `__serialize()`'s property bag names a subclass's non-public properties
-//!   plainly (`"b"`) where php mangles them (`"\0*\0b"`), because the object
-//!   model keys properties by their declared name. The round trip through
-//!   this implementation is faithful; the *bytes* differ from php's.
-//! * A dump of a user subclass that declares properties of its own lists
-//!   them *after* the three slots here and *before* them in php: php's are
-//!   not real properties at all, so its debug handler appends them to the
-//!   declared set, while this layout is parent-first like any other class.
 
 use rphp_runtime::{
-    nm, ClassFlags, Ctx, NativeFn, NativeMethod, NativeResult, Registry, Unwind, Visibility,
+    nm, ClassFlags, Ctx, Interp, NativeFn, NativeMethod, NativeResult, Registry, Unwind,
+    Visibility,
 };
-use rphp_value::{Array, ArrayKey, Object, Value, Vis};
+use rphp_value::{Array, ArrayKey, Object, Payload, Value};
 
 /// Functions this module provides: none. The heaps are classes, and every
 /// SPL *function* lives in `spl_iterators.rs` / `spl_autoload.rs`.
@@ -124,25 +119,81 @@ fn abstract_compare(_: &mut Ctx, _: Option<&Object>, _: &mut [Value]) -> NativeR
     Err(Unwind::error("Cannot call abstract method SplHeap::compare()"))
 }
 
-/// A declared array property as an owned [`Array`].
-fn arr_prop(o: &Object, name: &[u8]) -> Array {
-    match o.get_deref(name) {
-        Some(Value::Array(a)) => a,
-        _ => Array::new(),
+/// Everything about a heap php keeps out of the property table.
+#[derive(Default)]
+struct HeapState {
+    /// `SplPriorityQueue`'s `EXTR_*` word; `0` on a plain heap.
+    flags: i64,
+    /// php's `isCorrupted` latch (see the module notes).
+    corrupted: bool,
+    /// The flat binary heap, in php's exact order.
+    heap: Array,
+}
+
+/// Run `f` on the instance's state, installing the default first when
+/// there is none (an instance built by
+/// [`Interp::instantiate`](rphp_runtime::Interp::instantiate) —
+/// `unserialize`, a cast — has no payload).
+fn with_state<R>(o: &Object, f: impl FnOnce(&mut HeapState) -> R) -> R {
+    let present = o.with_payload::<HeapState, _>(|_| ()).is_some();
+    if !present {
+        o.set_payload(Payload::Native(Box::new(HeapState::default())));
     }
+    o.with_payload::<HeapState, _>(f)
+        .expect("payload installed just above")
 }
 
-/// The values of a declared list property, in order.
-fn list_prop(o: &Object, name: &[u8]) -> Vec<Value> {
-    arr_prop(o, name)
-        .values()
-        .map(|v| v.deref().into_owned())
-        .collect()
+/// `SplPriorityQueue` starts extracting the data half.
+fn queue_init(_: &mut Interp, o: &Object) -> Result<(), Unwind> {
+    with_state(o, |s| s.flags = EXTR_DATA);
+    Ok(())
 }
 
-/// A declared int property.
-fn int_prop(o: &Object, name: &[u8]) -> i64 {
-    o.get_deref(name).map_or(0, |v| v.to_int())
+/// `clone` copies the state along with the ordinary properties.
+fn heap_clone(_: &mut Interp, src: &Object, dst: &Object) -> Result<(), Unwind> {
+    let (flags, corrupted, heap) = with_state(src, |s| (s.flags, s.corrupted, s.heap.clone()));
+    with_state(dst, |s| {
+        s.flags = flags;
+        s.corrupted = corrupted;
+        s.heap = heap;
+    });
+    Ok(())
+}
+
+/// The heap array, shared (a read).
+fn heap_arr(o: &Object) -> Array {
+    with_state(o, |s| s.heap.clone())
+}
+
+/// The number of elements.
+fn heap_len(o: &Object) -> usize {
+    with_state(o, |s| s.heap.len())
+}
+
+/// The root, if any.
+fn heap_first(o: &Object) -> Option<Value> {
+    with_state(o, |s| s.heap.get_deref(&ArrayKey::Int(0)))
+}
+
+/// The `flags` word.
+fn heap_flags(o: &Object) -> i64 {
+    with_state(o, |s| s.flags)
+}
+
+fn heap_corrupted(o: &Object) -> bool {
+    with_state(o, |s| s.corrupted)
+}
+
+/// php's `zend_unmangle_property_name`: the plain name behind a
+/// private/protected `"\0Class\0name"` key.
+fn unmangled_name(key: &[u8]) -> &[u8] {
+    if key.len() < 3 || key[0] != 0 || key[1] == 0 {
+        return key;
+    }
+    match key[1..].iter().position(|&b| b == 0) {
+        Some(end) => &key[end + 2..],
+        None => key,
+    }
 }
 
 /// php's mangled private-property key, `"\0Class\0prop"`.
@@ -190,7 +241,7 @@ fn empty_heap(what: &str) -> Unwind {
 
 /// Refuse the operations php refuses once a `compare()` has thrown.
 fn guard_corrupted(o: &Object) -> Result<(), Unwind> {
-    if o.get_deref(b"isCorrupted").is_some_and(|v| v.to_bool()) {
+    if heap_corrupted(o) {
         return Err(Unwind::exception(
             "RuntimeException",
             "Heap is corrupted, heap properties are no longer ensured.",
@@ -247,7 +298,7 @@ impl Cmp {
     fn finish(self, o: &Object) -> Result<(), Unwind> {
         match self.fault {
             Some(err) => {
-                o.set(b"isCorrupted", Value::Bool(true));
+                with_state(o, |s| s.corrupted = true);
                 Err(err)
             }
             None => Ok(()),
@@ -291,22 +342,14 @@ fn heap_at(e: &Array, i: usize) -> Value {
     e.get_deref(&ArrayKey::Int(i as i64)).unwrap_or(Value::Null)
 }
 
-/// The heap array moved out of the `heap` property (null left behind) for
-/// an in-place change that [`set_heap`] puts back.
+/// The heap array moved out of the state (an empty one left behind) for an
+/// in-place change that [`set_heap`] puts back.
 fn take_heap(o: &Object) -> Array {
-    let taken = o.with_data_mut(|d| match d.get_mut(b"heap") {
-        Some(Value::Ref(r)) => r.get(),
-        Some(slot) => std::mem::replace(slot, Value::Null),
-        None => Value::Null,
-    });
-    match taken {
-        Value::Array(a) => a,
-        _ => Array::new(),
-    }
+    with_state(o, |s| std::mem::take(&mut s.heap))
 }
 
 fn set_heap(o: &Object, a: Array) {
-    o.set(b"heap", Value::Array(a));
+    with_state(o, |s| s.heap = a);
 }
 
 /// Remove and return the root. Both callers refuse an empty heap first; the
@@ -370,7 +413,7 @@ fn shaped(o: &Object, kind: Kind, v: Value) -> Value {
     if kind == Kind::Heap {
         return v;
     }
-    let flags = int_prop(o, b"flags");
+    let flags = heap_flags(o);
     if flags & EXTR_BOTH == EXTR_BOTH {
         return v;
     }
@@ -413,7 +456,7 @@ fn queue_insert_method(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
 fn extract(ctx: &mut Ctx, o: Option<&Object>, kind: Kind) -> NativeResult {
     let o = this(o)?;
     guard_corrupted(o)?;
-    if arr_prop(o, b"heap").is_empty() {
+    if heap_len(o) == 0 {
         return Err(empty_heap("extract from"));
     }
     let top = heap_delete_top(ctx, o, kind)?;
@@ -433,10 +476,7 @@ fn queue_extract(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRe
 fn top(o: Option<&Object>, kind: Kind) -> NativeResult {
     let o = this(o)?;
     guard_corrupted(o)?;
-    let first = list_prop(o, b"heap")
-        .first()
-        .cloned()
-        .ok_or_else(|| empty_heap("peek at"))?;
+    let first = heap_first(o).ok_or_else(|| empty_heap("peek at"))?;
     Ok(shaped(o, kind, first))
 }
 
@@ -451,21 +491,19 @@ fn queue_top(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
 /// `count(): int` — answers even when the heap is corrupted.
 fn count(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    Ok(Value::Int(arr_prop(o, b"heap").len() as i64))
+    Ok(Value::Int(heap_len(o) as i64))
 }
 
 /// `isEmpty(): bool`
 fn is_empty(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    Ok(Value::Bool(arr_prop(o, b"heap").is_empty()))
+    Ok(Value::Bool(heap_len(o) == 0))
 }
 
 /// `isCorrupted(): bool`
 fn is_corrupted(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    Ok(Value::Bool(
-        o.get_deref(b"isCorrupted").is_some_and(|v| v.to_bool()),
-    ))
+    Ok(Value::Bool(heap_corrupted(o)))
 }
 
 /// `recoverFromCorruption(): true` — clears the latch. The heap itself is
@@ -473,7 +511,7 @@ fn is_corrupted(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResul
 /// restore the invariant, which is what "recover" means here.
 fn recover_from_corruption(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    o.set(b"isCorrupted", Value::Bool(false));
+    with_state(o, |s| s.corrupted = false);
     Ok(Value::Bool(true))
 }
 
@@ -487,21 +525,21 @@ fn rewind(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
 /// `valid(): bool`
 fn valid(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    Ok(Value::Bool(!arr_prop(o, b"heap").is_empty()))
+    Ok(Value::Bool(heap_len(o) != 0))
 }
 
 /// `key(): int` — php numbers the remaining elements downwards, so the key
 /// is `count() - 1` and an exhausted heap answers `-1`.
 fn key(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    Ok(Value::Int(arr_prop(o, b"heap").len() as i64 - 1))
+    Ok(Value::Int(heap_len(o) as i64 - 1))
 }
 
 /// `current(): mixed` — the root, or `null` when exhausted. Unlike `top()`
 /// this does not check corruption.
 fn current(o: Option<&Object>, kind: Kind) -> NativeResult {
     let o = this(o)?;
-    Ok(match list_prop(o, b"heap").first().cloned() {
+    Ok(match heap_first(o) {
         Some(v) => shaped(o, kind, v),
         None => Value::Null,
     })
@@ -519,7 +557,7 @@ fn queue_current(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResu
 /// corruption latch here, so a corrupted heap can still be drained.
 fn next(ctx: &mut Ctx, o: Option<&Object>, kind: Kind) -> NativeResult {
     let o = this(o)?;
-    if !arr_prop(o, b"heap").is_empty() {
+    if heap_len(o) != 0 {
         heap_delete_top(ctx, o, kind)?;
     }
     Ok(Value::Null)
@@ -567,64 +605,48 @@ fn set_extract_flags(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> N
             "Must specify at least one extract flag",
         ));
     }
-    o.set(b"flags", Value::Int(want));
+    with_state(o, |s| s.flags = want);
     Ok(Value::Int(want))
 }
 
 /// `SplPriorityQueue::getExtractFlags(): int`
 fn get_extract_flags(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    Ok(Value::Int(int_prop(o, b"flags")))
+    Ok(Value::Int(heap_flags(o)))
 }
 
 // ---- debugging and serialization ---------------------------------------
 
-/// `__debugInfo(): array` — the three slots under their mangled private
-/// names, always attributed to the class that declares them.
-fn debug_info(o: Option<&Object>, kind: Kind) -> NativeResult {
+/// `__debugInfo(): array` — the standard properties, then the three state
+/// entries under their mangled private names, always attributed to the
+/// class that owns them.
+fn debug_info(ctx: &mut Ctx, o: Option<&Object>, kind: Kind) -> NativeResult {
     let o = this(o)?;
     let owner = kind.owner();
-    let mut out = Array::new();
-    out.set(mangled(owner, b"flags"), Value::Int(int_prop(o, b"flags")));
-    out.set(
-        mangled(owner, b"isCorrupted"),
-        Value::Bool(o.get_deref(b"isCorrupted").is_some_and(|v| v.to_bool())),
-    );
-    out.set(mangled(owner, b"heap"), Value::Array(arr_prop(o, b"heap")));
+    let mut out = ctx.std_property_table(o);
+    out.set(mangled(owner, b"flags"), Value::Int(heap_flags(o)));
+    out.set(mangled(owner, b"isCorrupted"), Value::Bool(heap_corrupted(o)));
+    out.set(mangled(owner, b"heap"), Value::Array(heap_arr(o)));
     Ok(Value::Array(out))
 }
 
-fn heap_debug_info(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    debug_info(o, Kind::Heap)
+fn heap_debug_info(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    debug_info(ctx, o, Kind::Heap)
 }
 
-fn queue_debug_info(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    debug_info(o, Kind::Queue)
+fn queue_debug_info(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    debug_info(ctx, o, Kind::Queue)
 }
 
-/// Whether a property is one of the three slots php keeps out of the
-/// serialized property bag (it carries them in the second element instead).
-fn is_internal_slot(name: &[u8], vis: Vis) -> bool {
-    vis == Vis::Private && matches!(name, b"flags" | b"isCorrupted" | b"heap")
-}
-
-/// `__serialize(): array` — php's pair of a property bag and a
+/// `__serialize(): array` — php's pair of the property bag (mangled keys,
+/// as `zend_std_get_properties` hands them out) and a
 /// `["flags" => …, "heap_elements" => …]` record.
-fn magic_serialize(o: Option<&Object>) -> NativeResult {
+fn magic_serialize(ctx: &mut Ctx, o: Option<&Object>) -> NativeResult {
     let o = this(o)?;
-    let mut props = Array::new();
-    for (name, value, vis) in o.props_snapshot() {
-        if is_internal_slot(&name, vis) {
-            continue;
-        }
-        props.set(ArrayKey::Str(name), value);
-    }
+    let props = ctx.std_property_table(o);
     let mut record = Array::new();
-    record.set(ArrayKey::str(b"flags"), Value::Int(int_prop(o, b"flags")));
-    record.set(
-        ArrayKey::str(b"heap_elements"),
-        Value::Array(arr_prop(o, b"heap")),
-    );
+    record.set(ArrayKey::str(b"flags"), Value::Int(heap_flags(o)));
+    record.set(ArrayKey::str(b"heap_elements"), Value::Array(heap_arr(o)));
     let mut out = Array::new();
     out.push(Value::Array(props));
     out.push(Value::Array(record));
@@ -632,8 +654,8 @@ fn magic_serialize(o: Option<&Object>) -> NativeResult {
 }
 
 /// Both families produce the same pair, so both register this.
-fn magic_serialize_method(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    magic_serialize(o)
+fn magic_serialize_method(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    magic_serialize(ctx, o)
 }
 
 /// `__unserialize(array $data): void` — the elements are *re-inserted*, not
@@ -675,12 +697,16 @@ fn magic_unserialize(
     let Some(Value::Array(elements)) = record.get_deref(&ArrayKey::str(b"heap_elements")) else {
         return Err(invalid());
     };
-    o.set(b"flags", Value::Int(flags));
-    o.set(b"isCorrupted", Value::Bool(false));
-    o.set(b"heap", Value::empty_array());
+    with_state(o, |s| {
+        s.flags = flags;
+        s.corrupted = false;
+        s.heap = Array::new();
+    });
+    // The bag's keys are mangled (`"\0*\0b"`); a property is stored by
+    // its plain name.
     for (k, v) in props.iter() {
         if let ArrayKey::Str(name) = k {
-            o.set(name, v.deref().into_owned());
+            o.set(unmangled_name(name), v.deref().into_owned());
         }
     }
     for v in elements.values() {
@@ -710,10 +736,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
     r.class("SplHeap")
         .flags(ClassFlags::ABSTRACT)
         .implements(&["Iterator", "Countable"])
-        // php dumps all three, so they are real private slots.
-        .prop("flags", Visibility::Private, Value::Int(0))
-        .prop("isCorrupted", Visibility::Private, Value::Bool(false))
-        .prop("heap", Visibility::Private, Value::empty_array())
+        .payload_clone(heap_clone)
         .abstract_method("compare", sig(2, Some(2), &["value1", "value2"]))
         .method("insert", nm!(1, Some(1), heap_insert_method))
         .method("extract", nm!(0, Some(0), heap_extract))
@@ -749,9 +772,8 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .class_const("EXTR_DATA", Value::Int(EXTR_DATA))
         .class_const("EXTR_PRIORITY", Value::Int(EXTR_PRIORITY))
         .class_const("EXTR_BOTH", Value::Int(EXTR_BOTH))
-        .prop("flags", Visibility::Private, Value::Int(EXTR_DATA))
-        .prop("isCorrupted", Visibility::Private, Value::Bool(false))
-        .prop("heap", Visibility::Private, Value::empty_array())
+        .native_init(queue_init)
+        .payload_clone(heap_clone)
         .method("compare", nm!(2, Some(2), queue_compare))
         .method("insert", nm!(2, Some(2), queue_insert_method))
         .method("extract", nm!(0, Some(0), queue_extract))
@@ -791,10 +813,7 @@ mod tests {
 
     /// The backing list as php dumps it.
     fn layout(o: &rphp_value::Object) -> Vec<i64> {
-        let Some(Value::Array(a)) = o.get_deref(b"heap") else {
-            panic!("the heap property is an array")
-        };
-        a.values().map(|v| v.to_int()).collect()
+        super::heap_arr(o).values().map(|v| v.to_int()).collect()
     }
 
     #[test]

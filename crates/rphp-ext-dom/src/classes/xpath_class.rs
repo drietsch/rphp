@@ -456,6 +456,7 @@ pub fn register(r: &mut Registry) {
             unset: None,
             list: None,
             debug: None,
+            cast: None,
         })
         .method("__construct", nm!(1, Some(2), construct))
         .method("registerNamespace", nm!(2, Some(2), register_namespace))
@@ -485,6 +486,7 @@ pub fn register_modern(r: &mut Registry) {
             unset: None,
             list: None,
             debug: None,
+            cast: None,
         })
         .method("__construct", nm!(1, Some(2), construct))
         .method("registerNamespace", nm!(2, Some(2), register_namespace))

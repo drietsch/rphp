@@ -1,8 +1,10 @@
 //! `ArrayIterator` and `ArrayObject` (php-src `ext/spl/spl_array.c`) — the
 //! two SPL containers everything else leans on.
 //!
-//! **Where the state lives.** php exposes the backing array of both classes
-//! as a *private* property named `storage`, declared on the class itself:
+//! **Where the state lives.** php keeps the backing array out of the
+//! property table — `get_object_vars()`, Reflection and a user subclass's
+//! `$this->storage` see nothing — and shows it through `__debugInfo()` as
+//! a private-looking entry of the *base* class:
 //!
 //! ```text
 //! object(ArrayObject)#1 (1) {
@@ -11,20 +13,26 @@
 //! }
 //! ```
 //!
-//! So that is exactly how it is stored here — a real private slot — and
-//! `var_dump`, `print_r` and `(array)` match php without a special case.
-//! The parts php does *not* show (the `ARRAY_AS_PROPS` flag word, the
-//! iterator cursor, `ArrayObject`'s iterator class) live in the instance's
-//! native [`Payload`], where they stay invisible, as in php.
+//! So the whole state — the backing array, the `ARRAY_AS_PROPS` flag word,
+//! the iterator cursor, `ArrayObject`'s iterator class — lives in the
+//! instance's native [`Payload`] ([`ContainerState`]); `__debugInfo()`
+//! builds php's table, `(array)`, `var_export()` and `json_encode()` see the
+//! backing array itself (php's `get_properties_for`, the `cast` hook),
+//! `==` compares it first (the `native_compare` hook) and `&$ao[$k]`
+//! reaches into it (the `dim_ref` hook). `SplObjectStorage` shares the
+//! layout with its entry list in the same slot.
 //!
 //! The two classes share almost every method; the implementations below are
 //! written once and registered on both.
 
-use rphp_runtime::{nm, Ctx, NativeResult, Registry, Unwind, Visibility};
-use rphp_value::{array_key, Array, ArrayKey, Object, Payload, Value};
+use rphp_runtime::{nm, Ctx, Interp, NativeProps, NativeResult, Registry, Unwind};
+use rphp_value::{array_key, Array, ArrayKey, Object, Payload, PhpRef, Value};
 
-/// Everything about an instance php keeps out of sight.
+/// Everything about an instance php keeps out of the property table.
 struct ContainerState {
+    /// The backing array (`ArrayObject`/`ArrayIterator`), or the entry
+    /// list (`SplObjectStorage`).
+    storage: Array,
     /// The `STD_PROP_LIST` / `ARRAY_AS_PROPS` word.
     flags: i64,
     /// The iterator cursor as a *raw* position into the backing array
@@ -42,6 +50,7 @@ struct ContainerState {
 impl Default for ContainerState {
     fn default() -> ContainerState {
         ContainerState {
+            storage: Array::new(),
             flags: 0,
             pos: 0,
             iterator_class: b"ArrayIterator".to_vec(),
@@ -67,34 +76,85 @@ fn this(o: Option<&Object>) -> Result<&Object, Unwind> {
     o.ok_or_else(|| Unwind::error("Non-static method called statically"))
 }
 
-/// The backing array.
+/// The backing array (shared: a read).
 fn storage(o: &Object) -> Array {
-    match o.get_deref(b"storage") {
-        Some(Value::Array(a)) => a,
-        _ => Array::new(),
-    }
+    with_state(o, |s| s.storage.clone())
 }
 
 /// Replace the backing array.
 fn set_storage(o: &Object, a: Array) {
-    o.set(b"storage", Value::Array(a));
+    with_state(o, |s| s.storage = a);
 }
 
-/// The backing array **moved out** of the property (null is left behind)
-/// for an in-place change that [`set_storage`] then puts back: a clone
-/// would leave two handles and make every `$ao[$k] = $v` copy the whole
-/// array.
+/// The backing array **moved out** of the state (an empty one is left
+/// behind) for an in-place change that [`set_storage`] then puts back: a
+/// clone would leave two handles and make every `$ao[$k] = $v` copy the
+/// whole array.
 fn take_storage(o: &Object) -> Array {
-    let taken = o.with_data_mut(|d| match d.get_mut(b"storage") {
-        Some(Value::Ref(r)) => r.get(),
-        Some(slot) => std::mem::replace(slot, Value::Null),
-        None => Value::Null,
-    });
-    match taken {
-        Value::Array(a) => a,
-        _ => Array::new(),
-    }
+    with_state(o, |s| std::mem::take(&mut s.storage))
 }
+
+/// `clone` copies the whole state along with the ordinary properties.
+fn container_clone(_: &mut Interp, src: &Object, dst: &Object) -> Result<(), Unwind> {
+    let (storage, flags, pos, iterator_class) =
+        with_state(src, |s| (s.storage.clone(), s.flags, s.pos, s.iterator_class.clone()));
+    with_state(dst, |s| {
+        s.storage = storage;
+        s.flags = flags;
+        s.pos = pos;
+        s.iterator_class = iterator_class;
+        s.sos_index = None;
+    });
+    Ok(())
+}
+
+/// The `dim_ref` hook: the cell behind `$ao[$k]`, autovivified — what php
+/// hands out for `&$ao['k']`.
+fn dim_ref(o: &Object, k: &ArrayKey) -> Option<PhpRef> {
+    Some(with_state(o, |s| s.storage.get_ref(k.clone())))
+}
+
+/// The `native_compare` hook (php's `spl_array_compare_objects`): the
+/// backing arrays first; equal ones leave the verdict to the properties.
+fn array_compare(a: &Object, b: &Object) -> Option<i64> {
+    let r = Value::Array(storage(a)).spaceship(&Value::Array(storage(b)));
+    (r != 0).then_some(r)
+}
+
+/// The `cast` hook (php's `get_properties_for` on `ARRAY_CAST`,
+/// `VAR_EXPORT` and `JSON`): the backing array — unless `STD_PROP_LIST`
+/// asks for the standard properties.
+fn cast_table(it: &mut Interp, o: &Object) -> Vec<(ArrayKey, Value)> {
+    if with_state(o, |s| s.flags) & STD_PROP_LIST != 0 {
+        return it.std_property_table(o).iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    }
+    storage(o).iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+}
+
+/// A property hook that claims nothing: the containers have no computed
+/// properties, only the whole-table hooks.
+fn no_prop_get(_: &mut Interp, _: &Object, _: &[u8]) -> Option<Result<Value, Unwind>> {
+    None
+}
+
+fn no_prop_set(_: &mut Interp, _: &Object, _: &[u8], _: Value) -> Option<Result<(), Unwind>> {
+    None
+}
+
+/// The hooks `ArrayObject`/`ArrayIterator` register.
+const ARRAY_PROPS: NativeProps = NativeProps {
+    names: &[],
+    get: no_prop_get,
+    set: no_prop_set,
+    isset: None,
+    unset: None,
+    list: None,
+    debug: None,
+    cast: Some(cast_table),
+};
+
+/// `ArrayObject::STD_PROP_LIST`.
+const STD_PROP_LIST: i64 = 1;
 
 /// An offset argument as an array key (php: `Illegal offset type` for an
 /// array or object offset).
@@ -122,7 +182,7 @@ fn backing(ctx: &mut Ctx, who: &str, arg: &Value) -> Result<Array, Unwind> {
             ))?;
             // An `ArrayObject`/`ArrayIterator` source contributes its
             // backing array, anything else its properties.
-            if let Some(Value::Array(a)) = src.get_deref(b"storage") {
+            if let Some(a) = src.with_payload::<ContainerState, _>(|s| s.storage.clone()) {
                 return Ok(a);
             }
             let mut out = Array::new();
@@ -203,7 +263,10 @@ fn offset_set(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResu
         Value::Null | Value::Uninit => a.push(value),
         k => {
             let k = offset(k)?;
-            a.set(k, value);
+            // php's `zend_hash_update`: the slot is replaced, so a reference
+            // taken on it earlier (`&$ao['k']`) is left behind, unlike a
+            // plain array's write-through.
+            a.set_slot(k, value);
         }
     }
     set_storage(o, a);
@@ -453,28 +516,59 @@ fn set_iterator_class(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> 
 
 // ---- debugging and serialization ---------------------------------------
 
-/// `__debugInfo(): array` — php reports the backing array under the mangled
-/// private name (`"\0ArrayObject\0storage"`).
+/// php's `zend_unmangle_property_name`: the plain name behind a
+/// private/protected `"\0Class\0name"` key.
+fn unmangled_name(key: &[u8]) -> &[u8] {
+    if key.len() < 3 || key[0] != 0 || key[1] == 0 {
+        return key;
+    }
+    match key[1..].iter().position(|&b| b == 0) {
+        Some(end) => &key[end + 2..],
+        None => key,
+    }
+}
+
+/// php's mangled private-property key, `"\0Class\0prop"`.
+fn mangled(class: &[u8], prop: &[u8]) -> ArrayKey {
+    let mut name = vec![0u8];
+    name.extend_from_slice(class);
+    name.push(0);
+    name.extend_from_slice(prop);
+    ArrayKey::Str(name.into_boxed_slice())
+}
+
+/// The class php attributes a container's `storage` entry to: the base
+/// class, whatever the receiver's (`"storage":"ArrayObject":private` on a
+/// subclass too).
+fn storage_owner(ctx: &Ctx, o: &Object) -> &'static [u8] {
+    for base in [&b"ArrayIterator"[..], b"SplObjectStorage"] {
+        if ctx.class_by_name(base).is_some_and(|cid| ctx.object_instanceof(o, cid)) {
+            return base;
+        }
+    }
+    b"ArrayObject"
+}
+
+/// `__debugInfo(): array` — the standard properties, then the backing
+/// array under the base class's mangled private name
+/// (`"\0ArrayObject\0storage"`).
 fn debug_info(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let mut name = vec![0u8];
-    name.extend_from_slice(ctx.class_name_of(o).as_bytes());
-    name.push(0);
-    name.extend_from_slice(b"storage");
-    let mut out = Array::new();
-    out.set(ArrayKey::Str(name.into_boxed_slice()), Value::Array(storage(o)));
+    let owner = storage_owner(ctx, o);
+    let mut out = ctx.std_property_table(o);
+    out.set(mangled(owner, b"storage"), Value::Array(storage(o)));
     Ok(Value::Array(out))
 }
 
 /// `__serialize(): array` — php's `[flags, storage, properties, iterator
-/// class]` quadruple.
-fn magic_serialize(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+/// class]` quadruple, the properties under their mangled keys.
+fn magic_serialize(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let (flags, iter_class) = with_state(o, |s| (s.flags, s.iterator_class.clone()));
     let mut out = Array::new();
     out.push(Value::Int(flags));
     out.push(Value::Array(storage(o)));
-    out.push(Value::empty_array());
+    out.push(Value::Array(ctx.std_property_table(o)));
     out.push(if iter_class.as_slice() == &b"ArrayIterator"[..] {
         Value::Null
     } else {
@@ -503,6 +597,13 @@ fn magic_unserialize(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nat
         Some(Value::Array(a)) => set_storage(o, a),
         _ => set_storage(o, Array::new()),
     }
+    if let Some(Value::Array(props)) = data.get_deref(&ArrayKey::Int(2)) {
+        for (k, v) in props.iter() {
+            if let ArrayKey::Str(name) = k {
+                o.set(unmangled_name(name), v.deref().into_owned());
+            }
+        }
+    }
     if let Some(Value::Str(c)) = data.get_deref(&ArrayKey::Int(3)) {
         let name = c.as_bytes().to_vec();
         with_state(o, |s| s.iterator_class = name);
@@ -513,11 +614,11 @@ fn magic_unserialize(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nat
 
 // ---- SplObjectStorage --------------------------------------------------
 //
-// php stores the set in a private `storage` property too, as a list of
-// `["obj" => $object, "inf" => $info]` pairs — which is exactly what
-// `var_dump` prints — so that is the representation here. Lookup is by
-// object identity over that list; the iterator cursor is the list index and
-// lives in the hidden [`ContainerState::pos`].
+// php shows the set as a list of `["obj" => $object, "inf" => $info]`
+// pairs under a private-looking `storage` entry of `__debugInfo()`, and
+// that is the representation kept in [`ContainerState::storage`] here.
+// Lookup is by object identity over that list through a handle index; the
+// iterator cursor is the list index in [`ContainerState::pos`].
 
 /// An entry's key: an object — a closure included, which is an object to
 /// php though a value of its own here — compared by handle.
@@ -850,20 +951,42 @@ fn sos_seek(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult
     Ok(Value::Null)
 }
 
-/// `__serialize(): array` — php's `[[[object, info], …], []]`.
-fn sos_magic_serialize(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+/// `__serialize(): array` — php's `[[object, info, object, info, …],
+/// properties]`: the entries flattened into one list, the properties under
+/// their mangled keys.
+fn sos_magic_serialize(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let mut entries = Array::new();
     for (obj, inf) in sos_load(o) {
-        let mut pair = Array::new();
-        pair.push(obj.value());
-        pair.push(inf);
-        entries.push(Value::Array(pair));
+        entries.push(obj.value());
+        entries.push(inf);
     }
     let mut out = Array::new();
     out.push(Value::Array(entries));
-    out.push(Value::empty_array());
+    out.push(Value::Array(ctx.std_property_table(o)));
     Ok(Value::Array(out))
+}
+
+/// The `native_compare` hook (php's `spl_object_storage_compare_objects`):
+/// the entry counts, then each entry of the left set must be in the right
+/// one with an equal `inf` — the verdict is final, the properties never
+/// weigh in.
+fn sos_compare(a: &Object, b: &Object) -> Option<i64> {
+    let la = sos_load(a);
+    let lb = sos_load(b);
+    if la.len() != lb.len() {
+        return Some(if la.len() < lb.len() { -1 } else { 1 });
+    }
+    for (key, inf) in &la {
+        let Some((_, other)) = lb.iter().find(|(k, _)| k.same(key)) else {
+            return Some(1);
+        };
+        let r = inf.spaceship(other);
+        if r != 0 {
+            return Some(r);
+        }
+    }
+    Some(0)
 }
 
 /// `__unserialize(array $data): void`
@@ -878,18 +1001,31 @@ fn sos_magic_unserialize(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
             )))
         }
     };
-    let mut items: Vec<(SosKey, Value)> = Vec::new();
-    if let Some(Value::Array(entries)) = data.get_deref(&ArrayKey::Int(0)) {
-        for v in entries.values() {
-            if let Value::Array(pair) = &*v.deref() {
-                if let Some(obj) = pair.get_deref(&ArrayKey::Int(0)).as_ref().and_then(SosKey::of) {
-                    let inf = pair.get_deref(&ArrayKey::Int(1)).unwrap_or(Value::Null);
-                    items.push((obj, inf));
-                }
-            }
-        }
+    // php's checks, in its order: the two arrays, an even entry count, an
+    // object at every even position.
+    let bad = |what: &str| Unwind::exception("UnexpectedValueException", what.to_string());
+    let (Some(Value::Array(entries)), Some(Value::Array(props))) =
+        (data.get_deref(&ArrayKey::Int(0)), data.get_deref(&ArrayKey::Int(1)))
+    else {
+        return Err(bad("Incomplete or ill-typed serialization data"));
+    };
+    let flat: Vec<Value> = entries.values().map(|v| v.deref().into_owned()).collect();
+    if flat.len() % 2 != 0 {
+        return Err(bad("Odd number of elements"));
+    }
+    let mut items: Vec<(SosKey, Value)> = Vec::with_capacity(flat.len() / 2);
+    for pair in flat.chunks(2) {
+        let Some(obj) = SosKey::of(&pair[0]) else {
+            return Err(bad("Non-object key"));
+        };
+        items.push((obj, pair[1].clone()));
     }
     sos_store(o, &items);
+    for (k, v) in props.iter() {
+        if let ArrayKey::Str(name) = k {
+            o.set(unmangled_name(name), v.deref().into_owned());
+        }
+    }
     Ok(Value::Null)
 }
 
@@ -900,7 +1036,12 @@ fn sos_magic_unserialize(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
 pub(crate) fn register_classes(r: &mut Registry) {
     r.class("ArrayIterator")
         .implements(&["SeekableIterator", "ArrayAccess", "Serializable", "Countable"])
-        .prop("storage", Visibility::Private, Value::empty_array())
+        .class_const("STD_PROP_LIST", Value::Int(STD_PROP_LIST))
+        .class_const("ARRAY_AS_PROPS", Value::Int(2))
+        .payload_clone(container_clone)
+        .native_props(ARRAY_PROPS)
+        .native_compare(array_compare)
+        .dim_ref(dim_ref)
         .method("__construct", nm!(0, Some(2), array_iterator_construct))
         .method("offsetExists", nm!(1, Some(1), offset_exists))
         .method("offsetGet", nm!(1, Some(1), offset_get))
@@ -930,7 +1071,12 @@ pub(crate) fn register_classes(r: &mut Registry) {
 
     r.class("ArrayObject")
         .implements(&["IteratorAggregate", "ArrayAccess", "Serializable", "Countable"])
-        .prop("storage", Visibility::Private, Value::empty_array())
+        .class_const("STD_PROP_LIST", Value::Int(STD_PROP_LIST))
+        .class_const("ARRAY_AS_PROPS", Value::Int(2))
+        .payload_clone(container_clone)
+        .native_props(ARRAY_PROPS)
+        .native_compare(array_compare)
+        .dim_ref(dim_ref)
         .method("__construct", nm!(0, Some(3), array_object_construct))
         .method("offsetExists", nm!(1, Some(1), offset_exists))
         .method("offsetGet", nm!(1, Some(1), offset_get))
@@ -958,7 +1104,8 @@ pub(crate) fn register_classes(r: &mut Registry) {
 
     r.class("SplObjectStorage")
         .implements(&["Countable", "SeekableIterator", "Serializable", "ArrayAccess"])
-        .prop("storage", Visibility::Private, Value::empty_array())
+        .payload_clone(container_clone)
+        .native_compare(sos_compare)
         .method("attach", nm!(1, Some(2), sos_attach))
         .method("detach", nm!(1, Some(1), sos_detach))
         .method("contains", nm!(1, Some(1), sos_contains))
@@ -1020,12 +1167,8 @@ mod tests {
             it.call_method(&o, b"offsetExists", &[Value::string(b"k")]).unwrap(),
             Value::Bool(false)
         );
-        // The backing array is php's private `storage` slot, so it dumps the
-        // way php dumps it.
-        let props = o.props_snapshot();
-        assert_eq!(props.len(), 1);
-        assert_eq!(&*props[0].0, &b"storage"[..]);
-        assert_eq!(props[0].2, rphp_value::Vis::Private);
+        // The backing array is no property: php keeps it out of the table.
+        assert!(o.props_snapshot().is_empty());
     }
 
     #[test]
@@ -1134,10 +1277,8 @@ mod tests {
         assert_eq!(it.call_method(&s, b"valid", &[]).unwrap(), Value::Bool(false));
         it.call_method(&s, b"offsetUnset", &[Value::Object(a)]).unwrap();
         assert_eq!(it.call_method(&s, b"count", &[]).unwrap(), Value::Int(1));
-        // php keeps the set in the same private `storage` slot it dumps.
-        let props = s.props_snapshot();
-        assert_eq!(props.len(), 1);
-        assert_eq!(&*props[0].0, &b"storage"[..]);
+        // php keeps the set out of the property table.
+        assert!(s.props_snapshot().is_empty());
     }
 
     #[test]

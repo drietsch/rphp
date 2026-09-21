@@ -52,12 +52,6 @@
 //!   of php's `InvalidArgumentException` naming the compile error. The
 //!   compile-error text lives inside `pcre.rs`, which this module may not
 //!   reach into.
-//! * `var_dump(new MultipleIterator)` prints no members where php shows the
-//!   `SplObjectStorage` it is built on (`["storage":"SplObjectStorage":…]`) —
-//!   a property whose *declaring* class is a class `MultipleIterator` does not
-//!   extend, which [`ClassBuilder`](rphp_runtime::ClassBuilder) cannot
-//!   express. `__debugInfo()` below returns php's array for when the
-//!   formatters learn to consult it.
 //! * `IteratorIterator` over an `IteratorAggregate` whose `getIterator()`
 //!   returns *another* aggregate: php's `getInnerIterator()` answers the first
 //!   result while driving the fully resolved one. That is reproduced here
@@ -2395,10 +2389,10 @@ fn multi_key(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult
     multi_gather(ctx, o, b"key", "key")
 }
 
-/// `MultipleIterator::__debugInfo(): array` — php reports the backing
-/// `SplObjectStorage` under its mangled private name, each attachment as
-/// `['obj' => …, 'inf' => …]`.
-fn multi_debug_info(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+/// `MultipleIterator::__debugInfo(): array` — the standard properties,
+/// then the backing `SplObjectStorage` under its mangled private name,
+/// each attachment as `['obj' => …, 'inf' => …]`.
+fn multi_debug_info(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let mut storage = Array::new();
     for (it, info) in multi_items(o) {
@@ -2407,7 +2401,7 @@ fn multi_debug_info(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeR
         entry.set(ArrayKey::str(b"inf"), info);
         storage.push(Value::Array(entry));
     }
-    let mut out = Array::new();
+    let mut out = ctx.std_property_table(o);
     out.set(mangled(b"SplObjectStorage", b"storage"), Value::Array(storage));
     Ok(Value::Array(out))
 }

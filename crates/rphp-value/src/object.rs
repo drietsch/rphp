@@ -87,7 +87,15 @@ pub struct Layout {
     class_name: Rc<[u8]>,
     props: Vec<PropMeta>,
     index: HashMap<Box<[u8]>, u16>,
+    /// A native class's own ordering for `==`/`<=>` (php's
+    /// `compare_objects` handler — `ArrayObject` compares its storage,
+    /// `SplObjectStorage` its entries): `Some(verdict)` settles the
+    /// comparison, `None` hands over to the property-by-property one.
+    compare: Option<NativeCompare>,
 }
+
+/// A [`Layout::compare`] hook: the two objects are of the same class.
+pub type NativeCompare = fn(&Object, &Object) -> Option<i64>;
 
 impl Layout {
     /// Build a layout; `props` are in slot order (parent-first). Panics if more
@@ -110,7 +118,18 @@ impl Layout {
             }
             index.insert(p.name.clone(), i as u16);
         }
-        Layout { class_name, props, index }
+        Layout { class_name, props, index, compare: None }
+    }
+
+    /// The layout with a native comparison hook (see [`Layout::compare`]).
+    pub fn with_compare(mut self, f: NativeCompare) -> Layout {
+        self.compare = Some(f);
+        self
+    }
+
+    /// The native comparison hook, if the class has one.
+    pub fn compare(&self) -> Option<NativeCompare> {
+        self.compare
     }
 
     /// A layout with no declared properties (e.g. `stdClass`).
@@ -626,7 +645,14 @@ impl fmt::Debug for ObjectData {
 
 impl Drop for ObjectData {
     fn drop(&mut self) {
-        if self.flags.contains(ObjFlags::HAS_DESTRUCTOR) && !self.flags.contains(ObjFlags::DESTRUCTED) {
+        // The handle is free once the object is really gone: a resurrected
+        // one keeps it until the destructor has run and that copy drops.
+        let resurrect =
+            self.flags.contains(ObjFlags::HAS_DESTRUCTOR) && !self.flags.contains(ObjFlags::DESTRUCTED);
+        if !resurrect {
+            release_id(self.id);
+        }
+        if resurrect {
             // Resurrect: move the state into a fresh handle that the runtime
             // will run `__destruct` on, then free.
             let resurrected = ObjectData {
@@ -667,27 +693,50 @@ pub fn take_pending_destructors() -> Vec<Object> {
     DESTRUCT_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
-/// Allocator for object handle numbers. PHP numbers handles from 1 and reuses
-/// freed ones; this one is monotonic (a documented divergence visible only in
-/// `spl_object_id`/`var_dump` after objects are freed). The runtime owns one
-/// per run.
+/// Allocator for object handle numbers, php's `objects_store`: handles are
+/// numbered from 1 and a freed one is reused, the most recently freed
+/// first (php's free list is a stack), which is why
+/// `var_dump(new A); var_dump(new B)` prints `#1` twice. The runtime owns
+/// one per run; a freed handle lands on the thread's [`FREE_IDS`] from the
+/// object's drop, where the next `alloc` finds it.
 #[derive(Debug, Default)]
 pub struct ObjectIdAllocator {
     last: u32,
 }
 
+thread_local! {
+    /// Handles freed on this thread, most recent last (see
+    /// [`ObjectIdAllocator`]).
+    static FREE_IDS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Hand `id` back for reuse (an object or closure with that handle was
+/// freed). Handle 0 is "none" and never comes back.
+pub(crate) fn release_id(id: u32) {
+    if id != 0 {
+        FREE_IDS.with(|f| f.borrow_mut().push(id));
+    }
+}
+
 impl ObjectIdAllocator {
+    /// A fresh allocator for a fresh run: the handles a previous run on
+    /// this thread freed are forgotten.
     pub fn new() -> Self {
+        FREE_IDS.with(|f| f.borrow_mut().clear());
         ObjectIdAllocator::default()
     }
 
-    /// The next id (starting at 1).
+    /// The next id: the most recently freed one, else one past the highest
+    /// handed out so far (starting at 1).
     pub fn alloc(&mut self) -> u32 {
+        if let Some(id) = FREE_IDS.with(|f| f.borrow_mut().pop()) {
+            return id;
+        }
         self.last += 1;
         self.last
     }
 
-    /// The most recently allocated id (0 if none).
+    /// The highest id handed out so far (0 if none).
     pub fn last(&self) -> u32 {
         self.last
     }

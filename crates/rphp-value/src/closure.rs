@@ -28,6 +28,12 @@ struct ClosureData {
     statics: RefCell<Option<Rc<RefCell<Vec<Option<PhpRef>>>>>>,
 }
 
+impl Drop for ClosureData {
+    fn drop(&mut self) {
+        crate::object::release_id(self.id);
+    }
+}
+
 impl Closure {
     /// Create a closure over compiled function `func` capturing `captures`
     /// (in the order the function expects to bind them).

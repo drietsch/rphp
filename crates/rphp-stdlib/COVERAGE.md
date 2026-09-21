@@ -999,7 +999,8 @@ ids, the CSRF tokens and the clock, and the walk is the ladder's
 
 **Still open from the walk:** ext/curl (the profiler's log panel lists
 HttpClient's "install the curl extension" notice on every page, normalized
-away in the ladder), php's reuse of freed object handles (`#N` in dumps).
+away in the ladder). Object handles are reused like php's since the
+property-purposes batch below.
 
 ## Interpreter performance, second wave (2026-09-21)
 
@@ -1040,5 +1041,65 @@ declared outside any class compile to run-time references (php's
 scope after `Closure::bind()`; `lang/closure-scope.php`), and `&$o[$k]`
 on an `ArrayAccess` object hands out an `ArrayObject`'s own storage
 element, a by-reference `offsetGet()`'s cell, or a copy with php's
-"Indirect modification" notice (`lang/arrayaccess-refs.php`). Known:
-`SplQueue::dequeue` is O(n).
+"Indirect modification" notice (`lang/arrayaccess-refs.php`).
+
+## php's property-table purposes (2026-09-21)
+
+Probing the SPL containers' dumps against php exposed a family of gaps
+that all come from one distinction php makes and the engine did not:
+`get_properties` (what `get_object_vars()`, `foreach` and `==` see) versus
+`get_properties_for(purpose)` (`(array)`, `var_export()`, `json_encode()`
+and — through `get_debug_info` / `__debugInfo()` — the dumps). Landed:
+
+- **`__debugInfo()` is honoured**: `var_dump()`/`print_r()` show its table
+  instead of the properties — a mangled key (`"\0A\0p"`, `"\0*\0p"`)
+  prints as that visibility, an integer key as `[N]=>`, `null` is php's
+  deprecation and an empty table, anything else the fatal
+  `__debuginfo() must return an array`. `var_export()`, `(array)`,
+  `json_encode()` and `get_object_vars()` ignore it, as php's do
+  (`lang/debug-info.php`, `lang/fatal-debug-info.php`). The dumper works
+  from a snapshot of the slots now, so a nested `__debugInfo()` that
+  writes to an outer object cannot trip the borrow.
+- **The SPL containers keep their state out of the property table**, as
+  php does: `ArrayObject`/`ArrayIterator` (the storage, flags, cursor and
+  iterator class in one payload), `SplObjectStorage`, the
+  `SplDoublyLinkedList` family (a `VecDeque` now — `SplQueue::dequeue`
+  in a loop was O(n)), `SplHeap`/`SplPriorityQueue`. `(array)`,
+  `get_object_vars()`, `var_export()`, `json_encode()`, Reflection's
+  property list and `==` therefore see none of it; their native
+  `__debugInfo()` builds php's table — a subclass's standard properties
+  first, then the private-looking entries attributed to the base class
+  (`"storage":"ArrayObject":private` on a subclass too). Their
+  `__serialize()` bags carry the standard properties under php's mangled
+  keys, and `__unserialize()` restores them; `SplObjectStorage::__serialize`
+  is php's flat `[obj, inf, obj, inf, …]` list with php's three
+  `UnexpectedValueException`s on the way back. `clone` copies the whole
+  state (`ArrayObject`'s flags and iterator class were lost before).
+  `ArrayObject::STD_PROP_LIST`/`ARRAY_AS_PROPS` exist now.
+- **Three class hooks** carry php's handlers for native classes:
+  `NativeProps::cast` — the whole table `(array)`, `var_export()` and
+  `json_encode()` see (`ArrayObject`'s storage unless `STD_PROP_LIST`;
+  `SplFixedArray`'s elements then its properties); `native_compare` —
+  php's `compare_objects` (`ArrayObject` orders by storage, then
+  properties; `SplObjectStorage` by entries, identity and info, final);
+  `dim_ref` — the cell behind `$ao[$k]` for `&$ao[$k]`, a by-reference
+  argument and a nested write (`$ao['k'][] = 1` lands in the storage and
+  keeps an earlier `&$ao['k']` attached — php's `get_dimension_ptr` — while
+  `$ao['k'] = 1` and `$ao['k'] .= 'x'` go through `offsetSet()`, which
+  replaces the slot like `zend_hash_update`; `$ao['k']++` writes through).
+  The `debug` hook is the *whole* debug table now, and every native table
+  follows the standard properties (the DOM's handler table came first).
+- `WeakReference`/`WeakMap`/`MultipleIterator`/`SplFixedArray` dump as
+  php dumps them (`["object"]=>`, `[0]=> ["key" => …, "value" => …]`,
+  the `SplObjectStorage` behind, the elements then the properties);
+  `SplFixedArray` no longer declares a `__debugInfo()` method php lacks.
+- **Object handles are reused** the way php's object store reuses them:
+  a freed handle (an object's or a closure's) is the next one handed out,
+  most recently freed first, so `var_dump(new A); var_dump(new B)` prints
+  `#1` twice and the corpus no longer needs most of its `object-id`
+  allowances (the remaining ones are expression temporaries dying in a
+  different order).
+
+Corpus: `spl/property-purposes.php`, `spl/container-compare.php`,
+`spl/container-state.php`, `lang/debug-info.php`. Known: `debug_zval_dump()`
+is not implemented (its refcounts could never match).

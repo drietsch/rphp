@@ -29,15 +29,9 @@
 #   normalize = ""
 
 [[allow]]
-snippet   = "var/unserialize.php"
-category  = "object-id"
-reason    = "unserialize creates objects that are dropped after each var_dump; php reuses the freed handle (#1 every time) while the engine's ObjectIdAllocator is monotonic (documented in rphp-value)"
-normalize = ""
-
-[[allow]]
 snippet   = "lang/closure-identity.php"
 category  = "object-id"
-reason    = "the snippet dumps short-lived closures; php reuses each freed handle while the engine's ObjectIdAllocator is monotonic (documented in rphp-value)"
+reason    = "the snippet dumps short-lived closures beside the objects an expression makes; freed handles are reused on both sides, but the temporaries of one expression die in a different order here, so a handle is sometimes reused one object later"
 normalize = ""
 
 [[allow]]
@@ -47,37 +41,25 @@ reason    = "the include_path in php's 'Failed opening' warning is the build's d
 normalize = "regex:include_path='[^']*' => include_path='<default>'"
 
 [[allow]]
-snippet   = "date/datetime.php"
-category  = "object-id"
-reason    = "the snippet dumps many short-lived date objects; php reuses each freed handle while the engine's ObjectIdAllocator is monotonic (documented in rphp-value)"
-normalize = ""
-
-[[allow]]
-snippet   = "date/interval.php"
-category  = "object-id"
-reason    = "the snippet dumps many short-lived date objects; php reuses each freed handle while the engine's ObjectIdAllocator is monotonic (documented in rphp-value)"
-normalize = ""
-
-[[allow]]
 snippet   = "date/period.php"
 category  = "object-id"
-reason    = "the snippet dumps many short-lived date objects; php reuses each freed handle while the engine's ObjectIdAllocator is monotonic (documented in rphp-value)"
+reason    = "DatePeriod builds its start/interval objects in a different order from php, so the handles a dump shows are permuted"
 normalize = ""
 
 [[allow]]
 snippet   = "reflection/lazy-objects.php"
 category  = "object-id"
-reason    = "var_dump prints the handle of every lazy object; php's closures are objects that take handles of their own, the engine's are not, and php reuses freed handles while the engine's ObjectIdAllocator is monotonic"
+reason    = "var_dump prints the handle of every lazy object; the initializer closures and the temporaries die in a different order here, so a few handles are reused one object later"
 normalize = ""
 
 [[allow]]
 snippet   = "pdo/sqlite*.php"
 category  = "object-id"
-reason    = "the fetch-mode probes dump the objects every fetch builds; php reuses freed handles while the engine's ObjectIdAllocator is monotonic"
+reason    = "the fetch-mode probes dump the objects every fetch builds; the statement's temporaries die in a different order here, so the handles are permuted"
 normalize = ""
 
 [[allow]]
 snippet   = "dom/*.php"
 category  = "object-id"
-reason    = "the DOM probes dump node objects and LibXMLError objects made on the fly; php reuses freed handles while the engine's ObjectIdAllocator is monotonic"
+reason    = "the DOM probes dump node objects made on the fly; php frees a node wrapper as soon as the expression is done with it, while the engine keeps some alive to the end of the statement, so the handles are permuted"
 normalize = ""

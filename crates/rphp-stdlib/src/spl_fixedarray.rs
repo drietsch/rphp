@@ -18,18 +18,14 @@
 //! }
 //! ```
 //!
+//! That list is what the `debug` and `cast` hooks of the class's
+//! [`NativeProps`] produce — php's `get_properties_for` handler answers
+//! every purpose (a dump, `(array)`, `var_export()`, `json_encode()`) with
+//! the elements at their integer keys followed by the standard properties,
+//! and `get_object_vars()` with the standard properties alone.
+//!
 //! **Known divergences.**
 //!
-//! * `var_dump` / `print_r` / `(array)` of an instance print nothing where
-//!   php prints that numeric list. An object's property list is a map of
-//!   *named* slots in this object model and php's shape needs integer keys,
-//!   so the shape cannot be expressed at all; [`debug_info`] below already
-//!   returns php's array for when the formatters learn to consult
-//!   `__debugInfo` (the same gap `weak.rs` and `spl_containers2.rs` record).
-//! * php has no `__debugInfo` *method* — `method_exists('SplFixedArray',
-//!   '__debugInfo')` is `false` there and `true` here — because php answers
-//!   through the object handler instead. The method is declared anyway, as
-//!   `ArrayObject` and `SplDoublyLinkedList` declare theirs.
 //! * `$a[] = $v` is `Error: [] operator not supported for SplFixedArray` in
 //!   php but `TypeError: Cannot access offset of type null on
 //!   SplFixedArray` here: the engine routes an append to
@@ -41,7 +37,9 @@
 //!   `OutOfBoundsException` there instead of yielding `null`). That is the
 //!   snapshot `weak.rs`'s `InternalIterator` can express.
 
-use rphp_runtime::{nm, Ctx, Interp, NativeFn, NativeMethod, NativeResult, Registry, Unwind};
+use rphp_runtime::{
+    nm, Ctx, Interp, NativeFn, NativeMethod, NativeProps, NativeResult, Registry, Unwind,
+};
 use rphp_value::{array_key, Array, ArrayKey, Object, Payload, Value};
 
 /// Functions this module provides: none. `SplFixedArray` is a class, and
@@ -400,12 +398,35 @@ fn elements_and_props(o: &Object) -> Array {
     out
 }
 
-/// `__debugInfo(): array` — the shape php's dump handler produces. php has
-/// no such *method*; see the module divergences.
-fn debug_info(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
-    let o = this(o)?;
-    Ok(Value::Array(elements_and_props(o)))
+/// The `debug` and `cast` hooks (a dump, `(array)`, `var_export()`,
+/// `json_encode()`): the elements at their integer keys, then the standard
+/// properties — php's `spl_fixedarray_object_get_properties_for` order.
+fn table(it: &mut Interp, o: &Object) -> Vec<(ArrayKey, Value)> {
+    let mut out: Vec<(ArrayKey, Value)> =
+        elements(o).iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    out.extend(it.std_property_table(o).iter().map(|(k, v)| (k.clone(), v.clone())));
+    out
 }
+
+fn no_prop_get(_: &mut Interp, _: &Object, _: &[u8]) -> Option<Result<Value, Unwind>> {
+    None
+}
+
+fn no_prop_set(_: &mut Interp, _: &Object, _: &[u8], _: Value) -> Option<Result<(), Unwind>> {
+    None
+}
+
+/// The class's property hooks: no computed properties, only the tables.
+const PROPS: NativeProps = NativeProps {
+    names: &[],
+    get: no_prop_get,
+    set: no_prop_set,
+    isset: None,
+    unset: None,
+    list: None,
+    debug: Some(table),
+    cast: Some(table),
+};
 
 /// `__serialize(): array` — the elements at their integer keys plus any
 /// property a subclass added, which is exactly what `serialize()` then
@@ -476,6 +497,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
             "JsonSerializable",
         ])
         .payload_clone(payload_clone)
+        .native_props(PROPS)
         .method("__construct", nm!(0, Some(1), construct))
         .method(
             "fromArray",
@@ -494,7 +516,6 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .method("__serialize", nm!(0, Some(0), magic_serialize))
         .method("__unserialize", nm!(1, Some(1), magic_unserialize))
         .method("__wakeup", nm!(0, Some(0), wakeup))
-        .method("__debugInfo", nm!(0, Some(0), debug_info))
         .finish();
 }
 

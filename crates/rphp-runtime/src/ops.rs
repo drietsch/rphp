@@ -513,15 +513,32 @@ impl Interp {
 
     /// `(array) $object`: declared and dynamic properties in order, with
     /// php's mangled keys for private (`\0Class\0name`) and protected
-    /// (`\0*\0name`) properties.
+    /// (`\0*\0name`) properties — or, for a native class with a `cast`
+    /// table (`ArrayObject`), that table alone.
     pub fn object_to_array(&mut self, o: &Object) -> Array {
-        let mut out = Array::new();
-        // A native class's computed table (`(array) $simpleXml`).
+        if let Some(table) = self.native_cast_table(o) {
+            let mut out = Array::new();
+            for (k, v) in table {
+                out.set(k, v);
+            }
+            return out;
+        }
+        let mut out = self.std_property_table(o);
+        // A native class's computed table (`(array) $simpleXml`) follows
+        // the standard properties, as php's handlers add to the table.
         if let Some(table) = self.native_property_table(o) {
             for (k, v) in table {
                 out.set(k, v);
             }
         }
+        out
+    }
+
+    /// php's `zend_std_get_properties` as an array: the declared and
+    /// dynamic properties in order under their mangled keys, nothing a
+    /// native class computes. What a native `__debugInfo()` starts from.
+    pub fn std_property_table(&mut self, o: &Object) -> Array {
+        let mut out = Array::new();
         // An initialized proxy casts as its real instance; an uninitialized
         // lazy object casts to nothing at all (php does not initialize it).
         let real = o.lazy_real();

@@ -7,14 +7,16 @@
 //! declared property, because a declared property would be a *strong*
 //! reference and defeat the point.
 //!
-//! **Known divergence.** php renders these through `__debugInfo`-style
-//! handlers (`var_dump($ref)` shows `["object"]=> …`, `var_dump($map)` shows
-//! `[0]=> ["key" => …, "value" => …]`). Our `var_dump` reads declared and
-//! dynamic properties, so it prints `object(WeakReference)#1 (0) {}`. Closing
-//! that needs `__debugInfo` support in `var.rs`/`output.rs`.
+//! php renders both through its `get_properties_for` handler on a dump
+//! only (`var_dump($ref)` shows `["object"]=> …`, `var_dump($map)` shows
+//! `[0]=> ["key" => …, "value" => …]`; `(array)` and `json_encode()` see
+//! nothing), which is the `debug` hook of each class's [`NativeProps`].
 
-use rphp_runtime::{nm, ClassFlags, Ctx, Interp, NativeMethod, NativeResult, Registry, Unwind, Visibility};
-use rphp_value::{Closure, Object, Payload, Value, WeakClosure, WeakObject};
+use rphp_runtime::{
+    nm, ClassFlags, Ctx, Interp, NativeMethod, NativeProps, NativeResult, Registry, Unwind,
+    Visibility,
+};
+use rphp_value::{Array, ArrayKey, Closure, Object, Payload, Value, WeakClosure, WeakObject};
 
 // ---- payloads ----------------------------------------------------------
 
@@ -266,7 +268,73 @@ fn weakref_get(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult
     })
 }
 
+/// The `debug` hook: `["object" => the target or null]`.
+fn weakref_debug_table(_: &mut Interp, o: &Object) -> Vec<(ArrayKey, Value)> {
+    let alive = o
+        .with_payload::<WeakRefState, _>(|s| s.0.upgrade())
+        .flatten();
+    vec![(
+        ArrayKey::str(b"object"),
+        alive.map_or(Value::Null, Value::Object),
+    )]
+}
+
+fn no_prop_get(_: &mut Interp, _: &Object, _: &[u8]) -> Option<Result<Value, Unwind>> {
+    None
+}
+
+fn no_prop_set(_: &mut Interp, _: &Object, _: &[u8], _: Value) -> Option<Result<(), Unwind>> {
+    None
+}
+
+const WEAKREF_PROPS: NativeProps = NativeProps {
+    names: &[],
+    get: no_prop_get,
+    set: no_prop_set,
+    isset: None,
+    unset: None,
+    list: None,
+    debug: Some(weakref_debug_table),
+    cast: None,
+};
+
 // ---- WeakMap -----------------------------------------------------------
+
+/// The `debug` hook: the live entries as `["key" => …, "value" => …]`
+/// pairs at integer keys.
+fn weakmap_debug_table(_: &mut Interp, o: &Object) -> Vec<(ArrayKey, Value)> {
+    let items = with_state::<WeakMapState, _>(o, |s| {
+        s.prune();
+        let out: Vec<(Value, Value)> = s
+            .entries
+            .iter()
+            .flatten()
+            .filter_map(|(k, v)| k.upgrade().map(|k| (k.value(), v.clone())))
+            .collect();
+        out
+    });
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(i, (k, v))| {
+            let mut pair = Array::new();
+            pair.set(ArrayKey::str(b"key"), k);
+            pair.set(ArrayKey::str(b"value"), v);
+            (ArrayKey::Int(i as i64), Value::Array(pair))
+        })
+        .collect()
+}
+
+const WEAKMAP_PROPS: NativeProps = NativeProps {
+    names: &[],
+    get: no_prop_get,
+    set: no_prop_set,
+    isset: None,
+    unset: None,
+    list: None,
+    debug: Some(weakmap_debug_table),
+    cast: None,
+};
 
 /// `WeakMap::offsetGet(object $object): mixed`
 fn weakmap_offset_get(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
@@ -390,6 +458,7 @@ fn internal_iterator_rewind(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) ->
 pub(crate) fn register_classes(r: &mut Registry) {
     r.class("WeakReference")
         .flags(ClassFlags::FINAL)
+        .native_props(WEAKREF_PROPS)
         .method("__construct", nm!(0, Some(0), weakref_construct))
         .method("create", static_method(1, Some(1), &["object"], weakref_create))
         .method("get", nm!(0, Some(0), weakref_get))
@@ -399,6 +468,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
     r.class("WeakMap")
         .flags(ClassFlags::FINAL)
         .implements(&["ArrayAccess", "Countable", "IteratorAggregate"])
+        .native_props(WEAKMAP_PROPS)
         .method("offsetGet", nm!(1, Some(1), weakmap_offset_get))
         .method("offsetSet", nm!(2, Some(2), weakmap_offset_set))
         .method("offsetExists", nm!(1, Some(1), weakmap_offset_exists))

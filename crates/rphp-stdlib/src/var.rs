@@ -40,6 +40,18 @@ pub(crate) fn register_constants(r: &mut Registry) {
 
 // ---- var_export -------------------------------------------------------------
 
+/// php's `zend_unmangle_property_name` for an exported key: the plain
+/// name behind a private/protected `"\0Class\0name"` key.
+fn unmangled_name(key: &[u8]) -> &[u8] {
+    if key.len() < 3 || key[0] != 0 || key[1] == 0 {
+        return key;
+    }
+    match key[1..].iter().position(|&b| b == 0) {
+        Some(end) => &key[end + 2..],
+        None => key,
+    }
+}
+
 /// `var_export(mixed $value, bool $return = false): ?string`
 pub(crate) fn var_export(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let return_mode = args.get(1).is_some_and(Value::to_bool);
@@ -186,16 +198,34 @@ fn export(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, level: usize, seen: &mut 
             }
             seen.objects.push(o.id());
             // Copy the properties out before recursing: an element may hold a
-            // handle back onto this object.
-            let props = o.props_snapshot();
-            for (name, val, _) in &props {
-                if val.is_uninit() {
-                    continue;
+            // handle back onto this object. A native class with a table of
+            // its own for the purpose (`ArrayObject`'s storage) exports that
+            // instead; an integer key stays one, a mangled string key
+            // exports by its plain name, as php unmangles it.
+            let props: Vec<(ArrayKey, Value)> = match ctx.native_cast_table(o) {
+                Some(table) => table,
+                None => {
+                    let mut props: Vec<(ArrayKey, Value)> = o
+                        .props_snapshot()
+                        .into_iter()
+                        .filter(|(_, v, _)| !v.is_uninit())
+                        .map(|(n, v, _)| (ArrayKey::Str(n), v))
+                        .collect();
+                    props.extend(ctx.native_property_table(o).unwrap_or_default());
+                    props
                 }
+            };
+            for (key, val) in &props {
                 spaces(out, level + 2);
-                out.push(b'\'');
-                export_quote(out, name, false);
-                out.extend_from_slice(b"' => ");
+                match key {
+                    ArrayKey::Int(i) => out.extend_from_slice(i.to_string().as_bytes()),
+                    ArrayKey::Str(name) => {
+                        out.push(b'\'');
+                        export_quote(out, unmangled_name(name), false);
+                        out.push(b'\'');
+                    }
+                }
+                out.extend_from_slice(b" => ");
                 export(ctx, out, val, level + 2, seen, precision)?;
                 out.extend_from_slice(b",\n");
             }

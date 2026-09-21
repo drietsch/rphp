@@ -466,11 +466,6 @@ impl Interp {
         // scope; an uninitialized typed property is skipped.
         let scope = self.current_user_frame().and_then(|f| f.scope);
         let mut arr = rphp_value::Array::new();
-        if let Some(table) = self.native_property_table(o) {
-            for (k, v) in table {
-                arr.set(k, v);
-            }
-        }
         for (name, value, _) in o.props_snapshot() {
             if let Some((vis, decl)) = self.resolve_prop(o.class_id(), &name) {
                 if !self.access_ok(vis, decl, scope) {
@@ -482,6 +477,12 @@ impl Interp {
                 arr.set(key, Value::Ref(o.prop_ref(&name)));
             } else {
                 arr.set(key, value);
+            }
+        }
+        // A native class's computed table follows the standard properties.
+        if let Some(table) = self.native_property_table(o) {
+            for (k, v) in table {
+                arr.set(k, v);
             }
         }
         Ok(if by_ref {
@@ -911,14 +912,18 @@ impl Interp {
                     };
                     match object {
                         Some(o) => {
-                            if self.has_dim_storage(&o) {
+                            // A fetched *cell* — the storage slot itself, or
+                            // the one a by-reference `offsetGet()` handed
+                            // out — already took the write; a copy goes back
+                            // through `offsetSet()`.
+                            let cell = matches!(self.raw(base, val), Value::Ref(_));
+                            if !cell && self.has_dim_storage(&o) {
                                 let k = key.map(|k| self.rd(base, k));
                                 self.offset_set(&o, k.as_ref(), v)?;
                             }
-                            // The fetched temporary (or the cell a
-                            // by-reference `offsetGet()` handed out) is done
-                            // with: release it, as php does at the end of
-                            // the statement.
+                            // The fetched temporary or cell is done with:
+                            // release it, as php does at the end of the
+                            // statement.
                             self.set(base, val, Value::Null);
                         }
                         None => self.array_set(base, arr, key, v)?,
@@ -2804,6 +2809,22 @@ impl Interp {
     /// `offsetGet()`'s temporary with php's notice that writing into it
     /// changes nothing.
     fn fetch_dim_w_object(&mut self, o: &Object, key: Value, quiet: bool) -> Result<Value, Unwind> {
+        // php's `get_dimension_ptr` (`ArrayObject`): the slot itself, made
+        // a reference, so the nested write lands in the storage and a
+        // reference taken on the element earlier stays attached — where an
+        // `offsetSet()` write-back would replace the slot. An `RW` fetch
+        // reads first, for the warning a missing key earns.
+        if let Some(dim_ref) = self.class_of(o).dim_ref {
+            if let Some(k) = array_key(&key) {
+                if !quiet {
+                    // Before the cell is made: the read is what warns.
+                    self.offset_get(o, &key)?;
+                }
+                if let Some(cell) = dim_ref(o, &k) {
+                    return Ok(Value::Ref(cell));
+                }
+            }
+        }
         if self.has_dim_storage(o) {
             if !quiet {
                 return self.offset_get(o, &key);
@@ -2826,15 +2847,11 @@ impl Interp {
 
     /// `&$o[$key]` on an `ArrayAccess` object (see `Op::RefElem`).
     fn dim_ref_object(&mut self, o: &Object, key: Value) -> Result<PhpRef, Unwind> {
-        if self.has_dim_storage(o) {
-            // The element of the backing array itself, autovivified: what
-            // php's `ArrayObject` hands out for `&$ao['k']`.
+        // The element of the backing storage itself, autovivified: what
+        // php's `ArrayObject` hands out for `&$ao['k']`.
+        if let Some(dim_ref) = self.class_of(o).dim_ref {
             if let Some(k) = array_key(&key) {
-                let cell = o.with_data_mut(|d| match d.get_mut(b"storage") {
-                    Some(Value::Array(a)) => Some(a.get_ref(k)),
-                    _ => None,
-                });
-                if let Some(cell) = cell {
+                if let Some(cell) = dim_ref(o, &k) {
                     return Ok(cell);
                 }
             }

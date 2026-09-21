@@ -974,6 +974,7 @@ macro_rules! props {
             unset: None,
             list: None,
             debug: Some(debug_table),
+            cast: None,
         };
     };
 }
@@ -982,7 +983,10 @@ fn debug_table(it: &mut Interp, o: &Object) -> Vec<(rphp_value::ArrayKey, Value)
     let Some(np) = it.class_of(o).native_props else {
         return Vec::new();
     };
-    let mut out = Vec::new();
+    // The standard properties first (a subclass's own, dynamic ones), then
+    // the handler table, as php's `dom_get_debug_info_helper` lays it out.
+    let mut out: Vec<(rphp_value::ArrayKey, Value)> =
+        it.std_property_table(o).iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     for name in np.names {
         let v = match (np.get)(it, o, name.as_bytes()) {
             Some(Ok(Value::Object(_))) => Value::string(b"(object value omitted)"),
@@ -1482,6 +1486,7 @@ pub fn register(r: &mut Registry) {
             unset: None,
             list: None,
             debug: None,
+            cast: None,
         })
         .method("item", nm!(1, Some(1), token_item))
         .method("contains", nm!(1, Some(1), token_contains))

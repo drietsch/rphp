@@ -432,12 +432,26 @@ impl Encoder {
             return Ok(false);
         }
         self.seen_objects.push(o.id());
-        let props: Vec<(Vec<u8>, Value)> = ctx
-            .props_through_hooks(o)?
-            .into_iter()
-            .filter(|(_, _, vis, _)| *vis == Vis::Public)
-            .map(|(name, v, _, _)| (name.to_vec(), v))
-            .collect();
+        // A native class with a table of its own for the purpose
+        // (`ArrayObject`'s storage, `SplFixedArray`'s elements) encodes
+        // that: an integer key as a string, a mangled (non-public) key
+        // skipped as php's encoder skips it.
+        let props: Vec<(Vec<u8>, Value)> = match ctx.native_cast_table(o) {
+            Some(table) => table
+                .into_iter()
+                .filter(|(k, _)| !matches!(k, rphp_value::ArrayKey::Str(s) if s.first() == Some(&0)))
+                .map(|(k, v)| match k {
+                    rphp_value::ArrayKey::Int(i) => (i.to_string().into_bytes(), v),
+                    rphp_value::ArrayKey::Str(s) => (s.to_vec(), v),
+                })
+                .collect(),
+            None => ctx
+                .props_through_hooks(o)?
+                .into_iter()
+                .filter(|(_, _, vis, _)| *vis == Vis::Public)
+                .map(|(name, v, _, _)| (name.to_vec(), v))
+                .collect(),
+        };
         self.out.push(b'{');
         self.depth += 1;
         let mut need_comma = false;

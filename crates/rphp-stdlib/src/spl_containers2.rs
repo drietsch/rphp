@@ -3,50 +3,28 @@
 //! `spl_iterators.c`): the doubly-linked-list family, `SplFixedArray`, the
 //! heaps, and the iterator decorators.
 //!
-//! **Where the state lives.** php exposes three of these families through
-//! real-looking properties, and `var_dump`/`print_r` show them:
+//! **Where the state lives.** php keeps a container's state out of the
+//! property table — `(array)`, `get_object_vars()`, Reflection and `==`
+//! see none of it — and shows it through `__debugInfo()` as private-looking
+//! entries:
 //!
 //! ```text
 //! object(SplStack)#1 (2) {
 //!   ["flags":"SplDoublyLinkedList":private]=>  int(6)
 //!   ["dllist":"SplDoublyLinkedList":private]=> array(2) { … }
 //! }
-//! object(SplMinHeap)#1 (3) {
-//!   ["flags":"SplHeap":private]=>        int(0)
-//!   ["isCorrupted":"SplHeap":private]=>  bool(false)
-//!   ["heap":"SplHeap":private]=>         array(2) { … }
-//! }
 //! ```
 //!
-//! so those are declared as real private slots here and dump byte for byte.
-//! Everything php keeps out of sight — an iteration cursor, a decorator's
-//! inner iterator, the `SplFixedArray` elements — lives in the instance's
-//! native [`Payload`], and every class that does so registers
+//! So everything — the elements, the mode word, the iteration cursor —
+//! lives in the instance's native [`Payload`], `__debugInfo()` builds that
+//! table (a user subclass's standard properties first, as php's handler
+//! appends to `zend_std_get_properties`), and every class registers
 //! [`ClassBuilder::payload_clone`](rphp_runtime::ClassBuilder::payload_clone)
 //! so `clone $c` copies it.
-//!
-//! **Known divergence (`__debugInfo`).** php synthesizes the dump of
-//! `SplFixedArray` (a bare numeric list), `MultipleIterator` and the heaps'
-//! `(array)` cast through the `get_debug_info` / `get_properties_for`
-//! handlers. `var.rs`/`output.rs` render declared and dynamic properties
-//! only and do not consult `__debugInfo` yet (the same gap `weak.rs`
-//! records), so:
-//!
-//! * `var_dump(new SplFixedArray(2))` prints `object(SplFixedArray)#1 (0) {}`
-//!   where php prints a two-entry numeric list. The property list of an
-//!   object is a map of *named* slots here, and php's shape needs integer
-//!   keys, so the object model cannot express it at all; the `__debugInfo`
-//!   method below already returns php's array for when the formatters learn
-//!   to use it.
-//! * `(array)` of a heap / a linked list yields the mangled private keys
-//!   here and `[]` in php (php answers `get_properties_for(ARRAY_CAST)` with
-//!   nothing and only fills the debug view).
-//! * `var_dump(new MultipleIterator)` prints no properties where php shows
-//!   the `SplObjectStorage` behind it.
 
-use rphp_runtime::{
-    nm, Ctx, Interp, NativeFn, NativeResult, Registry, Unwind, Visibility,
-};
+use std::collections::VecDeque;
+
+use rphp_runtime::{nm, Ctx, Interp, NativeFn, NativeResult, Registry, Unwind};
 use rphp_value::{Array, ArrayKey, Object, Payload, Value};
 
 /// Functions this module provides. The SPL *functions* live in
@@ -77,66 +55,6 @@ fn with_state<T: Default + 'static, R>(o: &Object, f: impl FnOnce(&mut T) -> R) 
     }
     o.with_payload::<T, _>(f)
         .expect("payload installed just above")
-}
-
-/// A declared array property as an owned [`Array`].
-fn arr_prop(o: &Object, name: &[u8]) -> Array {
-    match o.get_deref(name) {
-        Some(Value::Array(a)) => a,
-        _ => Array::new(),
-    }
-}
-
-/// A declared array property **moved out** for an in-place change that
-/// [`set_arr_prop`] puts back (a clone would leave two handles and make
-/// every push copy the whole list).
-fn take_arr_prop(o: &Object, name: &[u8]) -> Array {
-    let taken = o.with_data_mut(|d| match d.get_mut(name) {
-        Some(Value::Ref(r)) => r.get(),
-        Some(slot) => std::mem::replace(slot, Value::Null),
-        None => Value::Null,
-    });
-    match taken {
-        Value::Array(a) => a,
-        _ => Array::new(),
-    }
-}
-
-fn set_arr_prop(o: &Object, name: &[u8], a: Array) {
-    o.set(name, Value::Array(a));
-}
-
-/// Element `i` (a raw list position) of a declared list property.
-fn list_elem(o: &Object, name: &[u8], i: i64) -> Option<Value> {
-    if i < 0 {
-        return None;
-    }
-    o.with_data(|d| match d.get(name) {
-        Some(Value::Array(a)) => a.get_deref(&ArrayKey::Int(i)),
-        _ => None,
-    })
-}
-
-/// The values of a declared list property, in order.
-fn list_prop(o: &Object, name: &[u8]) -> Vec<Value> {
-    arr_prop(o, name)
-        .values()
-        .map(|v| v.deref().into_owned())
-        .collect()
-}
-
-/// Write a `Vec<Value>` back as a packed list property.
-fn set_list_prop(o: &Object, name: &[u8], items: &[Value]) {
-    let mut a = Array::new();
-    for v in items {
-        a.push(v.clone());
-    }
-    o.set(name, Value::Array(a));
-}
-
-/// A declared int property.
-fn int_prop(o: &Object, name: &[u8]) -> i64 {
-    o.get_deref(name).map_or(0, |v| v.to_int())
 }
 
 /// php's weak `int` parameter coercion, with php's diagnostics: a numeric
@@ -174,9 +92,9 @@ fn int_arg(ctx: &mut Ctx, who: &str, pos: u32, name: &str, v: &Value) -> Result<
 // SplDoublyLinkedList / SplStack / SplQueue  (php-src spl_dllist.c)
 // ========================================================================
 //
-// The elements live in the private `dllist` property as a packed list, the
-// mode word in the private `flags` property — exactly what php dumps. Only
-// the iteration cursor is hidden.
+// The elements live in a deque — php's list is doubly linked, so `shift`
+// and `unshift` are O(1) there, and `SplQueue::dequeue` in a loop must not
+// renumber an array — the mode word beside them, in the payload.
 //
 // `flags` carries the two public mode bits plus one php keeps to itself:
 // bit 2 (`IT_FIXED`) marks `SplStack`/`SplQueue`, whose LIFO/FIFO direction
@@ -190,16 +108,53 @@ const IT_MODE_DELETE: i64 = 1;
 /// php's private "the LIFO/FIFO bit is frozen" flag (`SplStack`/`SplQueue`).
 const IT_FIXED: i64 = 4;
 
-/// The iteration cursor of a linked list. Negative means "before the start",
-/// which is what `prev()` off the front produces (php reports `key() === -1`).
+/// A linked list's state: the elements, the mode word, and the iteration
+/// cursor — negative means "before the start", which is what `prev()` off
+/// the front produces (php reports `key() === -1`).
 #[derive(Default)]
 struct DllState {
+    items: VecDeque<Value>,
+    flags: i64,
     pos: i64,
+}
+
+/// Run `f` on the list's state.
+fn dll<R>(o: &Object, f: impl FnOnce(&mut DllState) -> R) -> R {
+    with_state::<DllState, _>(o, f)
+}
+
+/// The mode word.
+fn dll_flags(o: &Object) -> i64 {
+    dll(o, |s| s.flags)
+}
+
+/// The number of elements.
+fn dll_len(o: &Object) -> usize {
+    dll(o, |s| s.items.len())
+}
+
+/// Element `i` (a raw list position).
+fn dll_at(o: &Object, i: i64) -> Option<Value> {
+    if i < 0 {
+        return None;
+    }
+    dll(o, |s| s.items.get(i as usize).cloned())
+}
+
+/// The elements as a packed array (dumps, serialization).
+fn dll_array(o: &Object) -> Array {
+    dll(o, |s| {
+        let mut a = Array::new();
+        for v in &s.items {
+            a.push(v.clone());
+        }
+        a
+    })
 }
 
 /// Whether the list iterates back to front.
 fn dll_is_lifo(o: &Object) -> bool {
-    int_prop(o, b"flags") & IT_MODE_LIFO != 0
+    dll_flags(o) & IT_MODE_LIFO != 0
 }
 
 /// Seed `flags` for a new instance: php freezes the direction of
@@ -217,15 +172,19 @@ fn dll_init(it: &mut Interp, o: &Object) -> Result<(), Unwind> {
     } else {
         0
     };
-    o.set(b"flags", Value::Int(flags));
+    dll(o, |s| s.flags = flags);
     Ok(())
 }
 
-/// `clone` copies the cursor along with the (ordinary, already copied)
-/// properties.
+/// `clone` copies the elements, the mode and the cursor along with the
+/// ordinary properties.
 fn dll_clone(_: &mut Interp, src: &Object, dst: &Object) -> Result<(), Unwind> {
-    let pos = with_state::<DllState, _>(src, |s| s.pos);
-    with_state::<DllState, _>(dst, |s| s.pos = pos);
+    let (items, flags, pos) = dll(src, |s| (s.items.clone(), s.flags, s.pos));
+    dll(dst, |s| {
+        s.items = items;
+        s.flags = flags;
+        s.pos = pos;
+    });
     Ok(())
 }
 
@@ -254,55 +213,46 @@ fn dll_real_index(o: &Object, index: i64, len: usize) -> i64 {
 
 fn dll_push(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let mut a = take_arr_prop(o, b"dllist");
-    a.push(args[0].deref().into_owned());
-    set_arr_prop(o, b"dllist", a);
+    let v = args[0].deref().into_owned();
+    dll(o, |s| s.items.push_back(v));
     Ok(Value::Null)
 }
 
 fn dll_unshift(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let mut a = take_arr_prop(o, b"dllist");
-    a.unshift(vec![args[0].deref().into_owned()]);
-    set_arr_prop(o, b"dllist", a);
+    let v = args[0].deref().into_owned();
+    dll(o, |s| s.items.push_front(v));
     Ok(Value::Null)
 }
 
 fn dll_pop(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let mut a = take_arr_prop(o, b"dllist");
-    let v = a.pop();
-    set_arr_prop(o, b"dllist", a);
-    v.map(Value::unref).ok_or_else(|| dll_empty("pop from"))
+    dll(o, |s| s.items.pop_back()).ok_or_else(|| dll_empty("pop from"))
 }
 
 fn dll_shift(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let mut a = take_arr_prop(o, b"dllist");
-    let v = a.shift();
-    set_arr_prop(o, b"dllist", a);
-    v.map(Value::unref).ok_or_else(|| dll_empty("shift from"))
+    dll(o, |s| s.items.pop_front()).ok_or_else(|| dll_empty("shift from"))
 }
 
 fn dll_top(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let len = arr_prop(o, b"dllist").len() as i64;
-    list_elem(o, b"dllist", len - 1).ok_or_else(|| dll_empty("peek at"))
+    dll(o, |s| s.items.back().cloned()).ok_or_else(|| dll_empty("peek at"))
 }
 
 fn dll_bottom(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    list_elem(o, b"dllist", 0).ok_or_else(|| dll_empty("peek at"))
+    dll(o, |s| s.items.front().cloned()).ok_or_else(|| dll_empty("peek at"))
 }
 
 fn dll_count(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    Ok(Value::Int(arr_prop(o, b"dllist").len() as i64))
+    Ok(Value::Int(dll_len(o) as i64))
 }
 
 fn dll_is_empty(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    Ok(Value::Bool(arr_prop(o, b"dllist").is_empty()))
+    Ok(Value::Bool(dll_len(o) == 0))
 }
 
 /// `add(int $index, mixed $value): void` — insert *before* `$index`, so
@@ -313,8 +263,7 @@ fn dll_add(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResul
     let o = this(o)?;
     let index = int_arg(ctx, "SplDoublyLinkedList::add", 1, "index", &args[0])?;
     let value = args[1].deref().into_owned();
-    let mut items = list_prop(o, b"dllist");
-    let len = items.len() as i64;
+    let len = dll_len(o) as i64;
     if index < 0 || index > len {
         return Err(dll_range("add"));
     }
@@ -325,27 +274,26 @@ fn dll_add(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResul
     } else {
         index
     };
-    items.insert(at as usize, value);
-    set_list_prop(o, b"dllist", &items);
+    dll(o, |s| s.items.insert(at as usize, value));
     Ok(Value::Null)
 }
 
 fn dll_offset_exists(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let index = int_arg(ctx, "SplDoublyLinkedList::offsetExists", 1, "index", &args[0])?;
-    let len = arr_prop(o, b"dllist").len();
+    let len = dll_len(o);
     Ok(Value::Bool(index >= 0 && (index as usize) < len))
 }
 
 fn dll_offset_get(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let index = int_arg(ctx, "SplDoublyLinkedList::offsetGet", 1, "index", &args[0])?;
-    let len = arr_prop(o, b"dllist").len();
+    let len = dll_len(o);
     if index < 0 || index as usize >= len {
         return Err(dll_range("offsetGet"));
     }
     let at = dll_real_index(o, index, len);
-    Ok(list_elem(o, b"dllist", at).unwrap_or(Value::Null))
+    Ok(dll_at(o, at).unwrap_or(Value::Null))
 }
 
 /// `offsetSet(?int $index, mixed $value): void` — a null index appends.
@@ -353,33 +301,28 @@ fn dll_offset_set(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nati
     let o = this(o)?;
     let value = args[1].deref().into_owned();
     if matches!(&*args[0].deref(), Value::Null | Value::Uninit) {
-        let mut a = take_arr_prop(o, b"dllist");
-        a.push(value);
-        set_arr_prop(o, b"dllist", a);
+        dll(o, |s| s.items.push_back(value));
         return Ok(Value::Null);
     }
     let index = int_arg(ctx, "SplDoublyLinkedList::offsetSet", 1, "index", &args[0])?;
-    let len = arr_prop(o, b"dllist").len();
+    let len = dll_len(o);
     if index < 0 || index as usize >= len {
         return Err(dll_range("offsetSet"));
     }
-    let at = dll_real_index(o, index, len);
-    let mut a = take_arr_prop(o, b"dllist");
-    a.set(ArrayKey::Int(at), value);
-    set_arr_prop(o, b"dllist", a);
+    let at = dll_real_index(o, index, len) as usize;
+    dll(o, |s| s.items[at] = value);
     Ok(Value::Null)
 }
 
 fn dll_offset_unset(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let index = int_arg(ctx, "SplDoublyLinkedList::offsetUnset", 1, "index", &args[0])?;
-    let mut items = list_prop(o, b"dllist");
-    if index < 0 || index as usize >= items.len() {
+    let len = dll_len(o);
+    if index < 0 || index as usize >= len {
         return Err(dll_range("offsetUnset"));
     }
-    let at = dll_real_index(o, index, items.len());
-    items.remove(at as usize);
-    set_list_prop(o, b"dllist", &items);
+    let at = dll_real_index(o, index, len) as usize;
+    dll(o, |s| s.items.remove(at));
     Ok(Value::Null)
 }
 
@@ -388,7 +331,7 @@ fn dll_offset_unset(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Na
 fn dll_set_iterator_mode(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let mode = int_arg(ctx, "SplDoublyLinkedList::setIteratorMode", 1, "mode", &args[0])?;
-    let flags = int_prop(o, b"flags");
+    let flags = dll_flags(o);
     let wanted = mode & (IT_MODE_LIFO | IT_MODE_DELETE);
     if flags & IT_FIXED != 0 && (wanted & IT_MODE_LIFO) != (flags & IT_MODE_LIFO) {
         return Err(Unwind::exception(
@@ -396,39 +339,36 @@ fn dll_set_iterator_mode(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) 
             "Iterators' LIFO/FIFO modes for SplStack/SplQueue objects are frozen",
         ));
     }
-    o.set(b"flags", Value::Int((flags & !(IT_MODE_LIFO | IT_MODE_DELETE)) | wanted));
+    dll(o, |s| s.flags = (flags & !(IT_MODE_LIFO | IT_MODE_DELETE)) | wanted);
     Ok(Value::Null)
 }
 
 fn dll_get_iterator_mode(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    Ok(Value::Int(int_prop(o, b"flags")))
+    Ok(Value::Int(dll_flags(o)))
 }
 
 fn dll_rewind(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let len = arr_prop(o, b"dllist").len() as i64;
-    let start = if dll_is_lifo(o) { len - 1 } else { 0 };
-    with_state::<DllState, _>(o, |s| s.pos = start);
+    let lifo = dll_is_lifo(o);
+    dll(o, |s| s.pos = if lifo { s.items.len() as i64 - 1 } else { 0 });
     Ok(Value::Null)
 }
 
 fn dll_valid(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let len = arr_prop(o, b"dllist").len() as i64;
-    let pos = with_state::<DllState, _>(o, |s| s.pos);
-    Ok(Value::Bool(pos >= 0 && pos < len))
+    Ok(Value::Bool(dll(o, |s| s.pos >= 0 && s.pos < s.items.len() as i64)))
 }
 
 fn dll_current(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let pos = with_state::<DllState, _>(o, |s| s.pos);
-    Ok(list_elem(o, b"dllist", pos).unwrap_or(Value::Null))
+    let pos = dll(o, |s| s.pos);
+    Ok(dll_at(o, pos).unwrap_or(Value::Null))
 }
 
 fn dll_key(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    Ok(Value::Int(with_state::<DllState, _>(o, |s| s.pos)))
+    Ok(Value::Int(dll(o, |s| s.pos)))
 }
 
 /// `next(): void` — forwards, or backwards on a LIFO list. In `IT_MODE_DELETE`
@@ -436,24 +376,20 @@ fn dll_key(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
 /// (FIFO) or follows the shrinking tail (LIFO).
 fn dll_next(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let flags = int_prop(o, b"flags");
+    let flags = dll_flags(o);
     let lifo = flags & IT_MODE_LIFO != 0;
     if flags & IT_MODE_DELETE != 0 {
-        let mut a = take_arr_prop(o, b"dllist");
-        if !a.is_empty() {
+        dll(o, |s| {
             if lifo {
-                a.pop();
+                s.items.pop_back();
             } else {
-                a.shift();
+                s.items.pop_front();
             }
-        }
-        let len = a.len();
-        set_arr_prop(o, b"dllist", a);
-        let pos = if lifo { len as i64 - 1 } else { 0 };
-        with_state::<DllState, _>(o, |s| s.pos = pos);
+            s.pos = if lifo { s.items.len() as i64 - 1 } else { 0 };
+        });
         return Ok(Value::Null);
     }
-    with_state::<DllState, _>(o, |s| s.pos += if lifo { -1 } else { 1 });
+    dll(o, |s| s.pos += if lifo { -1 } else { 1 });
     Ok(Value::Null)
 }
 
@@ -462,17 +398,18 @@ fn dll_next(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
 fn dll_prev(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let lifo = dll_is_lifo(o);
-    with_state::<DllState, _>(o, |s| s.pos += if lifo { 1 } else { -1 });
+    dll(o, |s| s.pos += if lifo { 1 } else { -1 });
     Ok(Value::Null)
 }
 
-/// `__serialize(): array` — php's `[flags, elements, properties]` triple.
-fn dll_magic_serialize(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+/// `__serialize(): array` — php's `[flags, elements, properties]` triple,
+/// the properties under their mangled keys.
+fn dll_magic_serialize(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let mut out = Array::new();
-    out.push(Value::Int(int_prop(o, b"flags")));
-    out.push(Value::Array(arr_prop(o, b"dllist")));
-    out.push(Value::empty_array());
+    out.push(Value::Int(dll_flags(o)));
+    out.push(Value::Array(dll_array(o)));
+    out.push(Value::Array(ctx.std_property_table(o)));
     Ok(Value::Array(out))
 }
 
@@ -488,13 +425,34 @@ fn dll_magic_unserialize(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
         }
     };
     if let Some(f) = data.get_deref(&ArrayKey::Int(0)) {
-        o.set(b"flags", Value::Int(f.to_int()));
+        let flags = f.to_int();
+        dll(o, |s| s.flags = flags);
     }
-    match data.get_deref(&ArrayKey::Int(1)) {
-        Some(Value::Array(a)) => o.set(b"dllist", Value::Array(a)),
-        _ => o.set(b"dllist", Value::empty_array()),
+    let items: VecDeque<Value> = match data.get_deref(&ArrayKey::Int(1)) {
+        Some(Value::Array(a)) => a.values().map(|v| v.deref().into_owned()).collect(),
+        _ => VecDeque::new(),
+    };
+    dll(o, |s| s.items = items);
+    if let Some(Value::Array(props)) = data.get_deref(&ArrayKey::Int(2)) {
+        for (k, v) in props.iter() {
+            if let ArrayKey::Str(name) = k {
+                o.set(unmangled_name(name), v.deref().into_owned());
+            }
+        }
     }
     Ok(Value::Null)
+}
+
+/// php's `zend_unmangle_property_name`: the plain name behind a
+/// private/protected `"\0Class\0name"` key.
+fn unmangled_name(key: &[u8]) -> &[u8] {
+    if key.len() < 3 || key[0] != 0 || key[1] == 0 {
+        return key;
+    }
+    match key[1..].iter().position(|&b| b == 0) {
+        Some(end) => &key[end + 2..],
+        None => key,
+    }
 }
 
 /// `serialize(): string` — the legacy `Serializable` form: the flags,
@@ -505,9 +463,9 @@ fn dll_serialize(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRe
         .native_by_name(b"serialize")
         .expect("serialize is registered");
     let mut out: Vec<u8> = Vec::new();
-    let mut argv = [Value::Int(int_prop(o, b"flags"))];
+    let mut argv = [Value::Int(dll_flags(o))];
     out.extend_from_slice(&ctx.call_native(id, &mut argv)?.to_php_bytes());
-    for v in list_prop(o, b"dllist") {
+    for v in dll(o, |s| s.items.iter().cloned().collect::<Vec<_>>()) {
         out.push(b':');
         let mut argv = [v];
         out.extend_from_slice(&ctx.call_native(id, &mut argv)?.to_php_bytes());
@@ -538,7 +496,8 @@ fn dll_unserialize(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nat
         let mut argv = [Value::string(&data[cur..cur + n])];
         let v = ctx.call_native(id, &mut argv)?;
         if first {
-            o.set(b"flags", Value::Int(v.to_int()));
+            let flags = v.to_int();
+            dll(o, |s| s.flags = flags);
             first = false;
         } else {
             items.push(v);
@@ -548,7 +507,7 @@ fn dll_unserialize(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nat
             cur += 1;
         }
     }
-    set_list_prop(o, b"dllist", &items);
+    dll(o, |s| s.items = items.into());
     Ok(Value::Null)
 }
 
@@ -615,13 +574,14 @@ fn serialized_len(s: &[u8]) -> Option<usize> {
     }
 }
 
-/// `__debugInfo(): array` — php reports both slots under their mangled
-/// private names. Kept faithful for when the formatters learn to call it.
-fn dll_debug_info(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+/// `__debugInfo(): array` — the standard properties, then the mode word
+/// and the elements under `SplDoublyLinkedList`'s mangled private names,
+/// whatever the receiver's class.
+fn dll_debug_info(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let mut out = Array::new();
-    out.set(mangled(b"SplDoublyLinkedList", b"flags"), Value::Int(int_prop(o, b"flags")));
-    out.set(mangled(b"SplDoublyLinkedList", b"dllist"), Value::Array(arr_prop(o, b"dllist")));
+    let mut out = ctx.std_property_table(o);
+    out.set(mangled(b"SplDoublyLinkedList", b"flags"), Value::Int(dll_flags(o)));
+    out.set(mangled(b"SplDoublyLinkedList", b"dllist"), Value::Array(dll_array(o)));
     Ok(Value::Array(out))
 }
 
@@ -660,9 +620,6 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .class_const("IT_MODE_FIFO", Value::Int(0))
         .class_const("IT_MODE_DELETE", Value::Int(IT_MODE_DELETE))
         .class_const("IT_MODE_KEEP", Value::Int(0))
-        // php dumps both of these, so they are real private slots.
-        .prop("flags", Visibility::Private, Value::Int(0))
-        .prop("dllist", Visibility::Private, Value::Array(Array::new()))
         .native_init(dll_init)
         .payload_clone(dll_clone)
         .method("push", nm!(1, Some(1), dll_push))

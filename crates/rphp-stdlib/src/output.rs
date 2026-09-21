@@ -8,11 +8,9 @@
 //! [`php_gcvt`], the `serialize_precision` form shared with
 //! `var_export`/`serialize` (`var.rs`). Closures keep a placeholder shape
 //! until they become `Closure` objects (plan E6).
-use rphp_value::{
-    display_class_name, ArrayKey, ObjectData, PhpRef, PropEntry, Str, Value, Vis,
-};
+use rphp_value::{display_class_name, ArrayKey, Object, PhpRef, Str, Value, Vis};
 
-use rphp_runtime::{Ctx, NativeFn, NativeResult, nf};
+use rphp_runtime::{nf, Ctx, MagicFlags, NativeFn, NativeResult, Unwind};
 
 /// This extension's registry contribution (see `lib.rs`).
 pub(crate) static FUNCTIONS: &[NativeFn] = &[
@@ -54,7 +52,7 @@ pub(crate) fn var_dump(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     {
         let mut native = |v: &Value| native_dump_props(ctx, v);
         for v in args.iter() {
-            dump(&mut buf, v, 0, &mut seen, precision, &mut native);
+            dump(&mut buf, v, 0, &mut seen, precision, &mut native)?;
         }
     }
     ctx.out().extend_from_slice(&buf);
@@ -68,7 +66,7 @@ pub(crate) fn print_r(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut buf = Vec::new();
     {
         let mut native = |v: &Value| native_dump_props(ctx, v);
-        print_r_buf(&mut buf, &args[0], 0, &mut Seen::new(), &mut native);
+        print_r_buf(&mut buf, &args[0], 0, &mut Seen::new(), &mut native)?;
     }
     if return_mode {
         Ok(Value::Str(Str::from_vec(buf)))
@@ -80,18 +78,135 @@ pub(crate) fn print_r(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 // ---- var_dump ---------------------------------------------------------------
 
-/// The computed properties a native class contributes to a dump (php's
-/// `get_debug_info` for the DOM's `prop_handler`s): name → value, an
-/// object-valued one already replaced by `(object value omitted)`.
-type NativeDump<'a> = &'a mut dyn FnMut(&Value) -> Option<Vec<(ArrayKey, Value)>>;
+/// What an object's dump shows besides, or instead of, its slots — php's
+/// `get_debug_info`.
+enum DebugTable {
+    /// Appended after the standard properties: a native class's property
+    /// table or its declared names, when it has no `debug` hook.
+    Extra(Vec<(ArrayKey, Value)>),
+    /// The whole table: what `__debugInfo()` returned (the SPL containers
+    /// answer it natively with their standard properties plus the private
+    /// state php shows), a native class's `debug` hook (the DOM's
+    /// `prop_handler`s after the standard properties, an object-valued
+    /// entry already replaced by `(object value omitted)`), or a closure's
+    /// debug table. String keys may be mangled (`"\0Class\0name"`) and
+    /// print as that visibility.
+    Whole(Vec<(ArrayKey, Value)>),
+}
 
-/// What a native class's computed properties — or a closure's debug
-/// table — look like in a dump.
-fn native_dump_props(ctx: &mut Ctx, v: &Value) -> Option<Vec<(ArrayKey, Value)>> {
+/// The hook a dump asks for an object's [`DebugTable`].
+type NativeDump<'a> = &'a mut dyn FnMut(&Value) -> Result<Option<DebugTable>, Unwind>;
+
+/// An object's debug table: `__debugInfo()` when the class has one —
+/// php's `zend_std_get_debug_info`: an array is the table, `null` a
+/// deprecation and an empty one, anything else the fatal error — else a
+/// native class's computed table; a closure's debug table.
+fn native_dump_props(ctx: &mut Ctx, v: &Value) -> Result<Option<DebugTable>, Unwind> {
     match v {
-        Value::Object(o) => ctx.native_debug_table(o),
-        Value::Closure(c) => Some(ctx.closure_debug_info(c)),
-        _ => None,
+        // An uninitialized lazy object is dumped as it is; php does not
+        // initialize it for a dump either.
+        Value::Object(o) if !o.is_lazy() && ctx.class_of(o).magic.contains(MagicFlags::DEBUGINFO) => {
+            let o = o.clone();
+            let r = ctx.call_method(&o, b"__debugInfo", &[])?;
+            match &*r.deref() {
+                Value::Array(a) => Ok(Some(DebugTable::Whole(
+                    a.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                ))),
+                Value::Null => {
+                    let msg = format!(
+                        "Returning null from {}::__debugInfo() is deprecated, return an empty array instead",
+                        ctx.class_name_of(&o)
+                    );
+                    ctx.deprecated(&msg)?;
+                    Ok(Some(DebugTable::Whole(Vec::new())))
+                }
+                _ => Err(ctx.fatal("__debuginfo() must return an array")),
+            }
+        }
+        Value::Object(o) => Ok(ctx.native_debug_table(o).map(|(whole, t)| {
+            if whole {
+                DebugTable::Whole(t)
+            } else {
+                DebugTable::Extra(t)
+            }
+        })),
+        Value::Closure(c) => Ok(Some(DebugTable::Whole(ctx.closure_debug_info(c)))),
+        _ => Ok(None),
+    }
+}
+
+/// php's `zend_unmangle_property_name`: a key of the form
+/// `"\0Class\0name"` is a private property of `Class`, `"\0*\0name"` a
+/// protected one; anything else is the plain name.
+fn unmangle(key: &[u8]) -> (&[u8], Option<&[u8]>) {
+    if key.len() < 3 || key[0] != 0 || key[1] == 0 {
+        return (key, None);
+    }
+    let Some(end) = key[1..].iter().position(|&b| b == 0) else {
+        return (key, None);
+    };
+    (&key[end + 2..], Some(&key[1..=end]))
+}
+
+/// One property of an object, copied out before the dump recurses: an
+/// element's `__debugInfo()` may touch this object, and a nested value
+/// may be a handle back onto it.
+struct Slot {
+    name: Box<[u8]>,
+    value: Value,
+    vis: Vis,
+    /// The declaring class of a private slot (`["p":"Decl":private]`).
+    decl: Option<std::rc::Rc<[u8]>>,
+    /// The declared type of an uninitialized typed slot.
+    ty: Option<std::rc::Rc<str>>,
+    /// For a reference slot: whether another handle shared the cell
+    /// *before* this copy took one — the `&` marker's condition.
+    shared: bool,
+}
+
+impl Slot {
+    fn new(name: Box<[u8]>, value: &Value, vis: Vis) -> Slot {
+        let shared = matches!(value, Value::Ref(r) if r.strong_count() > 1);
+        Slot { name, value: value.clone(), vis, decl: None, ty: None, shared }
+    }
+}
+
+/// The standard property list of `o` as a dump shows it: an uninitialized
+/// *typed* slot is kept (it prints `uninitialized(T)`), an untyped one that
+/// was `unset()` is gone.
+fn slots_of(o: &Object) -> Vec<Slot> {
+    o.with_data(|d| {
+        d.props_in_order()
+            .filter_map(|p| {
+                let ty = p.meta.and_then(|m| m.ty.clone());
+                if p.value.is_uninit() && ty.is_none() {
+                    return None;
+                }
+                let mut slot = Slot::new(Box::from(p.name), p.value, p.vis);
+                slot.decl = p.meta.map(|m| m.decl_class_name.clone());
+                slot.ty = ty;
+                Some(slot)
+            })
+            .collect()
+    })
+}
+
+/// A debug-table entry as a [`Slot`]: an integer key prints as `[0]=>`, a
+/// mangled string key as the visibility it encodes.
+fn table_slot(k: &ArrayKey, v: &Value) -> (Option<i64>, Slot) {
+    match k {
+        ArrayKey::Int(i) => (Some(*i), Slot::new(Box::default(), v, Vis::Public)),
+        ArrayKey::Str(key) => {
+            let (name, class) = unmangle(key);
+            let (vis, decl) = match class {
+                Some(b"*") => (Vis::Protected, None),
+                Some(c) => (Vis::Private, Some(std::rc::Rc::from(c))),
+                None => (Vis::Public, None),
+            };
+            let mut slot = Slot::new(Box::from(name), v, vis);
+            slot.decl = decl;
+            (None, slot)
+        }
     }
 }
 
@@ -210,7 +325,7 @@ fn dump(
     seen: &mut Seen,
     precision: i64,
     native: NativeDump<'_>,
-) {
+) -> Result<(), Unwind> {
     match v {
         // An uninitialized typed property never reaches user code (the runtime
         // errors first) and is skipped inside objects; standalone it is null.
@@ -237,7 +352,7 @@ fn dump(
                 indent(out, pad + 2);
                 dump_key(out, k);
                 indent(out, pad + 2);
-                dump(out, val, pad + 2, seen, precision, native);
+                dump(out, val, pad + 2, seen, precision, native)?;
             }
             indent(out, pad);
             out.extend_from_slice(b"}\n");
@@ -246,148 +361,166 @@ fn dump(
         Value::Closure(c) => {
             if seen.objects.contains(&c.id()) {
                 out.extend_from_slice(b"*RECURSION*\n");
-                return;
+                return Ok(());
             }
-            let props = native(v).unwrap_or_default();
+            let props = match native(v)? {
+                Some(DebugTable::Whole(t) | DebugTable::Extra(t)) => t,
+                None => Vec::new(),
+            };
             out.extend_from_slice(format!("object(Closure)#{} ({}) {{\n", c.id(), props.len()).as_bytes());
             seen.objects.push(c.id());
             for (k, val) in &props {
                 indent(out, pad + 2);
                 dump_key(out, k);
                 indent(out, pad + 2);
-                dump(out, val, pad + 2, seen, precision, native);
+                dump(out, val, pad + 2, seen, precision, native)?;
             }
             seen.objects.pop();
             indent(out, pad);
             out.extend_from_slice(b"}\n");
         }
         Value::Object(o) => {
-            let extra = native(v).unwrap_or_default();
-            o.with_data(|d| dump_object(out, d, pad, seen, precision, extra, native))
-        }
-        // PHP marks a reference `&` only while more than one handle shares it.
-        Value::Ref(r) => {
-            // (Measured before the cycle guard takes its own handle.)
-            let shared = r.strong_count() > 1;
-            if !seen.enter_ref(r) {
+            // The cycle check comes before `__debugInfo()` (php protects
+            // the object first, then asks for its table).
+            if seen.objects.contains(&o.id()) {
                 out.extend_from_slice(b"*RECURSION*\n");
-                return;
+                return Ok(());
             }
-            let inner = r.get();
-            // php prints the `&` with the type, never before `*RECURSION*`.
-            let recursive = matches!(&inner, Value::Object(o) if seen.objects.contains(&o.id()));
-            if shared && !recursive {
-                out.push(b'&');
-            }
-            dump(out, &inner, pad, seen, precision, native);
-            seen.refs.pop();
+            let table = native(v)?;
+            dump_object(out, o, pad, seen, precision, table, native)?;
         }
+        // PHP marks a reference `&` only while more than one handle shares it
+        // (measured before the cycle guard takes its own handle).
+        Value::Ref(r) => dump_ref(out, r, r.strong_count() > 1, pad, seen, precision, native)?,
         Value::Resource(r) => {
             out.extend_from_slice(format!("resource({}) of type ({})\n", r.id(), r.kind()).as_bytes());
         }
     }
+    Ok(())
 }
 
-/// `object(Class)#id (count) { ["name"(:protected | :"Decl":private)]=> value … }`
-fn dump_object(
+/// A reference cell: `&` when `shared`, `*RECURSION*` on a cycle.
+fn dump_ref(
     out: &mut Vec<u8>,
-    d: &ObjectData,
+    r: &PhpRef,
+    shared: bool,
     pad: usize,
     seen: &mut Seen,
     precision: i64,
-    extra: Vec<(ArrayKey, Value)>,
     native: NativeDump<'_>,
-) {
-    if seen.objects.contains(&d.id()) {
+) -> Result<(), Unwind> {
+    if !seen.enter_ref(r) {
         out.extend_from_slice(b"*RECURSION*\n");
-        return;
+        return Ok(());
     }
+    let inner = r.get();
+    // php prints the `&` with the type, never before `*RECURSION*`.
+    let recursive = matches!(&inner, Value::Object(o) if seen.objects.contains(&o.id()));
+    if shared && !recursive {
+        out.push(b'&');
+    }
+    dump(out, &inner, pad, seen, precision, native)?;
+    seen.refs.pop();
+    Ok(())
+}
+
+/// `object(Class)#id (count) { ["name"(:protected | :"Decl":private)]=> value … }`
+#[allow(clippy::too_many_arguments)]
+fn dump_object(
+    out: &mut Vec<u8>,
+    o: &Object,
+    pad: usize,
+    seen: &mut Seen,
+    precision: i64,
+    table: Option<DebugTable>,
+    native: NativeDump<'_>,
+) -> Result<(), Unwind> {
+    let class_name = o.layout().class_name().to_vec();
     // php prints an enum case as `enum(Suit::Hearts)`, with no id and no
     // property list.
-    if d.flags().contains(rphp_value::ObjFlags::ENUM_CASE) {
+    if o.flags().contains(rphp_value::ObjFlags::ENUM_CASE) {
         out.extend_from_slice(b"enum(");
-        out.extend_from_slice(display_class_name(d.layout().class_name()));
+        out.extend_from_slice(display_class_name(&class_name));
         out.extend_from_slice(b"::");
-        if let Some(p) = d.props_in_order().find(|p| p.name == b"name") {
-            out.extend_from_slice(&p.value.to_php_bytes());
+        if let Some(v) = o.get_deref(b"name") {
+            out.extend_from_slice(&v.to_php_bytes());
         }
         out.extend_from_slice(b")\n");
-        return;
+        return Ok(());
     }
     // A php 8.4 lazy object is headed `lazy ghost ` / `lazy proxy ` while
     // uninitialized (a proxy keeps the prefix for good), and an initialized
     // proxy shows the real instance under `["instance"]`.
-    let lazy = d.lazy();
-    match lazy.map(|l| (l.kind, l.initialized)) {
+    let lazy = o.lazy();
+    match lazy.as_ref().map(|l| (l.kind, l.initialized)) {
         Some((rphp_value::LazyKind::Ghost, false)) => out.extend_from_slice(b"lazy ghost "),
         Some((rphp_value::LazyKind::Proxy, _)) => out.extend_from_slice(b"lazy proxy "),
         _ => {}
     }
     out.extend_from_slice(b"object(");
-    out.extend_from_slice(display_class_name(d.layout().class_name()));
+    out.extend_from_slice(display_class_name(&class_name));
     if let Some(real) = lazy.and_then(|l| l.real.clone()) {
-        out.extend_from_slice(format!(")#{} (1) {{\n", d.id()).as_bytes());
-        seen.objects.push(d.id());
+        out.extend_from_slice(format!(")#{} (1) {{\n", o.id()).as_bytes());
+        seen.objects.push(o.id());
         indent(out, pad + 2);
         out.extend_from_slice(b"[\"instance\"]=>\n");
         indent(out, pad + 2);
-        dump(out, &Value::Object(real), pad + 2, seen, precision, native);
+        dump(out, &Value::Object(real), pad + 2, seen, precision, native)?;
         seen.objects.pop();
         indent(out, pad);
         out.extend_from_slice(b"}\n");
-        return;
+        return Ok(());
     }
-    out.extend_from_slice(
-        format!(")#{} ({}) {{\n", d.id(), d.prop_count() + extra.len()).as_bytes(),
-    );
-    seen.objects.push(d.id());
-    // A native class's computed properties come first, as php's
-    // `get_debug_info` lists them.
-    for (k, v) in &extra {
+    // The standard properties, then a native class's computed ones — or
+    // the `__debugInfo()` table alone.
+    let entries: Vec<(Option<i64>, Slot)> = match table {
+        Some(DebugTable::Whole(t)) => t.iter().map(|(k, v)| table_slot(k, v)).collect(),
+        Some(DebugTable::Extra(t)) => slots_of(o)
+            .into_iter()
+            .map(|s| (None, s))
+            .chain(t.iter().map(|(k, v)| table_slot(k, v)))
+            .collect(),
+        None => slots_of(o).into_iter().map(|s| (None, s)).collect(),
+    };
+    // php counts the property table, which an uninitialized typed slot is
+    // not in (it is still listed, as `uninitialized(T)`).
+    let count = entries.iter().filter(|(_, p)| !p.value.is_uninit()).count();
+    out.extend_from_slice(format!(")#{} ({}) {{\n", o.id(), count).as_bytes());
+    seen.objects.push(o.id());
+    for (index, p) in &entries {
         indent(out, pad + 2);
-        dump_key(out, k);
-        indent(out, pad + 2);
-        dump(out, v, pad + 2, seen, precision, native);
-    }
-    for p in d.props_in_order() {
-        // An uninitialized *typed* slot prints as `uninitialized(T)` (a
-        // lazy object's slots all are, until its initializer runs); an
-        // untyped one that was unset is simply gone.
-        let ty = p.meta.and_then(|m| m.ty.clone());
-        if p.value.is_uninit() && ty.is_none() {
-            continue;
-        }
-        indent(out, pad + 2);
-        out.extend_from_slice(b"[\"");
-        out.extend_from_slice(p.name);
-        out.push(b'"');
-        match p.vis {
-            Vis::Public => {}
-            Vis::Protected => out.extend_from_slice(b":protected"),
-            Vis::Private => {
-                out.extend_from_slice(b":\"");
-                out.extend_from_slice(decl_class_name(&p));
-                out.extend_from_slice(b"\":private");
+        match index {
+            Some(i) => out.extend_from_slice(format!("[{i}]=>\n").as_bytes()),
+            None => {
+                out.extend_from_slice(b"[\"");
+                out.extend_from_slice(&p.name);
+                out.push(b'"');
+                match p.vis {
+                    Vis::Public => {}
+                    Vis::Protected => out.extend_from_slice(b":protected"),
+                    Vis::Private => {
+                        out.extend_from_slice(b":\"");
+                        out.extend_from_slice(p.decl.as_deref().unwrap_or(b""));
+                        out.extend_from_slice(b"\":private");
+                    }
+                }
+                out.extend_from_slice(b"]=>\n");
             }
         }
-        out.extend_from_slice(b"]=>\n");
         indent(out, pad + 2);
-        match ty {
-            Some(ty) if p.value.is_uninit() => {
+        match (&p.ty, &p.value) {
+            (Some(ty), v) if v.is_uninit() => {
                 out.extend_from_slice(format!("uninitialized({ty})\n").as_bytes());
             }
-            _ => dump(out, p.value, pad + 2, seen, precision, native),
+            // The slot's own copy of the cell must not count as a sharer.
+            (_, Value::Ref(r)) => dump_ref(out, r, p.shared, pad + 2, seen, precision, native)?,
+            (_, v) => dump(out, v, pad + 2, seen, precision, native)?,
         }
     }
     seen.objects.pop();
     indent(out, pad);
     out.extend_from_slice(b"}\n");
-}
-
-/// The class declaring a private property (dynamic properties are public, so
-/// this is only consulted for declared slots).
-fn decl_class_name<'a>(p: &PropEntry<'a>) -> &'a [u8] {
-    p.meta.map_or(b"", |m| &m.decl_class_name)
+    Ok(())
 }
 
 fn dump_key(out: &mut Vec<u8>, k: &ArrayKey) {
@@ -405,7 +538,13 @@ fn dump_key(out: &mut Vec<u8>, k: &ArrayKey) {
 
 /// Emit the `print_r` representation of `v`. `pad` is the indentation applied to
 /// the `(` / `)` lines of a container; scalars print their plain string cast.
-fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, native: NativeDump<'_>) {
+fn print_r_buf(
+    out: &mut Vec<u8>,
+    v: &Value,
+    pad: usize,
+    seen: &mut Seen,
+    native: NativeDump<'_>,
+) -> Result<(), Unwind> {
     match v {
         Value::Array(a) => {
             out.extend_from_slice(b"Array\n");
@@ -419,23 +558,45 @@ fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, native
                     ArrayKey::Str(b) => out.extend_from_slice(b),
                 }
                 out.extend_from_slice(b"] => ");
-                print_r_buf(out, val, pad + 8, seen, native);
+                print_r_buf(out, val, pad + 8, seen, native)?;
                 out.push(b'\n');
             }
             indent(out, pad);
             out.extend_from_slice(b")\n");
         }
         Value::Object(o) => {
-            let extra = native(v).unwrap_or_default();
-            o.with_data(|d| print_r_object(out, d, pad, seen, extra, native))
+            out.extend_from_slice(display_class_name(o.layout().class_name()));
+            // php heads an enum case with `Enum` (pure) or `Enum:int`/
+            // `Enum:string` (backed) instead of `Object`, then lists its
+            // properties as usual.
+            if o.flags().contains(rphp_value::ObjFlags::ENUM_CASE) {
+                out.extend_from_slice(b" Enum");
+                match o.get_deref(b"value") {
+                    Some(Value::Int(_)) => out.extend_from_slice(b":int"),
+                    Some(Value::Str(_)) => out.extend_from_slice(b":string"),
+                    _ => {}
+                }
+                out.push(b'\n');
+            } else {
+                out.extend_from_slice(b" Object\n");
+            }
+            if seen.objects.contains(&o.id()) {
+                out.extend_from_slice(b" *RECURSION*");
+                return Ok(());
+            }
+            let table = native(v)?;
+            print_r_object(out, o, pad, seen, table, native)?;
         }
         Value::Closure(c) => {
             out.extend_from_slice(b"Closure Object\n");
             if seen.objects.contains(&c.id()) {
                 out.extend_from_slice(b" *RECURSION*");
-                return;
+                return Ok(());
             }
-            let props = native(v).unwrap_or_default();
+            let props = match native(v)? {
+                Some(DebugTable::Whole(t) | DebugTable::Extra(t)) => t,
+                None => Vec::new(),
+            };
             indent(out, pad);
             out.extend_from_slice(b"(\n");
             seen.objects.push(c.id());
@@ -447,7 +608,7 @@ fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, native
                     ArrayKey::Str(b) => out.extend_from_slice(b),
                 }
                 out.extend_from_slice(b"] => ");
-                print_r_buf(out, val, pad + 8, seen, native);
+                print_r_buf(out, val, pad + 8, seen, native)?;
                 out.push(b'\n');
             }
             seen.objects.pop();
@@ -457,90 +618,77 @@ fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, native
         Value::Ref(r) => {
             if !seen.enter_ref(r) {
                 out.extend_from_slice(b"Array\n *RECURSION*");
-                return;
+                return Ok(());
             }
             let inner = r.get();
-            print_r_buf(out, &inner, pad, seen, native);
+            print_r_buf(out, &inner, pad, seen, native)?;
             seen.refs.pop();
         }
         // Scalars (and resources: `Resource id #N`) use the same string
         // conversion as `echo`.
         _ => v.append_php_bytes(out),
     }
+    Ok(())
 }
 
-/// `Class Object ( [name(:protected | :Decl:private)] => value … )`
+/// `( [name(:protected | :Decl:private)] => value … )` — the body after the
+/// `Class Object` heading the caller wrote.
 fn print_r_object(
     out: &mut Vec<u8>,
-    d: &ObjectData,
+    o: &Object,
     pad: usize,
     seen: &mut Seen,
-    extra: Vec<(ArrayKey, Value)>,
+    table: Option<DebugTable>,
     native: NativeDump<'_>,
-) {
-    out.extend_from_slice(display_class_name(d.layout().class_name()));
-    // php heads an enum case with `Enum` (pure) or `Enum:int`/`Enum:string`
-    // (backed) instead of `Object`, then lists its properties as usual.
-    if d.flags().contains(rphp_value::ObjFlags::ENUM_CASE) {
-        out.extend_from_slice(b" Enum");
-        match d.props_in_order().find(|p| p.name == b"value").map(|p| p.value.clone()) {
-            Some(rphp_value::Value::Int(_)) => out.extend_from_slice(b":int"),
-            Some(rphp_value::Value::Str(_)) => out.extend_from_slice(b":string"),
-            _ => {}
-        }
-        out.push(b'\n');
-    } else {
-        out.extend_from_slice(b" Object\n");
-    }
-    if seen.objects.contains(&d.id()) {
-        out.extend_from_slice(b" *RECURSION*");
-        return;
-    }
+) -> Result<(), Unwind> {
     indent(out, pad);
     out.extend_from_slice(b"(\n");
-    seen.objects.push(d.id());
+    seen.objects.push(o.id());
     // An initialized lazy proxy lists the real instance under `[instance]`.
-    if let Some(real) = d.lazy().and_then(|l| l.real.clone()) {
+    if let Some(real) = o.lazy().and_then(|l| l.real.clone()) {
         indent(out, pad + 4);
         out.extend_from_slice(b"[instance] => ");
-        print_r_buf(out, &Value::Object(real), pad + 8, seen, native);
+        print_r_buf(out, &Value::Object(real), pad + 8, seen, native)?;
         out.push(b'\n');
         seen.objects.pop();
         indent(out, pad);
         out.extend_from_slice(b")\n");
-        return;
+        return Ok(());
     }
-    for (k, v) in &extra {
+    // The standard properties (an uninitialized slot is not listed), then
+    // a native class's computed ones — or the `__debugInfo()` table alone.
+    let std = || slots_of(o).into_iter().filter(|s| !s.value.is_uninit()).map(|s| (None, s));
+    let entries: Vec<(Option<i64>, Slot)> = match table {
+        Some(DebugTable::Whole(t)) => t.iter().map(|(k, v)| table_slot(k, v)).collect(),
+        Some(DebugTable::Extra(t)) => std().chain(t.iter().map(|(k, v)| table_slot(k, v))).collect(),
+        None => std().collect(),
+    };
+    for (index, p) in &entries {
         indent(out, pad + 4);
         out.push(b'[');
-        match k {
-            ArrayKey::Int(i) => out.extend_from_slice(i.to_string().as_bytes()),
-            ArrayKey::Str(s) => out.extend_from_slice(s),
-        }
-        out.extend_from_slice(b"] => ");
-        print_r_buf(out, v, pad + 8, seen, native);
-        out.push(b'\n');
-    }
-    for p in d.props_in_order().filter(|p| !p.value.is_uninit()) {
-        indent(out, pad + 4);
-        out.push(b'[');
-        out.extend_from_slice(p.name);
-        match p.vis {
-            Vis::Public => {}
-            Vis::Protected => out.extend_from_slice(b":protected"),
-            Vis::Private => {
-                out.push(b':');
-                out.extend_from_slice(decl_class_name(&p));
-                out.extend_from_slice(b":private");
+        match index {
+            Some(i) => out.extend_from_slice(i.to_string().as_bytes()),
+            None => {
+                out.extend_from_slice(&p.name);
+                match p.vis {
+                    Vis::Public => {}
+                    Vis::Protected => out.extend_from_slice(b":protected"),
+                    Vis::Private => {
+                        out.push(b':');
+                        out.extend_from_slice(p.decl.as_deref().unwrap_or(b""));
+                        out.extend_from_slice(b":private");
+                    }
+                }
             }
         }
         out.extend_from_slice(b"] => ");
-        print_r_buf(out, p.value, pad + 8, seen, native);
+        print_r_buf(out, &p.value, pad + 8, seen, native)?;
         out.push(b'\n');
     }
     seen.objects.pop();
     indent(out, pad);
     out.extend_from_slice(b")\n");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -553,13 +701,13 @@ mod tests {
 
     fn dumped(v: &Value) -> String {
         let mut out = Vec::new();
-        dump(&mut out, v, 0, &mut Seen::new(), -1, &mut |_| None);
+        dump(&mut out, v, 0, &mut Seen::new(), -1, &mut |_| Ok(None)).unwrap();
         String::from_utf8(out).unwrap()
     }
 
     fn printed(v: &Value) -> String {
         let mut out = Vec::new();
-        print_r_buf(&mut out, v, 0, &mut Seen::new(), &mut |_| None);
+        print_r_buf(&mut out, v, 0, &mut Seen::new(), &mut |_| Ok(None)).unwrap();
         String::from_utf8(out).unwrap()
     }
 

@@ -568,6 +568,8 @@ impl Interp {
             native_init: None,
             payload_clone: None,
             native_props: None,
+            native_compare: None,
+            dim_ref: None,
             declared_at: stub.declared_at.clone(),
             internal: false,
             static_props,

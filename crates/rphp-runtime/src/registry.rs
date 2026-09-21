@@ -364,6 +364,8 @@ impl Registry<'_> {
             native_init: None,
             payload_clone: None,
             native_props: None,
+            native_compare: None,
+            dim_ref: None,
         }
     }
 
@@ -392,6 +394,8 @@ pub struct ClassBuilder<'a> {
     native_init: Option<NativeInit>,
     payload_clone: Option<crate::class::PayloadClone>,
     native_props: Option<crate::class::NativeProps>,
+    native_compare: Option<rphp_value::NativeCompare>,
+    dim_ref: Option<crate::class::NativeDimRef>,
 }
 
 impl ClassBuilder<'_> {
@@ -493,6 +497,23 @@ impl ClassBuilder<'_> {
         self
     }
 
+    /// php's `compare_objects` handler: how `==`/`<=>` order two instances
+    /// before (or instead of) their properties — `ArrayObject` by its
+    /// storage, `SplObjectStorage` by its entries. Inherited by user
+    /// subclasses.
+    pub fn native_compare(mut self, f: rphp_value::NativeCompare) -> Self {
+        self.native_compare = Some(f);
+        self
+    }
+
+    /// The cell behind `$o[$key]` for a class whose elements are real
+    /// storage (`&$ao[$k]`, `sort($ao[$k])`); see
+    /// [`NativeDimRef`](crate::class::NativeDimRef).
+    pub fn dim_ref(mut self, f: crate::class::NativeDimRef) -> Self {
+        self.dim_ref = Some(f);
+        self
+    }
+
     /// Link and register the class; returns its process-wide id. Re-registering
     /// a name keeps the earlier id (the definition is replaced).
     ///
@@ -514,6 +535,8 @@ impl ClassBuilder<'_> {
             native_init,
             payload_clone,
             native_props,
+            native_compare,
+            dim_ref,
         } = self;
         let lookup = |interp: &Interp, n: &str| {
             interp.class_by_name(n.as_bytes()).unwrap_or_else(|| {
@@ -541,6 +564,8 @@ impl ClassBuilder<'_> {
             native_init,
             payload_clone,
             native_props,
+            native_compare,
+            dim_ref,
             declared_at: None,
             internal: true,
             static_props: Vec::new(),

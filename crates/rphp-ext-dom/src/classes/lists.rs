@@ -378,6 +378,7 @@ pub fn register_modern(r: &mut Registry) {
             unset: None,
             list: None,
             debug: None,
+            cast: None,
         })
         .method("item", nm!(1, Some(1), list_item))
         .method("count", nm!(0, Some(0), list_count))
@@ -397,6 +398,7 @@ pub fn register_modern(r: &mut Registry) {
             unset: None,
             list: None,
             debug: None,
+            cast: None,
         })
         .method("item", nm!(1, Some(1), list_item))
         .method("namedItem", nm!(1, Some(1), collection_named_item))
@@ -418,6 +420,7 @@ pub fn register_modern(r: &mut Registry) {
                 unset: None,
                 list: None,
                 debug: None,
+                cast: None,
             })
             .method("getNamedItem", nm!(1, Some(1), map_get_named_item))
             .method("getNamedItemNS", nm!(2, Some(2), map_get_named_item_ns))
@@ -443,6 +446,7 @@ pub fn register(r: &mut Registry) {
             unset: None,
             list: None,
             debug: None,
+            cast: None,
         })
         .method("item", nm!(1, Some(1), list_item))
         .method("count", nm!(0, Some(0), list_count))
@@ -462,6 +466,7 @@ pub fn register(r: &mut Registry) {
             unset: None,
             list: None,
             debug: None,
+            cast: None,
         })
         .method("getNamedItem", nm!(1, Some(1), map_get_named_item))
         .method("getNamedItemNS", nm!(2, Some(2), map_get_named_item_ns))

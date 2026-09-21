@@ -37,7 +37,10 @@ fn debug_table(it: &mut Interp, o: &Object) -> Vec<(rphp_value::ArrayKey, Value)
     let Some(np) = it.class_of(o).native_props else {
         return Vec::new();
     };
-    let mut out = Vec::new();
+    // The standard properties first (a subclass's own, dynamic ones), then
+    // the handler table, as php's `dom_get_debug_info_helper` lays it out.
+    let mut out: Vec<(rphp_value::ArrayKey, Value)> =
+        it.std_property_table(o).iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     for name in np.names {
         let v = match (np.get)(it, o, name.as_bytes()) {
             Some(Ok(Value::Object(_))) => Value::string(b"(object value omitted)"),
@@ -57,6 +60,7 @@ pub const PROPS: NativeProps = NativeProps {
     unset: None,
     list: None,
     debug: Some(debug_table),
+    cast: None,
 };
 
 /// A subclass's `NativeProps`: its own names first, then `DOMNode`'s, in
@@ -91,6 +95,7 @@ macro_rules! props {
             unset: None,
             list: None,
             debug: Some(debug_table),
+            cast: None,
         };
     };
 }
@@ -195,6 +200,7 @@ pub const NOTATION_PROPS: NativeProps = NativeProps {
     unset: None,
     list: None,
     debug: Some(debug_table),
+    cast: None,
 };
 props!(
     DOCUMENT_PROPS,

@@ -29,6 +29,11 @@ pub mod cgi;
 
 pub use constants::{php_os, php_os_family};
 pub use rphp_runtime::{Interp, OutputSink, Registry, SapiKind, Unwind};
+/// A host's PDO drivers: register one per DSN scheme (`pdo::register_host_driver`).
+pub mod pdo {
+    pub use rphp_ext_pdo::driver::{Column, DbError, Driver, ParamKey, ResultSet, SqlValue};
+    pub use rphp_ext_pdo::{register_host_driver, DriverFactory, HostDsn};
+}
 pub use sink::{BufferSink, StdoutSink};
 
 /// Why [`Engine::compile`] failed.

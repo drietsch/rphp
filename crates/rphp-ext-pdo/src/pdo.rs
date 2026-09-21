@@ -368,7 +368,21 @@ fn pdo_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nativ
                 }
             }
         }
-        _ => return Err(plain_exception(ctx, "could not find driver", 0)),
+        scheme => {
+            // A scheme the host answers (`host.rs`): its factory opens the
+            // connection, or refuses with php's connection-failure shape.
+            let username = args.get(1).map(|v| v.deref().into_owned()).filter(|v| !matches!(v, Value::Null)).map(|v| String::from_utf8_lossy(&v.to_php_bytes()).into_owned());
+            let password = args.get(2).map(|v| v.deref().into_owned()).filter(|v| !matches!(v, Value::Null)).map(|v| String::from_utf8_lossy(&v.to_php_bytes()).into_owned());
+            let dsn = crate::host::HostDsn { scheme, rest, username: username.as_deref(), password: password.as_deref(), options: &options };
+            match crate::host::host_drivers(ctx).and_then(|h| h.open(&dsn)) {
+                Some(Ok(conn)) => conn,
+                Some(Err(e)) => {
+                    let message = format!("SQLSTATE[{}] [{}] {}", e.sqlstate, e.code, e.message);
+                    return Err(plain_exception(ctx, &message, e.code));
+                }
+                None => return Err(plain_exception(ctx, "could not find driver", 0)),
+            }
+        }
     };
     let mut state = PdoState {
         conn,
@@ -399,10 +413,7 @@ fn pdo_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nativ
 fn pdo_connect(ctx: &mut Ctx, _: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let dsn = String::from_utf8_lossy(&str_arg(args, 0)).into_owned();
     let driver = dsn.split_once(':').map(|(d, _)| d).unwrap_or("");
-    let class: &[u8] = match driver {
-        "sqlite" => b"Pdo\\Sqlite",
-        _ => b"PDO",
-    };
+    let class: &[u8] = crate::host::subclass_for(driver);
     let cid = ctx.class_by_name(class).unwrap_or_else(|| ctx.class_by_name(b"PDO").expect("PDO is registered"));
     let obj = ctx.instantiate(cid);
     let mut ctor_args: Vec<Value> = args.iter().map(|v| v.deref().into_owned()).collect();
@@ -411,9 +422,16 @@ fn pdo_connect(ctx: &mut Ctx, _: Option<&Object>, args: &mut [Value]) -> NativeR
 }
 
 /// `PDO::getAvailableDrivers(): array`
-fn pdo_get_available_drivers(_: &mut Ctx, _: Option<&Object>, _: &mut [Value]) -> NativeResult {
+fn pdo_get_available_drivers(ctx: &mut Ctx, _: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let mut a = Array::new();
     a.push(Value::string(b"sqlite"));
+    if let Some(h) = crate::host::host_drivers(ctx) {
+        for scheme in h.schemes() {
+            if scheme != "sqlite" {
+                a.push(Value::string(scheme.as_bytes()));
+            }
+        }
+    }
     Ok(Value::Array(a))
 }
 
@@ -1055,7 +1073,25 @@ pub fn register(r: &mut Registry) {
             Box::leak(format!(" since 8.5, use {new} instead").into_boxed_str()),
         );
     }
+    // `PDO::MYSQL_ATTR_*`, deprecated in 8.5 like the SQLite ones in favour
+    // of `Pdo\Mysql::ATTR_*`.
+    for (name, v) in crate::host::MYSQL_ATTRS {
+        pdo = pdo.deprecated_class_const(
+            &format!("MYSQL_{name}"),
+            Value::Int(*v),
+            Box::leak(format!(" since 8.5, use Pdo\\Mysql::{name} instead").into_boxed_str()),
+        );
+    }
     pdo.finish();
+
+    // php 8.4's per-driver subclass for a host-answered `mysql:` scheme, with
+    // the driver constants both spellings carry (`PDO::MYSQL_ATTR_*` on the
+    // parent is registered above alongside the other PDO constants).
+    let mut mysql = r.class("Pdo\\Mysql").extends("PDO");
+    for (name, v) in crate::host::MYSQL_ATTRS {
+        mysql = mysql.class_const(name, Value::Int(*v));
+    }
+    mysql.finish();
 
     let mut sqlite = r
         .class("Pdo\\Sqlite")

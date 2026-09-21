@@ -17,10 +17,12 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 mod bridge;
-mod driver;
+pub mod driver;
+pub mod host;
 mod pdo;
 mod sqlite;
 mod sqlstate;
 mod stmt;
 
+pub use host::{register_host_driver, DriverFactory, HostDsn};
 pub use pdo::register;

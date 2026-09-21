@@ -250,6 +250,10 @@ pub struct Interp {
     /// of what the op calls into — a `DoCall` includes the callee's run
     /// only up to the frame switch, since the loop times one op at a time).
     pub profile_ops: HashMap<String, (std::time::Duration, u64)>,
+    /// Under the `profile` feature: the inclusive time of every op timed
+    /// so far, which an enclosing op subtracts to get its own (exclusive)
+    /// time — a native's callback, a generator's body run inside `IterNext`.
+    pub profile_nested: std::time::Duration,
     /// A `FnFlags::LIGHT` native is running without a frame: a
     /// diagnostic it emits cannot be attributed, so `emit_error` aborts
     /// the call with `Unwind::Retry` and the engine re-runs it on the
@@ -338,7 +342,7 @@ impl Interp {
         let mut ops: Vec<(&String, &(std::time::Duration, u64))> = self.profile_ops.iter().collect();
         ops.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
         let total_ops: std::time::Duration = ops.iter().map(|(_, (d, _))| *d).sum();
-        eprintln!("== ops by kind: {:.1} ms in the dispatch loop", total_ops.as_secs_f64() * 1e3);
+        eprintln!("== ops by kind (exclusive): {:.1} ms in the dispatch loop", total_ops.as_secs_f64() * 1e3);
         for (name, (d, n)) in ops.iter().take(40) {
             eprintln!(
                 "{:9.2} ms {n:>9} ops {:6.1} ns/op  {name}",
@@ -411,6 +415,7 @@ impl Interp {
             light_native: false,
             profile_natives: HashMap::new(),
             profile_ops: HashMap::new(),
+            profile_nested: std::time::Duration::ZERO,
             reentry_depth: 0,
             included: HashSet::new(),
             generators: Vec::new(),

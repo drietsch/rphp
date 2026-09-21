@@ -214,3 +214,18 @@ string building — at ~20 ns per op, and the allocator behind it
 (`malloc`/`free` were ~20 % of the samples). The `rphp` binary's global
 allocator is **mimalloc** now: 192 → 161 ms CPU per demo request,
 string-key reads with an interpolated key 854 → 603 ms.
+
+**Prod mode (2026-09-21 evening).** The same page with `APP_ENV=prod`
+(`/tmp/demo-*-prod`, `.env.local` with the secret): php 12.5 ms CPU per
+request (16 ms wall), rphp 53 ms (52 ms wall) — 4.2×. The `profile`
+feature's exclusive per-op-kind table (each op's own time, its nested ops
+subtracted) on that request: 1.08 M ops; `DoCall` 18.7 ms (the natives'
+own bodies), `IterNext` 18.7 ms at 1.2 µs a step (Twig renders through
+nested `yield from` generators: every step resumes a chain of parked
+frames through `run_until`), `DeclareClass` 5.7 ms at 9 µs a class,
+`InitNew` 4.4 ms (a `new` whose class autoloads pays the unit's link,
+`load_unit`, ~7 µs a file), the property ops at 40–110 ns, the plain
+ops at ~5 ns. Next in that order: generators resumed inside the dispatch
+loop (`continue 'frames` instead of a nested `run_until`), and the
+per-request loading — ~900 units linked and ~600 classes declared per
+request, php's opcache keeps both.

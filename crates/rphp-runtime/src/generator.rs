@@ -233,10 +233,12 @@ impl Interp {
         let mut frame = self.frames.pop().expect("generator frame");
         // Resume after the `Yield` op, with the sent value in `dst`.
         frame.pc += 1;
+        // The register window moves out whole (one copy, an allocation the
+        // resume hands back).
         let regs = self.stack.split_off(frame.base);
         let g = &mut self.generators[idx as usize];
-        g.frame = Some(frame);
         g.regs = regs;
+        g.frame = Some(frame);
         g.status = GenStatus::Suspended;
         g.resume_dst = Some(dst);
         g.current_key = key;
@@ -294,7 +296,7 @@ impl Interp {
             return Ok(());
         }
 
-        let (mut frame, regs, dst, throw) = {
+        let (mut frame, mut regs, dst, throw) = {
             let g = &mut self.generators[idx as usize];
             let frame = g.frame.take().expect("parked frame");
             let regs = std::mem::take(&mut g.regs);
@@ -303,7 +305,7 @@ impl Interp {
         };
         let base = self.stack.len();
         frame.base = base;
-        self.stack.extend(regs);
+        self.stack.append(&mut regs);
         if let Some(d) = dst {
             let abs = base + d as usize;
             if abs < self.stack.len() {

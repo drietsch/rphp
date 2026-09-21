@@ -725,16 +725,19 @@ impl Interp {
             func.profile.set((ops, calls + u64::from(pc == 0)));
         }
         #[cfg(feature = "profile")]
-        let mut prev_op: Option<(&'static str, std::time::Instant)> = None;
+        let mut prev_op: Option<(&'static str, std::time::Instant, std::time::Duration)> = None;
         loop {
             #[cfg(feature = "profile")]
             {
                 let (ops, calls) = func.profile.get();
                 func.profile.set((ops + 1, calls));
-                if let Some((kind, started)) = prev_op.take() {
+                if let Some((kind, started, nested_before)) = prev_op.take() {
+                    let inclusive = started.elapsed();
+                    let nested = self.profile_nested - nested_before;
                     let e = self.profile_ops.entry(kind.to_string()).or_default();
-                    e.0 += started.elapsed();
+                    e.0 += inclusive.saturating_sub(nested);
                     e.1 += 1;
+                    self.profile_nested = nested_before + inclusive;
                 }
             }
             if rphp_value::has_pending_destructors() {
@@ -746,7 +749,7 @@ impl Interp {
             #[cfg(feature = "profile")]
             {
                 if let Some(o) = code.get(pc) {
-                    prev_op = Some((op_kind_name(o), std::time::Instant::now()));
+                    prev_op = Some((op_kind_name(o), std::time::Instant::now(), self.profile_nested));
                 }
             }
             let Some(&op) = code.get(pc) else {

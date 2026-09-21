@@ -58,14 +58,14 @@ impl Interp {
         // the code returns earlier and is unaffected.
         let mut module = module;
         let main_id = module.main;
-        if let Some(Op::Ret { src }) = module.funcs[main_id as usize].code.last_mut() {
+        if let Some(Op::Ret { src }) = std::rc::Rc::make_mut(&mut module.funcs[main_id as usize]).code.last_mut() {
             *src = None;
         }
         let main = self.load_unit(module)?;
         let func = self.funcs[main as usize].clone();
         let (this, scope, static_class, symtab) = {
             let f = &self.frames[fi];
-            (f.this.clone(), f.scope, f.static_class, f.symtab.clone())
+            (f.this.clone(), f.scope, f.static_class, f.extra().symtab.clone())
         };
         // Sharing the caller's symbol table is what makes `eval` see and
         // update the caller's variables.

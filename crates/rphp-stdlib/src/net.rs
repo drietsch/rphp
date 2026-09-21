@@ -36,7 +36,7 @@ fn str_arg(v: &Value, func: &str, name: &str) -> Result<Vec<u8>, Unwind> {
         Value::Array(_) | Value::Object(_) | Value::Closure(_) | Value::Resource(_) => {
             Err(Unwind::type_error(format!(
                 "{func}(): Argument #1 (${name}) must be of type string, {} given",
-                v.type_name()
+                rphp_runtime::value_name(&v)
             )))
         }
         _ => Ok(v.to_php_bytes()),

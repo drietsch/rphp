@@ -896,6 +896,18 @@ thread_local! {
     static STRTOK: RefCell<Option<(Vec<u8>, usize)>> = const { RefCell::new(None) };
 }
 
+/// php's `RSHUTDOWN`: the `strtok` cursor is dropped and the locale
+/// returns to the process default.
+pub(crate) fn request_shutdown() {
+    STRTOK.with(|s| *s.borrow_mut() = None);
+    LOCALE.with(|l| {
+        let mut l = l.borrow_mut();
+        for (i, name) in l.iter_mut().enumerate() {
+            *name = String::from(if i == 2 { "C.UTF-8" } else { "C" });
+        }
+    });
+}
+
 /// `strtok(string $string, ?string $token = null): string|false`.
 pub(crate) fn strtok(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let token = if args.len() > 1 && !matches!(args[1], Value::Null) {

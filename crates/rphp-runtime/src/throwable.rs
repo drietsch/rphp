@@ -252,6 +252,9 @@ impl Interp {
     pub fn to_string(&mut self, v: &Value) -> Result<Str, Unwind> {
         match &*v.deref() {
             Value::Object(o) => self.object_to_string(o),
+            Value::Closure(_) => Err(Unwind::error(
+                "Object of class Closure could not be converted to string",
+            )),
             Value::Array(_) => {
                 self.warn("Array to string conversion")?;
                 Ok(Str::new(b"Array"))

@@ -464,6 +464,7 @@ impl Engine {
             Err(u) => interp.handle_top_level_unwind(u),
         };
         interp.finish_output();
+        request_shutdown(interp);
         code
     }
 
@@ -669,6 +670,14 @@ fn is_php_compile_fatal(code: &str, message: &str) -> bool {
             | codes::REDECLARED_FUNCTION
             | codes::REDECLARED_CLASS
     )
+}
+
+/// php's per-request module shutdown, after the output is flushed: the
+/// extensions forget what they kept for this request (an active session is
+/// written and closed first). A server's worker thread runs many requests,
+/// so every one ends here.
+pub fn request_shutdown(interp: &mut Interp) {
+    rphp_stdlib::request_shutdown(interp);
 }
 
 /// Evaluate PHP source through the full parse → compile → run pipeline on an

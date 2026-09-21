@@ -418,6 +418,50 @@ impl Interp {
         }
     }
 
+    // ---- inline caches --------------------------------------------------------
+
+    /// What a property site may cache for `o`'s class from `scope` after a
+    /// slow-path access of `name` succeeded: the declared slot, when the
+    /// property is plainly visible, unhooked, and (for a write) neither
+    /// readonly nor asymmetric — `None` leaves the site uncached. A lazy
+    /// object never fills the cache (its slots are not its own yet).
+    pub(crate) fn prop_cache_entry(
+        &self,
+        o: &Object,
+        name: &[u8],
+        scope: Option<u32>,
+        write: bool,
+    ) -> Option<crate::unit::IcSlot> {
+        use crate::unit::{FastTy, IcSlot};
+        if o.is_lazy() {
+            return None;
+        }
+        let class = self.class_of(o);
+        let key = self.prop_key(class, name, scope);
+        let p = class.prop(&key)?;
+        if p.hooks.is_some() || !matches!(self.access_of(class, p, scope), Access::Visible) {
+            return None;
+        }
+        let entry = if write {
+            if p.readonly || self.check_set_access(p, scope, "modify", name).is_some() {
+                return None;
+            }
+            IcSlot::PropWrite {
+                class: class.id,
+                scope,
+                slot: p.slot,
+                ty: FastTy::of(p.ty.as_ref())?,
+            }
+        } else {
+            IcSlot::PropRead {
+                class: class.id,
+                scope,
+                slot: p.slot,
+            }
+        };
+        Some(entry)
+    }
+
     // ---- entry points (`exec.rs` decodes the operand, we do the rest) -------
 
     /// `$obj->name` in a read context.
@@ -426,6 +470,14 @@ impl Interp {
             Value::Object(o) => {
                 let o = self.lazy_target(&o.clone(), Some(name))?;
                 self.read_prop(&o, name)
+            }
+            // A closure is an object without properties.
+            Value::Closure(_) => {
+                self.warn(&format!(
+                    "Undefined property: Closure::${}",
+                    String::from_utf8_lossy(name)
+                ))?;
+                Ok(Value::Null)
             }
             other => {
                 let msg = format!(
@@ -446,6 +498,10 @@ impl Interp {
                 let o = self.lazy_target(&o.clone(), Some(name))?;
                 self.write_prop(&o, name, v)
             }
+            Value::Closure(_) => Err(Unwind::error(format!(
+                "Cannot create dynamic property Closure::${}",
+                String::from_utf8_lossy(name)
+            ))),
             other => Err(Unwind::error(format!(
                 "Attempt to assign property \"{}\" on {}",
                 String::from_utf8_lossy(name),
@@ -566,7 +622,7 @@ impl Interp {
                     return Err(e);
                 }
                 if !initialized
-                    && p.ty.is_none()
+                    && (p.ty.is_none() || o.was_unset(name))
                     && self.call_magic(&o, Magic::Unset, name, None)?.is_some()
                 {
                     return Ok(());
@@ -650,6 +706,10 @@ impl Interp {
     pub(crate) fn prop_holder(&mut self, obj: &Value, name: &[u8]) -> Result<Object, Unwind> {
         match &*obj.deref() {
             Value::Object(o) => self.lazy_target(&o.clone(), Some(name)),
+            Value::Closure(_) => Err(Unwind::error(format!(
+                "Cannot create dynamic property Closure::${}",
+                String::from_utf8_lossy(name)
+            ))),
             other => Err(Unwind::error(format!(
                 "Attempt to assign property \"{}\" on {}",
                 String::from_utf8_lossy(name),
@@ -691,10 +751,11 @@ impl Interp {
                             return Ok(v);
                         }
                     }
-                    if p.ty.is_some() {
+                    if p.ty.is_some() && !o.was_unset(name) {
                         // A typed slot starts out uninitialized; reading it
                         // before the first write is an `Error` even when the
-                        // class has `__get`.
+                        // class has `__get`. One `unset()` emptied is
+                        // different: php hands its read to `__get`.
                         return Err(Unwind::error(format!(
                             "Typed property {}::${} must not be accessed before initialization",
                             self.classes[p.decl as usize].name_str(),
@@ -704,7 +765,33 @@ impl Interp {
                     // An *untyped* slot is only uninitialized after `unset()`,
                     // and that is exactly when php hands the read to `__get`.
                     if let Some(v) = self.call_magic(o, Magic::Get, name, None)? {
+                        // What `__get` answers for an unset typed property
+                        // must fit the declaration.
+                        if let Some(ty) = &p.ty {
+                            let ty = ty.clone();
+                            let decl = p.decl;
+                            let (scope, static_class) = (Some(decl), Some(o.class_id()));
+                            return match self.coerce_to_type(v.clone(), &ty, true, scope, static_class)? {
+                                crate::types::Coerced::Ok(v) => Ok(v),
+                                crate::types::Coerced::Mismatch => Err(Unwind::type_error(format!(
+                                    "Value of type {} returned from {}::__get() must be compatible with unset property {}::${} of type {}",
+                                    crate::ops::value_name(&v),
+                                    self.classes[decl as usize].name_str(),
+                                    self.classes[decl as usize].name_str(),
+                                    String::from_utf8_lossy(name),
+                                    self.type_display(&ty, Some(decl))
+                                ))),
+                            };
+                        }
                         return Ok(v);
+                    }
+                    if p.ty.is_some() {
+                        // Unset, and no `__get`: the same error.
+                        return Err(Unwind::error(format!(
+                            "Typed property {}::${} must not be accessed before initialization",
+                            self.classes[p.decl as usize].name_str(),
+                            String::from_utf8_lossy(name)
+                        )));
                     }
                 }
                 Access::Hidden => {
@@ -814,9 +901,10 @@ impl Interp {
         if let Some(e) = self.check_set_access(p, scope, "modify", name) {
             return Err(e);
         }
-        if !initialized && p.ty.is_none() {
-            // Untyped and uninitialized means `unset()` emptied the slot, and
-            // php sends the write to `__set`.
+        if !initialized && (p.ty.is_none() || o.was_unset(name)) {
+            // An `unset()` slot (any untyped uninitialized one is that) gets
+            // its write through `__set`; a never-initialized typed one does
+            // not.
             if self
                 .call_magic(o, Magic::Set, name, Some(v.clone()))?
                 .is_some()
@@ -957,8 +1045,9 @@ impl Interp {
                 Access::Visible => match o.get(name) {
                     Some(v) if !v.deref().is_uninit() => Stored::Present(v),
                     // A typed slot that was never written is simply not set —
-                    // php does not consult `__isset` for it.
-                    _ if p.ty.is_some() => Stored::NotSet,
+                    // php does not consult `__isset` for it; one `unset()`
+                    // emptied is asked about like an untyped one.
+                    _ if p.ty.is_some() && !o.was_unset(name) => Stored::NotSet,
                     _ => Stored::Absent,
                 },
                 Access::Hidden => Stored::Absent,

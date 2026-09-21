@@ -405,7 +405,7 @@ pub(crate) fn http_build_query(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
         other => {
             return Err(Unwind::type_error(format!(
                 "http_build_query(): Argument #1 ($data) must be of type array, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     }

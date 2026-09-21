@@ -149,6 +149,12 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     STATE.with(|s| f(&mut s.borrow_mut()))
 }
 
+/// php's `RSHUTDOWN`: the runtime settings (`mb_internal_encoding()` and
+/// friends) fall back to the ini defaults for the next request.
+pub(crate) fn request_shutdown() {
+    with_state(|s| *s = State::default());
+}
+
 /// Forget every runtime setting (tests).
 #[cfg(test)]
 pub(crate) fn reset_state() {
@@ -297,7 +303,7 @@ fn str_arg(v: &Value, func: &str, n: usize, name: &str) -> Result<Vec<u8>, Unwin
     match v.deref().as_ref() {
         Value::Array(_) | Value::Object(_) | Value::Closure(_) | Value::Resource(_) => Err(Unwind::type_error(format!(
             "{func}(): Argument #{n} (${name}) must be of type string, {} given",
-            v.type_name()
+            rphp_runtime::value_name(&v)
         ))),
         _ => Ok(bytes(v)),
     }
@@ -1184,7 +1190,7 @@ fn mb_convert_encoding(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         }
         Value::Object(_) | Value::Closure(_) => Err(Unwind::type_error(format!(
             "mb_convert_encoding(): Argument #1 ($string) must be of type array|string, {} given",
-            args[0].type_name()
+            rphp_runtime::value_name(&args[0])
         ))),
         v => match convert_detect(ctx, &bytes(v), to, &from)? {
             Some(out) => Ok(str_value(out)),
@@ -1428,7 +1434,7 @@ fn mb_convert_variables(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 fn conversion_map(func: &str, v: &Value) -> Result<Vec<u32>, Unwind> {
     let v = v.deref();
     let Value::Array(a) = v.as_ref() else {
-        return Err(Unwind::type_error(format!("{func}(): Argument #2 ($map) must be of type array, {} given", v.type_name())));
+        return Err(Unwind::type_error(format!("{func}(): Argument #2 ($map) must be of type array, {} given", rphp_runtime::value_name(&v))));
     };
     if a.len() % 4 != 0 {
         return Err(Unwind::value_error(format!("{func}(): Argument #2 ($map) must have a multiple of 4 elements")));
@@ -1685,7 +1691,7 @@ fn mb_check_encoding(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         }
         Some(Value::Object(_)) | Some(Value::Closure(_)) => Err(Unwind::type_error(format!(
             "mb_check_encoding(): Argument #1 ($value) must be of type array|string|null, {} given",
-            args[0].type_name()
+            rphp_runtime::value_name(&args[0])
         ))),
         Some(v) => Ok(Value::Bool(enc.check(&bytes(&v)))),
     }

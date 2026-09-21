@@ -16,7 +16,7 @@ use rphp_value::{Closure, Object, PhpRef, Value};
 
 use crate::native_args::NamedFault;
 use crate::class::{MethodBody, MethodDef};
-use crate::frame::{CallTarget, Frame, FrameKind, PendingCall, RetTarget};
+use crate::frame::{FrameExtra, CallTarget, Frame, FrameKind, PendingCall, RetTarget};
 use crate::registry::{Ctx, NativeId, NativeResult, Unwind};
 use crate::symtab::Symtab;
 use crate::unit::FuncRt;
@@ -41,6 +41,16 @@ pub enum Callable {
         method: Rc<MethodDef>,
         this: Option<Object>,
     },
+}
+
+/// What [`Interp::coerce_object_params`] decides for one object argument.
+enum ObjectFit {
+    /// The parameter takes the object as it is.
+    Accept,
+    /// A `string` parameter: the object's `__toString()` stands in.
+    ToString(Object),
+    /// php's `TypeError`.
+    Refuse,
 }
 
 impl Interp {
@@ -88,7 +98,6 @@ impl Interp {
             argc: args.len(),
             named: Vec::new(),
             new_obj: None,
-            name: func.f.name_bytes.clone(),
         };
         self.activate(pending, kind, ret, symtab, None)
     }
@@ -190,12 +199,12 @@ impl Interp {
         // from the callee's RECV, so the callee shows in the trace).
         let required = func.f.required_params();
         let passed_total = self.stack.len() - args_base;
-        let (caller_file, caller_line) = self.caller_site();
         let mut arity_error: Option<Unwind> = None;
         for i in 0..required.min(declared) {
             let missing = i >= argc && (i >= passed_total || self.stack[args_base + i].is_uninit());
             if missing {
                 let fname = self.callable_display_name(&func);
+                let (caller_file, caller_line) = self.caller_site();
                 arity_error = Some(if used_named {
                     Unwind::argument_count_error(format!(
                         "{fname}(): Argument #{} (${}) not passed",
@@ -239,37 +248,42 @@ impl Interp {
         // Parameter types are checked under the *caller's* strict_types; a
         // call from a native (re-entry) is coercive and has no `called in`.
         let (caller_strict, caller_site) = match self.frames.last() {
-            Some(f) if f.is_user() => (f.strict, Some((self.frame_file(f), self.frame_line(f)))),
+            Some(f) if f.is_user() => (f.strict, Some(self.frames.len() - 1)),
             _ => (false, None),
         };
         let strict = func.f.flags.contains(FnFlags::STRICT_TYPES);
+        // A closure body binds *its own* statics (php gives each closure
+        // object a fresh set); everything else uses the function's.
+        let statics = closure
+            .as_ref()
+            .filter(|_| !func.f.statics.is_empty())
+            .map(|c| c.statics(func.f.statics.len()));
+        let extra = if extra_args.is_empty() && extra_named.is_empty() && symtab.is_none() && statics.is_none() {
+            None
+        } else {
+            Some(Box::new(FrameExtra {
+                extra_args,
+                extra_named,
+                symtab,
+                statics,
+                ..Default::default()
+            }))
+        };
         let frame = Frame {
             kind,
             func: Some(func.clone()),
             base: args_base,
             pc: 0,
             argc: argc.max(if used_named { passed_total } else { 0 }),
-            extra_args,
-            extra_named,
             this,
             scope,
             static_class,
             ret,
-            symtab,
             pending: Vec::new(),
             silence_base: self.silence,
             strict,
             native: None,
-            ref_cells: Vec::new(),
-            include_kind: None,
-            iters: Vec::new(),
-            generator: None,
-            // A closure body binds *its own* statics (php gives each closure
-            // object a fresh set); everything else uses the function's.
-            statics: closure
-                .as_ref()
-                .filter(|_| !func.f.statics.is_empty())
-                .map(|c| c.statics(func.f.statics.len())),
+            extra,
         };
         self.frames.push(frame);
         // E8: calling a generator function evaluates its arguments and then
@@ -365,7 +379,7 @@ impl Interp {
             Err(NamedFault::Inside(u, extra)) => {
                 let silence = self.silence;
                 let mut frame = Frame::native(id, uninit_as_null(&args), silence);
-                frame.extra_named = extra;
+                frame.extra_mut().extra_named = extra;
                 self.frames.push(frame);
                 let r = self.locate_fault(Err(u));
                 self.frames.pop();
@@ -433,7 +447,7 @@ impl Interp {
         if !f.accepts(args.len()) {
             return Err(Unwind::argument_count_error(f.arity_message(args.len())));
         }
-        self.coerce_string_params(f.name, args)?;
+        self.coerce_object_params(f.name, args)?;
         let mut cells: Vec<(usize, PhpRef)> = Vec::new();
         for (i, a) in args.iter_mut().enumerate() {
             if let Value::Ref(r) = a {
@@ -447,9 +461,11 @@ impl Interp {
         let copy = self.frame_args_copy(args);
         let mut frame = Frame::native(id, copy, silence);
         if !cells.is_empty() {
-            frame.ref_cells = cells.clone();
+            frame.extra_mut().ref_cells = cells.clone();
         }
-        frame.extra_named = extra_named;
+        if !extra_named.is_empty() {
+            frame.extra_mut().extra_named = extra_named;
+        }
         self.frames.push(frame);
         let r = {
             let mut ctx = Ctx(self);
@@ -465,69 +481,103 @@ impl Interp {
         r
     }
 
-    /// php's argument parser calls `__toString()` when an object reaches a
-    /// parameter declared `string` — `sprintf('%s', $alias)`,
-    /// `strlen($stringable)` — and leaves it alone for `mixed`, `array|string`
-    /// and every other type. Which positions those are, per native, is the
-    /// generated [`crate::string_params::STRING_PARAMS`] table; this applies
-    /// it before the handler runs, so a handler's own `string` conversion
-    /// never meets an object. An object without `__toString` is left for the
-    /// handler to refuse with its own `TypeError`.
+    /// php's argument parser on an object argument: a parameter declared
+    /// `string` (a union with it included) takes `__toString()` —
+    /// `sprintf('%s', $alias)`, `strlen($stringable)` — a class or
+    /// interface part takes an instance, `object`/`mixed`/`callable` take
+    /// any object, `iterable` a Traversable, and every other declared type
+    /// (`int`, `array`, `?bool`, …) refuses the object with php's
+    /// `TypeError`. A closure is an object of class `Closure` here. This
+    /// runs before the handler, so a handler's own conversions never meet
+    /// an object they cannot take; a native the manifest does not describe
+    /// is left to its handler.
     ///
     /// `key` is the native's name, or `class::method` for a method; the
     /// lookup only happens when an argument is an object at all.
-    pub(crate) fn coerce_string_params(&mut self, key: &str, args: &mut [Value]) -> Result<(), Unwind> {
-        if !args.iter().any(|a| matches!(&*a.deref(), Value::Object(_))) {
+    pub(crate) fn coerce_object_params(&mut self, key: &str, args: &mut [Value]) -> Result<(), Unwind> {
+        if !args.iter().any(|a| matches!(&*a.deref(), Value::Object(_) | Value::Closure(_))) {
             return Ok(());
         }
         let lower = key.to_ascii_lowercase();
-        let Ok(at) = crate::string_params::STRING_PARAMS.binary_search_by(|(n, _, _)| (*n).cmp(lower.as_str())) else {
+        // A handler that parses its object itself, more loosely than its
+        // stub declares (php takes any object here and throws its own
+        // `InvalidArgumentException` for the wrong kind).
+        if matches!(
+            lower.as_str(),
+            "recursiveiteratoriterator::__construct" | "recursivetreeiterator::__construct"
+        ) {
+            return Ok(());
+        }
+        let Some(row) = crate::native_args::params_of(&lower) else {
             return Ok(());
         };
-        let (_, mask, params) = crate::string_params::STRING_PARAMS[at];
-        let variadic_from = (mask >> 56) as usize; // index + 1, 0 = none
         for (i, a) in args.iter_mut().enumerate() {
-            let flagged = (i < 48 && mask & (1 << i) != 0) || (variadic_from != 0 && i + 1 >= variadic_from);
-            if !flagged {
+            let v = a.deref().into_owned();
+            if !matches!(v, Value::Object(_) | Value::Closure(_)) {
                 continue;
             }
-            let Value::Object(o) = &*a.deref() else {
+            // The parameter as declared; a variadic one covers the rest,
+            // and php names such a position by number alone.
+            let param = row.get(i).or_else(|| row.last().filter(|p| p.2 == Some("...")));
+            let Some((name, Some(ty), default)) = param else {
                 continue;
             };
-            let o = o.clone();
-            // The parameter as it is declared. A variadic position takes
-            // the variadic parameter's name.
-            let (name, ty) = params
-                .iter()
-                .find(|(pos, _, _)| usize::from(*pos) == i)
-                .or_else(|| params.last())
-                .map(|(_, n, t)| (*n, *t))
-                .unwrap_or(("value", "string"));
-            // A class member of the union (`Dom\Node|string`,
-            // `Throwable|string|null`) takes an instance as it is.
-            let accepted = ty.trim_start_matches('?').split('|').any(|part| {
-                let part = part.trim();
-                part.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-                    && self.class_by_name(part.as_bytes()).is_some_and(|cid| self.object_instanceof(&o, cid))
-            });
-            if accepted {
-                continue;
+            match self.object_param_fit(&v, ty) {
+                ObjectFit::Accept => {}
+                ObjectFit::ToString(o) => *a = Value::Str(self.object_to_string(&o)?),
+                ObjectFit::Refuse => {
+                    let name = if *default == Some("...") {
+                        String::new()
+                    } else {
+                        format!(" (${name})")
+                    };
+                    return Err(Unwind::type_error(format!(
+                        "{key}(): Argument #{}{name} must be of type {ty}, {} given",
+                        i + 1,
+                        crate::ops::value_name(&v)
+                    )));
+                }
             }
-            if !self
-                .class_of(&o)
-                .magic
-                .contains(crate::class::MagicFlags::TOSTRING)
-            {
-                // php's own refusal.
-                return Err(Unwind::type_error(format!(
-                    "{key}(): Argument #{} (${name}) must be of type {ty}, {} given",
-                    i + 1,
-                    self.class_of(&o).name_str()
-                )));
-            }
-            *a = Value::Str(self.object_to_string(&o)?);
         }
         Ok(())
+    }
+
+    /// How an object argument meets a declared parameter type (see
+    /// [`Interp::coerce_object_params`]).
+    fn object_param_fit(&self, v: &Value, ty: &str) -> ObjectFit {
+        let mut string = false;
+        for part in ty.split('|') {
+            let part = part.trim().trim_start_matches('?');
+            match part {
+                "mixed" | "object" | "callable" | "self" | "static" => return ObjectFit::Accept,
+                "string" => string = true,
+                "iterable" => {
+                    if let Value::Object(o) = v {
+                        if self.is_traversable(o) {
+                            return ObjectFit::Accept;
+                        }
+                    }
+                }
+                p if p.starts_with(|c: char| c.is_ascii_uppercase()) || p.contains('\\') => {
+                    let cid = self.class_of_value(v);
+                    let target = self.class_by_name(p.trim_start_matches('\\').as_bytes());
+                    if let (Some(cid), Some(target)) = (cid, target) {
+                        if self.instanceof_class(cid, target) {
+                            return ObjectFit::Accept;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if string {
+            if let Value::Object(o) = v {
+                if self.has_to_string(o) {
+                    return ObjectFit::ToString(o.clone());
+                }
+            }
+        }
+        ObjectFit::Refuse
     }
 
     /// Invoke a native method over a staged window (`DoCall` on a
@@ -563,7 +613,7 @@ impl Interp {
                 Err(NamedFault::Inside(u, extra)) => {
                     let silence = self.silence;
                     let mut frame = Frame::native_method(m, this, uninit_as_null(&args), silence);
-                    frame.extra_named = extra;
+                    frame.extra_mut().extra_named = extra;
                     self.frames.push(frame);
                     let r = self.locate_fault(Err(u));
                     self.frames.pop();
@@ -592,7 +642,7 @@ impl Interp {
             Err(NamedFault::Inside(u, extra)) => {
                 let silence = self.silence;
                 let mut frame = Frame::native_method(m, this, uninit_as_null(&args), silence);
-                frame.extra_named = extra;
+                frame.extra_mut().extra_named = extra;
                 self.frames.push(frame);
                 let r = self.locate_fault(Err(u));
                 self.frames.pop();
@@ -639,13 +689,13 @@ impl Interp {
             );
             return Err(Unwind::argument_count_error(nm.arity_message(&display, args.len())));
         }
-        if args.iter().any(|a| matches!(&*a.deref(), Value::Object(_))) {
+        if args.iter().any(|a| matches!(&*a.deref(), Value::Object(_) | Value::Closure(_))) {
             let key = format!(
                 "{}::{}",
                 self.classes[m.decl as usize].name_str(),
                 String::from_utf8_lossy(&m.name)
             );
-            self.coerce_string_params(&key, args)?;
+            self.coerce_object_params(&key, args)?;
         }
         let mut cells: Vec<(usize, PhpRef)> = Vec::new();
         for (i, a) in args.iter_mut().enumerate() {
@@ -660,9 +710,11 @@ impl Interp {
         let copy = self.frame_args_copy(args);
         let mut frame = Frame::native_method(m, this.clone(), copy, silence);
         if !cells.is_empty() {
-            frame.ref_cells = cells.clone();
+            frame.extra_mut().ref_cells = cells.clone();
         }
-        frame.extra_named = extra_named;
+        if !extra_named.is_empty() {
+            frame.extra_mut().extra_named = extra_named;
+        }
         self.frames.push(frame);
         let r = {
             let mut ctx = Ctx(self);
@@ -842,7 +894,6 @@ impl Interp {
             argc: args.len(),
             named,
             new_obj: None,
-            name: func.f.name_bytes.clone(),
         };
         let symtab = if func.f.flags.contains(FnFlags::NEEDS_SYMTAB) {
             Some(Symtab::new())

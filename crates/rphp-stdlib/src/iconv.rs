@@ -295,7 +295,7 @@ fn str_arg(v: &Value, func: &str, n: usize, name: &str) -> Result<Vec<u8>, Unwin
         Value::Array(_) | Value::Object(_) | Value::Closure(_) | Value::Resource(_) => {
             Err(Unwind::type_error(format!(
                 "{func}(): Argument #{n} (${name}) must be of type string, {} given",
-                v.type_name()
+                rphp_runtime::value_name(&v)
             )))
         }
         _ => Ok(v.to_php_bytes()),
@@ -578,7 +578,7 @@ fn iconv_mime_encode(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             _ => {
                 return Err(Unwind::type_error(format!(
                     "{who}(): Argument #3 ($options) must be of type array, {} given",
-                    args[2].type_name()
+                    rphp_runtime::value_name(&args[2])
                 )))
             }
         },

@@ -14,17 +14,70 @@
 //! that needs `__debugInfo` support in `var.rs`/`output.rs`.
 
 use rphp_runtime::{nm, ClassFlags, Ctx, Interp, NativeMethod, NativeResult, Registry, Unwind, Visibility};
-use rphp_value::{Object, Payload, Value, WeakObject};
+use rphp_value::{Closure, Object, Payload, Value, WeakClosure, WeakObject};
 
 // ---- payloads ----------------------------------------------------------
 
 /// A `WeakReference`'s target.
 struct WeakRefState(WeakObject);
 
+/// A `WeakMap` key: an object or a closure (an object to php), held
+/// strongly while it is an argument and weakly once stored.
+#[derive(Clone)]
+enum MapKey {
+    Object(Object),
+    Closure(Closure),
+}
+
+impl MapKey {
+    fn downgrade(&self) -> WeakKey {
+        match self {
+            MapKey::Object(o) => WeakKey::Object(o.downgrade()),
+            MapKey::Closure(c) => WeakKey::Closure(c.downgrade()),
+        }
+    }
+
+    fn value(&self) -> Value {
+        match self {
+            MapKey::Object(o) => Value::Object(o.clone()),
+            MapKey::Closure(c) => Value::Closure(c.clone()),
+        }
+    }
+
+    fn id(&self) -> u32 {
+        match self {
+            MapKey::Object(o) => o.id(),
+            MapKey::Closure(c) => c.id(),
+        }
+    }
+}
+
+enum WeakKey {
+    Object(WeakObject),
+    Closure(WeakClosure),
+}
+
+impl WeakKey {
+    fn upgrade(&self) -> Option<MapKey> {
+        match self {
+            WeakKey::Object(w) => w.upgrade().map(MapKey::Object),
+            WeakKey::Closure(w) => w.upgrade().map(MapKey::Closure),
+        }
+    }
+
+    fn is(&self, key: &MapKey) -> bool {
+        match (self, key) {
+            (WeakKey::Object(w), MapKey::Object(o)) => w.ptr_eq_obj(o),
+            (WeakKey::Closure(w), MapKey::Closure(c)) => w.ptr_eq_closure(c),
+            _ => false,
+        }
+    }
+}
+
 /// A `WeakMap`'s entries, in insertion order. The key is weak; the value is
 /// held strongly, as php does.
 #[derive(Default)]
-struct WeakMapState(Vec<(WeakObject, Value)>);
+struct WeakMapState(Vec<(WeakKey, Value)>);
 
 impl WeakMapState {
     /// Drop entries whose key has been collected. php does this eagerly from
@@ -34,9 +87,9 @@ impl WeakMapState {
         self.0.retain(|(k, _)| k.upgrade().is_some());
     }
 
-    /// The index of `obj`'s entry, if present.
-    fn find(&self, obj: &Object) -> Option<usize> {
-        self.0.iter().position(|(k, _)| k.ptr_eq_obj(obj))
+    /// The index of `key`'s entry, if present.
+    fn find(&self, key: &MapKey) -> Option<usize> {
+        self.0.iter().position(|(k, _)| k.is(key))
     }
 }
 
@@ -69,19 +122,24 @@ fn this(o: Option<&Object>) -> Result<&Object, Unwind> {
 }
 
 /// A `WeakMap` key argument: php accepts objects only.
-fn key_arg(v: &Value) -> Result<Object, Unwind> {
+fn key_arg(v: &Value) -> Result<MapKey, Unwind> {
     match &*v.deref() {
-        Value::Object(o) => Ok(o.clone()),
+        Value::Object(o) => Ok(MapKey::Object(o.clone())),
+        Value::Closure(c) => Ok(MapKey::Closure(c.clone())),
         _ => Err(Unwind::type_error("WeakMap key must be an object")),
     }
 }
 
 /// php's `Object <Class>#<handle> not contained in WeakMap`.
-fn not_contained(ctx: &Ctx, o: &Object) -> Unwind {
+fn not_contained(ctx: &Ctx, key: &MapKey) -> Unwind {
+    let class = match key {
+        MapKey::Object(o) => ctx.class_name_of(o),
+        MapKey::Closure(_) => "Closure".to_string(),
+    };
     Unwind::error(format!(
         "Object {}#{} not contained in WeakMap",
-        ctx.class_name_of(o),
-        o.id()
+        class,
+        key.id()
     ))
 }
 
@@ -222,7 +280,7 @@ fn weakmap_get_iterator(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> N
         let out: Vec<(Value, Value)> = s
             .0
             .iter()
-            .filter_map(|(k, v)| k.upgrade().map(|k| (Value::Object(k), v.clone())))
+            .filter_map(|(k, v)| k.upgrade().map(|k| (k.value(), v.clone())))
             .collect();
         out
     });

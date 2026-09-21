@@ -99,6 +99,11 @@ impl Interp {
     ) -> Result<Value, Unwind> {
         let o = match obj.deref().into_owned() {
             Value::Object(o) => o,
+            // A closure clones to a new closure object over the same body
+            // and captures.
+            Value::Closure(c) => {
+                return Ok(Value::Closure(self.new_closure(c.func(), c.captures().to_vec())));
+            }
             other => {
                 return Err(Unwind::type_error(format!(
                     "clone(): Argument #1 ($object) must be of type object, {} given",
@@ -204,6 +209,7 @@ impl Interp {
         };
         let slots = o.with_data(|d| d.slots().iter().map(unwrap).collect());
         let copy = Object::new(o.class_id(), id, layout, slots);
+        copy.copy_unset_marks_from(o);
         if self.class_of(o).magic.contains(MagicFlags::DESTRUCT) {
             copy.add_flags(rphp_value::ObjFlags::HAS_DESTRUCTOR);
             self.destructibles.push(copy.downgrade());

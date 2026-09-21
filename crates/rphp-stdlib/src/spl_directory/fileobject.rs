@@ -973,7 +973,7 @@ fn fo_fputcsv(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeRe
     if !matches!(fields, Value::Array(_)) {
         return Err(Unwind::type_error(format!(
             "SplFileObject::fputcsv(): Argument #1 ($fields) must be of type array, {} given",
-            fields.type_name()
+            rphp_runtime::value_name(&fields)
         )));
     }
     let (delim, enc, esc) = csv_control(ctx, o, "fputcsv", args, 1)?;

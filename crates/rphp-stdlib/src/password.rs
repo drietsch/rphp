@@ -432,7 +432,7 @@ fn options_arg(value: Option<&Value>, func: &str) -> Result<Option<Array>, Unwin
         Value::Array(a) => Ok(Some(a.clone())),
         other => Err(Unwind::type_error(format!(
             "{func}(): Argument #3 ($options) must be of type array, {} given",
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }

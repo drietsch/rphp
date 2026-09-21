@@ -176,6 +176,13 @@ fn header_remove(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Null)
 }
 
+/// php's `php_session_remove_cookie`: drop every `Set-Cookie: <name>=`
+/// line already in the list, so the session cookie is sent once.
+pub(crate) fn remove_cookie_lines(ctx: &mut Ctx, name: &str) {
+    let prefix = format!("Set-Cookie: {name}=");
+    ctx.head.lock().unwrap().headers.retain(|(_, line)| !line.starts_with(&prefix));
+}
+
 /// `headers_list(): array` — the field lines, in the order they were set.
 fn headers_list(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
     let mut out = Array::new();

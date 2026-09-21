@@ -260,7 +260,7 @@ fn hook_kind(ctx: &Ctx, args: &[Value], who: &str) -> Result<bool, Unwind> {
     }
     Err(Unwind::type_error(format!(
         "ReflectionProperty::{who}(): Argument #1 ($type) must be of type PropertyHookType, {} given",
-        v.type_name()
+        rphp_runtime::value_name(&v)
     )))
 }
 
@@ -753,7 +753,7 @@ fn const_to_string(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Native
         Some(t) => t,
         None => match &value {
             Value::Object(obj) => String::from_utf8_lossy(obj.layout().class_name()).into_owned(),
-            other => other.type_name().to_string(),
+            other => rphp_runtime::value_name(&other).to_string(),
         },
     };
     out.push_str(&ty);

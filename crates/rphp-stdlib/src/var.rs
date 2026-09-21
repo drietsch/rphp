@@ -479,7 +479,7 @@ pub(crate) fn unserialize(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         let Value::Array(opts) = opts else {
             return Err(Unwind::type_error(format!(
                 "unserialize(): Argument #2 ($options) must be of type array, {} given",
-                opts.type_name()
+                rphp_runtime::value_name(&opts)
             )));
         };
         if let Some(v) = opts.get_deref(&ArrayKey::str(b"allowed_classes")) {
@@ -490,7 +490,7 @@ pub(crate) fn unserialize(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
                 other => {
                     return Err(Unwind::type_error(format!(
                         "unserialize(): Option \"allowed_classes\" must be of type array|bool, {} given",
-                        other.type_name()
+                        rphp_runtime::value_name(&other)
                     )))
                 }
             };
@@ -499,7 +499,7 @@ pub(crate) fn unserialize(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             let Value::Int(d) = v else {
                 return Err(Unwind::type_error(format!(
                     "unserialize(): Option \"max_depth\" must be of type int, {} given",
-                    v.type_name()
+                    rphp_runtime::value_name(&v)
                 )));
             };
             if d < 0 {

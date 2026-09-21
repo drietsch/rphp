@@ -2,6 +2,7 @@
 //! time) and the v2 [`CompiledUnit`] (one file or `eval` string, declared
 //! incrementally into the interpreter, plan E7).
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use rphp_value::{Value, Vis};
@@ -13,7 +14,10 @@ use crate::{vis_to_value, Class, ClassDecl, ClassId, FuncId, Function, Visibilit
 /// compiler/runtime pair.)
 #[derive(Clone, Debug)]
 pub struct Module {
-    pub funcs: Vec<Function>,
+    /// Every compiled function, shared: an interpreter links a unit by
+    /// taking handles on these (a server's worker links the same cached
+    /// unit for every request).
+    pub funcs: Vec<Rc<Function>>,
     /// Declared classes, indexed by [`ClassId`].
     pub classes: Vec<Class>,
     /// The synthetic top-level `{main}` function id.
@@ -38,7 +42,7 @@ impl Module {
         let hoist_funcs = (0..funcs.len() as FuncId).filter(|&i| i != main).collect();
         let hoist_classes = (0..classes.len() as ClassId).collect();
         Module {
-            funcs,
+            funcs: funcs.into_iter().map(Rc::new).collect(),
             classes,
             main,
             hoist_funcs,

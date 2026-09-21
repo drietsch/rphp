@@ -529,7 +529,7 @@ fn values_array(func: &str, v: &Value) -> Result<Vec<Value>, Unwind> {
         Value::Array(a) => Ok(a.iter().map(|(_, v)| v.deref().into_owned()).collect()),
         other => Err(Unwind::type_error(format!(
             "{func}(): Argument #2 ($values) must be of type array, {} given",
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }

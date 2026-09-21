@@ -391,6 +391,16 @@ fn is_user_defined(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Native
     Ok(Value::Bool(i.func.is_some()))
 }
 
+/// `ReflectionFunctionAbstract::getStaticVariables(): array` — empty for a
+/// native.
+fn get_static_variables(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
+    let i = recv(ctx, o)?;
+    match &i.func {
+        Some(f) => Ok(Value::Array(ctx.function_static_variables(f, i.closure.as_ref())?)),
+        None => Ok(Value::empty_array()),
+    }
+}
+
 /// `ReflectionFunctionAbstract::getFileName(): string|false`
 fn get_file_name(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     match recv(ctx, o)?.func {
@@ -965,7 +975,7 @@ fn method_get_closure(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> 
                 Value::Int(i64::from(m.decl)),
                 Value::Int(i64::from(called)),
             ];
-            Ok(Value::Closure(Closure::new(f.id, caps)))
+            Ok(Value::Closure(ctx.new_closure(f.id, caps)))
         }
         // A native method has no function id, so the engine's own
         // `Closure::fromCallable` path builds the wrapper.
@@ -1748,6 +1758,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .method("isInternal", nm!(0, Some(0), is_internal))
         .method("isUserDefined", nm!(0, Some(0), is_user_defined))
         .method("getFileName", nm!(0, Some(0), get_file_name))
+        .method("getStaticVariables", nm!(0, Some(0), get_static_variables))
         .method("getStartLine", nm!(0, Some(0), get_start_line))
         .method("getEndLine", nm!(0, Some(0), get_end_line))
         .method("getDocComment", nm!(0, Some(0), get_doc_comment))

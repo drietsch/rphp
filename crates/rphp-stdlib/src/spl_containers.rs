@@ -498,17 +498,45 @@ fn magic_unserialize(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nat
 // object identity over that list; the iterator cursor is the list index and
 // lives in the hidden [`ContainerState::pos`].
 
+/// An entry's key: an object — a closure included, which is an object to
+/// php though a value of its own here — compared by handle.
+#[derive(Clone)]
+struct SosKey(Value);
+
+impl SosKey {
+    fn of(v: &Value) -> Option<SosKey> {
+        match v {
+            Value::Object(_) | Value::Closure(_) => Some(SosKey(v.clone())),
+            _ => None,
+        }
+    }
+
+    /// The object handle (`spl_object_id`).
+    fn id(&self) -> u32 {
+        match &self.0 {
+            Value::Object(o) => o.id(),
+            Value::Closure(c) => c.id(),
+            _ => 0,
+        }
+    }
+
+    fn same(&self, other: &SosKey) -> bool {
+        self.id() == other.id()
+    }
+
+    fn value(&self) -> Value {
+        self.0.clone()
+    }
+}
+
 /// The entry list as `(object, info)` pairs.
-fn sos_load(o: &Object) -> Vec<(Object, Value)> {
+fn sos_load(o: &Object) -> Vec<(SosKey, Value)> {
     let entries = storage(o);
     entries
         .values()
         .filter_map(|v| match &*v.deref() {
             Value::Array(e) => {
-                let obj = match e.get_deref(&ArrayKey::str(b"obj")) {
-                    Some(Value::Object(x)) => x,
-                    _ => return None,
-                };
+                let obj = SosKey::of(&e.get_deref(&ArrayKey::str(b"obj"))?)?;
                 let inf = e.get_deref(&ArrayKey::str(b"inf")).unwrap_or(Value::Null);
                 Some((obj, inf))
             }
@@ -518,11 +546,11 @@ fn sos_load(o: &Object) -> Vec<(Object, Value)> {
 }
 
 /// Write the entry list back in php's shape.
-fn sos_store(o: &Object, items: &[(Object, Value)]) {
+fn sos_store(o: &Object, items: &[(SosKey, Value)]) {
     let mut a = Array::new();
     for (obj, inf) in items {
         let mut e = Array::new();
-        e.set(ArrayKey::str(b"obj"), Value::Object(obj.clone()));
+        e.set(ArrayKey::str(b"obj"), obj.value());
         e.set(ArrayKey::str(b"inf"), inf.clone());
         a.push(Value::Array(e));
     }
@@ -530,9 +558,9 @@ fn sos_store(o: &Object, items: &[(Object, Value)]) {
 }
 
 /// An `$object` argument (every `SplObjectStorage` entry point takes one).
-fn sos_object_arg(who: &str, v: &Value) -> Result<Object, Unwind> {
+fn sos_object_arg(who: &str, v: &Value) -> Result<SosKey, Unwind> {
     match &*v.deref() {
-        Value::Object(o) => Ok(o.clone()),
+        v @ (Value::Object(_) | Value::Closure(_)) => Ok(SosKey(v.clone())),
         other => Err(Unwind::type_error(format!(
             "SplObjectStorage::{who}(): Argument #1 ($object) must be of type object, {} given",
             rphp_runtime::value_name(other)
@@ -546,7 +574,7 @@ fn sos_offset_set(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Native
     let key = sos_object_arg("offsetSet", &args[0])?;
     let info = args.get(1).map(|v| v.deref().into_owned()).unwrap_or(Value::Null);
     let mut items = sos_load(o);
-    let found = items.iter().position(|(k, _)| k.ptr_eq(&key));
+    let found = items.iter().position(|(k, _)| k.same(&key));
     match found {
         Some(i) => items[i].1 = info,
         None => items.push((key, info)),
@@ -560,7 +588,7 @@ fn sos_offset_get(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Native
     let o = this(o)?;
     let key = sos_object_arg("offsetGet", &args[0])?;
     let items = sos_load(o);
-    match items.iter().find(|(k, _)| k.ptr_eq(&key)) {
+    match items.iter().find(|(k, _)| k.same(&key)) {
         Some((_, info)) => Ok(info.clone()),
         None => Err(Unwind::exception("UnexpectedValueException", "Object not found")),
     }
@@ -570,7 +598,7 @@ fn sos_offset_get(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Native
 fn sos_offset_exists(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let key = sos_object_arg("offsetExists", &args[0])?;
-    Ok(Value::Bool(sos_load(o).iter().any(|(k, _)| k.ptr_eq(&key))))
+    Ok(Value::Bool(sos_load(o).iter().any(|(k, _)| k.same(&key))))
 }
 
 /// `offsetUnset(object $object): void`
@@ -578,7 +606,7 @@ fn sos_offset_unset(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nati
     let o = this(o)?;
     let key = sos_object_arg("offsetUnset", &args[0])?;
     let mut items = sos_load(o);
-    let found = items.iter().position(|(k, _)| k.ptr_eq(&key));
+    let found = items.iter().position(|(k, _)| k.same(&key));
     if let Some(i) = found {
         items.remove(i);
         sos_store(o, &items);
@@ -626,7 +654,7 @@ fn sos_contains(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Native
 
 /// The `SplObjectStorage` argument `addAll`/`removeAll`/`removeAllExcept`
 /// take.
-fn sos_storage_arg(ctx: &Ctx, who: &str, v: &Value) -> Result<Vec<(Object, Value)>, Unwind> {
+fn sos_storage_arg(ctx: &Ctx, who: &str, v: &Value) -> Result<Vec<(SosKey, Value)>, Unwind> {
     let sos = ctx
         .class_by_name(b"SplObjectStorage")
         .expect("SplObjectStorage is registered");
@@ -645,7 +673,7 @@ fn sos_add_all(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeR
     let incoming = sos_storage_arg(ctx, "addAll", &args[0])?;
     let mut items = sos_load(o);
     for (obj, inf) in incoming {
-        let found = items.iter().position(|(k, _)| k.ptr_eq(&obj));
+        let found = items.iter().position(|(k, _)| k.same(&obj));
         match found {
             Some(i) => items[i].1 = inf,
             None => items.push((obj, inf)),
@@ -660,7 +688,7 @@ fn sos_remove_all(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nati
     let o = this(o)?;
     let drop_these = sos_storage_arg(ctx, "removeAll", &args[0])?;
     let mut items = sos_load(o);
-    items.retain(|(k, _)| !drop_these.iter().any(|(d, _)| d.ptr_eq(k)));
+    items.retain(|(k, _)| !drop_these.iter().any(|(d, _)| d.same(k)));
     sos_store(o, &items);
     Ok(Value::Int(items.len() as i64))
 }
@@ -670,7 +698,7 @@ fn sos_remove_all_except(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) 
     let o = this(o)?;
     let keep = sos_storage_arg(ctx, "removeAllExcept", &args[0])?;
     let mut items = sos_load(o);
-    items.retain(|(k, _)| keep.iter().any(|(d, _)| d.ptr_eq(k)));
+    items.retain(|(k, _)| keep.iter().any(|(d, _)| d.same(k)));
     sos_store(o, &items);
     Ok(Value::Int(items.len() as i64))
 }
@@ -719,7 +747,7 @@ fn sos_current(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult
     let pos = with_state(o, |s| s.pos);
     Ok(sos_load(o)
         .get(pos)
-        .map_or(Value::Null, |(obj, _)| Value::Object(obj.clone())))
+        .map_or(Value::Null, |(obj, _)| obj.value()))
 }
 
 fn sos_next(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
@@ -749,7 +777,7 @@ fn sos_magic_serialize(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Nati
     let mut entries = Array::new();
     for (obj, inf) in sos_load(o) {
         let mut pair = Array::new();
-        pair.push(Value::Object(obj));
+        pair.push(obj.value());
         pair.push(inf);
         entries.push(Value::Array(pair));
     }
@@ -771,11 +799,11 @@ fn sos_magic_unserialize(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) ->
             )))
         }
     };
-    let mut items: Vec<(Object, Value)> = Vec::new();
+    let mut items: Vec<(SosKey, Value)> = Vec::new();
     if let Some(Value::Array(entries)) = data.get_deref(&ArrayKey::Int(0)) {
         for v in entries.values() {
             if let Value::Array(pair) = &*v.deref() {
-                if let Some(Value::Object(obj)) = pair.get_deref(&ArrayKey::Int(0)) {
+                if let Some(obj) = pair.get_deref(&ArrayKey::Int(0)).as_ref().and_then(SosKey::of) {
                     let inf = pair.get_deref(&ArrayKey::Int(1)).unwrap_or(Value::Null);
                     items.push((obj, inf));
                 }

@@ -174,6 +174,12 @@ pub struct RungSpec {
     /// Requests of an HTTP rung (`"GET /"`).
     #[serde(default)]
     pub requests: Vec<String>,
+    /// A stateful flow: each side keeps a cookie jar across its requests
+    /// (sessions, logins), every non-GET carries a same-origin `Origin`
+    /// header (stateless CSRF checks), and a request may quote the previous
+    /// response's form fields as `${input:NAME}` (a CSRF token).
+    #[serde(default)]
+    pub cookies: bool,
 }
 
 /// One entry of `commands`: a plain command line or a table with options.
@@ -964,6 +970,107 @@ struct HttpRequest {
     body: Option<String>,
 }
 
+/// What a `cookies = true` rung carries from one request to the next on
+/// one side: the cookie jar and the previous response's body (for
+/// `${input:NAME}`).
+#[derive(Default)]
+struct FlowState {
+    jar: Vec<(String, String)>,
+    last_body: Vec<u8>,
+}
+
+impl FlowState {
+    /// Record the `Set-Cookie` headers of a raw response and keep its body.
+    fn absorb(&mut self, response: &[u8]) {
+        let head_end = response
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map_or(response.len(), |i| i + 4);
+        let head = String::from_utf8_lossy(&response[..head_end]);
+        for line in head.lines() {
+            let Some(rest) = line
+                .get(..11)
+                .filter(|p| p.eq_ignore_ascii_case("set-cookie:"))
+                .map(|_| line[11..].trim())
+            else {
+                continue;
+            };
+            let mut attrs = rest.split(';').map(str::trim);
+            let Some((name, value)) = attrs.next().and_then(|nv| nv.split_once('=')) else {
+                continue;
+            };
+            // `Max-Age=0` / a past `expires` deletes the cookie, as php's
+            // `setcookie('x', '', 1)` spells it.
+            let deleted = value == "deleted"
+                || attrs.clone().any(|a| a.eq_ignore_ascii_case("max-age=0"));
+            self.jar.retain(|(n, _)| n != name);
+            if !deleted {
+                self.jar.push((name.to_string(), value.to_string()));
+            }
+        }
+        self.last_body = response[head_end..].to_vec();
+    }
+
+    /// The `Cookie:` header value, or `None` with an empty jar.
+    fn cookie_header(&self) -> Option<String> {
+        if self.jar.is_empty() {
+            return None;
+        }
+        Some(self.jar.iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>().join("; "))
+    }
+
+    /// The request with its `${input:NAME}` placeholders filled from the
+    /// previous response's `<input name="NAME" … value="…">` (any attribute
+    /// order); an absent field becomes the empty string.
+    fn fill(&self, req: &HttpRequest) -> HttpRequest {
+        let mut out = req.clone();
+        out.target = self.fill_str(&req.target);
+        out.body = req.body.as_deref().map(|b| self.fill_str(b));
+        out
+    }
+
+    fn fill_str(&self, s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s;
+        while let Some(i) = rest.find("${input:") {
+            out.push_str(&rest[..i]);
+            let after = &rest[i + 8..];
+            let Some(end) = after.find('}') else {
+                out.push_str(&rest[i..]);
+                return out;
+            };
+            out.push_str(&self.input_value(&after[..end]));
+            rest = &after[end + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn input_value(&self, name: &str) -> String {
+        let body = String::from_utf8_lossy(&self.last_body);
+        let mut rest = body.as_ref();
+        while let Some(i) = rest.find("<input") {
+            let tag = &rest[i..];
+            let end = tag.find('>').unwrap_or(tag.len());
+            let tag = &tag[..end];
+            if attr(tag, "name").as_deref() == Some(name) {
+                return attr(tag, "value").unwrap_or_default();
+            }
+            rest = &rest[i + 6..];
+        }
+        String::new()
+    }
+}
+
+/// The value of attribute `key` in one tag's text (double-quoted).
+fn attr(tag: &str, key: &str) -> Option<String> {
+    let needle = format!(" {key}=\"");
+    let i = tag.find(&needle)?;
+    let after = &tag[i + needle.len()..];
+    let end = after.find('"')?;
+    Some(after[..end].to_string())
+}
+
 impl HttpRequest {
     fn parse(line: &str) -> Result<HttpRequest, String> {
         let mut parts = line.splitn(3, ' ');
@@ -1008,7 +1115,7 @@ fn wait_ready(port: u16, child: &mut std::process::Child, deadline: Duration) ->
 /// Send one request and read the whole response (the servers close the
 /// connection after it). The HTTP status is the `RunResult`'s exit code,
 /// the raw response its stdout.
-fn http_exchange(port: u16, req: &HttpRequest, timeout: Duration) -> RunResult {
+fn http_exchange(port: u16, req: &HttpRequest, timeout: Duration, flow: Option<&mut FlowState>) -> RunResult {
     let failed = |status: i32, msg: String| RunResult {
         stdout: Vec::new(),
         stderr: msg.into_bytes(),
@@ -1021,10 +1128,20 @@ fn http_exchange(port: u16, req: &HttpRequest, timeout: Duration) -> RunResult {
     };
     let _ = stream.set_read_timeout(Some(timeout));
     let _ = stream.set_write_timeout(Some(timeout));
+    let filled = flow.as_ref().map(|f| f.fill(req));
+    let req = filled.as_ref().unwrap_or(req);
     let mut head = format!(
         "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUser-Agent: ladder\r\nAccept: */*\r\nConnection: close\r\n",
         req.method, req.target
     );
+    if let Some(flow) = &flow {
+        if let Some(cookie) = flow.cookie_header() {
+            head.push_str(&format!("Cookie: {cookie}\r\n"));
+        }
+        if req.method != "GET" {
+            head.push_str(&format!("Origin: http://127.0.0.1:{port}\r\n"));
+        }
+    }
     if let Some(body) = &req.body {
         head.push_str(&format!(
             "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n",
@@ -1056,6 +1173,9 @@ fn http_exchange(port: u16, req: &HttpRequest, timeout: Duration) -> RunResult {
         .and_then(|s| std::str::from_utf8(s).ok())
         .and_then(|s| s.trim().parse::<i32>().ok())
         .unwrap_or(-1);
+    if let Some(flow) = flow {
+        flow.absorb(&response);
+    }
     RunResult {
         stdout: normalize_http(response, port),
         stderr: Vec::new(),
@@ -1610,9 +1730,10 @@ impl Runner {
         let result = match ready {
             Ok(()) => {
                 let mut runs = Vec::with_capacity(requests.len());
+                let mut flow = rung.cookies.then(FlowState::default);
                 for (i, req) in requests.iter().enumerate() {
                     let started = Instant::now();
-                    let result = http_exchange(port, req, self.opts.timeout);
+                    let result = http_exchange(port, req, self.opts.timeout, flow.as_mut());
                     dump_result(&out_dir, i + 1, &result)
                         .map_err(|e| format!("cannot write {}: {e}", out_dir.display()))?;
                     runs.push(TimedRun { result, duration: started.elapsed() });

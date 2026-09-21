@@ -29,7 +29,7 @@ mod resource;
 mod string;
 
 pub use array::{array_key, Array, ArrayKey};
-pub use closure::Closure;
+pub use closure::{Closure, WeakClosure};
 pub use object::{display_class_name, mangled_key};
 pub use object::{
     has_pending_destructors, take_pending_destructors, CastHandler, CastTarget, DynProps, Layout,

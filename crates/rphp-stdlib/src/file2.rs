@@ -959,7 +959,7 @@ fn stream_meta(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Meta, Unwind> {
         Value::Resource(r) if r.kind() == "stream" => None,
         other => Some(Unwind::type_error(format!(
             "{func}(): Argument #1 ($stream) must be of type resource, {} given",
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     };
     if let Some(e) = wrong {
@@ -1295,7 +1295,7 @@ fn fputcsv(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let Value::Array(fields) = fields else {
         return Err(Unwind::type_error(format!(
             "fputcsv(): Argument #2 ($fields) must be of type array, {} given",
-            args[1].deref().type_name()
+            rphp_runtime::value_name(&args[1].deref())
         )));
     };
     let (delim, enc, escape) = csv_args(ctx, args, "fputcsv", 2)?;

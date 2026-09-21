@@ -212,7 +212,7 @@ impl Interp {
         };
         let obj = self.instantiate(cid);
         obj.set_payload(rphp_value::Payload::Native(Box::new(idx)));
-        self.generators[idx as usize].frame.as_mut().expect("frame").generator = Some(idx);
+        self.generators[idx as usize].frame.as_mut().expect("frame").extra_mut().generator = Some(idx);
         let v = Value::Object(obj);
         if was == FrameKind::ReentryBoundary {
             // `run_until` hands this back to the native that re-entered.

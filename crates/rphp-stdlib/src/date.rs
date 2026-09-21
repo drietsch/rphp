@@ -23,7 +23,7 @@ use rphp_runtime::{NativeFn, Registry};
 pub(crate) mod civil;
 mod classes;
 mod format;
-mod funcs;
+pub(crate) mod funcs;
 mod parse;
 mod tz;
 

@@ -301,10 +301,9 @@ fn ord(i: i64) -> Ordering {
 
 /// `(string)$v` with php's "Array to string conversion" warning.
 pub(crate) fn sort_string_of(ctx: &mut Ctx, v: &Value) -> Result<Vec<u8>, Unwind> {
-    if matches!(&*v.deref(), Value::Array(_)) {
-        ctx.warn("Array to string conversion")?;
-    }
-    Ok(v.to_php_bytes())
+    // The engine's `(string)`: `__toString()` for an object (an `Error`
+    // without one), the `Array to string conversion` warning for an array.
+    Ok(ctx.to_string(v)?.as_bytes().to_vec())
 }
 
 /// php's `php_get_data_compare_func` family, applied to two values.
@@ -428,7 +427,7 @@ fn want_array<'a>(func: &str, v: &'a Value) -> Result<&'a Array, Unwind> {
         Value::Array(a) => Ok(a),
         other => Err(Unwind::type_error(format!(
             "{func}(): Argument #1 ($array) must be of type array, {} given",
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }
@@ -439,7 +438,7 @@ fn want_array_n<'a>(func: &str, n: usize, v: &'a Value) -> Result<&'a Array, Unw
         other => Err(Unwind::type_error(format!(
             "{func}(): Argument #{} must be of type array, {} given",
             n + 1,
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }
@@ -583,13 +582,13 @@ fn set_op(ctx: &mut Ctx, func: &str, args: &[Value], diff: bool, by_key: bool, b
             return Err(if i == 0 {
                 Unwind::type_error(format!(
                     "{func}(): Argument #1 ($array) must be of type array, {} given",
-                    a.type_name()
+                    rphp_runtime::value_name(&a)
                 ))
             } else {
                 Unwind::type_error(format!(
                     "{func}(): Argument #{} must be of type array, {} given",
                     i + 1,
-                    a.type_name()
+                    rphp_runtime::value_name(&a)
                 ))
             });
         }

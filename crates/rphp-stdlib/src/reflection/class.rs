@@ -78,6 +78,13 @@ fn class_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nat
 /// `ReflectionObject::__construct(object $object)`
 fn object_construct(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult {
     let o = this(o)?;
+    // A closure reflects as its class (`Closure`), with no instance to keep.
+    if let Value::Closure(_) = &*args[0].deref() {
+        if let Some(cid) = ctx.well_known.closure {
+            seed_class(ctx, o, cid, None);
+            return Ok(Value::Null);
+        }
+    }
     let Some(inst) = obj_arg(&args[0]) else {
         return Err(Unwind::type_error(
             "ReflectionObject::__construct(): Argument #1 ($object) must be of type object",
@@ -392,7 +399,7 @@ fn instance_of_arg(ctx: &Ctx, cid: u32, who: &str, args: &[Value]) -> Result<Obj
         ctx.class(cid).name_str(),
         v.as_ref().map_or("null".to_string(), |v| match v {
             Value::Object(o) => ctx.class(o.class_id()).name_str().to_string(),
-            other => other.type_name().to_string(),
+            other => rphp_runtime::value_name(&other).to_string(),
         })
     )))
 }

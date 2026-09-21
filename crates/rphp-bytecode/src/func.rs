@@ -369,6 +369,12 @@ pub struct StaticVar {
     pub reg: Reg,
     /// Initial value (null when `None`), evaluated once per cell.
     pub init: Option<InitRef>,
+    /// When the body evaluates its initializer inline (php 8.3's arbitrary
+    /// initializers, `init` is `None`) and that initializer is a php
+    /// constant expression: the same expression as a thunk, which is what
+    /// `ReflectionFunction::getStaticVariables()` reports before the body
+    /// first runs.
+    pub const_expr: Option<InitRef>,
 }
 
 /// A template for [`Op::MakeClosure`]: the closure's compiled function plus the

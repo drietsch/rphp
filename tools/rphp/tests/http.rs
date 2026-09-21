@@ -283,6 +283,9 @@ fn responses_match_php_s() {
         ("flush then header", get("/hs4.php"), "HTTP/1.1"),
         ("setcookie", get("/cookies.php"), "HTTP/1.1"),
         ("session", get("/sess.php"), "HTTP/1.1"),
+        ("session-fresh", get("/sess2.php"), "HTTP/1.1"),
+        ("session-fresh-again", get("/sess2.php"), "HTTP/1.1"),
+        ("session-regenerate", with(get("/regen.php"), "Cookie", "PHPSESSID=abcdef0123456789"), "HTTP/1.1"),
         ("POST form", form("POST", "/post.php?q=1", "a=1&b[]=2&c[k]=v"), "HTTP/1.1"),
         ("POST multipart", multipart("/post.php"), "HTTP/1.1"),
         (

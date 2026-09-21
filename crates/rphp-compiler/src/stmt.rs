@@ -105,7 +105,7 @@ impl FnCompiler<'_> {
                     let mark = self.temp_top;
                     let r = self.compile_expr(a);
                     self.emit(Op::Echo { src: r });
-                    self.free_to(mark);
+                    self.release_temps(mark, None);
                 }
             }
             Stmt::InlineHtml { text, .. } => {
@@ -120,7 +120,7 @@ impl FnCompiler<'_> {
             Stmt::Expr { expr, .. } => {
                 let mark = self.temp_top;
                 self.compile_expr_discard(expr);
-                self.free_to(mark);
+                self.release_temps(mark, None);
             }
             Stmt::If {
                 cond,
@@ -133,6 +133,9 @@ impl FnCompiler<'_> {
                 let ltop = self.here();
                 let mark = self.temp_top;
                 let rc = self.compile_expr(cond);
+                let top = self.temp_top;
+                self.release_temps(mark, Some(rc));
+                self.set_top(top);
                 let jf = self.emit(Op::JmpIfFalse {
                     cond: rc,
                     target: 0,
@@ -153,6 +156,9 @@ impl FnCompiler<'_> {
                 self.mark_line(cond.span());
                 let mark = self.temp_top;
                 let rc = self.compile_expr(cond);
+                let top = self.temp_top;
+                self.release_temps(mark, Some(rc));
+                self.set_top(top);
                 self.emit(Op::JmpIfTrue {
                     cond: rc,
                     target: ltop,
@@ -171,7 +177,7 @@ impl FnCompiler<'_> {
                 for e in init {
                     let mark = self.temp_top;
                     self.compile_expr_discard(e);
-                    self.free_to(mark);
+                    self.release_temps(mark, None);
                 }
                 let ltop = self.here();
                 let mut jf = None;
@@ -179,9 +185,12 @@ impl FnCompiler<'_> {
                     let mark = self.temp_top;
                     for e in rest {
                         self.compile_expr_discard(e);
-                        self.free_to(mark);
+                        self.release_temps(mark, None);
                     }
                     let rc = self.compile_expr(last);
+                    let top = self.temp_top;
+                    self.release_temps(mark, Some(rc));
+                    self.set_top(top);
                     jf = Some(self.emit(Op::JmpIfFalse {
                         cond: rc,
                         target: 0,
@@ -195,7 +204,7 @@ impl FnCompiler<'_> {
                     self.mark_line(e.span());
                     let mark = self.temp_top;
                     self.compile_expr_discard(e);
-                    self.free_to(mark);
+                    self.release_temps(mark, None);
                 }
                 self.emit(Op::Jmp { target: ltop });
                 let lend = self.here();
@@ -329,7 +338,7 @@ impl FnCompiler<'_> {
                         .filter(|val| !matches!(val, Value::Array(_)));
                     match (&v.init, literal) {
                         (None, _) => {
-                            self.statics.push(StaticVar { name, reg, init: None });
+                            self.statics.push(StaticVar { name, reg, init: None, const_expr: None });
                             self.emit(Op::BindStatic { reg, idx });
                         }
                         (Some(_), Some(val)) => {
@@ -345,11 +354,20 @@ impl FnCompiler<'_> {
                                 name,
                                 reg,
                                 init: Some(InitRef::Const(k)),
+                                const_expr: None,
                             });
                             self.emit(Op::BindStatic { reg, idx });
                         }
                         (Some(e), None) => {
-                            self.statics.push(StaticVar { name, reg, init: None });
+                            // Reflection reads a constant expression's value
+                            // ahead of the first call; anything else is
+                            // null until then.
+                            let const_expr = if e.is_constant_shape() {
+                                Some(InitRef::Thunk(self.compile_thunk(e)))
+                            } else {
+                                None
+                            };
+                            self.statics.push(StaticVar { name, reg, init: None, const_expr });
                             let j1 = self.emit(Op::BindStaticOrJmp { reg, idx, target: 0 });
                             let mark = self.temp_top;
                             let val = self.compile_expr(e);
@@ -420,6 +438,11 @@ impl FnCompiler<'_> {
     ) {
         let mark = self.temp_top;
         let rc = self.compile_expr(cond);
+        // The condition's other temporaries die before the branch, on both
+        // paths.
+        let top = self.temp_top;
+        self.release_temps(mark, Some(rc));
+        self.set_top(top);
         let jf = self.emit(Op::JmpIfFalse {
             cond: rc,
             target: 0,
@@ -482,6 +505,13 @@ impl FnCompiler<'_> {
         };
         let it = self.alloc_temp();
         self.emit(Op::IterInit { it, src, by_ref });
+        // A by-value loop iterates its own snapshot: the temporary that
+        // held the container (a property, a call's result) is done with,
+        // and holding it would make the body's writes to that container
+        // copy it.
+        if !by_ref && src >= mark && src != it {
+            self.emit(Op::FreeTemps { from: src, to: src + 1 });
+        }
         // Simple variable targets receive the element directly; an HIR
         // temporary (a desugared destructuring pattern) is *bound* to a fresh
         // register the pattern statement in the body reads; anything else

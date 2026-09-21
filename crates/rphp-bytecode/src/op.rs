@@ -337,6 +337,14 @@ pub enum Op {
     LoadNull {
         dst: Reg,
     },
+    /// Release the temporaries `from..to` (set them to null): a statement's
+    /// temporaries die with it, as php frees its `TMP_VAR`s — a temporary
+    /// left holding an array would make the next write to that array copy
+    /// it, and an object would outlive its statement.
+    FreeTemps {
+        from: Reg,
+        to: Reg,
+    },
     LoadBool {
         dst: Reg,
         val: bool,

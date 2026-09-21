@@ -263,8 +263,9 @@ fn operands(func: &str, args: &[Value]) -> Result<Vec<Value>, Unwind> {
                     Ok(values)
                 }
             }
-            _ => Err(Unwind::type_error(format!(
-                "{func}(): When only one argument is passed, it must be of type array"
+            other => Err(Unwind::type_error(format!(
+                "{func}(): Argument #1 ($value) must be of type array, {} given",
+                rphp_runtime::value_name(other)
             ))),
         };
     }

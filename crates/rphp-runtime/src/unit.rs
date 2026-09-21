@@ -49,7 +49,7 @@ impl UnitRt {
 
 /// An inline-cache slot, stamped with the generation of the table it was
 /// resolved against.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum IcSlot {
     /// Nothing cached yet.
     Empty,
@@ -59,14 +59,75 @@ pub enum IcSlot {
     Native { gen: u32, id: NativeId },
     /// A resolved class.
     Class { gen: u32, id: u32 },
+    /// `$o->name` in a read context: the declared slot this site resolved
+    /// for objects of `class` from calling scope `scope` — visible, without
+    /// hooks — so a hit reads the slot directly. (A class id never changes
+    /// meaning within an interpreter, so no generation is needed.)
+    PropRead { class: u32, scope: Option<u32>, slot: u16 },
+    /// `$o->name = v`: as [`IcSlot::PropRead`], for a slot that is neither
+    /// readonly nor asymmetric; `ty` is what the write may store without
+    /// coercion.
+    PropWrite { class: u32, scope: Option<u32>, slot: u16, ty: FastTy },
+}
+
+/// The declared type of a cached property slot as an assignment can check
+/// it without the coercion machinery: none, or one scalar/array keyword
+/// (optionally nullable) that the value must match exactly. Anything else
+/// (a class, a union, `float` taking an int) goes the slow way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FastTy {
+    /// Untyped, or `mixed`.
+    Any,
+    /// One built-in keyword, `nullable` for `?T`.
+    Builtin { ty: rphp_bytecode::BuiltinType, nullable: bool },
+}
+
+impl FastTy {
+    /// The fast form of a declared type, if it has one.
+    pub fn of(ty: Option<&rphp_bytecode::TypeDecl>) -> Option<FastTy> {
+        use rphp_bytecode::{BuiltinType, TypeDecl};
+        let scalar = |b: &BuiltinType| {
+            matches!(
+                b,
+                BuiltinType::Int | BuiltinType::Float | BuiltinType::String | BuiltinType::Bool | BuiltinType::Array
+            )
+        };
+        match ty {
+            None | Some(TypeDecl::Builtin(BuiltinType::Mixed)) => Some(FastTy::Any),
+            Some(TypeDecl::Builtin(b)) if scalar(b) => Some(FastTy::Builtin { ty: *b, nullable: false }),
+            Some(TypeDecl::Nullable(inner)) => match &**inner {
+                TypeDecl::Builtin(b) if scalar(b) => Some(FastTy::Builtin { ty: *b, nullable: true }),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether `v` may be stored as it is.
+    pub fn accepts(self, v: &rphp_value::Value) -> bool {
+        use rphp_bytecode::BuiltinType;
+        use rphp_value::Value;
+        match self {
+            FastTy::Any => true,
+            FastTy::Builtin { ty, nullable } => match (ty, v) {
+                (_, Value::Null) => nullable,
+                (BuiltinType::Int, Value::Int(_))
+                | (BuiltinType::Float, Value::Float(_))
+                | (BuiltinType::String, Value::Str(_))
+                | (BuiltinType::Bool, Value::Bool(_))
+                | (BuiltinType::Array, Value::Array(_)) => true,
+                _ => false,
+            },
+        }
+    }
 }
 
 /// A compiled function as the runtime holds it.
 pub struct FuncRt {
     /// Process-wide id.
     pub id: u32,
-    /// The compiled body and metadata.
-    pub f: Function,
+    /// The compiled body and metadata (shared with the unit cache).
+    pub f: Rc<Function>,
     /// The owning unit.
     pub unit: Rc<UnitRt>,
     /// Inline caches (`Function::ic_count` slots).
@@ -595,6 +656,23 @@ impl Interp {
             init(self, &obj)?;
         }
         Ok(obj)
+    }
+
+    /// Whether the object can be iterated (`Traversable`, a generator
+    /// included).
+    pub fn is_traversable(&self, o: &rphp_value::Object) -> bool {
+        self.generator_id(o).is_some()
+            || self.well_known.traversable.is_some_and(|t| self.object_instanceof(o, t))
+    }
+
+    /// The class of an object value — a closure's is `Closure`, which is an
+    /// object to php though a value of its own here. `None` for a non-object.
+    pub fn class_of_value(&self, v: &Value) -> Option<u32> {
+        match v {
+            Value::Object(o) => Some(o.class_id()),
+            Value::Closure(_) => self.well_known.closure,
+            _ => None,
+        }
     }
 
     /// The object's class name for a *message*: php formats one with `%s`,

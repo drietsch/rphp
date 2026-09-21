@@ -9,7 +9,7 @@
 //! `var_export`/`serialize` (`var.rs`). Closures keep a placeholder shape
 //! until they become `Closure` objects (plan E6).
 use rphp_value::{
-    display_class_name, ArrayKey, Object, ObjectData, PhpRef, PropEntry, Str, Value, Vis,
+    display_class_name, ArrayKey, ObjectData, PhpRef, PropEntry, Str, Value, Vis,
 };
 
 use rphp_runtime::{Ctx, NativeFn, NativeResult, nf};
@@ -52,7 +52,7 @@ pub(crate) fn var_dump(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let precision = serialize_precision(ctx);
     let mut buf = Vec::new();
     {
-        let mut native = |o: &Object| native_dump_props(ctx, o);
+        let mut native = |v: &Value| native_dump_props(ctx, v);
         for v in args.iter() {
             dump(&mut buf, v, 0, &mut seen, precision, &mut native);
         }
@@ -67,7 +67,7 @@ pub(crate) fn print_r(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let return_mode = args.get(1).is_some_and(Value::to_bool);
     let mut buf = Vec::new();
     {
-        let mut native = |o: &Object| native_dump_props(ctx, o);
+        let mut native = |v: &Value| native_dump_props(ctx, v);
         print_r_buf(&mut buf, &args[0], 0, &mut Seen::new(), &mut native);
     }
     if return_mode {
@@ -83,11 +83,16 @@ pub(crate) fn print_r(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// The computed properties a native class contributes to a dump (php's
 /// `get_debug_info` for the DOM's `prop_handler`s): name → value, an
 /// object-valued one already replaced by `(object value omitted)`.
-type NativeDump<'a> = &'a mut dyn FnMut(&Object) -> Option<Vec<(ArrayKey, Value)>>;
+type NativeDump<'a> = &'a mut dyn FnMut(&Value) -> Option<Vec<(ArrayKey, Value)>>;
 
-/// What a native class's computed properties look like in a dump.
-fn native_dump_props(ctx: &mut Ctx, o: &Object) -> Option<Vec<(ArrayKey, Value)>> {
-    ctx.native_debug_table(o)
+/// What a native class's computed properties — or a closure's debug
+/// table — look like in a dump.
+fn native_dump_props(ctx: &mut Ctx, v: &Value) -> Option<Vec<(ArrayKey, Value)>> {
+    match v {
+        Value::Object(o) => ctx.native_debug_table(o),
+        Value::Closure(c) => Some(ctx.closure_debug_info(c)),
+        _ => None,
+    }
 }
 
 fn indent(out: &mut Vec<u8>, spaces: usize) {
@@ -237,11 +242,27 @@ fn dump(
             indent(out, pad);
             out.extend_from_slice(b"}\n");
         }
-        // A closure is an object; PHP prints `object(Closure)#N (3) { name, file,
-        // line }` — the shape arrives with the Closure class (plan E6).
-        Value::Closure(_) => out.extend_from_slice(b"object(Closure) {\n}\n"),
+        // A closure is an object whose "properties" are its debug table.
+        Value::Closure(c) => {
+            if seen.objects.contains(&c.id()) {
+                out.extend_from_slice(b"*RECURSION*\n");
+                return;
+            }
+            let props = native(v).unwrap_or_default();
+            out.extend_from_slice(format!("object(Closure)#{} ({}) {{\n", c.id(), props.len()).as_bytes());
+            seen.objects.push(c.id());
+            for (k, val) in &props {
+                indent(out, pad + 2);
+                dump_key(out, k);
+                indent(out, pad + 2);
+                dump(out, val, pad + 2, seen, precision, native);
+            }
+            seen.objects.pop();
+            indent(out, pad);
+            out.extend_from_slice(b"}\n");
+        }
         Value::Object(o) => {
-            let extra = native(o).unwrap_or_default();
+            let extra = native(v).unwrap_or_default();
             o.with_data(|d| dump_object(out, d, pad, seen, precision, extra, native))
         }
         // PHP marks a reference `&` only while more than one handle shares it.
@@ -405,8 +426,33 @@ fn print_r_buf(out: &mut Vec<u8>, v: &Value, pad: usize, seen: &mut Seen, native
             out.extend_from_slice(b")\n");
         }
         Value::Object(o) => {
-            let extra = native(o).unwrap_or_default();
+            let extra = native(v).unwrap_or_default();
             o.with_data(|d| print_r_object(out, d, pad, seen, extra, native))
+        }
+        Value::Closure(c) => {
+            out.extend_from_slice(b"Closure Object\n");
+            if seen.objects.contains(&c.id()) {
+                out.extend_from_slice(b" *RECURSION*");
+                return;
+            }
+            let props = native(v).unwrap_or_default();
+            indent(out, pad);
+            out.extend_from_slice(b"(\n");
+            seen.objects.push(c.id());
+            for (k, val) in &props {
+                indent(out, pad + 4);
+                out.push(b'[');
+                match k {
+                    ArrayKey::Int(i) => out.extend_from_slice(i.to_string().as_bytes()),
+                    ArrayKey::Str(b) => out.extend_from_slice(b),
+                }
+                out.extend_from_slice(b"] => ");
+                print_r_buf(out, val, pad + 8, seen, native);
+                out.push(b'\n');
+            }
+            seen.objects.pop();
+            indent(out, pad);
+            out.extend_from_slice(b")\n");
         }
         Value::Ref(r) => {
             if !seen.enter_ref(r) {

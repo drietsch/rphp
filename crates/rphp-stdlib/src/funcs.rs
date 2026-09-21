@@ -39,7 +39,7 @@ pub(crate) fn call_user_func_array(ctx: &mut Ctx, args: &mut [Value]) -> NativeR
         other => {
             return Err(Unwind::type_error(format!(
                 "call_user_func_array(): Argument #2 ($args) must be of type array, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     };
@@ -158,7 +158,7 @@ pub(crate) fn extract(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         other => {
             return Err(Unwind::type_error(format!(
                 "extract(): Argument #1 ($array) must be of type array, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     };
@@ -200,7 +200,7 @@ pub(crate) fn array_walk(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         other => {
             return Err(Unwind::type_error(format!(
                 "array_walk(): Argument #1 ($array) must be of type array, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     };

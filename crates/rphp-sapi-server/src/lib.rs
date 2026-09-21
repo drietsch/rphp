@@ -381,6 +381,7 @@ fn finish(it: &mut Interp) {
     }
     let _ = code;
     it.finish_output();
+    rphp_embed::request_shutdown(it);
 }
 
 /// Drop whatever the router buffered without sending a head.

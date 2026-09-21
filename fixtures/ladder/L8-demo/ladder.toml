@@ -42,3 +42,34 @@ requests = [
   "GET /en/blog/posts/nope",
   "GET /nonexistent",
 ]
+
+[[rung]]
+id = "L8http-flow"
+title = "symfony/demo, the stateful walk: login, a post created with tags, a comment, the post edited and deleted, logout, the profile, search"
+http = true
+docroot = "public"
+# Each side keeps its cookies (the session), sends the same-origin header
+# the demo's stateless CSRF wants on every POST, and quotes the delete
+# form's session-bound token. The fixture database has 30 posts, so the
+# new one is 31 on both sides.
+cookies = true
+requests = [
+  "GET /en/login",
+  "POST /en/login _username=jane_admin&_password=kitten&_csrf_token=csrf-token",
+  "GET /en/admin/post/",
+  "GET /en/admin/post/new",
+  "POST /en/admin/post/new post[title]=Walk+post&post[summary]=A+summary+from+the+walk&post[content]=Some+**markdown**+content+with+a+[link](http://example.com)+and+<script>alert(1)</script>.&post[publishedAt]=2026-09-21+10:00&post[tags]=walk,test&post[_token]=csrf-token",
+  "GET /en/admin/post/",
+  "GET /en/blog/posts/walk-post",
+  "POST /en/blog/comment/walk-post/new comment[content]=A+comment+from+the+walk&comment[_token]=csrf-token",
+  "GET /en/blog/posts/walk-post",
+  "GET /en/admin/post/31/edit",
+  "POST /en/admin/post/31/edit post[title]=Walk+post+(edited)&post[summary]=A+summary+from+the+walk&post[content]=Edited+content.&post[publishedAt]=2026-09-21+10:00&post[tags]=walk&post[_token]=csrf-token",
+  "GET /en/admin/post/31",
+  "POST /en/admin/post/31/delete token=${input:token}",
+  "GET /en/admin/post/",
+  "GET /en/profile/edit",
+  "GET /en/blog/search?q=walk",
+  "GET /en/logout",
+  "GET /en/admin/post/",
+]

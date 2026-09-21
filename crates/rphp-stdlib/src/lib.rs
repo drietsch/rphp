@@ -184,6 +184,19 @@ pub fn register(r: &mut Registry) {
     syslog::register_constants(r);
 }
 
+/// php's per-request module shutdown (`RSHUTDOWN`) for the state this
+/// crate keeps per thread: a server's worker thread lives across requests,
+/// and the next one must not see this one's session, `mb_*` settings,
+/// default timezone, `strtok` cursor, locale or `mt_rand` seed. Runs after
+/// the output is flushed, as php's does.
+pub fn request_shutdown(it: &mut rphp_runtime::Interp) {
+    session::request_shutdown(it);
+    mbstring::request_shutdown();
+    string2::request_shutdown();
+    date::funcs::request_shutdown();
+    random::request_shutdown();
+}
+
 /// Every native this crate provides (for tooling: coverage, `xtask missing`).
 pub fn all_functions() -> impl Iterator<Item = &'static NativeFn> {
     MODULES.iter().flat_map(|m| m.iter())

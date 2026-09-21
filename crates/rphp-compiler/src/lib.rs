@@ -303,6 +303,7 @@ pub fn compile(
     let sink = mx.sink.into_inner();
     let mut funcs = sink.funcs;
     funcs[0] = main;
+    let funcs = funcs.into_iter().map(std::rc::Rc::new).collect();
     let classes = sink
         .classes
         .into_iter()

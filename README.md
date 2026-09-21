@@ -79,7 +79,8 @@ forms, translations, the web profiler) on both engines and compares the
 output of every console command and HTTP page byte for byte after a
 declared set of normalizations: `bin/console about|debug:router|
 lint:container`, the demo's blog, posts, search, feeds, login and error
-pages are identical to php's.
+pages, and its stateful admin walk (login, a post created with tags, a
+comment, the post edited and deleted, the profile) are identical to php's.
 
 ```sh
 rphp -S 127.0.0.1:8000 -t public          # like php -S

@@ -353,6 +353,11 @@ pub struct ObjectData {
     /// convert by their own rule (`SimpleXMLElement`'s truthiness and
     /// numbers); `None` for every other object.
     cast: Option<CastHandler>,
+    /// Which declared slots `unset()` emptied (php's `IS_PROP_UNINIT` flag
+    /// cleared): a typed property in that state goes to the magic accessors
+    /// where a never-initialized one bypasses them. `None` until the first
+    /// `unset()`.
+    unset_marks: Option<Box<[bool]>>,
 }
 
 /// What a [`CastHandler`] is asked to convert to.
@@ -515,8 +520,26 @@ impl ObjectData {
     /// properties onto an instance; the 8.2 deprecation is the runtime's job).
     pub fn set(&mut self, name: &[u8], value: Value) {
         match self.layout.slot_of(name) {
-            Some(i) => Value::assign(&mut self.slots[usize::from(i)], value),
+            Some(i) => {
+                self.clear_unset_mark(i);
+                Value::assign(&mut self.slots[usize::from(i)], value)
+            }
             None => self.dyn_props_mut().set(name, value),
+        }
+    }
+
+    fn clear_unset_mark(&mut self, i: u16) {
+        if let Some(m) = &mut self.unset_marks {
+            m[usize::from(i)] = false;
+        }
+    }
+
+    /// Whether declared slot `name` was emptied by `unset()` (and not
+    /// written since).
+    pub fn was_unset(&self, name: &[u8]) -> bool {
+        match (self.layout.slot_of(name), &self.unset_marks) {
+            (Some(i), Some(m)) => m[usize::from(i)],
+            _ => false,
         }
     }
 
@@ -524,7 +547,10 @@ impl ObjectData {
     /// property is created as `null`) and return it.
     pub fn prop_ref(&mut self, name: &[u8]) -> PhpRef {
         match self.layout.slot_of(name) {
-            Some(i) => Value::make_ref(&mut self.slots[usize::from(i)]),
+            Some(i) => {
+                self.clear_unset_mark(i);
+                Value::make_ref(&mut self.slots[usize::from(i)])
+            }
             None => self.dyn_props_mut().get_ref(name),
         }
     }
@@ -535,6 +561,8 @@ impl ObjectData {
     pub fn unset(&mut self, name: &[u8]) -> Option<Value> {
         match self.layout.slot_of(name) {
             Some(i) => {
+                let n = self.slots.len();
+                self.unset_marks.get_or_insert_with(|| vec![false; n].into_boxed_slice())[usize::from(i)] = true;
                 let slot = &mut self.slots[usize::from(i)];
                 if slot.is_uninit() {
                     None
@@ -611,6 +639,7 @@ impl Drop for ObjectData {
                 flags: self.flags | ObjFlags::DESTRUCTED,
                 lazy: self.lazy.take(),
                 cast: self.cast,
+                unset_marks: self.unset_marks.take(),
             };
             let obj = Object(Rc::new(RefCell::new(resurrected)));
             DESTRUCT_QUEUE.with(|q| q.borrow_mut().push(obj));
@@ -683,6 +712,7 @@ impl Object {
             flags: ObjFlags::NONE,
             lazy: None,
             cast: None,
+            unset_marks: None,
         })))
     }
 
@@ -766,12 +796,27 @@ impl Object {
 
     /// Assign declared slot `i` by value (writing through a binding).
     pub fn set_slot(&self, i: u16, value: Value) {
-        Value::assign(&mut self.0.borrow_mut().slots[usize::from(i)], value);
+        let mut d = self.0.borrow_mut();
+        d.clear_unset_mark(i);
+        Value::assign(&mut d.slots[usize::from(i)], value);
+    }
+
+    /// See [`ObjectData::was_unset`].
+    pub fn was_unset(&self, name: &[u8]) -> bool {
+        self.0.borrow().was_unset(name)
+    }
+
+    /// Copy another object's `unset()` marks (a clone keeps them).
+    pub fn copy_unset_marks_from(&self, other: &Object) {
+        let marks = other.0.borrow().unset_marks.clone();
+        self.0.borrow_mut().unset_marks = marks;
     }
 
     /// Make declared slot `i` a reference cell in place and return it.
     pub fn slot_ref(&self, i: u16) -> PhpRef {
-        Value::make_ref(&mut self.0.borrow_mut().slots[usize::from(i)])
+        let mut d = self.0.borrow_mut();
+        d.clear_unset_mark(i);
+        Value::make_ref(&mut d.slots[usize::from(i)])
     }
 
     /// `&$o->name` over declared and dynamic properties.

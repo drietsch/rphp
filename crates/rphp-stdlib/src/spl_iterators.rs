@@ -22,13 +22,13 @@ fn pairs(ctx: &mut Ctx, v: &Value) -> Result<Vec<(Value, Value)>, Unwind> {
             .iter()
             .map(|(k, val)| (k.to_value(), val.deref().into_owned()))
             .collect()),
-        Value::Object(o) => {
+        Value::Object(o) if ctx.is_traversable(o) => {
             let o = o.clone();
             ctx.iterate_traversable(&o)
         }
         other => Err(Unwind::type_error(format!(
             "iterator_to_array(): Argument #1 ($iterator) must be of type Traversable|array, {} given",
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }

@@ -49,7 +49,7 @@ impl Interp {
     pub fn ref_arg(&self, i: usize) -> Option<PhpRef> {
         self.frames
             .last()
-            .and_then(|f| f.ref_cells.iter().find(|(p, _)| *p == i).map(|(_, c)| c.clone()))
+            .and_then(|f| f.extra().ref_cells.iter().find(|(p, _)| *p == i).map(|(_, c)| c.clone()))
     }
 
     pub fn note_output(&mut self) {

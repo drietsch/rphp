@@ -258,8 +258,8 @@ pub(crate) fn obj_arg(v: &Value) -> Option<Object> {
 /// string is looked up (with autoload) and a missing one is
 /// `Class "X" does not exist`.
 pub(crate) fn class_arg(ctx: &mut Ctx, v: &Value) -> Result<u32, Unwind> {
-    if let Some(o) = obj_arg(v) {
-        return Ok(o.class_id());
+    if let Some(cid) = ctx.class_of_value(&v.deref()) {
+        return Ok(cid);
     }
     let name = str_arg(v);
     class_by_name_or_error(ctx, &name)
@@ -414,7 +414,7 @@ pub(crate) fn set_static_prop(ctx: &mut Ctx, cid: u32, idx: usize, v: Value) {
 /// `self`/`static`.
 pub(crate) fn run_thunk(ctx: &mut Ctx, fid: u32, scope: Option<u32>) -> Result<Value, Unwind> {
     let scope_v = scope.map_or(Value::Null, |c| Value::Int(i64::from(c)));
-    let c = Closure::new(fid, vec![Value::Null, scope_v.clone(), scope_v]);
+    let c = ctx.new_closure(fid, vec![Value::Null, scope_v.clone(), scope_v]);
     ctx.call_value(&Value::Closure(c), &[])
 }
 

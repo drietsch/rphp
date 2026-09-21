@@ -428,6 +428,7 @@ fn finish(it: &mut Interp) {
         it.handle_top_level_unwind(u);
     }
     it.finish_output();
+    rphp_embed::request_shutdown(it);
 }
 
 /// `$_SERVER` as php-fpm lays it out — `USER` and `HOME`, the parameters

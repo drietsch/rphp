@@ -85,6 +85,11 @@ thread_local! {
     static DEFAULT_TZ: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
+/// php's `RSHUTDOWN`: `date_default_timezone_set()` lasts one request.
+pub(crate) fn request_shutdown() {
+    DEFAULT_TZ.with(|t| *t.borrow_mut() = None);
+}
+
 /// The name `date_default_timezone_get()` answers with.
 fn default_tz_name(ctx: &Ctx) -> String {
     if let Some(name) = DEFAULT_TZ.with(|t| t.borrow().clone()) {

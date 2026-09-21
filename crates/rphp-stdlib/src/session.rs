@@ -48,7 +48,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
-use rphp_runtime::{nf, nm, Ctx, NativeFn, NativeResult, Registry, Unwind};
+use rphp_runtime::{nf, nm, Ctx, Interp, NativeFn, NativeResult, Registry, Unwind};
 use rphp_value::{Array, ArrayKey, Object, Value};
 
 /// This extension's registry contribution (see `lib.rs`).
@@ -174,9 +174,21 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
 }
 
 /// Forget the running session (tests, and a fresh request).
-#[cfg(test)]
 pub(crate) fn reset_state() {
     with_state(|s| *s = State::default());
+}
+
+/// php's `RSHUTDOWN`: an active session is written and closed, then the
+/// module forgets it — a server's worker thread serves the next request
+/// with no session running.
+pub(crate) fn request_shutdown(it: &mut Interp) {
+    if active() {
+        let mut ctx = Ctx(it);
+        if let Err(u) = session_write_close(&mut ctx, &mut []) {
+            ctx.handle_top_level_unwind(u);
+        }
+    }
+    reset_state();
 }
 
 fn active() -> bool {
@@ -199,7 +211,7 @@ fn opt_str(args: &[Value], i: usize, func: &str, name: &str) -> Result<Option<Ve
                 Err(Unwind::type_error(format!(
                     "{func}(): Argument #{} (${name}) must be of type ?string, {} given",
                     i + 1,
-                    v.type_name()
+                    rphp_runtime::value_name(&v)
                 )))
             }
             _ => Ok(Some(v.to_php_bytes().to_vec())),
@@ -664,6 +676,9 @@ fn send_cookie(ctx: &mut Ctx, id: &[u8]) -> Result<(), Unwind> {
             opts.set(ArrayKey::str(key.as_bytes()), Value::Bool(true));
         }
     }
+    // An earlier session cookie (a handler's own deletion of the old id,
+    // say) goes: php sends the session cookie once.
+    crate::head::remove_cookie_lines(ctx, &name);
     ctx.call_function(
         b"setcookie",
         &[Value::string(name.as_bytes()), Value::string(id), Value::Array(opts)],

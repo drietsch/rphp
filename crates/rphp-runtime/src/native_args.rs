@@ -222,7 +222,7 @@ impl Interp {
     pub fn take_extra_named(&mut self) -> NamedArgs {
         self.frames
             .last_mut()
-            .map(|f| std::mem::take(&mut f.extra_named))
+            .map(|f| std::mem::take(&mut f.extra_mut().extra_named))
             .unwrap_or_default()
     }
 

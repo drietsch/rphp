@@ -266,7 +266,7 @@ impl Interp {
         base: usize,
         argc: usize,
         strict: bool,
-        caller: Option<(String, u32)>,
+        caller: Option<usize>,
     ) -> Result<(), Unwind> {
         let (scope, static_class) = {
             let f = self.frames.last().expect("callee frame");
@@ -301,7 +301,11 @@ impl Interp {
                         self.type_display(ty, scope),
                         self.given_name(&v)
                     );
-                    if let Some((file, line)) = caller {
+                    // The caller's site (a frame index: the file and line
+                    // are only spelled out for the message).
+                    if let Some(fi) = caller {
+                        let f = &self.frames[fi];
+                        let (file, line) = (self.frame_file(f), self.frame_line(f));
                         msg.push_str(&format!(", called in {file} on line {line}"));
                     }
                     return Err(Unwind::type_error(msg));

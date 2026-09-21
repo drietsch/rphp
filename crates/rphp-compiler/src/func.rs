@@ -239,6 +239,17 @@ pub(crate) struct FnCompiler<'a> {
     pub(crate) this_reg: Option<Reg>,
     /// Current top of the temporary stack (next free temp register).
     pub(crate) temp_top: Reg,
+    /// The highest `temp_top` since the current statement began (what
+    /// [`release_temps`](Self::release_temps) clears: sub-expressions free
+    /// their temporaries early, but the values linger until then).
+    pub(crate) temp_peak: Reg,
+    /// The temporaries (a register range, `lo..hi`) that received a value
+    /// which may be a container since the current statement began; empty
+    /// when `dirty_lo >= dirty_hi`.
+    pub(crate) dirty_lo: Reg,
+    pub(crate) dirty_hi: Reg,
+    /// Registers below this are named variables; the rest are temporaries.
+    pub(crate) var_count: Reg,
     /// High-water mark: total registers the frame needs.
     pub(crate) num_regs: Reg,
     /// Closure captures (`Function::captures`).
@@ -341,6 +352,10 @@ impl<'a> FnCompiler<'a> {
             assigned: captures.iter().map(|&(c, _)| c).collect(),
             this_reg,
             temp_top: var_count,
+            temp_peak: var_count,
+            dirty_lo: Reg::MAX,
+            dirty_hi: 0,
+            var_count,
             num_regs: var_count,
             captures: capture_descs,
             statics: Vec::new(),
@@ -370,6 +385,27 @@ impl<'a> FnCompiler<'a> {
     }
 
     pub(crate) fn emit(&mut self, op: Op) -> usize {
+        // A temporary that receives a value which may be a container (a
+        // property, a static, an element, a call's result, a variable's
+        // copy) is what `release_temps` must clear; one holding an
+        // arithmetic result or a literal need not be.
+        let holder = match op {
+            Op::FetchProp { dst, .. }
+            | Op::FetchStaticProp { dst, .. }
+            | Op::ArrayGet { dst, .. }
+            | Op::ArrayGetQuiet { dst, .. }
+            | Op::DoCall { dst }
+            | Op::Move { dst, .. }
+            | Op::Deref { dst, .. }
+            | Op::FetchConst { dst, .. } => Some(dst),
+            _ => None,
+        };
+        if let Some(r) = holder {
+            if r >= self.var_count {
+                self.dirty_lo = self.dirty_lo.min(r);
+                self.dirty_hi = self.dirty_hi.max(r + 1);
+            }
+        }
         self.code.push(op);
         if self.mx.line_of.is_some() {
             self.lines.push(self.cur_line);
@@ -411,6 +447,9 @@ impl<'a> FnCompiler<'a> {
         if n > self.num_regs {
             self.num_regs = n;
         }
+        if n > self.temp_peak {
+            self.temp_peak = n;
+        }
     }
 
     /// Allocate a fresh temporary register.
@@ -423,6 +462,37 @@ impl<'a> FnCompiler<'a> {
     /// Release temporaries down to `mark` (does not lower the high-water mark).
     pub(crate) fn free_to(&mut self, mark: Reg) {
         self.temp_top = mark;
+    }
+
+    /// [`free_to`](Self::free_to) at a point where the temporaries above
+    /// `mark` are dead for good (a statement's end): the emitted
+    /// [`Op::FreeTemps`] drops their values too, so nothing lingers in a
+    /// register — a container left there would make the next write to it
+    /// copy. `keep` is a register the caller still needs (a condition
+    /// about to be tested).
+    pub(crate) fn release_temps(&mut self, mark: Reg, keep: Option<Reg>) {
+        let top = self.temp_peak.max(self.temp_top);
+        self.temp_peak = mark;
+        // Only the range that may hold a container is cleared.
+        let (lo, hi) = (self.dirty_lo.max(mark), self.dirty_hi.min(top));
+        self.dirty_lo = Reg::MAX;
+        self.dirty_hi = 0;
+        if lo < hi {
+            match keep {
+                Some(k) if k >= lo && k < hi => {
+                    if k > lo {
+                        self.emit(Op::FreeTemps { from: lo, to: k });
+                    }
+                    if k + 1 < hi {
+                        self.emit(Op::FreeTemps { from: k + 1, to: hi });
+                    }
+                }
+                _ => {
+                    self.emit(Op::FreeTemps { from: lo, to: hi });
+                }
+            }
+        }
+        self.free_to(mark);
     }
 
     pub(crate) fn push_const(&mut self, c: Const) -> u32 {

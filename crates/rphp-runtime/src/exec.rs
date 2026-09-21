@@ -6,11 +6,12 @@
 //! `@` depth restored) and the error returned to the caller — a native's
 //! `call_value`, or the SAPI for the entry `{main}`.
 
+use std::borrow::Cow;
 use rphp_bytecode::{
     AssignOpKind, ClassRef, ClassRefKind, Const, FinallyState, FnFlags, IncludeKind, InitRef,
     NameRef, NameRefKind, Op, Visibility,
 };
-use rphp_value::{array_key, Closure, Object, PhpRef, Value};
+use rphp_value::{array_key, Object, PhpRef, Value};
 
 use crate::class::MethodBody;
 use crate::frame::{CallTarget, FrameKind, IterState, PendingCall, RetTarget};
@@ -136,7 +137,7 @@ impl Interp {
         self.stack[base + r as usize] = Value::Ref(cell.clone());
         let fi = self.frames.len() - 1;
         let f = &self.frames[fi];
-        if let (Some(symtab), Some(func)) = (&f.symtab, &f.func) {
+        if let (Some(symtab), Some(func)) = (&f.extra().symtab, &f.func) {
             if let Some(name) = func.reg_name(r) {
                 symtab.insert(name, cell);
             }
@@ -176,15 +177,61 @@ impl Interp {
         func.f.consts[k as usize].to_value()
     }
 
-    fn name_bytes(&self, func: &crate::unit::FuncRt, k: u32) -> Box<[u8]> {
+    fn name_bytes<'f>(&self, func: &'f crate::unit::FuncRt, k: u32) -> Cow<'f, [u8]> {
         match &func.f.consts[k as usize] {
-            Const::Name(n) => n.orig.clone(),
-            other => other.to_value().to_php_bytes().into_boxed_slice(),
+            Const::Name(n) => Cow::Borrowed(&n.orig),
+            Const::Str(s) => Cow::Borrowed(s.as_bytes()),
+            other => Cow::Owned(other.to_value().to_php_bytes()),
         }
     }
 
+    /// `$o->name` through the site's inline cache: the slot's value when the
+    /// register holds an object of the cached class, read from the cached
+    /// scope, and the slot is initialized; `None` sends the op the slow way
+    /// (which fills the cache).
+    #[inline]
+    fn prop_read_cached(&self, func: &crate::unit::FuncRt, fi: usize, base: usize, obj: u16, ic: u16) -> Option<Value> {
+        let crate::unit::IcSlot::PropRead { class, scope, slot } = *func.ics.borrow().get(ic as usize)? else {
+            return None;
+        };
+        let Value::Object(o) = self.raw(base, obj) else {
+            return None;
+        };
+        if o.class_id() != class || self.frames[fi].scope != scope || o.is_lazy() {
+            return None;
+        }
+        match o.slot(slot) {
+            Value::Uninit => None,
+            Value::Ref(r) => Some(r.get()),
+            v => Some(v),
+        }
+    }
+
+    /// `$o->name = v` through the site's inline cache: stores into the
+    /// cached slot when the object, scope and value's type fit and the slot
+    /// is initialized (an `unset()` slot goes to `__set`); `false` sends
+    /// the op the slow way.
+    #[inline]
+    fn prop_write_cached(&mut self, func: &crate::unit::FuncRt, fi: usize, base: usize, obj: u16, src: u16, ic: u16) -> bool {
+        let Some(&crate::unit::IcSlot::PropWrite { class, scope, slot, ty }) = func.ics.borrow().get(ic as usize) else {
+            return false;
+        };
+        let Value::Object(o) = self.raw(base, obj) else {
+            return false;
+        };
+        if o.class_id() != class || self.frames[fi].scope != scope || o.is_lazy() {
+            return false;
+        }
+        let v = self.rd(base, src);
+        if !ty.accepts(&v) || o.slot(slot).deref().is_uninit() {
+            return false;
+        }
+        o.set_slot(slot, v);
+        true
+    }
+
     /// A member name operand as bytes.
-    fn member_name(&self, func: &crate::unit::FuncRt, base: usize, name: NameRef) -> Result<Box<[u8]>, Unwind> {
+    fn member_name<'f>(&self, func: &'f crate::unit::FuncRt, base: usize, name: NameRef) -> Result<Cow<'f, [u8]>, Unwind> {
         Ok(match name.kind() {
             NameRefKind::Const(k) => self.name_bytes(func, k),
             NameRefKind::Reg(r) => {
@@ -192,7 +239,7 @@ impl Interp {
                 if matches!(v, Value::Array(_) | Value::Object(_) | Value::Closure(_)) {
                     return Err(Unwind::error("Illegal member name"));
                 }
-                v.to_php_bytes().into_boxed_slice()
+                Cow::Owned(v.to_php_bytes())
             }
         })
     }
@@ -228,6 +275,11 @@ impl Interp {
                 .ok_or_else(|| Unwind::error("Cannot use \"static\" when no class scope is active")),
             ClassRefKind::Reg(r) => match self.rd(base, r) {
                 Value::Object(o) => Ok(o.class_id()),
+                // `$closure::fromCallable(…)`: the `Closure` class.
+                Value::Closure(_) => self
+                    .well_known
+                    .closure
+                    .ok_or_else(|| Unwind::error("Cannot use value of type Closure as class name")),
                 // `new $cls` autoloads like `new A` does. php looks the name
                 // up with a leading `\` stripped — the loader is called with
                 // `Foo`, never `\Foo` — but keeps the caller's spelling in
@@ -277,6 +329,7 @@ impl Interp {
             }
             ClassRefKind::Reg(r) => match self.rd(base, r) {
                 Value::Object(o) => Ok(Some(o.class_id())),
+                Value::Closure(_) => Ok(self.well_known.closure),
                 // `$x instanceof $name` never autoloads: an unknown class
                 // simply does not match.
                 Value::Str(s) => {
@@ -507,6 +560,11 @@ impl Interp {
                     self.set(base, dst, v);
                 }
                 Op::LoadNull { dst } => self.set(base, dst, Value::Null),
+                Op::FreeTemps { from, to } => {
+                    for r in from..to {
+                        self.set(base, r, Value::Null);
+                    }
+                }
                 Op::LoadBool { dst, val } => self.set(base, dst, Value::Bool(val)),
                 Op::Move { dst, src } => {
                     let v = self.raw(base, src).clone();
@@ -730,11 +788,15 @@ impl Interp {
                 }
                 Op::WriteBackElem { arr, key, val } => {
                     let v = self.rd(base, val);
-                    let container = self.rd(base, arr);
-                    match &*container.deref() {
-                        Value::Object(o) if self.is_array_access(o) => {
-                            if self.has_dim_storage(o) {
-                                let o = o.clone();
+                    // As in `FetchElemW`: no clone of an array container may
+                    // outlive this look, or the write below copies it.
+                    let object = match &*self.raw(base, arr).deref() {
+                        Value::Object(o) if self.is_array_access(o) => Some(o.clone()),
+                        _ => None,
+                    };
+                    match object {
+                        Some(o) => {
+                            if self.has_dim_storage(&o) {
                                 let k = key.map(|k| self.rd(base, k));
                                 self.offset_set(&o, k.as_ref(), v)?;
                             }
@@ -744,18 +806,21 @@ impl Interp {
                             // the statement.
                             self.set(base, val, Value::Null);
                         }
-                        _ => self.array_set(base, arr, key, v)?,
+                        None => self.array_set(base, arr, key, v)?,
                     }
                 }
                 Op::FetchElemW { dst, arr, key } => {
                     let k = key.map(|k| self.rd(base, k));
-                    let container = self.rd(base, arr);
-                    let taken = match &*container.deref() {
-                        Value::Object(o) if self.is_array_access(o) => {
-                            let o = o.clone();
-                            self.fetch_dim_w_object(&o, k.unwrap_or(Value::Null), true)?
-                        }
-                        _ => self.fetch_elem_w(base, arr, k.as_ref())?,
+                    // Only an `ArrayAccess` object is looked at through a
+                    // handle of its own: a clone of an array container held
+                    // here would make the element fetch copy the array.
+                    let object = match &*self.raw(base, arr).deref() {
+                        Value::Object(o) if self.is_array_access(o) => Some(o.clone()),
+                        _ => None,
+                    };
+                    let taken = match object {
+                        Some(o) => self.fetch_dim_w_object(&o, k.unwrap_or(Value::Null), true)?,
+                        None => self.fetch_elem_w(base, arr, k.as_ref())?,
                     };
                     self.set(base, dst, taken);
                 }
@@ -851,7 +916,7 @@ impl Interp {
                 Op::UnsetVar { var } => {
                     self.set(base, var, Value::Uninit);
                     let f = &self.frames[fi];
-                    if let Some(symtab) = f.symtab.clone() {
+                    if let Some(symtab) = f.extra().symtab.clone() {
                         if let Some(name) = func.reg_name(var) {
                             symtab.with_mut(|t| t.remove(name));
                         }
@@ -992,17 +1057,18 @@ impl Interp {
                         }
                     };
                     let f = &mut self.frames[fi];
-                    f.iters.retain(|(r, _)| *r != it);
-                    f.iters.push((it, state));
+                    let iters = &mut f.extra_mut().iters;
+                    iters.retain(|(r, _)| *r != it);
+                    iters.push((it, state));
                 }
                 Op::IterNext { it, key, val, target } => {
-                    let Some(idx) = self.frames[fi].iters.iter().position(|(r, _)| *r == it) else {
+                    let Some(idx) = self.frames[fi].extra().iters.iter().position(|(r, _)| *r == it) else {
                         pc = target as usize;
                         continue;
                     };
                     // An `Iterator` object drives user code, which needs the
                     // interpreter, so it is stepped outside the frame borrow.
-                    let iter_obj = match &self.frames[fi].iters[idx].1 {
+                    let iter_obj = match &self.frames[fi].extra().iters[idx].1 {
                         IterState::ByRef { cell, pos } => {
                             let o = match &*cell.borrow() {
                                 Value::Object(o) => Some(o.clone()),
@@ -1014,13 +1080,13 @@ impl Interp {
                     };
                     let step = if let Some((o, pos)) = iter_obj {
                         let step = self.iterator_step(&o, pos, key.is_some())?;
-                        if let IterState::ByRef { pos, .. } = &mut self.frames[fi].iters[idx].1 {
+                        if let IterState::ByRef { pos, .. } = &mut self.frames[fi].extra_mut().iters[idx].1 {
                             *pos += 1;
                         }
                         step
                     } else {
                         let f = &mut self.frames[fi];
-                        match &mut f.iters[idx].1 {
+                        match &mut f.extra_mut().iters[idx].1 {
                             IterState::Empty => None,
                             IterState::Array { arr, pos } => match arr.next_live_from(*pos) {
                                 Some((raw, k, v)) => {
@@ -1069,7 +1135,7 @@ impl Interp {
                     }
                 }
                 Op::IterFree { it } => {
-                    self.frames[fi].iters.retain(|(r, _)| *r != it);
+                    self.frames[fi].extra_mut().iters.retain(|(r, _)| *r != it);
                 }
 
                 // --- comparison ---
@@ -1226,7 +1292,6 @@ impl Interp {
                 // --- calls ---
                 Op::InitFCall { name, ns_fallback, ic } => {
                     let target = self.resolve_fcall(&func, name, ns_fallback, ic)?;
-                    let name = self.name_bytes(&func, name);
                     let args_base = self.stack.len();
                     self.frames[fi].pending.push(PendingCall {
                         target,
@@ -1237,26 +1302,18 @@ impl Interp {
                         argc: 0,
                         named: Vec::new(),
                         new_obj: None,
-                        name,
                     });
                 }
                 Op::InitDynCall { callee, .. } => {
                     let v = self.rd(base, callee);
                     self.autoload_callable(&v)?;
                     let c = self.resolve_callable(&v)?;
-                    let (target, this, scope, static_class, name) = match c {
-                        crate::call::Callable::Native(id) => (
-                            CallTarget::Native(id),
-                            None,
-                            None,
-                            None,
-                            Box::from(self.natives[id.0 as usize].name.as_bytes()),
-                        ),
+                    let (target, this, scope, static_class) = match c {
+                        crate::call::Callable::Native(id) => (CallTarget::Native(id), None, None, None),
                         crate::call::Callable::NativeMethod { method, this } => {
-                            let name = method.name.clone();
                             let decl = method.decl;
                             let static_class = this.as_ref().map(|o| o.class_id()).or(Some(decl));
-                            (CallTarget::NativeMethod(method), this, Some(decl), static_class, name)
+                            (CallTarget::NativeMethod(method), this, Some(decl), static_class)
                         }
                         crate::call::Callable::User {
                             func: f,
@@ -1264,10 +1321,7 @@ impl Interp {
                             scope,
                             static_class,
                             closure,
-                        } => {
-                            let name = f.f.name_bytes.clone();
-                            (CallTarget::User { func: f, closure }, this, scope, static_class, name)
-                        }
+                        } => (CallTarget::User { func: f, closure }, this, scope, static_class),
                     };
                     let args_base = self.stack.len();
                     self.frames[fi].pending.push(PendingCall {
@@ -1279,7 +1333,6 @@ impl Interp {
                         argc: 0,
                         named: Vec::new(),
                         new_obj: None,
-                        name,
                     });
                 }
                 Op::InitMethodCall { obj, name, .. } => {
@@ -1288,7 +1341,7 @@ impl Interp {
                     // `methods.rs` owns dispatch: virtual lookup, visibility,
                     // `__call`, the private-shadowing retry and the `Closure`
                     // receiver (`bindTo`/`call`/`__invoke`).
-                    self.init_method_call(fi, o, mname)?;
+                    self.init_method_call(fi, o, mname.into())?;
                 }
                 Op::InitStaticCall { class, name, .. } => {
                     let cid = self.resolve_class_ref(&func, base, class)?;
@@ -1300,7 +1353,7 @@ impl Interp {
                         class.kind(),
                         ClassRefKind::SelfKw | ClassRefKind::Parent | ClassRefKind::Static
                     );
-                    self.init_static_call(fi, cid, mname, forwarding)?;
+                    self.init_static_call(fi, cid, mname.into(), forwarding)?;
                 }
                 Op::InitNew { class, .. } => {
                     let cid = self.resolve_class_ref(&func, base, class)?;
@@ -1331,7 +1384,6 @@ impl Interp {
                         None => (CallTarget::NoCtor, None),
                     };
                     let args_base = self.stack.len();
-                    let name = self.classes[cid as usize].name.clone();
                     self.frames[fi].pending.push(PendingCall {
                         target,
                         this: Some(obj.clone()),
@@ -1341,7 +1393,6 @@ impl Interp {
                         argc: 0,
                         named: Vec::new(),
                         new_obj: Some(obj),
-                        name,
                     });
                 }
                 Op::SendVal { pos, src } => {
@@ -1485,7 +1536,7 @@ impl Interp {
                     } else {
                         self.rd(base, src)
                     };
-                    self.frames[fi].pending.last_mut().expect("pending").named.push((nm, v));
+                    self.frames[fi].pending.last_mut().expect("pending").named.push((nm.into(), v));
                 }
                 Op::DoCall { dst } => {
                     let pending = self.frames[fi].pending.pop().expect("DoCall without Init");
@@ -1576,12 +1627,13 @@ impl Interp {
                     // `static::` inside a closure declared in a static method
                     // still means the called class (`methods.rs`).
                     captures.push(called.map_or(Value::Null, |c| Value::Int(i64::from(c))));
-                    self.set(base, dst, Value::Closure(Closure::new(fid, captures)));
+                    let closure = self.new_closure(fid, captures);
+                    self.set(base, dst, Value::Closure(closure));
                 }
                 Op::Ret { src } => {
                     // A generator body that falls off the end finishes the
                     // generator; it does not return to a caller.
-                    if let Some(gid) = self.frames[fi].generator {
+                    if let Some(gid) = self.frames[fi].extra().generator {
                         self.finish_generator(gid, Value::Null);
                         return Ok(Switch::Done(Value::Null));
                     }
@@ -1648,20 +1700,20 @@ impl Interp {
                     let mut arr = rphp_value::Array::new();
                     // The extras stay on the frame for `func_get_args()`; a
                     // by-reference variadic collects the cells themselves.
-                    for v in &f.extra_args {
+                    for v in &f.extra().extra_args {
                         match v {
                             Value::Ref(r) => arr.push_ref(r.clone()),
                             other => arr.push(other.clone()),
                         }
                     }
-                    for (k, v) in &f.extra_named {
+                    for (k, v) in &f.extra().extra_named {
                         arr.set(rphp_value::ArrayKey::str(k), v.clone());
                     }
                     Value::assign(&mut self.stack[base + reg as usize], Value::Array(arr));
                 }
                 Op::BindStatic { reg, idx } => {
                     // A closure frame keeps its own table (`frame.statics`).
-                    let table = self.frames[fi].statics.clone();
+                    let table = self.frames[fi].extra().statics.clone();
                     let existing = match &table {
                         Some(t) => t.borrow()[idx as usize].clone(),
                         None => func.statics.borrow()[idx as usize].clone(),
@@ -1707,7 +1759,7 @@ impl Interp {
                     self.rebind(base, reg, cell);
                 }
                 Op::BindStaticOrJmp { reg, idx, target } => {
-                    let table = self.frames[fi].statics.clone();
+                    let table = self.frames[fi].extra().statics.clone();
                     let existing = match &table {
                         Some(t) => t.borrow()[idx as usize].clone(),
                         None => func.statics.borrow()[idx as usize].clone(),
@@ -1733,11 +1785,11 @@ impl Interp {
                     self.rebind(base, reg, cell);
                 }
                 Op::BindSymtab => {
-                    let symtab = match self.frames[fi].symtab.clone() {
+                    let symtab = match self.frames[fi].extra().symtab.clone() {
                         Some(t) => t,
                         None => {
                             let t = Symtab::new();
-                            self.frames[fi].symtab = Some(t.clone());
+                            self.frames[fi].extra_mut().symtab = Some(t.clone());
                             t
                         }
                     };
@@ -1763,7 +1815,7 @@ impl Interp {
                     let table = if global {
                         Some(self.globals.clone())
                     } else {
-                        self.frames[fi].symtab.clone()
+                        self.frames[fi].extra().symtab.clone()
                     };
                     let v = match table.and_then(|t| t.get(&n)) {
                         Some(cell) => cell.get(),
@@ -1783,11 +1835,11 @@ impl Interp {
                     let table = if global {
                         self.globals.clone()
                     } else {
-                        match self.frames[fi].symtab.clone() {
+                        match self.frames[fi].extra().symtab.clone() {
                             Some(t) => t,
                             None => {
                                 let t = Symtab::new();
-                                self.frames[fi].symtab = Some(t.clone());
+                                self.frames[fi].extra_mut().symtab = Some(t.clone());
                                 t
                             }
                         }
@@ -1803,11 +1855,11 @@ impl Interp {
                     // inside a namespace falls back to the global one, which
                     // is how `DIRECTORY_SEPARATOR` resolves inside
                     // `namespace Composer\Autoload`.
-                    let (v, found) = match self.constants.get(&n).cloned() {
+                    let (v, found) = match self.constants.get(&*n).cloned() {
                         Some(v) => (v, n),
                         None => {
                             let g = ns_fallback.map(|k| self.name_bytes(&func, k));
-                            match g.as_ref().and_then(|g| self.constants.get(g).cloned()) {
+                            match g.as_ref().and_then(|g| self.constants.get(&**g).cloned()) {
                                 Some(v) => (v, g.expect("looked up through it")),
                                 None => {
                                     return Err(Unwind::error(format!(
@@ -1819,7 +1871,7 @@ impl Interp {
                         }
                     };
                     if !self.deprecated_constants.is_empty() {
-                        if let Some(note) = self.deprecated_constants.get(&found).copied() {
+                        if let Some(note) = self.deprecated_constants.get(&*found).copied() {
                             self.deprecated(&format!(
                                 "Constant {} is deprecated{note}",
                                 String::from_utf8_lossy(&found)
@@ -1850,6 +1902,7 @@ impl Interp {
                                 Value::Object(o) => {
                                     Value::string(&self.classes[o.class_id() as usize].name)
                                 }
+                                Value::Closure(_) => Value::string(b"Closure"),
                                 other => {
                                     return Err(Unwind::type_error(format!(
                                         "Cannot use \"::class\" on {}",
@@ -1972,17 +2025,46 @@ impl Interp {
                         String::from_utf8_lossy(&n)
                     )));
                 }
-                Op::FetchProp { dst, obj, name, .. } => {
-                    let o = self.rd(base, obj);
-                    let n = self.member_name(&func, base, name)?;
-                    let v = self.fetch_prop(&o, &n)?;
-                    self.set(base, dst, v);
+                Op::FetchProp { dst, obj, name, ic } => {
+                    // A site with a constant name that already resolved the
+                    // slot for this object's class reads it without a
+                    // lookup. (`$o->$name` names many properties from one
+                    // site and is never cached.)
+                    let constant = matches!(name.kind(), NameRefKind::Const(_));
+                    let cached = if constant { self.prop_read_cached(&func, fi, base, obj, ic) } else { None };
+                    if let Some(v) = cached {
+                        self.set(base, dst, v);
+                    } else {
+                        let o = self.rd(base, obj);
+                        let n = self.member_name(&func, base, name)?;
+                        let v = self.fetch_prop(&o, &n)?;
+                        if let (true, Value::Object(o)) = (constant, &o) {
+                            let scope = self.frames[fi].scope;
+                            if let Some(e) = self.prop_cache_entry(o, &n, scope, false) {
+                                if let Some(slot) = func.ics.borrow_mut().get_mut(ic as usize) {
+                                    *slot = e;
+                                }
+                            }
+                        }
+                        self.set(base, dst, v);
+                    }
                 }
-                Op::AssignProp { obj, name, src, .. } => {
-                    let o = self.rd(base, obj);
-                    let n = self.member_name(&func, base, name)?;
-                    let v = self.rd(base, src);
-                    self.assign_prop(&o, &n, v)?;
+                Op::AssignProp { obj, name, src, ic } => {
+                    let constant = matches!(name.kind(), NameRefKind::Const(_));
+                    if !(constant && self.prop_write_cached(&func, fi, base, obj, src, ic)) {
+                        let o = self.rd(base, obj);
+                        let n = self.member_name(&func, base, name)?;
+                        let v = self.rd(base, src);
+                        self.assign_prop(&o, &n, v)?;
+                        if let (true, Value::Object(o)) = (constant, &o) {
+                            let scope = self.frames[fi].scope;
+                            if let Some(e) = self.prop_cache_entry(o, &n, scope, true) {
+                                if let Some(slot) = func.ics.borrow_mut().get_mut(ic as usize) {
+                                    *slot = e;
+                                }
+                            }
+                        }
+                    }
                 }
                 Op::FetchClass { dst, name, .. } => {
                     let n = self.name_bytes(&func, name);
@@ -2008,25 +2090,10 @@ impl Interp {
                 }
                 Op::InstanceOfRef { dst, obj, class } => {
                     let o = self.rd(base, obj);
-                    let r = if let Value::Closure(_) = &o {
-                        // Closures are not class instances yet (plan E6):
-                        // only `instanceof Closure` holds.
-                        match class.kind() {
-                            ClassRefKind::Named(k) => {
-                                self.name_bytes(&func, k).eq_ignore_ascii_case(b"closure")
-                            }
-                            ClassRefKind::Reg(r) => matches!(
-                                self.rd(base, r),
-                                Value::Str(s) if s.as_bytes().eq_ignore_ascii_case(b"closure")
-                            ),
-                            _ => false,
-                        }
-                    } else {
-                        let cid = self.resolve_class_ref_quiet(&func, base, class)?;
-                        match (o, cid) {
-                            (Value::Object(o), Some(cid)) => self.instanceof_class(o.class_id(), cid),
-                            _ => false,
-                        }
+                    let cid = self.resolve_class_ref_quiet(&func, base, class)?;
+                    let r = match (self.class_of_value(&o), cid) {
+                        (Some(c), Some(cid)) => self.instanceof_class(c, cid),
+                        _ => false,
                     };
                     self.set(base, dst, Value::Bool(r));
                 }
@@ -2062,7 +2129,7 @@ impl Interp {
                     }
                 }
                 Op::Yield { dst, key, val } => {
-                    let Some(gid) = self.frames[fi].generator else {
+                    let Some(gid) = self.frames[fi].extra().generator else {
                         return Err(Unwind::error("Cannot yield outside a generator"));
                     };
                     let v = val.map(|r| self.rd(base, r)).unwrap_or(Value::Null);
@@ -2078,7 +2145,7 @@ impl Interp {
                     return Ok(Switch::Done(Value::Null));
                 }
                 Op::YieldFrom { dst, src } => {
-                    let Some(gid) = self.frames[fi].generator else {
+                    let Some(gid) = self.frames[fi].extra().generator else {
                         return Err(Unwind::error("Cannot yield outside a generator"));
                     };
                     let v = self.rd(base, src);
@@ -2086,7 +2153,7 @@ impl Interp {
                     return Ok(Switch::Done(Value::Null));
                 }
                 Op::GenReturn { src } => {
-                    let Some(gid) = self.frames[fi].generator else {
+                    let Some(gid) = self.frames[fi].extra().generator else {
                         return Err(Unwind::error("Cannot return from outside a generator"));
                     };
                     let v = src.map(|r| self.rd(base, r)).unwrap_or(Value::Null);
@@ -2263,7 +2330,13 @@ impl Interp {
         };
         let name = match &p.target {
             CallTarget::User { func, .. } => self.callable_display_name(func),
-            _ => String::from_utf8_lossy(&p.name).into_owned(),
+            CallTarget::Native(id) => self.natives[id.0 as usize].name.to_string(),
+            CallTarget::NativeMethod(m) => format!(
+                "{}::{}",
+                self.classes[m.decl as usize].name_str(),
+                String::from_utf8_lossy(&m.name)
+            ),
+            CallTarget::NoCtor => String::new(),
         };
         format!(
             "{name}(): Argument #{}{param} could not be passed by reference",
@@ -2607,7 +2680,7 @@ impl Interp {
         let fi = self.frames.len() - 1;
         let (this, scope, static_class, symtab) = {
             let f = &self.frames[fi];
-            (f.this.clone(), f.scope, f.static_class, f.symtab.clone())
+            (f.this.clone(), f.scope, f.static_class, f.extra().symtab.clone())
         };
         let symtab = symtab.unwrap_or_else(|| self.globals.clone());
         self.push_user_frame(
@@ -2621,7 +2694,7 @@ impl Interp {
             Some(symtab),
         )?;
         let top = self.frames.len() - 1;
-        self.frames[top].include_kind = Some(kind);
+        self.frames[top].extra_mut().include_kind = Some(kind);
         Ok(true)
     }
 

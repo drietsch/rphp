@@ -67,6 +67,12 @@ thread_local! {
     static ENGINE: RefCell<Mt> = const { RefCell::new(Mt { state: [0; N], next: N, mode: MT_RAND_MT19937, seeded: false }) };
 }
 
+/// php's `RSHUTDOWN`: the next request's first `mt_rand()` seeds afresh
+/// (`RANDOM_G(mt19937_seeded) = false`).
+pub(crate) fn request_shutdown() {
+    ENGINE.with(|e| e.borrow_mut().seeded = false);
+}
+
 impl Mt {
     /// `php_mt_initialize` + `php_mt_reload`.
     fn seed(&mut self, seed: u32) {
@@ -326,7 +332,7 @@ pub(crate) fn shuffle(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let Value::Array(a) = args[0].deref().into_owned() else {
         return Err(Unwind::type_error(format!(
             "shuffle(): Argument #1 ($array) must be of type array, {} given",
-            args[0].type_name()
+            rphp_runtime::value_name(&args[0])
         )));
     };
     let mut items: Vec<Value> = a.iter().map(|(_, v)| v.clone()).collect();
@@ -381,7 +387,7 @@ pub(crate) fn array_rand(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let Value::Array(a) = args[0].deref().into_owned() else {
         return Err(Unwind::type_error(format!(
             "array_rand(): Argument #1 ($array) must be of type array, {} given",
-            args[0].type_name()
+            rphp_runtime::value_name(&args[0])
         )));
     };
     let num_req = args.get(1).map_or(1, Value::to_int);

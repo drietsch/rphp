@@ -53,7 +53,7 @@ fn from_array_element(ctx: &mut Ctx, _this: Option<&Object>, args: &mut [Value])
         other => {
             return Err(Unwind::type_error(format!(
                 "ReflectionReference::fromArrayElement(): Argument #1 ($array) must be of type array, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     };
@@ -61,7 +61,7 @@ fn from_array_element(ctx: &mut Ctx, _this: Option<&Object>, args: &mut [Value])
     let Some(key) = array_key(&k) else {
         return Err(Unwind::type_error(format!(
             "ReflectionReference::fromArrayElement(): Argument #2 ($key) must be of type string|int, {} given",
-            k.type_name()
+            rphp_runtime::value_name(&k)
         )));
     };
     let Some(slot) = arr.get(&key) else {

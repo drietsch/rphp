@@ -65,13 +65,20 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf_ref!("uksort", 2, Some(2), 0b1, uksort),
 ];
 
-/// Borrow an argument as an array, or produce PHP's TypeError message.
+/// Borrow the first argument as an array, or produce PHP's TypeError message.
 fn want_array<'a>(func: &str, v: &'a Value) -> Result<&'a Array, Unwind> {
+    want_array_at(func, 1, "$array", v)
+}
+
+/// [`want_array`] for argument `pos` named `name` (`""` for a variadic
+/// position, which php names by number alone).
+fn want_array_at<'a>(func: &str, pos: usize, name: &str, v: &'a Value) -> Result<&'a Array, Unwind> {
     match v {
         Value::Array(a) => Ok(a),
         other => Err(Unwind::type_error(format!(
-            "{func}(): Argument #1 ($array) must be of type array, {} given",
-            other.type_name()
+            "{func}(): Argument #{pos}{} must be of type array, {} given",
+            if name.is_empty() { String::new() } else { format!(" ({name})") },
+            rphp_runtime::value_name(&other)
         ))),
     }
 }
@@ -130,14 +137,14 @@ pub(crate) fn count(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         }
         other => Err(Unwind::type_error(format!(
             "count(): Argument #1 ($value) must be of type Countable|array, {} given",
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }
 
 pub(crate) fn in_array(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let needle = args[0].clone();
-    let haystack = want_array("in_array", &args[1])?;
+    let haystack = want_array_at("in_array", 2, "$haystack", &args[1])?;
     let strict = args.get(2).is_some_and(Value::to_bool);
     for (_, v) in haystack.iter() {
         let hit = if strict {
@@ -158,7 +165,7 @@ pub(crate) fn array_key_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
     let Value::Array(arr) = &args[1] else {
         return Err(Unwind::type_error(format!(
             "array_key_exists(): Argument #2 ($array) must be of type array, {} given",
-            args[1].type_name()
+            rphp_runtime::value_name(&args[1])
         )));
     };
     let key = args[0].deref().into_owned();
@@ -178,14 +185,21 @@ pub(crate) fn array_key_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
     }))
 }
 
-pub(crate) fn array_keys(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let arr = want_array("array_keys", &args[0])?;
+pub(crate) fn array_keys(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let arr = want_array("array_keys", &args[0])?.clone();
     let strict = args.get(2).is_some_and(Value::to_bool);
+    let needle = args.get(1).cloned();
     let mut out = Array::new();
     for (k, v) in arr.iter() {
         // With a filter value only the keys of matching elements are listed.
-        if let Some(needle) = args.get(1) {
-            let hit = if strict { needle.identical(v) } else { needle.loose_eq(v) };
+        if let Some(needle) = &needle {
+            let hit = if strict {
+                needle.identical(v)
+            } else {
+                // `==`, with php's object-beside-number notice and conversion.
+                let (l, r) = ctx.cmp_operands(needle.clone(), v.clone())?;
+                l.loose_eq(&r)
+            };
             if !hit {
                 continue;
             }
@@ -211,8 +225,8 @@ pub(crate) fn array_values(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 pub(crate) fn array_merge(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mut out = Array::new();
-    for arg in args {
-        let arr = want_array("array_merge", arg)?;
+    for (i, arg) in args.iter().enumerate() {
+        let arr = want_array_at("array_merge", i + 1, "", arg)?;
         for (k, v) in arr.iter() {
             match k {
                 // Integer keys are renumbered consecutively.
@@ -268,7 +282,7 @@ fn binop_operand(ctx: &mut Ctx, func: &str, op: &str, v: &Value) -> Result<Optio
             }
         }
         Value::Array(_) | Value::Object(_) | Value::Closure(_) | Value::Resource(_) => {
-            ctx.warn(&format!("{func}(): {op} is not supported on type {}", v.type_name()))?;
+            ctx.warn(&format!("{func}(): {op} is not supported on type {}", rphp_runtime::value_name(&v)))?;
             Ok(None)
         }
         _ => Ok(Some(v.to_number())),
@@ -321,7 +335,7 @@ pub(crate) fn range(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             other => {
                 return Err(Unwind::type_error(format!(
                     "range(): Argument #3 ($step) must be of type int|float, {} given",
-                    other.type_name()
+                    rphp_runtime::value_name(&other)
                 )))
             }
         };
@@ -368,7 +382,7 @@ pub(crate) fn range(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             other => {
                 return Err(Unwind::type_error(format!(
                     "range(): Argument #{n} (${name}) must be of type string|int|float, {} given",
-                    other.type_name()
+                    rphp_runtime::value_name(&other)
                 )))
             }
         })
@@ -554,7 +568,7 @@ fn want_array_n<'a>(func: &str, n: usize, v: &'a Value) -> Result<&'a Array, Unw
         other => Err(Unwind::type_error(format!(
             "{func}(): Argument #{} must be of type array, {} given",
             n + 1,
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }
@@ -694,7 +708,7 @@ pub(crate) fn array_search(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         other => {
             return Err(Unwind::type_error(format!(
                 "array_search(): Argument #2 ($haystack) must be of type array, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     };
@@ -757,7 +771,7 @@ pub(crate) fn array_combine(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
         other => {
             return Err(Unwind::type_error(format!(
                 "array_combine(): Argument #1 ($keys) must be of type array, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     };
@@ -766,7 +780,7 @@ pub(crate) fn array_combine(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
         other => {
             return Err(Unwind::type_error(format!(
                 "array_combine(): Argument #2 ($values) must be of type array, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     };
@@ -1043,7 +1057,7 @@ fn take_entries(func: &str, v: &Value) -> Result<Vec<(ArrayKey, Value)>, Unwind>
         Value::Array(a) => Ok(a.iter().map(|(k, val)| (k.clone(), val.clone())).collect()),
         other => Err(Unwind::type_error(format!(
             "{func}(): Argument #1 ($array) must be of type array, {} given",
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }
@@ -1120,7 +1134,7 @@ pub(crate) fn array_push(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
         other => {
             return Err(Unwind::type_error(format!(
                 "array_push(): Argument #1 ($array) must be of type array, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     };
@@ -1241,9 +1255,9 @@ pub(crate) fn array_map(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     for (i, a) in args.iter().enumerate().skip(1) {
         if !matches!(&*a.deref(), Value::Array(_)) {
             return Err(Unwind::type_error(if i == 1 {
-                format!("array_map(): Argument #2 ($array) must be of type array, {} given", a.type_name())
+                format!("array_map(): Argument #2 ($array) must be of type array, {} given", rphp_runtime::value_name(&a))
             } else {
-                format!("array_map(): Argument #{} must be of type array, {} given", i + 1, a.type_name())
+                format!("array_map(): Argument #{} must be of type array, {} given", i + 1, rphp_runtime::value_name(&a))
             }));
         }
     }

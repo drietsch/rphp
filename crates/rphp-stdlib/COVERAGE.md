@@ -497,10 +497,11 @@ Cataloged along the way, none of them blocking:
 - **ext/tokenizer** over the workspace scanner (the routing attribute loader).
 - **Every reflector's `__toString()`** — Symfony hashes them into the
   container's resource signatures.
-- **A `Stringable` object at a native's `string` parameter** — generated
-  from the manifest (`cargo xtask string-params`, 1460 natives), applied at
-  the native call boundary; `sprintf`'s `%s`, `implode()` and a loose
-  comparison with a string by hand.
+- **A `Stringable` object at a native's `string` parameter** — from the
+  manifest's parameter types (`cargo xtask native-params`; a separate
+  string-parameter table was generated at first and folded into the object
+  check of 2026-09-21), applied at the native call boundary; `sprintf`'s
+  `%s`, `implode()` and a loose comparison with a string by hand.
 
 - **php 8.4 lazy objects** — the container dumper tries
   `ReflectionClass::newLazyGhost()` and dumps a ghost when it exists, a proxy
@@ -927,3 +928,86 @@ configuration file (only `-d` overrides), a Unix-socket listener,
 `security.limit_extensions`, `cgi.fix_pathinfo`'s re-derivation of
 `PATH_INFO` when the web server passes a script that is a prefix of the
 path, `clear_env = no`, `env[]`/`php_value` pool directives.
+
+## The demo's admin walk (2026-09-21)
+
+Walking symfony/demo's stateful flow — login, a post created with tags, a
+comment, the post edited and deleted, logout, the profile, search —
+against `php -S` with a cookie jar found the gaps below; every page of the
+walk is now byte-identical apart from the profiler's tokens, the session
+ids, the CSRF tokens and the clock, and the walk is the ladder's
+`L8http-flow` rung (`cookies = true`, see `fixtures/ladder/README.md`).
+
+- **A closure is an object.** `spl_object_id()`/`spl_object_hash()` accept
+  one (every closure takes a handle from the object allocator now),
+  `SplObjectStorage` and `WeakMap` key on one, `clone` makes a new closure,
+  `$f::class`, `is_a()`, `is_subclass_of()`, `method_exists()`,
+  `class_implements()`, `get_parent_class()`, `ReflectionObject`/
+  `ReflectionClass` see the `Closure` class, `$f::fromCallable()` works,
+  `(string) $f` is php's `Object of class Closure could not be converted to
+  string`, `$f->x` is `Undefined property: Closure::$x` and `$f->x = 1` is
+  `Cannot create dynamic property Closure::$x`. `var_dump`/`print_r` print
+  php's debug table: `name`/`file`/`line`, the `static` captures, `this`,
+  the `parameter` list, or `function` for a first-class callable over a
+  named function — and `*RECURSION*` for a closure capturing itself.
+- **`ReflectionFunctionAbstract::getStaticVariables()`**: the captured
+  `use` variables (by-reference ones as the shared cell), then the `static`
+  variables — the current cell once bound, else a constant-expression
+  initializer's value (php 8.3 evaluates those on demand; the compiler
+  keeps such an initializer as a thunk beside the inline evaluation) and
+  null for any other initializer until the body first runs. Symfony's
+  VarDumper casts every closure through it, so the profiler's form panel
+  needed it.
+- **`unset()` of a typed property** hands the slot to `__get`/`__set`/
+  `__isset`/`__unset` (php's `IS_PROP_UNINIT`), with the `__get` result
+  checked against the declared type; a never-initialized typed slot still
+  bypasses magic and errors on read. Symfony's `Constraint::$groups` lazy
+  initialization relies on this.
+- **Objects meeting native parameters**: php's argument parser refuses an
+  object for an `int`/`array`/`bool`… parameter with `must be of type T,
+  Class given`, takes `__toString()` for a `string` one, an instance for a
+  class part of a union, anything for `object`/`mixed`/`callable`, a
+  Traversable for `iterable`. The engine now applies that rule at every
+  native call from the generated parameter manifest (`native_params.rs`;
+  the separate string-parameter table is gone), and the hand-written
+  `… given` messages name objects by class and booleans as `true`/`false`
+  (`zend_zval_value_name`), as php 8.3+ does. `max()`/`min()` with one
+  non-array argument, `in_array()`'s and `array_merge()`'s argument
+  positions, `iterator_to_array()` over a plain object, follow php's
+  texts.
+- **The set operations compare `(string)` casts** through the engine's
+  conversion: `array_diff`/`array_intersect`/`array_unique`/
+  `array_diff_assoc` and friends match a Stringable object against a
+  string by its `__toString()` (and refuse an object without one with
+  php's Error), and `array_keys($a, $needle)` uses the engine's loose
+  comparison like `in_array()`. The demo's tag transformer
+  (`array_diff($names, $tagObjects)`) inserted every tag twice before this.
+- **Per-request module shutdown (`RSHUTDOWN`)**: a server's worker thread
+  serves many requests, and the session module's thread-local state leaked
+  from one to the next — a fresh browser saw the previous visitor's
+  session as already active, with its data. `rphp_embed::request_shutdown`
+  now runs after the output is flushed in every SAPI: an active session is
+  written and closed, then the session, `mb_*` settings, default timezone,
+  `strtok` cursor, locale and `mt_rand` seed are forgotten. The `http` and
+  `fcgi` suites send two cookieless requests to a session script to keep
+  it so.
+- **The session cookie is sent once**: `session_regenerate_id()` drops an
+  earlier `Set-Cookie: PHPSESSID=` line (php's
+  `php_session_remove_cookie`), so a save handler's own deletion cookie
+  (Symfony's `AbstractSessionHandler::destroy()`) does not reach the
+  browser next to the new id.
+
+**Still open from the walk:** ext/curl (the profiler's log panel lists
+HttpClient's "install the curl extension" notice on every page, normalized
+away in the ladder), php's reuse of freed object handles (`#N` in dumps).
+
+## Interpreter performance, second wave (2026-09-21)
+
+See `examples/bench/README.md` for the numbers and the techniques (a
+property inline cache, the call path's per-call allocations, temporaries
+released at statement end, functions shared with the unit cache). The
+property cache is exercised by `examples/tier-a/lang/prop-sites.php` —
+one site meeting a dynamic name, several classes, an `unset()` slot, a
+reference-bound slot, a coerced type, readonly and asymmetric slots, and
+a shadowed private property — and everything else by the differential
+corpus and the ladder as before.

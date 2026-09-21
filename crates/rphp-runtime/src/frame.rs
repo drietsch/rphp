@@ -94,8 +94,6 @@ pub struct PendingCall {
     pub named: Vec<(Box<[u8]>, Value)>,
     /// The object being constructed (`InitNew`).
     pub new_obj: Option<Object>,
-    /// The name the call was made under (for messages).
-    pub name: Box<[u8]>,
 }
 
 /// The state of a `foreach` iterator register.
@@ -108,7 +106,9 @@ pub enum IterState {
     Empty,
 }
 
-/// One activation on the frame stack.
+/// One activation on the frame stack. The fields most calls never touch
+/// live behind [`Frame::extra`], allocated on first use, so that pushing
+/// and popping a frame moves and drops little.
 pub struct Frame {
     pub kind: FrameKind,
     /// The running function (`None` for native / internal frames).
@@ -119,11 +119,6 @@ pub struct Frame {
     pub pc: usize,
     /// Positional arguments passed.
     pub argc: usize,
-    /// Positional arguments beyond the declared parameters
-    /// (`func_get_args`, `...$rest`).
-    pub extra_args: Vec<Value>,
-    /// Named arguments beyond the declared parameters (`...$rest`).
-    pub extra_named: Vec<(Box<[u8]>, Value)>,
     /// `$this`.
     pub this: Option<Object>,
     /// Lexical scope class (visibility checks, `self::`).
@@ -132,8 +127,6 @@ pub struct Frame {
     pub static_class: Option<u32>,
     /// Where the return value goes.
     pub ret: RetTarget,
-    /// The named symbol table (`NEEDS_SYMTAB` frames, includes, `{main}`).
-    pub symtab: Option<Symtab>,
     /// Calls being set up in this frame (innermost last).
     pub pending: Vec<PendingCall>,
     /// The `@` depth on entry (restored when the frame unwinds).
@@ -142,6 +135,22 @@ pub struct Frame {
     pub strict: bool,
     /// For native frames: the native and the arguments it was called with.
     pub native: Option<(NativeTarget, Vec<Value>)>,
+    /// What few frames carry (see [`FrameExtra`]).
+    pub extra: Option<Box<FrameExtra>>,
+}
+
+/// The parts of a [`Frame`] that an ordinary call never needs: variadic
+/// leftovers, a symbol table, `foreach` iterators, generator and include
+/// bookkeeping, a native's by-reference cells, a closure's statics.
+#[derive(Default)]
+pub struct FrameExtra {
+    /// Positional arguments beyond the declared parameters
+    /// (`func_get_args`, `...$rest`).
+    pub extra_args: Vec<Value>,
+    /// Named arguments beyond the declared parameters (`...$rest`).
+    pub extra_named: Vec<(Box<[u8]>, Value)>,
+    /// The named symbol table (`NEEDS_SYMTAB` frames, includes, `{main}`).
+    pub symtab: Option<Symtab>,
     /// The cells behind a native's by-reference arguments (position,
     /// cell): what `bindParam()`-style natives keep hold of.
     pub ref_cells: Vec<(usize, PhpRef)>,
@@ -158,6 +167,29 @@ pub struct Frame {
     pub statics: Option<std::rc::Rc<std::cell::RefCell<Vec<Option<rphp_value::PhpRef>>>>>,
 }
 
+thread_local! {
+    /// What [`Frame::extra`] answers for a frame without extras (the
+    /// contents hold `Rc`s, so this cannot be a plain static).
+    static NO_EXTRA: &'static FrameExtra = Box::leak(Box::default());
+}
+
+impl Frame {
+    /// The rarely used parts, empty when the frame never needed them.
+    #[inline]
+    pub fn extra(&self) -> &FrameExtra {
+        match &self.extra {
+            Some(e) => e,
+            None => NO_EXTRA.with(|e| *e),
+        }
+    }
+
+    /// The rarely used parts for writing, allocated on first use.
+    #[inline]
+    pub fn extra_mut(&mut self) -> &mut FrameExtra {
+        self.extra.get_or_insert_with(Default::default)
+    }
+}
+
 impl Frame {
     /// A native frame.
     pub fn native(id: NativeId, args: Vec<Value>, silence_base: u32) -> Frame {
@@ -167,22 +199,15 @@ impl Frame {
             base: 0,
             pc: 0,
             argc: args.len(),
-            extra_args: Vec::new(),
-            extra_named: Vec::new(),
             this: None,
             scope: None,
             static_class: None,
             ret: RetTarget::Discard,
-            symtab: None,
             pending: Vec::new(),
             silence_base,
             strict: false,
             native: Some((NativeTarget::Func(id), args)),
-            ref_cells: Vec::new(),
-            include_kind: None,
-            iters: Vec::new(),
-            generator: None,
-            statics: None,
+            extra: None,
         }
     }
 
@@ -267,7 +292,7 @@ impl Interp {
 
     /// The innermost user frame's symbol table, if it has one.
     pub fn current_symtab(&self) -> Option<Symtab> {
-        self.current_user_frame().and_then(|f| f.symtab.clone())
+        self.current_user_frame().and_then(|f| f.extra().symtab.clone())
     }
 
     /// The arguments a user frame was called with, as php reports them in
@@ -294,7 +319,7 @@ impl Interp {
                     .unwrap_or(Value::Null)
             })
             .collect();
-        out.extend(frame.extra_args.iter().cloned());
+        out.extend(frame.extra().extra_args.iter().cloned());
         out
     }
 
@@ -346,7 +371,7 @@ impl Interp {
             FrameKind::Include => (
                 None,
                 None,
-                match frame.include_kind {
+                match frame.extra().include_kind {
                     Some(IncludeKind::Include) => "include".to_string(),
                     Some(IncludeKind::IncludeOnce) => "include_once".to_string(),
                     Some(IncludeKind::Require) => "require".to_string(),
@@ -456,7 +481,7 @@ impl Interp {
                         }
                         // Unknown named arguments a variadic collected keep
                         // their names (`f(1, k: 3)` in the rendering).
-                        for (k, v) in &callee.extra_named {
+                        for (k, v) in &callee.extra().extra_named {
                             args.set(ArrayKey::str(k), v.clone());
                         }
                     }

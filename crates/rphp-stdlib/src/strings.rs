@@ -336,7 +336,7 @@ pub(crate) fn implode(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             other => {
                 return Err(Unwind::type_error(format!(
                     "implode(): Argument #2 ($array) must be of type ?array, {} given",
-                    other.type_name()
+                    rphp_runtime::value_name(&other)
                 )))
             }
         }
@@ -905,7 +905,7 @@ pub(crate) fn strtr(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         let Value::Array(map) = &args[1] else {
             return Err(Unwind::type_error(format!(
                 "strtr(): Argument #2 ($from) must be of type array, {} given",
-                args[1].type_name()
+                rphp_runtime::value_name(&args[1])
             )));
         };
         let subject = bytes(&args[0]);
@@ -990,7 +990,7 @@ pub(crate) fn substr_replace(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult 
         if !matches!(&*l.deref(), Value::Null | Value::Int(_) | Value::Array(_) | Value::Bool(_) | Value::Float(_)) {
             return Err(Unwind::type_error(format!(
                 "substr_replace(): Argument #4 ($length) must be of type array|int|null, {} given",
-                l.type_name()
+                rphp_runtime::value_name(&l)
             )));
         }
     }

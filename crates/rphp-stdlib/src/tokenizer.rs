@@ -56,7 +56,7 @@ fn str_arg(v: &Value, func: &str, n: usize, name: &str) -> Result<Vec<u8>, Unwin
         Value::Array(_) | Value::Object(_) | Value::Closure(_) | Value::Resource(_) => {
             Err(Unwind::type_error(format!(
                 "{func}(): Argument #{n} (${name}) must be of type string, {} given",
-                v.type_name()
+                rphp_runtime::value_name(&v)
             )))
         }
         _ => Ok(v.to_php_bytes()),
@@ -199,7 +199,7 @@ fn token_is(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult
             other => {
                 return Err(Unwind::type_error(format!(
                     "PhpToken::is(): Argument #1 ($kind) must only have elements of type string|int, {} given",
-                    other.type_name()
+                    rphp_runtime::value_name(&other)
                 )))
             }
         })
@@ -220,7 +220,7 @@ fn token_is(_: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResult
         other => {
             return Err(Unwind::type_error(format!(
                 "PhpToken::is(): Argument #1 ($kind) must be of type string|int|array, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     }))

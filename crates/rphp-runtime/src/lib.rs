@@ -39,7 +39,6 @@ mod props;
 mod registry;
 mod resources;
 mod statics;
-mod string_params;
 mod symtab;
 mod throwable;
 mod traits;

@@ -69,7 +69,12 @@ the php side, a file missing under rphp, or a file only rphp produced all
 fail). HTTP rungs (`http = true`) start `php -S` and `rphp -S` on the
 working copy's `docroot` (ephemeral ports) and compare each request's raw
 response — status line, headers, body — the same way, with the port and the
-`Date` header as placeholders.
+`Date` header as placeholders. A rung with `cookies = true` is a stateful
+flow: each side keeps a cookie jar across its requests (a login, the
+session), every non-GET carries a same-origin `Origin` header (stateless
+CSRF checks), and a request may quote a field of the previous response's
+form as `${input:NAME}` (a session-bound CSRF token). Each side runs on its
+own fresh working copy, so a fixture database starts identical on both.
 
 ## `ladder.toml` schema
 
@@ -108,7 +113,10 @@ artifacts = ["var/cache/dev/*Container.php"]  # optional; globs, byte-identical 
 id       = "L7"
 http     = true
 docroot  = "public"
-requests = ["GET /", "GET /nonexistent"]
+requests = ["GET /", "GET /nonexistent",
+            "POST /login a=1&b=2"]  # `METHOD /path [urlencoded body]`
+cookies  = true                    # optional; a stateful flow (cookie jar, `Origin`
+                                   # on non-GETs, `${input:NAME}` from the last form)
 ```
 
 Unknown keys are rejected. Inline `allow` accepts only categories that have a

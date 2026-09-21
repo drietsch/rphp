@@ -305,12 +305,13 @@ pub(crate) fn class_implements(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
     let autoload = args.get(1).is_none_or(Value::to_bool);
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
+        Value::Closure(_) => ctx.well_known.closure,
         Value::Str(s) if autoload => ctx.lookup_class(s.as_bytes())?,
         Value::Str(s) => ctx.class_by_name(s.as_bytes()),
         other => {
             return Err(Unwind::type_error(format!(
                 "class_implements(): Argument #1 ($object_or_class) must be of type object|string, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     };
@@ -338,11 +339,12 @@ pub(crate) fn class_uses(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let autoload = args.get(1).is_none_or(Value::to_bool);
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
+        Value::Closure(_) => ctx.well_known.closure,
         Value::Str(s) if autoload => ctx.lookup_class(s.as_bytes())?,
         Value::Str(s) => ctx.class_by_name(s.as_bytes()),
         other => return Err(Unwind::type_error(format!(
             "class_uses(): Argument #1 ($object_or_class) must be of type object|string, {} given",
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     };
     let Some(cid) = class else {
@@ -424,7 +426,7 @@ pub(crate) fn get_resource_type(_: &mut Ctx, args: &mut [Value]) -> NativeResult
         Value::Resource(r) => Ok(Value::string(r.kind().as_bytes())),
         other => Err(Unwind::type_error(format!(
             "get_resource_type(): Argument #1 ($resource) must be of type resource, {} given",
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }
@@ -491,12 +493,13 @@ pub(crate) fn class_parents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let autoload = args.get(1).is_none_or(Value::to_bool);
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
+        Value::Closure(_) => ctx.well_known.closure,
         Value::Str(s) if autoload => ctx.lookup_class(s.as_bytes())?,
         Value::Str(s) => ctx.class_by_name(s.as_bytes()),
         other => {
             return Err(Unwind::type_error(format!(
                 "class_parents(): Argument #1 ($object_or_class) must be of type object|string, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     };
@@ -529,6 +532,7 @@ fn class_arg(
 ) -> Result<Option<u32>, Unwind> {
     match &*v.deref() {
         Value::Object(o) => Ok(Some(o.class_id())),
+        Value::Closure(_) => Ok(ctx.well_known.closure),
         // A name goes through the autoloader (php's `zend_lookup_class`).
         Value::Str(s) if allow_string => ctx.lookup_class(s.as_bytes()),
         other => Err(Unwind::type_error(format!(
@@ -538,7 +542,7 @@ fn class_arg(
             } else {
                 "object"
             },
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }
@@ -553,7 +557,7 @@ pub(crate) fn get_class(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             Value::Closure(_) => Ok(Value::string(b"Closure")),
             other => Err(Unwind::type_error(format!(
                 "get_class(): Argument #1 ($object) must be of type object, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             ))),
         },
         None => {
@@ -630,10 +634,14 @@ pub(crate) fn property_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult
 /// `get_object_vars(object $object): array` — the properties visible from
 /// the calling scope, in declaration order.
 pub(crate) fn get_object_vars(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A closure has no properties.
+    if let Value::Closure(_) = &*args[0].deref() {
+        return Ok(Value::empty_array());
+    }
     let Value::Object(o) = &*args[0].deref() else {
         return Err(Unwind::type_error(format!(
             "get_object_vars(): Argument #1 ($object) must be of type object, {} given",
-            args[0].type_name()
+            rphp_runtime::value_name(&args[0])
         )));
     };
     // A lazy object initializes first; a proxy lists its real instance.
@@ -695,6 +703,7 @@ pub(crate) fn is_a(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // then matches the target by name up the chain without loading it.
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
+        Value::Closure(_) => ctx.well_known.closure,
         Value::Str(s) if allow_string => ctx.lookup_class(s.as_bytes())?,
         _ => None,
     };
@@ -710,6 +719,7 @@ pub(crate) fn is_subclass_of(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult 
     let allow_string = args.get(2).is_none_or(Value::to_bool);
     let class = match &*args[0].deref() {
         Value::Object(o) => Some(o.class_id()),
+        Value::Closure(_) => ctx.well_known.closure,
         Value::Str(s) if allow_string => ctx.lookup_class(s.as_bytes())?,
         _ => None,
     };
@@ -724,9 +734,10 @@ pub(crate) fn is_subclass_of(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult 
 pub(crate) fn spl_object_id(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     match &*args[0].deref() {
         Value::Object(o) => Ok(Value::Int(i64::from(o.id()))),
+        Value::Closure(c) => Ok(Value::Int(i64::from(c.id()))),
         other => Err(Unwind::type_error(format!(
             "spl_object_id(): Argument #1 ($object) must be of type object, {} given",
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }
@@ -736,9 +747,10 @@ pub(crate) fn spl_object_id(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 pub(crate) fn spl_object_hash(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     match &*args[0].deref() {
         Value::Object(o) => Ok(Value::string(format!("{:016x}0000000000000000", o.id()).as_bytes())),
+        Value::Closure(c) => Ok(Value::string(format!("{:016x}0000000000000000", c.id()).as_bytes())),
         other => Err(Unwind::type_error(format!(
             "spl_object_hash(): Argument #1 ($object) must be of type object, {} given",
-            other.type_name()
+            rphp_runtime::value_name(&other)
         ))),
     }
 }

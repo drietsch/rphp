@@ -29,61 +29,61 @@ normalize = 'drop-lines:^\s{2}(?:OPcache|APCu|Xdebug|Intl locale)\s'
 # `Date` header are placeholders already (the ladder replaces both).
 
 [[allow]]
-snippet   = "L8http/**"
+snippet   = "L8http*/**"
 category  = "platform-value"
 reason    = "the profiler token (6 hex digits) names the request everywhere: the X-Debug-Token headers, the toolbar's element ids, the profiler links, the deauth cookie"
-normalize = 'regex:(X-Debug-Token: |X-Previous-Debug-Token: |/_profiler/|sfwdt|sfToolbarClearer-|sfToolbarMainContent-|sfToolbarToggleButton-|sfLoadCounter-|sfLoadCancel-|sf-toolbar-info-request-|main_deauth_profile_token=|sfMiniToolbar-|sfToolbarShowButton-|loadToolbar\(.)[a-f0-9]{6} => $1%TOKEN%'
+normalize = 'regex:(X-Debug-Token: |X-Previous-Debug-Token: |/_profiler/|sfwdt|sfToolbarClearer-|sfToolbarMainContent-|sfToolbarToggleButton-|sfLoadCounter-|sfLoadCancel-|sf-toolbar-info-request-|main_deauth_profile_token=|main_auth_profile_token=|sfMiniToolbar-|sfToolbarShowButton-|loadToolbar\(.|sf_redirect=%7B%22token%22%3A%22)[a-f0-9]{6} => $1%TOKEN%'
 
 [[allow]]
-snippet   = "L8http/**"
+snippet   = "L8http*/**"
 category  = "platform-value"
 reason    = "the session id cookie"
 normalize = 'regex:PHPSESSID=[a-z0-9]+ => PHPSESSID=%SESSION%'
 
 [[allow]]
-snippet   = "L8http/**"
+snippet   = "L8http*/**"
 category  = "platform-value"
 reason    = "the CSP nonces on the profiler's stylesheet and script tags are random"
 normalize = 'regex:nonce="[a-f0-9]+" => nonce="%NONCE%"'
 
 [[allow]]
-snippet   = "L8http/**"
+snippet   = "L8http*/**"
 category  = "platform-value"
 reason    = "the toolbar's error handler builds an absolute URL with the port JSON-escaped (\u003A), which the ladder's port placeholder does not cover"
 normalize = 'regex:127\.0\.0\.1\\u003A\d+ => 127.0.0.1\u003A%PORT%'
 
 [[allow]]
-snippet   = "L8http/**"
+snippet   = "L8http*/**"
 category  = "timing"
 reason    = "Twig's debug comments stamp every fragment and page with the wall-clock time of rendering"
 normalize = 'regex:(Fragment|Page) rendered on [^-]* --> => $1 rendered on %WHEN% -->'
 
 [[allow]]
-snippet   = "L8http/**"
+snippet   = "L8http*/**"
 category  = "timing"
 reason    = "the exception page prints each log entry's wall-clock time"
 normalize = 'regex:<span class="text-muted newline">\d\d:\d\d:\d\d</span> => <span class="text-muted newline">%TIME%</span>'
 
 [[allow]]
-snippet   = "L8http/**"
+snippet   = "L8http*/**"
 category  = "platform-value"
 reason    = "VarDumper numbers each HTML dump with mt_rand(), in the script and the element ids"
 normalize = 'regex:sf-dump-\d+ => sf-dump-%N%'
 
 [[allow]]
-snippet   = "L8http/**"
+snippet   = "L8http*/**"
 category  = "object-id"
 reason    = "the exception page prints spl_object_id() next to dumped objects; php reuses freed handles, the engine's allocator is monotonic"
 normalize = 'regex:class=sf-dump-ref>#\d+</a> => class=sf-dump-ref>#%ID%</a>'
 
 [[allow]]
-snippet   = "L8http/**"
+snippet   = "L8http*/**"
 category  = "platform-value"
 reason    = "the exception page's log panel lists HttpClient's `Install the curl extension` notice: the host php has ext/curl, the engine does not (see COVERAGE.md)"
 normalize = 'regex:(?s)<tr class="status-normal" data-filter-level="debug" data-filter-channel="php">(?:[^<]|<[^/]|</[^t]|</t[^r])*?Install the curl extension.*?</tr>\s* => '
 
 [[allow]]
-snippet   = "L8http/**"
+snippet   = "L8http*/**"
 category  = "timing"
 reason    = "cookie deletion and the login page's Expires header carry clock readings"
 normalize = 'regex:(expires|Expires)[=:] ?\w+, \d\d \w+ \d{4} \d\d:\d\d:\d\d GMT => $1=%DATE%'
@@ -93,3 +93,23 @@ snippet   = "L8http/GET /en/blog/rss.xml"
 category  = "timing"
 reason    = "the feed's channel pubDate is the time of rendering"
 normalize = 'regex:<pubDate>\w+, \d\d \w+ \d{4} \d\d:\d\d:\d\d \+0000</pubDate> => <pubDate>%DATE%</pubDate>'
+
+# L8http-flow — the stateful admin walk. The comment is posted "now".
+
+[[allow]]
+snippet   = "L8http-flow/**"
+category  = "timing"
+reason    = "a comment's publishedAt is the time it was posted; the two sides post it some seconds apart"
+normalize = 'regex:([A-Z][a-z]{2} \d{1,2}, \d{4}), \d{1,2}:\d{2} (AM|PM) => $1, %TIME%'
+
+[[allow]]
+snippet   = "L8http-flow/**"
+category  = "platform-value"
+reason    = "the session-bound CSRF token of the delete form is random"
+normalize = 'regex:name="token" value="[^"]*" => name="token" value="%CSRF%"'
+
+[[allow]]
+snippet   = "L8http-flow/**"
+category  = "timing"
+reason    = "a new post's publishedAt defaults to now"
+normalize = 'regex:(name="post\[publishedAt\]"[^>]*value=")\d{4}-\d\d-\d\d \d\d:\d\d" => $1%NOW%"'

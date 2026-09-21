@@ -537,7 +537,7 @@ fn stream_arg(ctx: &mut Ctx, v: &Value, func: &str) -> Result<rphp_value::Resour
             let _ = ctx;
             Err(Unwind::type_error(format!(
                 "{func}(): Argument #1 ($stream) must be of type resource, {} given",
-                other.type_name()
+                rphp_runtime::value_name(&other)
             )))
         }
     }

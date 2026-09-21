@@ -240,6 +240,12 @@ impl ArrayData {
 pub struct Array(Rc<ArrayData>);
 
 impl Array {
+    /// How many handles share this array's storage (a write with more than
+    /// one copies first).
+    pub fn owners(&self) -> usize {
+        Rc::strong_count(&self.0)
+    }
+
     /// The empty array.
     pub fn new() -> Self {
         Array::default()

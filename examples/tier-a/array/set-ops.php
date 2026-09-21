@@ -24,3 +24,16 @@ $r = array_udiff(["x" => 3, "y" => 1, "z" => 2], [1, 2], function ($a, $b) use (
 });
 var_dump($r, $calls > 0);
 var_dump(array_udiff([1, 2, 3], [2], fn($a, $b) => $a > $b));   // deprecated: bool return
+
+// The set operations compare `(string)` casts, so a Stringable object meets
+// a string by its __toString() (and an object without one is an Error);
+// the loose searches (`in_array`, `array_search`, `array_keys`) use `==`,
+// where a Stringable beside a string compares as its string too.
+class Tag { function __construct(public string $n) {} function __toString(): string { return $this->n; } }
+$names = ['walk', 'test'];
+$tags = [new Tag('walk')];
+var_dump(array_diff($names, $tags), array_intersect($names, $tags), array_diff_assoc($names, $tags));
+var_dump(count(array_unique([new Tag("a"), new Tag("a"), "a"])));
+var_dump(in_array('walk', $tags), array_search('walk', $tags), array_keys($tags, 'walk'), array_keys($tags, 'nope'));
+try { var_dump(array_diff([1], [new stdClass])); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }
+try { var_dump(array_intersect([new stdClass], [1])); } catch (Error $e) { echo get_class($e), ": ", $e->getMessage(), "\n"; }

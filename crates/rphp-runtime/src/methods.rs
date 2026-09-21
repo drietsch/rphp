@@ -51,7 +51,7 @@
 
 use std::rc::Rc;
 
-use rphp_bytecode::{FnFlags, Op, Visibility};
+use rphp_bytecode::{FnFlags, InitRef, Op, Visibility};
 use rphp_value::{Array, ArrayKey, Closure, Object, Value};
 
 use crate::call::Callable;
@@ -681,7 +681,6 @@ impl Interp {
             argc: 0,
             named: Vec::new(),
             new_obj: None,
-            name: mname,
         });
         Ok(())
     }
@@ -753,7 +752,6 @@ impl Interp {
             argc: 0,
             named: Vec::new(),
             new_obj: None,
-            name: mname,
         });
         Ok(())
     }
@@ -802,6 +800,154 @@ impl Interp {
         self.closure_binding(c).1
     }
 
+    /// A closure value with a fresh object handle (`spl_object_id`, dumps):
+    /// every closure the engine hands out goes through here.
+    pub fn new_closure(&mut self, func: u32, captures: Vec<Value>) -> Closure {
+        Closure::with_id(func, captures, self.object_ids.alloc())
+    }
+
+    /// What `var_dump`/`print_r` show for a closure (php's
+    /// `zend_closure_get_debug_info`): a closure literal lists `name`,
+    /// `file`, `line`, its `static` captures and `this`; a first-class
+    /// callable over a named function lists `function` and `this`; either
+    /// ends with the `parameter` table when there are parameters.
+    pub fn closure_debug_info(&self, c: &Closure) -> Vec<(ArrayKey, Value)> {
+        let mut out: Vec<(ArrayKey, Value)> = Vec::new();
+        let key = |k: &str| ArrayKey::str(k.as_bytes());
+        let (this, _, _) = self.closure_binding(c);
+        let mut params: Vec<(Vec<u8>, bool)> = Vec::new();
+        if c.func() == ENGINE_CLOSURE {
+            let name: Vec<u8> = match self.resolve_engine_closure(c) {
+                Ok(Callable::Native(id)) => self.natives[id.0 as usize].name.as_bytes().to_vec(),
+                Ok(Callable::NativeMethod { method, .. }) => {
+                    let mut n = self.classes[method.decl as usize].name.to_vec();
+                    n.extend_from_slice(b"::");
+                    n.extend_from_slice(&method.name);
+                    n
+                }
+                Ok(Callable::User { func, .. }) => self.function_display_name(&func),
+                Err(_) => b"".to_vec(),
+            };
+            if let Some(row) = crate::native_args::native_arginfo(&String::from_utf8_lossy(&name)) {
+                for (pname, _, default) in row {
+                    let mut n = b"$".to_vec();
+                    n.extend_from_slice(pname.as_bytes());
+                    params.push((n, default.is_none()));
+                }
+            }
+            out.push((key("function"), Value::string(&name)));
+        } else {
+            let Some(f) = self.funcs.get(c.func() as usize).cloned() else {
+                return out;
+            };
+            if f.f.flags.contains(FnFlags::CLOSURE) {
+                out.push((key("name"), Value::string(&f.f.name_bytes)));
+                out.push((key("file"), Value::string(f.unit.file.as_bytes())));
+                out.push((key("line"), Value::Int(i64::from(f.f.decl_line))));
+                let caps = c.captures();
+                let mut statics = Array::new();
+                for (i, cap) in f.f.captures.iter().enumerate() {
+                    let Some(v) = caps.get(i) else { break };
+                    if let Some((name, _)) = f.f.var_names.iter().find(|(_, r)| *r == cap.dst) {
+                        statics.set(ArrayKey::str(name), v.clone());
+                    }
+                }
+                if statics.len() > 0 {
+                    out.push((key("static"), Value::Array(statics)));
+                }
+            } else {
+                out.push((key("function"), Value::string(&self.function_display_name(&f))));
+            }
+            for p in &f.f.params {
+                let mut n = Vec::new();
+                if p.by_ref {
+                    n.push(b'&');
+                }
+                n.push(b'$');
+                n.extend_from_slice(&p.name);
+                params.push((n, p.default.is_none() && !p.variadic));
+            }
+        }
+        if let Some(o) = this {
+            out.push((key("this"), Value::Object(o)));
+        }
+        if !params.is_empty() {
+            let mut arr = Array::new();
+            for (n, required) in params {
+                arr.set(
+                    ArrayKey::str(&n),
+                    Value::string(if required { b"<required>" } else { b"<optional>" }),
+                );
+            }
+            out.push((key("parameter"), Value::Array(arr)));
+        }
+        out
+    }
+
+    /// `ReflectionFunctionAbstract::getStaticVariables()`: a closure's
+    /// captured `use` variables (by-reference ones as the shared cell), then
+    /// the function's `static` variables — each as its current cell, or its
+    /// initializer's value when the body has not bound it yet.
+    pub fn function_static_variables(
+        &mut self,
+        func: &Rc<FuncRt>,
+        closure: Option<&Closure>,
+    ) -> Result<Array, Unwind> {
+        let mut out = Array::new();
+        let name_of = |reg: u16| {
+            func.f.var_names.iter().find(|(_, r)| *r == reg).map(|(n, _)| n.clone())
+        };
+        if let Some(c) = closure {
+            let caps = c.captures();
+            for (i, cap) in func.f.captures.iter().enumerate() {
+                let (Some(v), Some(name)) = (caps.get(i), name_of(cap.dst)) else { break };
+                match v {
+                    // `use (&$x)`: the shared cell itself.
+                    Value::Ref(r) if cap.by_ref => out.set_ref(ArrayKey::str(&name), r.clone()),
+                    v => out.set(ArrayKey::str(&name), v.clone()),
+                }
+            }
+        }
+        let table = closure.map(|c| c.statics(func.f.statics.len()));
+        let (this, scope) = match closure {
+            Some(c) => {
+                let (this, scope, _) = self.closure_binding(c);
+                (this, scope)
+            }
+            None => (None, func.class),
+        };
+        for (idx, sv) in func.f.statics.iter().enumerate() {
+            let cell = match &table {
+                Some(t) => t.borrow()[idx].clone(),
+                None => func.statics.borrow()[idx].clone(),
+            };
+            let v = match cell {
+                Some(c) => c.get(),
+                None => match sv.init.or(sv.const_expr) {
+                    None => Value::Null,
+                    Some(InitRef::Const(k)) => func.f.consts[k as usize].to_value(),
+                    Some(InitRef::Thunk(t)) => {
+                        let fid = func.unit.func_id(t);
+                        self.run_thunk(fid, this.clone(), scope)?
+                    }
+                },
+            };
+            out.set(ArrayKey::str(&sv.name), v);
+        }
+        Ok(out)
+    }
+
+    /// `f` / `C::m`: how php names a function in a closure dump.
+    fn function_display_name(&self, f: &FuncRt) -> Vec<u8> {
+        let mut n = Vec::new();
+        if let Some(cid) = f.class {
+            n.extend_from_slice(&self.classes[cid as usize].name);
+            n.extend_from_slice(b"::");
+        }
+        n.extend_from_slice(&f.f.name_bytes);
+        n
+    }
+
     /// Whether the closure is a `static function () {}` — no `$this` may ever
     /// be bound to it.
     ///
@@ -847,7 +993,7 @@ impl Interp {
     /// over its function id; anything else becomes an *engine closure* over
     /// `target`, the callable value that produced it.
     fn closure_over(
-        &self,
+        &mut self,
         callable: &Callable,
         target: Value,
         this: Option<Object>,
@@ -864,19 +1010,19 @@ impl Interp {
         ];
         match callable {
             Callable::User { func, closure: None, .. } => {
-                Value::Closure(Closure::new(func.id, tail.to_vec()))
+                Value::Closure(self.new_closure(func.id, tail.to_vec()))
             }
             // Already a closure value: keep its captures, replace the binding.
             Callable::User { closure: Some(c), .. } => {
                 let caps = c.captures();
                 let mut new: Vec<Value> = caps[..caps.len().saturating_sub(CLOSURE_TAIL)].to_vec();
                 new.extend_from_slice(&tail);
-                Value::Closure(Closure::new(c.func(), new))
+                Value::Closure(self.new_closure(c.func(), new))
             }
             Callable::Native(_) | Callable::NativeMethod { .. } => {
                 let mut caps = vec![target];
                 caps.extend_from_slice(&tail);
-                Value::Closure(Closure::new(ENGINE_CLOSURE, caps))
+                Value::Closure(self.new_closure(ENGINE_CLOSURE, caps))
             }
         }
     }
@@ -1047,7 +1193,7 @@ impl Interp {
     /// Replace a closure's trailing `[$this, scope]` pair, keeping its
     /// function and every explicit capture (php's closures are immutable, so
     /// binding always produces a new one).
-    fn rebind_closure(&self, c: &Closure, this: Option<Object>, scope: Option<u32>) -> Value {
+    fn rebind_closure(&mut self, c: &Closure, this: Option<Object>, scope: Option<u32>) -> Value {
         let caps = c.captures();
         let keep = caps.len().saturating_sub(CLOSURE_TAIL);
         let mut new: Vec<Value> = caps[..keep].to_vec();
@@ -1076,7 +1222,7 @@ impl Interp {
         new.push(this.map_or(Value::Null, Value::Object));
         new.push(scope.map_or(Value::Null, |c| Value::Int(i64::from(c))));
         new.push(called.map_or(Value::Null, |c| Value::Int(i64::from(c))));
-        Value::Closure(Closure::new(c.func(), new))
+        Value::Closure(self.new_closure(c.func(), new))
     }
 
     /// `$closure->call($newThis, ...$args)` — bind `$this` *and* the scope to
@@ -1155,7 +1301,6 @@ impl Interp {
                 argc: 0,
                 named: Vec::new(),
                 new_obj: None,
-                name: mname,
             });
             return Ok(());
         }
@@ -1179,7 +1324,6 @@ impl Interp {
             argc: 1,
             named: Vec::new(),
             new_obj: None,
-            name: mname,
         });
         Ok(())
     }
@@ -1286,7 +1430,6 @@ impl Interp {
             this,
             scope,
             static_class,
-            name,
             ..
         } = pending;
         Ok(match target {
@@ -1301,29 +1444,31 @@ impl Interp {
                         .or(scope)
                         .map_or(Value::Null, |c| Value::Int(i64::from(c))),
                 ];
-                Value::Closure(Closure::new(func.id, tail))
+                Value::Closure(self.new_closure(func.id, tail))
             }
             CallTarget::User { closure: Some(c), .. } => self.rebind_closure(&c, this, scope),
             CallTarget::Native(id) => {
                 let target = Value::string(self.natives[id.0 as usize].name.as_bytes());
                 let caps = vec![target, Value::Null, Value::Null];
-                Value::Closure(Closure::new(ENGINE_CLOSURE, caps))
+                Value::Closure(self.new_closure(ENGINE_CLOSURE, caps))
             }
             CallTarget::NativeMethod(m) => {
                 // Re-resolvable spelling of the method (a `__call` trampoline
                 // included: `[$obj, 'zz']` re-enters the same fallback, and
                 // `'C::zz'` the `__callStatic` one).
+                // (A trampoline's descriptor is named after the method as
+                // called, so this is `zz` for `$obj->zz(...)` over `__call`.)
                 let target = match &this {
                     Some(o) => {
                         let mut arr = Array::new();
                         arr.push(Value::Object(o.clone()));
-                        arr.push(Value::string(&name));
+                        arr.push(Value::string(&m.name));
                         Value::Array(arr)
                     }
                     None => {
                         let mut s = self.classes[m.decl as usize].name.to_vec();
                         s.extend_from_slice(b"::");
-                        s.extend_from_slice(&name);
+                        s.extend_from_slice(&m.name);
                         Value::string(&s)
                     }
                 };
@@ -1336,7 +1481,7 @@ impl Interp {
                         .or(caller_scope)
                         .map_or(Value::Null, |c| Value::Int(i64::from(c))),
                 ];
-                Value::Closure(Closure::new(ENGINE_CLOSURE, caps))
+                Value::Closure(self.new_closure(ENGINE_CLOSURE, caps))
             }
             CallTarget::NoCtor => {
                 return Err(Unwind::error(

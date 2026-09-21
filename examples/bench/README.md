@@ -211,4 +211,6 @@ over 608 classes, as in php); the natives' inclusive time is spread thin
 4 ms; Reflection and pcre under 3 ms each). The remaining 7× is the
 interpreter's per-op cost on real code — property fetches, method calls,
 string building — at ~20 ns per op, and the allocator behind it
-(`malloc`/`free` are ~20 % of the samples).
+(`malloc`/`free` were ~20 % of the samples). The `rphp` binary's global
+allocator is **mimalloc** now: 192 → 161 ms CPU per demo request,
+string-key reads with an interpolated key 854 → 603 ms.

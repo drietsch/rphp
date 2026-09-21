@@ -70,6 +70,10 @@ mago-syntax = "=1.49.0"
 mago-allocator = "=1.49.0"
 mago-database = "=1.49.0"
 mago-span = "=1.49.0"
+# The process allocator of the binaries: the engine allocates a heap
+# object per string/array/object (no unsafe DSTs), and the system
+# allocator on macOS is a large share of a request's time.
+mimalloc = { version = "0.1", default-features = false }
 # Tooling / tests.
 rayon = "1.12"
 regex = "1.13"

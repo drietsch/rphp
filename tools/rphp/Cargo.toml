@@ -15,6 +15,7 @@ profile = ["rphp-sapi-cli/profile"]
 
 [dependencies]
 rphp-sapi-cli.workspace = true
+mimalloc.workspace = true
 
 [dev-dependencies]
 rphp-test.workspace = true

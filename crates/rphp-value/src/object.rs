@@ -32,7 +32,7 @@
 //! simply freed.
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::fmt;
 use std::ops::{BitOr, BitOrAssign};
 use std::rc::{Rc, Weak};

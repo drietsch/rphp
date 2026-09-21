@@ -61,11 +61,17 @@ const REMOTE_WRAPPERS: &[&str] = &[
 /// An open stream: a byte buffer plus a cursor, and where writes ultimately
 /// go. php's `php://memory` and `php://temp` are pure buffers; a real file is
 /// read into the buffer on open and written back on flush/close, which keeps
-/// the whole implementation one code path. `php://stdout`/`stderr`/`output`
-/// forward writes to the engine's output channel instead.
+/// the whole implementation one code path — except a file opened to append
+/// only (`a`, a log), whose writes go straight to the file: reading a
+/// growing log in whole to append a line made every request O(log size),
+/// and two writers would have overwritten each other's lines. `php://stdout`/
+/// `stderr`/`output` forward writes to the engine's output channel instead.
 pub(crate) struct Stream {
     buf: Vec<u8>,
     pos: usize,
+    /// An append-only file (`fopen(…, 'a')`): every write lands in it at
+    /// once, as php's `O_APPEND` handle does; `pos` counts the bytes written.
+    file: Option<fs::File>,
     /// The file to write back to on flush, when this is a real file opened
     /// for writing.
     path: Option<std::path::PathBuf>,
@@ -132,6 +138,14 @@ impl Stream {
 
     /// Write `data` at the cursor, extending the buffer as php does.
     fn write(&mut self, data: &[u8]) -> usize {
+        if let Some(f) = &mut self.file {
+            use std::io::Write;
+            if f.write_all(data).is_err() {
+                return 0;
+            }
+            self.pos += data.len();
+            return data.len();
+        }
         if self.append {
             self.pos = self.buf.len();
         }
@@ -589,6 +603,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Stream {
             buf,
             pos: 0,
+            file: None,
             path: None,
             append,
             sink,
@@ -608,7 +623,21 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         }
     } else {
         let p = arg_path(ctx, &args[0]);
-        let existing = if truncate { Ok(Vec::new()) } else { fs::read(&p) };
+        // Append-only: the file itself, nothing read.
+        let file = if append && !readable {
+            match fs::OpenOptions::new().append(true).create(true).open(&p) {
+                Ok(f) => Some(f),
+                Err(_) => {
+                    ctx.warn(&format!(
+                        "fopen({path_str}): Failed to open stream: No such file or directory"
+                    ))?;
+                    return Ok(Value::Bool(false));
+                }
+            }
+        } else {
+            None
+        };
+        let existing = if truncate || file.is_some() { Ok(Vec::new()) } else { fs::read(&p) };
         let buf = match existing {
             Ok(b) => b,
             Err(_) if writable => Vec::new(),
@@ -619,18 +648,22 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
                 return Ok(Value::Bool(false));
             }
         };
-        let pos = if append { buf.len() } else { 0 };
+        // php starts an `a+` handle's read position at the beginning; a
+        // write moves it to the end.
+        let pos = 0;
+        let dirty = writable && (truncate || append) && file.is_none();
         Stream {
             buf,
             pos,
+            file,
             path: Some(p.clone()),
             append,
             sink: Sink::Buffer,
             readable,
             writable,
             eof: false,
-            // A `w`/`a` open creates the file even with nothing written.
-            dirty: writable && (truncate || append),
+            // A `w`/`a+` open creates the file even with nothing written.
+            dirty,
             mode: m.clone().into(),
             uri: p.to_string_lossy().into_owned().into(),
             fill_end: pos,
@@ -657,6 +690,7 @@ pub(crate) fn open_resource(ctx: &mut Ctx, path: &std::path::Path, mode: &str) -
     let stream = Stream {
         buf: Vec::new(),
         pos: 0,
+        file: None,
         path: Some(path.to_path_buf()),
         append: false,
         sink: Sink::Buffer,
@@ -677,6 +711,7 @@ fn std_stream(sink: Sink, uri: &str, mode: &str) -> Stream {
     Stream {
         buf: Vec::new(),
         pos: 0,
+        file: None,
         path: None,
         append: false,
         sink,

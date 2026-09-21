@@ -81,6 +81,10 @@ serde_json = "1.0"
 insta = "1.48"
 pico-args = "0.5"
 memchr = "2.8"
+# The hash tables behind arrays, object layouts and the class/function
+# indexes: hashbrown's foldhash is several times faster than std's SipHash
+# on the short byte keys php code hashes all day.
+hashbrown = "0.16"
 sha2 = "0.10"
 # date extension (S6): civil/zoned datetime arithmetic and the tz database.
 jiff = "0.2"

@@ -49,7 +49,7 @@ impl UnitRt {
 
 /// An inline-cache slot, stamped with the generation of the table it was
 /// resolved against.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum IcSlot {
     /// Nothing cached yet.
     Empty,
@@ -68,6 +68,10 @@ pub enum IcSlot {
     /// readonly nor asymmetric; `ty` is what the write may store without
     /// coercion.
     PropWrite { class: u32, scope: Option<u32>, slot: u16, ty: FastTy },
+    /// `$o->m(...)`: the method this site's dispatch resolved for objects
+    /// of `class` from calling scope `scope` (visible, not abstract, not a
+    /// `__call` trampoline), so a hit pushes the call without the lookup.
+    Method { class: u32, scope: Option<u32>, method: Rc<crate::class::MethodDef> },
 }
 
 /// The declared type of a cached property slot as an assignment can check

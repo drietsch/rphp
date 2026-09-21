@@ -10,7 +10,7 @@
 //! readers that want the plain value use [`Array::get_deref`] or dereference
 //! what [`Array::iter`] yields. The target packed/hash dual representation
 //! (`specs/base/03-heap-types.md` §11.2) lands later behind this same API.
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::fmt;
 use std::rc::Rc;
 

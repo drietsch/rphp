@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+hashbrown.workspace = true
 jiff.workspace = true
 rphp-bytecode.workspace = true
 rphp-value.workspace = true

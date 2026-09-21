@@ -1335,13 +1335,42 @@ impl Interp {
                         new_obj: None,
                     });
                 }
-                Op::InitMethodCall { obj, name, .. } => {
-                    let o = self.rd(base, obj);
-                    let mname = self.member_name(&func, base, name)?;
-                    // `methods.rs` owns dispatch: virtual lookup, visibility,
-                    // `__call`, the private-shadowing retry and the `Closure`
-                    // receiver (`bindTo`/`call`/`__invoke`).
-                    self.init_method_call(fi, o, mname.into())?;
+                Op::InitMethodCall { obj, name, ic } => {
+                    // A constant-name site that already resolved the method
+                    // for this object's class dispatches without the lookup.
+                    let constant = matches!(name.kind(), NameRefKind::Const(_));
+                    let cached = if constant {
+                        match (func.ics.borrow().get(ic as usize), self.raw(base, obj)) {
+                            (Some(crate::unit::IcSlot::Method { class, scope, method }), Value::Object(o))
+                                if o.class_id() == *class && self.frames[fi].scope == *scope =>
+                            {
+                                Some((o.clone(), method.clone()))
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some((o, m)) = cached {
+                        self.init_method_call_cached(fi, &o, &m);
+                    } else {
+                        let o = self.rd(base, obj);
+                        let mname = self.member_name(&func, base, name)?;
+                        // `methods.rs` owns dispatch: virtual lookup, visibility,
+                        // `__call`, the private-shadowing retry and the `Closure`
+                        // receiver (`bindTo`/`call`/`__invoke`).
+                        let resolved = self.init_method_call(fi, o.clone(), mname.into())?;
+                        if let (true, Some(m), Value::Object(o)) = (constant, resolved, &o) {
+                            let entry = crate::unit::IcSlot::Method {
+                                class: o.class_id(),
+                                scope: self.frames[fi].scope,
+                                method: m,
+                            };
+                            if let Some(slot) = func.ics.borrow_mut().get_mut(ic as usize) {
+                                *slot = entry;
+                            }
+                        }
+                    }
                 }
                 Op::InitStaticCall { class, name, .. } => {
                     let cid = self.resolve_class_ref(&func, base, class)?;
@@ -2619,7 +2648,7 @@ impl Interp {
             self.stack[dst_abs] = Value::Bool(false);
             return Ok(false);
         };
-        let canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+        let canonical = canonical_path(&resolved);
         if once && self.included.contains(&canonical) {
             self.stack[dst_abs] = Value::Bool(true);
             return Ok(false);
@@ -2786,4 +2815,37 @@ fn fast_float(op: AssignOpKind, x: f64, y: f64) -> Option<Value> {
         AssignOpKind::Div if y != 0.0 => x / y,
         _ => return None,
     }))
+}
+
+thread_local! {
+    /// php's realpath cache: what `canonicalize` answered for a path,
+    /// trusted for `realpath_cache_ttl` (120 s) — the include path asks
+    /// for every file of every request, and each answer costs several
+    /// system calls.
+    static REALPATHS: std::cell::RefCell<hashbrown::HashMap<std::path::PathBuf, (std::path::PathBuf, std::time::Instant)>> =
+        std::cell::RefCell::new(hashbrown::HashMap::new());
+}
+
+/// The canonical form of `path` through the thread's realpath cache (the
+/// path itself when it cannot be canonicalized).
+fn canonical_path(path: &std::path::Path) -> std::path::PathBuf {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(120);
+    let hit = REALPATHS.with(|c| {
+        c.borrow()
+            .get(path)
+            .filter(|(_, at)| at.elapsed() < TTL)
+            .map(|(p, _)| p.clone())
+    });
+    if let Some(p) = hit {
+        return p;
+    }
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    REALPATHS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 65536 {
+            c.clear();
+        }
+        c.insert(path.to_path_buf(), (canonical.clone(), std::time::Instant::now()));
+    });
+    canonical
 }

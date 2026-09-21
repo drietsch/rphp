@@ -71,3 +71,30 @@ How the copies were found: a temporary trace in `array_set`/
 64+ elements had more than one owner — run against the demo page, then
 reproduced in a five-line script. Any `rd()` clone of a container held
 across a write, and any register left holding one, shows up there.
+
+Third wave, the same day: method calls 165 → 118 ms per million, the demo
+page 0.32 → 0.29 s:
+
+- **A method inline cache** (`IcSlot::Method`): a constant-name `$o->m()`
+  site remembers the method its dispatch resolved for the object's class
+  from its scope (visible, not abstract, not a `__call` trampoline), so a
+  hit pushes the call without the name lookup — which allocated the name
+  and hashed it every call. `examples/tier-a/lang/method-sites.php` runs
+  one site over subclasses, a shadowed private method, `__call`, a trait
+  method, a static method through an instance and a closure receiver.
+- **hashbrown/foldhash** behind arrays, object layouts, the class,
+  function and native indexes: std's SipHash was 4 % of the demo page by
+  itself.
+- **`fopen(…, 'a')` writes straight to the file**: the stream design read
+  a file whole on open and wrote it back on close, so Monolog's append to
+  a growing `dev.log` cost the whole log per request (and two workers
+  would have lost each other's lines).
+- **The include path** keeps a realpath cache (120 s, php's
+  `realpath_cache_ttl`) and trusts a cached unit for 2 s without a `stat`
+  (opcache's `revalidate_freq`).
+
+What the demo page's profile shows now (a worker's time): the plain
+interpretation of Symfony's code — callbacks, Twig's generator-rendered
+templates — with `open(2)` of the log and profiler files (4–6 ms each on
+this machine, php pays the same), class linking per request (~12 %: php
+without opcache re-links too), and `serialize()` of the profiler data.

@@ -4,7 +4,9 @@
 //! the compiled unit, runs `{main}`, the shutdown functions and the output
 //! flush, and reads the exit code back.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+
+use hashbrown::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 

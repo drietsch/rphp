@@ -620,15 +620,19 @@ impl Interp {
     /// visibility judged against the calling scope, `__call` when the method
     /// is missing or not visible. A `Closure` receiver dispatches to the
     /// engine-side closure methods ([`Interp::init_closure_method_call`]).
+    ///
+    /// Returns the method the dispatch resolved when a site may cache it
+    /// (see [`IcSlot::Method`](crate::unit::IcSlot::Method)).
     pub(crate) fn init_method_call(
         &mut self,
         fi: usize,
         obj: Value,
         mname: Box<[u8]>,
-    ) -> Result<(), Unwind> {
+    ) -> Result<Option<Rc<MethodDef>>, Unwind> {
         let obj = obj.deref().into_owned();
         if let Value::Closure(c) = &obj {
-            return self.init_closure_method_call(fi, c.clone(), mname);
+            self.init_closure_method_call(fi, c.clone(), mname)?;
+            return Ok(None);
         }
         let Value::Object(o) = obj else {
             return Err(Unwind::error(format!(
@@ -638,6 +642,7 @@ impl Interp {
             )));
         };
         let scope = self.frames[fi].scope;
+        let mut resolved = None;
         let (target, this, call_scope, static_class) =
             match self.lookup_method(o.class_id(), &mname, scope) {
                 Ok(m) => {
@@ -656,6 +661,7 @@ impl Interp {
                         },
                         MethodBody::Native(_) => CallTarget::NativeMethod(m.clone()),
                     };
+                    resolved = Some(m.clone());
                     (target, this, Some(m.decl), Some(o.class_id()))
                 }
                 Err(miss) => {
@@ -682,7 +688,30 @@ impl Interp {
             named: Vec::new(),
             new_obj: None,
         });
-        Ok(())
+        Ok(resolved)
+    }
+
+    /// `$o->m(...)` through a site's inline cache: the pending call for a
+    /// method already resolved for the object's class from this scope.
+    pub(crate) fn init_method_call_cached(&mut self, fi: usize, o: &Object, m: &Rc<MethodDef>) {
+        let target = match &m.body {
+            MethodBody::User(f) => CallTarget::User {
+                func: f.clone(),
+                closure: None,
+            },
+            MethodBody::Native(_) => CallTarget::NativeMethod(m.clone()),
+        };
+        let args_base = self.stack.len();
+        self.frames[fi].pending.push(PendingCall {
+            target,
+            this: if m.is_static { None } else { Some(o.clone()) },
+            scope: Some(m.decl),
+            static_class: Some(o.class_id()),
+            args_base,
+            argc: 0,
+            named: Vec::new(),
+            new_obj: None,
+        });
     }
 
     /// `Class::m(...)` — `Op::InitStaticCall`. `forwarding` is true for

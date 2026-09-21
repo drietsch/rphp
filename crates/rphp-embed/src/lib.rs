@@ -208,7 +208,15 @@ struct CachedUnit {
     short_open_tag: bool,
     assertions: i8,
     module: Module,
+    /// When the file was last found unchanged: within
+    /// [`REVALIDATE_EVERY`] of it the include path trusts the entry
+    /// without a `stat`, as opcache's `revalidate_freq` does.
+    validated: std::time::Instant,
 }
+
+/// How long a cached unit is trusted without a fresh `stat` of its file
+/// (opcache's `revalidate_freq`, 2 seconds).
+const REVALIDATE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Engine {
     /// An engine with `config`.
@@ -233,7 +241,10 @@ impl Engine {
         }
         let module = compile_unit(interp, src, name)?;
         UNITS.with(|units| {
-            units.borrow_mut().insert(name.to_string(), CachedUnit { size, mtime, short_open_tag, assertions, module: module.clone() });
+            units.borrow_mut().insert(
+                name.to_string(),
+                CachedUnit { size, mtime, short_open_tag, assertions, module: module.clone(), validated: std::time::Instant::now() },
+            );
         });
         Ok(module)
     }
@@ -249,19 +260,35 @@ impl Engine {
     /// size and mtime under these ini settings.
     fn cached_unit(name: &str, size: u64, mtime: Option<std::time::SystemTime>, short_open_tag: bool, assertions: i8) -> Option<Module> {
         UNITS.with(|units| {
-            let units = units.borrow();
-            units
-                .get(name)
-                .filter(|u| u.size == size && u.mtime == mtime && u.short_open_tag == short_open_tag && u.assertions == assertions)
-                .map(|u| u.module.clone())
+            let mut units = units.borrow_mut();
+            let u = units.get_mut(name)?;
+            if u.size == size && u.mtime == mtime && u.short_open_tag == short_open_tag && u.assertions == assertions {
+                u.validated = std::time::Instant::now();
+                Some(u.module.clone())
+            } else {
+                None
+            }
         })
     }
 
-    /// The include path's cache probe: one `stat` decides whether the file
-    /// needs reading at all.
+    /// The include path's cache probe: an entry validated within the last
+    /// two seconds is trusted as it is; otherwise one `stat` decides
+    /// whether the file needs reading at all.
     fn cached_unit_for_file(interp: &Interp, name: &str) -> Option<Module> {
-        let meta = std::fs::metadata(name).ok()?;
         let (short_open_tag, assertions) = Engine::compile_ini(interp);
+        let fresh = UNITS.with(|units| {
+            let units = units.borrow();
+            units
+                .get(name)
+                .filter(|u| {
+                    u.short_open_tag == short_open_tag && u.assertions == assertions && u.validated.elapsed() < REVALIDATE_EVERY
+                })
+                .map(|u| u.module.clone())
+        });
+        if fresh.is_some() {
+            return fresh;
+        }
+        let meta = std::fs::metadata(name).ok()?;
         Engine::cached_unit(name, meta.len(), meta.modified().ok(), short_open_tag, assertions)
     }
 

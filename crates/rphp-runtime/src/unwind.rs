@@ -117,9 +117,15 @@ impl Interp {
             if let Some(func) = func {
                 if let Some(h) = self.find_handler(&func, base, pc, &obj) {
                     // Discard calls being set up inside the protected range
-                    // and their staged arguments; restore the `@` depth.
+                    // and their staged arguments; restore the `@` depth. An
+                    // object whose `new` was still collecting arguments never
+                    // had its constructor run: php never destructs it.
                     let f = &mut self.frames[fi];
-                    f.pending.clear();
+                    for p in f.pending.drain(..) {
+                        if let Some(obj) = p.new_obj {
+                            obj.add_flags(rphp_value::ObjFlags::DESTRUCTED);
+                        }
+                    }
                     let top = base + func.f.num_regs as usize;
                     self.stack.truncate(top);
                     self.silence = f.silence_base;
@@ -139,8 +145,18 @@ impl Interp {
                     return Ok(());
                 }
             }
-            // No handler in this frame: pop it.
+            // No handler in this frame: pop it. Constructions it was setting
+            // up never ran; if the frame *is* a constructor, its object's
+            // construction failed — php skips `__destruct` in both cases.
             let f = self.frames.pop().expect("frame");
+            for p in &f.pending {
+                if let Some(obj) = &p.new_obj {
+                    obj.add_flags(rphp_value::ObjFlags::DESTRUCTED);
+                }
+            }
+            if let crate::frame::RetTarget::New { obj, .. } = &f.ret {
+                obj.add_flags(rphp_value::ObjFlags::DESTRUCTED);
+            }
             if f.is_user() {
                 self.stack.truncate(f.base);
             }

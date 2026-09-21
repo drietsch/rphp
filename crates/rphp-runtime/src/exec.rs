@@ -1730,12 +1730,37 @@ impl Interp {
                 }
                 Op::SendUnpack { src } => {
                     let v = self.rd(base, src);
-                    let Value::Array(a) = v else {
-                        return Err(Unwind::error("Only arrays and Traversables can be unpacked"));
+                    // An array unpacks in place; a `Traversable` (a generator,
+                    // an `Iterator`, an `IteratorAggregate`) is drained first —
+                    // `f(...$generator)` is how doctrine/inflector builds its
+                    // rule sets. String keys become named arguments (8.1).
+                    let items: Vec<(Value, Value)> = match &*v.deref() {
+                        Value::Array(a) => a.iter().map(|(k, val)| (k.to_value(), val.clone())).collect(),
+                        Value::Object(o)
+                            if self.generator_id(o).is_some()
+                                || self.well_known.traversable.is_some_and(|t| self.object_instanceof(o, t)) =>
+                        {
+                            let o = o.clone();
+                            self.iterate_traversable(&o)?
+                        }
+                        Value::Object(o) => {
+                            let name = self.class_name_of(o);
+                            return Err(Unwind::type_error(format!("Only arrays and Traversables can be unpacked, {name} given")));
+                        }
+                        other => {
+                            return Err(Unwind::type_error(format!(
+                                "Only arrays and Traversables can be unpacked, {} given",
+                                other.type_name()
+                            )))
+                        }
                     };
-                    for (k, val) in a.iter() {
+                    for (k, val) in items {
                         match k {
-                            rphp_value::ArrayKey::Int(_) => {
+                            Value::Str(s) => {
+                                let p = self.frames[fi].pending.last_mut().expect("pending");
+                                p.named.push((Box::from(s.as_bytes()), val.deref().into_owned()));
+                            }
+                            _ => {
                                 if !self.frames[fi].pending.last().expect("pending").named.is_empty() {
                                     return Err(Unwind::error(
                                         "Cannot use positional argument after named argument during unpacking",
@@ -1748,10 +1773,6 @@ impl Interp {
                                     val.deref().into_owned()
                                 };
                                 self.send(fi, v);
-                            }
-                            rphp_value::ArrayKey::Str(s) => {
-                                let p = self.frames[fi].pending.last_mut().expect("pending");
-                                p.named.push((Box::from(s.as_bytes()), val.deref().into_owned()));
                             }
                         }
                     }

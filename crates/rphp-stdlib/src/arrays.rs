@@ -888,20 +888,33 @@ pub(crate) fn array_column(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Some(v) => Some(array_key(v)),
     };
 
+    // A row is an array, or an object whose *public* properties answer for
+    // columns (an enum case's `name`/`value`, a DTO). Properties are stored
+    // under their plain name only when public, so a lookup by name never
+    // reaches a private or protected one — php skips those as well.
+    fn column(row: &Value, key: &rphp_value::ArrayKey) -> Option<Value> {
+        match row {
+            Value::Array(a) => a.get(key).cloned(),
+            Value::Object(o) => {
+                let name: Vec<u8> = match key {
+                    rphp_value::ArrayKey::Int(i) => i.to_string().into_bytes(),
+                    rphp_value::ArrayKey::Str(s) => s.as_bytes().to_vec(),
+                };
+                o.get(&name).map(|v| v.deref().into_owned())
+            }
+            _ => None,
+        }
+    }
     let mut out = Array::new();
     for (_, raw) in arr.iter() {
         let raw = raw.deref().into_owned();
-        let row = match &raw {
-            Value::Array(a) => Some(a),
-            _ => None,
-        };
         // Pull the column value (or the whole row, even a non-array one);
         // skip rows lacking the column.
         let val = if whole_row {
             raw.clone()
         } else {
-            match row.and_then(|r| column_key.as_ref().and_then(|k| r.get(k))) {
-                Some(v) => v.clone(),
+            match column_key.as_ref().and_then(|k| column(&raw, k)) {
+                Some(v) => v,
                 None => continue,
             }
         };
@@ -910,7 +923,7 @@ pub(crate) fn array_column(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
             None => out.push(val),
             // Index requested: key by the row's index value, falling back to an
             // append when the row lacks it or it is not a usable key.
-            Some(ik) => match row.and_then(|r| ik.as_ref().and_then(|k| r.get(k))).and_then(array_key) {
+            Some(ik) => match ik.as_ref().and_then(|k| column(&raw, k)).and_then(|v| array_key(&v)) {
                 Some(key) => out.set(key, val),
                 None => out.push(val),
             },

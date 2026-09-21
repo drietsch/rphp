@@ -29,6 +29,7 @@ mod frame;
 mod generator;
 mod ini;
 mod interp;
+mod interrupt;
 mod methods;
 mod native_args;
 mod native_params;
@@ -67,6 +68,7 @@ pub use frame::{
 };
 pub use generator::register_generator_class;
 pub use ini::{parse_bool, IniEntry, IniTable, CORE_DEFAULTS, SERVER_DEFAULTS};
+pub use interrupt::{Deadline, Interrupt};
 pub use interp::{
     CompileFailure, CompileHook, ExtState, Interp, SapiKind, MAX_FRAMES, MAX_REENTRY_DEPTH,
 };

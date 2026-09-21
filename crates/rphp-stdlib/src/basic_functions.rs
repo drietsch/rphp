@@ -196,9 +196,11 @@ pub(crate) fn function_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult
     Ok(Value::Bool(ctx.function_exists(name)))
 }
 
-/// `set_time_limit(int $seconds): bool` — accepted; the engine has no
-/// execution timer yet.
-pub(crate) fn set_time_limit(_: &mut Ctx, _: &mut [Value]) -> NativeResult {
+/// `set_time_limit(int $seconds): bool` — restart the execution timer from
+/// now; `0` removes the limit.
+pub(crate) fn set_time_limit(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let seconds = args.first().map(Value::to_int).unwrap_or(0).max(0) as u64;
+    ctx.set_time_limit(seconds);
     Ok(Value::Bool(true))
 }
 

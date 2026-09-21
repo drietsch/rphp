@@ -149,6 +149,10 @@ impl Interp {
         if self.light_native {
             return Err(Unwind::Retry);
         }
+        // Frame activation is the other safepoint: recursion without a loop.
+        if self.interrupt.is_raised() {
+            return Err(self.interrupted());
+        }
         if self.frames.len() >= MAX_FRAMES {
             return Err(Unwind::error(format!(
                 "Maximum function nesting level of '{MAX_FRAMES}' reached, aborting!"

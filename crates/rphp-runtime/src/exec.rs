@@ -1417,17 +1417,27 @@ impl Interp {
 
                 // --- control flow ---
                 Op::Jmp { target } => {
+                    // A backward jump is a loop's back edge: the safepoint.
+                    if (target as usize) <= pc && self.interrupt.is_raised() {
+                        return Err(self.interrupted());
+                    }
                     pc = target as usize;
                     continue;
                 }
                 Op::JmpIfTrue { cond, target } => {
                     if self.raw(base, cond).to_bool() {
+                        if (target as usize) <= pc && self.interrupt.is_raised() {
+                            return Err(self.interrupted());
+                        }
                         pc = target as usize;
                         continue;
                     }
                 }
                 Op::JmpIfFalse { cond, target } => {
                     if !self.raw(base, cond).to_bool() {
+                        if (target as usize) <= pc && self.interrupt.is_raised() {
+                            return Err(self.interrupted());
+                        }
                         pc = target as usize;
                         continue;
                     }

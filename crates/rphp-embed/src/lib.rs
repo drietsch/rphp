@@ -346,6 +346,12 @@ impl Engine {
             }
             Err(e) => debug_assert!(false, "prelude does not compile: {e:?}"),
         }
+        // php starts its execution timer at request startup: `max_execution_time`
+        // (30 under a web SAPI, 0 on the command line).
+        let limit = it.ini.int("max_execution_time");
+        if limit > 0 {
+            it.set_time_limit(limit as u64);
+        }
         it.cached_unit_hook = Some(Box::new(Engine::cached_unit_for_file));
         it.compile_hook = Some(Box::new(|interp: &Interp, src: &[u8], name: &str| {
             Engine::compile_cached(interp, src, name).map_err(|e| match e {

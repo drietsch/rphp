@@ -26,4 +26,5 @@ $missing = @include 'no-such-file.php';
 var_dump($missing);
 $missing2 = include 'no-such-file.php';
 var_dump($missing2);
+var_dump(include __DIR__ . '/no-such-file.php');     // an absolute path: the same two warnings
 echo "end\n";

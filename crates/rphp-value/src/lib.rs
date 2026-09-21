@@ -670,6 +670,9 @@ impl Value {
                 Some(y) => lhs.spaceship(&y),
                 None => byte_cmp(&lhs.to_php_bytes(), b.as_bytes()),
             },
+            // Two ints compare exactly (above 2^53 a double cannot tell
+            // them apart); an int beside a float compares as doubles, as php.
+            (Int(a), Int(b)) => int_cmp(*a, *b),
             _ => {
                 // Both numeric (Int/Float).
                 if lhs.identical(rhs) {

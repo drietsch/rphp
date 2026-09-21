@@ -303,16 +303,34 @@ fn binop_operand(ctx: &mut Ctx, func: &str, op: &str, v: &Value) -> Result<Optio
 
 pub(crate) fn array_sum(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_sum", &args[0])?;
-    let mut acc = Value::Int(0);
-    for (_, v) in entries(arr) {
-        if let Some(n) = binop_operand(ctx, "array_sum", "Addition", &v)? {
-            // Both operands are numeric, so `add` never errors.
-            if let Ok(sum) = acc.add(&n) {
-                acc = sum;
-            }
+    // php's `add_function` per element: an int total until a float or an
+    // overflow, a float total from then on. Straight over the storage — a
+    // number adds as it is, anything else goes through php's operand
+    // conversion and its warnings.
+    let mut int_acc: i64 = 0;
+    let mut float_acc: Option<f64> = None;
+    for v in arr.values() {
+        let n = match v {
+            Value::Int(_) | Value::Float(_) => std::borrow::Cow::Borrowed(v),
+            other => match binop_operand(ctx, "array_sum", "Addition", other)? {
+                Some(n) => std::borrow::Cow::Owned(n),
+                None => continue,
+            },
+        };
+        match (&*n, float_acc) {
+            (Value::Int(i), None) => match int_acc.checked_add(*i) {
+                Some(s) => int_acc = s,
+                None => float_acc = Some(int_acc as f64 + *i as f64),
+            },
+            (Value::Int(i), Some(f)) => float_acc = Some(f + *i as f64),
+            (Value::Float(x), acc) => float_acc = Some(acc.unwrap_or(int_acc as f64) + x),
+            _ => {}
         }
     }
-    Ok(acc)
+    Ok(match float_acc {
+        Some(f) => Value::Float(f),
+        None => Value::Int(int_acc),
+    })
 }
 
 /// The numeric form of a `range()` bound: `Int`, `Float`, or `Str` (kept as
@@ -967,11 +985,16 @@ pub(crate) fn array_product(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let arr = want_array("array_product", &args[0])?;
     // The empty-array product is the int 1, per PHP.
     let mut acc = Value::Int(1);
-    for (_, v) in entries(arr) {
-        if let Some(n) = binop_operand(ctx, "array_product", "Multiplication", &v)? {
-            if let Ok(p) = acc.mul(&n) {
-                acc = p;
-            }
+    for v in arr.values() {
+        let n = match v {
+            Value::Int(_) | Value::Float(_) => std::borrow::Cow::Borrowed(v),
+            other => match binop_operand(ctx, "array_product", "Multiplication", other)? {
+                Some(n) => std::borrow::Cow::Owned(n),
+                None => continue,
+            },
+        };
+        if let Ok(p) = acc.mul(&n) {
+            acc = p;
         }
     }
     Ok(acc)

@@ -115,7 +115,7 @@ pub fn run(args: &[String]) -> XtaskResult {
     let root = crate::corpus::repo_root();
     let manifest = match args.iter().position(|a| a == "--manifest") {
         Some(i) => root.join(&args[i + 1]),
-        None => root.join("manifest/php-8.5.0"),
+        None => root.join("manifest/php-8.5.10"),
     };
     let out_path = root.join("crates/rphp-runtime/src/native_params.rs");
     let functions: BTreeMap<String, Sig> =

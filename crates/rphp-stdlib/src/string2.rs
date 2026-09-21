@@ -45,7 +45,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("localeconv", 0, Some(0), localeconv),
 ];
 
-/// The string-extension constants (values from `manifest/php-8.5.0/constants.json`).
+/// The string-extension constants (values from `manifest/php-8.5.10/constants.json`).
 pub(crate) fn register_constants(r: &mut Registry) {
     for (name, v) in [
         ("STR_PAD_LEFT", 0),

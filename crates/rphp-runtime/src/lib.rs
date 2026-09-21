@@ -56,6 +56,7 @@ pub use class::{
     IterRole, MethodBody, MethodDef, MethodSpec, NativeInit, NativeIter, NativeMethod, NativeMethodHandler, NativeProps,
     PayloadClone, PropDefault, PropHooks, PropInfo, PropSpec, StaticPropInfo, WellKnown,
 };
+pub use exec::{clear_realpath_cache, realpath_cached};
 pub use errors::{
     DisplayMode, ErrLevel, LastError, E_ALL, E_COMPILE_ERROR, E_COMPILE_WARNING, E_CORE_ERROR,
     E_CORE_WARNING, E_DEPRECATED, E_ERROR, E_NOTICE, E_PARSE, E_RECOVERABLE_ERROR, E_STRICT,

@@ -55,7 +55,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf_ref!("array_multisort", 1, None, 0xFFFF_FFFF, array_multisort),
 ];
 
-/// The array-extension constants (values from `manifest/php-8.5.0/constants.json`).
+/// The array-extension constants (values from `manifest/php-8.5.10/constants.json`).
 pub(crate) fn register_constants(r: &mut Registry) {
     for (name, v) in [
         ("EXTR_OVERWRITE", 0),

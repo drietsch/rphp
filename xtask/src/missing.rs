@@ -35,7 +35,7 @@
 //!   `polyfill`: rphp does not strictly need them for the tree to run.
 //!
 //! Names are then intersected with the PHP 8.5.0 oracle manifest
-//! (`manifest/php-8.5.0/{functions,classes,constants}.json`, which tags each
+//! (`manifest/php-8.5.10/{functions,classes,constants}.json`, which tags each
 //! symbol with its extension) and the registry of what rphp implements is
 //! subtracted. Functions come from the live `rphp-stdlib` registry (see
 //! [`implemented_functions`]); until native classes and constants exist those
@@ -75,7 +75,7 @@ USAGE:
 OPTIONS:
     --dir <path>           root to scan (repeatable; files or directories)
     --include-tests        do not skip /Tests/, /tests/ and /Resources/skeleton/
-    --manifest <dir>       oracle manifest (default: manifest/php-8.5.0)
+    --manifest <dir>       oracle manifest (default: manifest/php-8.5.10)
     --registry <json>      what rphp implements, as {\"functions\":[..],\"classes\":[..],\"constants\":[..]}
                            (default: the live rphp-stdlib registry for functions; no classes/constants yet)
     --top <N>              rows to print (default: 60; 0 = all)
@@ -1331,7 +1331,7 @@ fn parse_args(args: &[String]) -> Result<Option<Opts>, Box<dyn std::error::Error
         include_tests: a.contains("--include-tests"),
         manifest: a
             .opt_value_from_str::<_, PathBuf>("--manifest")?
-            .unwrap_or_else(|| PathBuf::from("manifest/php-8.5.0")),
+            .unwrap_or_else(|| PathBuf::from("manifest/php-8.5.10")),
         registry: a.opt_value_from_str("--registry")?,
         top: a.opt_value_from_str("--top")?.unwrap_or(60),
         ext: a.opt_value_from_str("--ext")?,
@@ -1678,7 +1678,7 @@ mod tests {
     use super::*;
 
     fn manifest() -> Manifest {
-        Manifest::load(&repo_root().join("manifest/php-8.5.0")).expect("manifest loads")
+        Manifest::load(&repo_root().join("manifest/php-8.5.10")).expect("manifest loads")
     }
 
     fn fixture(name: &str) -> Vec<u8> {
@@ -1875,7 +1875,7 @@ mod tests {
         let opts = Opts {
             dirs: vec![dir],
             include_tests: false,
-            manifest: PathBuf::from("manifest/php-8.5.0"),
+            manifest: PathBuf::from("manifest/php-8.5.10"),
             registry: None,
             top: 0,
             ext: None,

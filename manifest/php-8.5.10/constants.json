@@ -11,7 +11,7 @@
             "deprecated": false
         },
         "DEFAULT_INCLUDE_PATH": {
-            "value": ".:/opt/homebrew/Cellar/php/8.5.0/share/php/pear",
+            "value": ".:/opt/homebrew/Cellar/php/8.5.10/share/php/pear",
             "type": "string",
             "deprecated": false
         },
@@ -106,27 +106,27 @@
             "deprecated": false
         },
         "PEAR_EXTENSION_DIR": {
-            "value": "/opt/homebrew/Cellar/php/8.5.0/lib/php/20250925",
+            "value": "/opt/homebrew/Cellar/php/8.5.10/lib/php/20250925",
             "type": "string",
             "deprecated": false
         },
         "PEAR_INSTALL_DIR": {
-            "value": "/opt/homebrew/Cellar/php/8.5.0/share/php/pear",
+            "value": "/opt/homebrew/Cellar/php/8.5.10/share/php/pear",
             "type": "string",
             "deprecated": false
         },
         "PHP_BINARY": {
-            "value": "/opt/homebrew/Cellar/php/8.5.0/bin/php",
+            "value": "/opt/homebrew/Cellar/php/8.5.10/bin/php",
             "type": "string",
             "deprecated": false
         },
         "PHP_BINDIR": {
-            "value": "/opt/homebrew/Cellar/php/8.5.0/bin",
+            "value": "/opt/homebrew/Cellar/php/8.5.10/bin",
             "type": "string",
             "deprecated": false
         },
         "PHP_BUILD_DATE": {
-            "value": "Nov 18 2025 08:02:20",
+            "value": "Aug 25 2026 21:09:32",
             "type": "string",
             "deprecated": false
         },
@@ -151,7 +151,7 @@
             "deprecated": false
         },
         "PHP_DATADIR": {
-            "value": "/opt/homebrew/Cellar/php/8.5.0/share/php",
+            "value": "/opt/homebrew/Cellar/php/8.5.10/share/php",
             "type": "string",
             "deprecated": false
         },
@@ -166,7 +166,7 @@
             "deprecated": false
         },
         "PHP_EXTENSION_DIR": {
-            "value": "/opt/homebrew/Cellar/php/8.5.0/lib/php/20250925",
+            "value": "/opt/homebrew/Cellar/php/8.5.10/lib/php/20250925",
             "type": "string",
             "deprecated": false
         },
@@ -216,7 +216,7 @@
             "deprecated": false
         },
         "PHP_LIBDIR": {
-            "value": "/opt/homebrew/Cellar/php/8.5.0/lib/php",
+            "value": "/opt/homebrew/Cellar/php/8.5.10/lib/php",
             "type": "string",
             "deprecated": false
         },
@@ -231,7 +231,7 @@
             "deprecated": false
         },
         "PHP_MANDIR": {
-            "value": "/opt/homebrew/Cellar/php/8.5.0/share/man",
+            "value": "/opt/homebrew/Cellar/php/8.5.10/share/man",
             "type": "string",
             "deprecated": false
         },
@@ -326,12 +326,12 @@
             "deprecated": false
         },
         "PHP_PREFIX": {
-            "value": "/opt/homebrew/Cellar/php/8.5.0",
+            "value": "/opt/homebrew/Cellar/php/8.5.10",
             "type": "string",
             "deprecated": false
         },
         "PHP_RELEASE_VERSION": {
-            "value": 0,
+            "value": 10,
             "type": "int",
             "deprecated": false
         },
@@ -341,7 +341,7 @@
             "deprecated": false
         },
         "PHP_SBINDIR": {
-            "value": "/opt/homebrew/Cellar/php/8.5.0/sbin",
+            "value": "/opt/homebrew/Cellar/php/8.5.10/sbin",
             "type": "string",
             "deprecated": false
         },
@@ -356,12 +356,12 @@
             "deprecated": false
         },
         "PHP_VERSION": {
-            "value": "8.5.0",
+            "value": "8.5.10",
             "type": "string",
             "deprecated": false
         },
         "PHP_VERSION_ID": {
-            "value": 80500,
+            "value": 80510,
             "type": "int",
             "deprecated": false
         },
@@ -588,12 +588,12 @@
             "deprecated": false
         },
         "CURLAUTH_ANY": {
-            "value": -17,
+            "value": 4294967279,
             "type": "int",
             "deprecated": false
         },
         "CURLAUTH_ANYSAFE": {
-            "value": -18,
+            "value": 4294967278,
             "type": "int",
             "deprecated": false
         },
@@ -1308,7 +1308,7 @@
             "deprecated": false
         },
         "CURLINFO_LASTONE": {
-            "value": 70,
+            "value": 71,
             "type": "int",
             "deprecated": false
         },
@@ -3068,7 +3068,7 @@
             "deprecated": false
         },
         "CURLPROTO_ALL": {
-            "value": -1,
+            "value": 4294967295,
             "type": "int",
             "deprecated": false
         },
@@ -3443,12 +3443,12 @@
             "deprecated": false
         },
         "CURLSSH_AUTH_ANY": {
-            "value": -1,
+            "value": 4294967295,
             "type": "int",
             "deprecated": false
         },
         "CURLSSH_AUTH_DEFAULT": {
-            "value": -1,
+            "value": 4294967295,
             "type": "int",
             "deprecated": false
         },
@@ -5528,6 +5528,858 @@
             "deprecated": false
         }
     },
+    "intl": {
+        "GRAPHEME_EXTR_COUNT": {
+            "value": 0,
+            "type": "int",
+            "deprecated": false
+        },
+        "GRAPHEME_EXTR_MAXBYTES": {
+            "value": 1,
+            "type": "int",
+            "deprecated": false
+        },
+        "GRAPHEME_EXTR_MAXCHARS": {
+            "value": 2,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ALLOW_UNASSIGNED": {
+            "value": 1,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_CHECK_BIDI": {
+            "value": 4,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_CHECK_CONTEXTJ": {
+            "value": 8,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_DEFAULT": {
+            "value": 48,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_BIDI": {
+            "value": 2048,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_CONTEXTJ": {
+            "value": 4096,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_DISALLOWED": {
+            "value": 128,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_DOMAIN_NAME_TOO_LONG": {
+            "value": 4,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_EMPTY_LABEL": {
+            "value": 1,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_HYPHEN_3_4": {
+            "value": 32,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_INVALID_ACE_LABEL": {
+            "value": 1024,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_LABEL_HAS_DOT": {
+            "value": 512,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_LABEL_TOO_LONG": {
+            "value": 2,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_LEADING_COMBINING_MARK": {
+            "value": 64,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_LEADING_HYPHEN": {
+            "value": 8,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_PUNYCODE": {
+            "value": 256,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_ERROR_TRAILING_HYPHEN": {
+            "value": 16,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_NONTRANSITIONAL_TO_ASCII": {
+            "value": 16,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_NONTRANSITIONAL_TO_UNICODE": {
+            "value": 32,
+            "type": "int",
+            "deprecated": false
+        },
+        "IDNA_USE_STD3_RULES": {
+            "value": 2,
+            "type": "int",
+            "deprecated": false
+        },
+        "INTL_ICU_DATA_VERSION": {
+            "value": "78.3",
+            "type": "string",
+            "deprecated": false
+        },
+        "INTL_ICU_VERSION": {
+            "value": "78.3",
+            "type": "string",
+            "deprecated": false
+        },
+        "INTL_IDNA_VARIANT_UTS46": {
+            "value": 1,
+            "type": "int",
+            "deprecated": false
+        },
+        "INTL_MAX_LOCALE_LEN": {
+            "value": 156,
+            "type": "int",
+            "deprecated": false
+        },
+        "ULOC_ACTUAL_LOCALE": {
+            "value": 0,
+            "type": "int",
+            "deprecated": false
+        },
+        "ULOC_VALID_LOCALE": {
+            "value": 1,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_AMBIGUOUS_ALIAS_WARNING": {
+            "value": -122,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BAD_VARIABLE_DEFINITION": {
+            "value": 65536,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_ASSIGN_ERROR": {
+            "value": 66053,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_ERROR_LIMIT": {
+            "value": 66062,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_ERROR_START": {
+            "value": 66048,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_HEX_DIGITS_EXPECTED": {
+            "value": 66049,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_INIT_ERROR": {
+            "value": 66058,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_INTERNAL_ERROR": {
+            "value": 66048,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_MALFORMED_RULE_TAG": {
+            "value": 66061,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_MISMATCHED_PAREN": {
+            "value": 66055,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_NEW_LINE_IN_QUOTED_STRING": {
+            "value": 66056,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_RULE_EMPTY_SET": {
+            "value": 66059,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_RULE_SYNTAX": {
+            "value": 66051,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_SEMICOLON_EXPECTED": {
+            "value": 66050,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_UNCLOSED_SET": {
+            "value": 66052,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_UNDEFINED_VARIABLE": {
+            "value": 66057,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_UNRECOGNIZED_OPTION": {
+            "value": 66060,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BRK_VARIABLE_REDFINITION": {
+            "value": 66054,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_BUFFER_OVERFLOW_ERROR": {
+            "value": 15,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_CE_NOT_FOUND_ERROR": {
+            "value": 21,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_COLLATOR_VERSION_MISMATCH": {
+            "value": 28,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_DIFFERENT_UCA_VERSION": {
+            "value": -121,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_ENUM_OUT_OF_SYNC_ERROR": {
+            "value": 25,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_ERROR_LIMIT": {
+            "value": 66818,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_ERROR_WARNING_LIMIT": {
+            "value": -119,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_ERROR_WARNING_START": {
+            "value": -128,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_FILE_ACCESS_ERROR": {
+            "value": 4,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_FMT_PARSE_ERROR_LIMIT": {
+            "value": 65825,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_FMT_PARSE_ERROR_START": {
+            "value": 65792,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_IDNA_ACE_PREFIX_ERROR": {
+            "value": 66564,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_IDNA_CHECK_BIDI_ERROR": {
+            "value": 66562,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_IDNA_DOMAIN_NAME_TOO_LONG_ERROR": {
+            "value": 66568,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_IDNA_ERROR_LIMIT": {
+            "value": 66569,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_IDNA_ERROR_START": {
+            "value": 66560,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_IDNA_LABEL_TOO_LONG_ERROR": {
+            "value": 66566,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_IDNA_PROHIBITED_ERROR": {
+            "value": 66560,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_IDNA_STD3_ASCII_RULES_ERROR": {
+            "value": 66563,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_IDNA_UNASSIGNED_ERROR": {
+            "value": 66561,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_IDNA_VERIFICATION_ERROR": {
+            "value": 66565,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_IDNA_ZERO_LENGTH_LABEL_ERROR": {
+            "value": 66567,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_ILLEGAL_ARGUMENT_ERROR": {
+            "value": 1,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_ILLEGAL_CHARACTER": {
+            "value": 65567,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_ILLEGAL_CHAR_FOUND": {
+            "value": 12,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_ILLEGAL_CHAR_IN_SEGMENT": {
+            "value": 65564,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_ILLEGAL_ESCAPE_SEQUENCE": {
+            "value": 18,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_ILLEGAL_PAD_POSITION": {
+            "value": 65800,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INDEX_OUTOFBOUNDS_ERROR": {
+            "value": 8,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INTERNAL_PROGRAM_ERROR": {
+            "value": 5,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INTERNAL_TRANSLITERATOR_ERROR": {
+            "value": 65568,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INVALID_CHAR_FOUND": {
+            "value": 10,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INVALID_FORMAT_ERROR": {
+            "value": 3,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INVALID_FUNCTION": {
+            "value": 65570,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INVALID_ID": {
+            "value": 65569,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INVALID_PROPERTY_PATTERN": {
+            "value": 65561,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INVALID_RBT_SYNTAX": {
+            "value": 65560,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INVALID_STATE_ERROR": {
+            "value": 27,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INVALID_TABLE_FILE": {
+            "value": 14,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INVALID_TABLE_FORMAT": {
+            "value": 13,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_INVARIANT_CONVERSION_ERROR": {
+            "value": 26,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MALFORMED_EXPONENTIAL_PATTERN": {
+            "value": 65795,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MALFORMED_PRAGMA": {
+            "value": 65562,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MALFORMED_RULE": {
+            "value": 65537,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MALFORMED_SET": {
+            "value": 65538,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MALFORMED_SYMBOL_REFERENCE": {
+            "value": 65539,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MALFORMED_UNICODE_ESCAPE": {
+            "value": 65540,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MALFORMED_VARIABLE_DEFINITION": {
+            "value": 65541,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MALFORMED_VARIABLE_REFERENCE": {
+            "value": 65542,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MEMORY_ALLOCATION_ERROR": {
+            "value": 7,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MESSAGE_PARSE_ERROR": {
+            "value": 6,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MISMATCHED_SEGMENT_DELIMITERS": {
+            "value": 65543,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MISPLACED_ANCHOR_START": {
+            "value": 65544,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MISPLACED_COMPOUND_FILTER": {
+            "value": 65558,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MISPLACED_CURSOR_OFFSET": {
+            "value": 65545,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MISPLACED_QUANTIFIER": {
+            "value": 65546,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MISSING_OPERATOR": {
+            "value": 65547,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MISSING_RESOURCE_ERROR": {
+            "value": 2,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MISSING_SEGMENT_CLOSE": {
+            "value": 65548,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MULTIPLE_ANTE_CONTEXTS": {
+            "value": 65549,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MULTIPLE_COMPOUND_FILTERS": {
+            "value": 65559,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MULTIPLE_CURSORS": {
+            "value": 65550,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MULTIPLE_DECIMAL_SEPARATORS": {
+            "value": 65793,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MULTIPLE_DECIMAL_SEPERATORS": {
+            "value": 65793,
+            "type": "int",
+            "deprecated": true
+        },
+        "U_MULTIPLE_EXPONENTIAL_SYMBOLS": {
+            "value": 65794,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MULTIPLE_PAD_SPECIFIERS": {
+            "value": 65798,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MULTIPLE_PERCENT_SYMBOLS": {
+            "value": 65796,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MULTIPLE_PERMILL_SYMBOLS": {
+            "value": 65797,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_MULTIPLE_POST_CONTEXTS": {
+            "value": 65551,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_NO_SPACE_AVAILABLE": {
+            "value": 20,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_NO_WRITE_PERMISSION": {
+            "value": 30,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_PARSE_ERROR": {
+            "value": 9,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_PARSE_ERROR_LIMIT": {
+            "value": 65571,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_PARSE_ERROR_START": {
+            "value": 65536,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_PATTERN_SYNTAX_ERROR": {
+            "value": 65799,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_PRIMARY_TOO_LONG_ERROR": {
+            "value": 22,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_BAD_ESCAPE_SEQUENCE": {
+            "value": 66307,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_BAD_INTERVAL": {
+            "value": 66312,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_ERROR_LIMIT": {
+            "value": 66326,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_ERROR_START": {
+            "value": 66304,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_INTERNAL_ERROR": {
+            "value": 66304,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_INVALID_BACK_REF": {
+            "value": 66314,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_INVALID_FLAG": {
+            "value": 66315,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_INVALID_STATE": {
+            "value": 66306,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_LOOK_BEHIND_LIMIT": {
+            "value": 66316,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_MAX_LT_MIN": {
+            "value": 66313,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_MISMATCHED_PAREN": {
+            "value": 66310,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_NUMBER_TOO_BIG": {
+            "value": 66311,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_PROPERTY_SYNTAX": {
+            "value": 66308,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_RULE_SYNTAX": {
+            "value": 66305,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_SET_CONTAINS_STRING": {
+            "value": 66317,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_REGEX_UNIMPLEMENTED": {
+            "value": 66309,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_RESOURCE_TYPE_MISMATCH": {
+            "value": 17,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_RULE_MASK_ERROR": {
+            "value": 65557,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_SAFECLONE_ALLOCATED_WARNING": {
+            "value": -126,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_SORT_KEY_TOO_SHORT_WARNING": {
+            "value": -123,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_STANDARD_ERROR_LIMIT": {
+            "value": 32,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_STATE_OLD_WARNING": {
+            "value": -125,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_STATE_TOO_OLD_ERROR": {
+            "value": 23,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_STRINGPREP_CHECK_BIDI_ERROR": {
+            "value": 66562,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_STRINGPREP_PROHIBITED_ERROR": {
+            "value": 66560,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_STRINGPREP_UNASSIGNED_ERROR": {
+            "value": 66561,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_STRING_NOT_TERMINATED_WARNING": {
+            "value": -124,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_TOO_MANY_ALIASES_ERROR": {
+            "value": 24,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_TRAILING_BACKSLASH": {
+            "value": 65552,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_TRUNCATED_CHAR_FOUND": {
+            "value": 11,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_UNCLOSED_SEGMENT": {
+            "value": 65563,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_UNDEFINED_SEGMENT_REFERENCE": {
+            "value": 65553,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_UNDEFINED_VARIABLE": {
+            "value": 65554,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_UNEXPECTED_TOKEN": {
+            "value": 65792,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_UNMATCHED_BRACES": {
+            "value": 65801,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_UNQUOTED_SPECIAL": {
+            "value": 65555,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_UNSUPPORTED_ATTRIBUTE": {
+            "value": 65803,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_UNSUPPORTED_ERROR": {
+            "value": 16,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_UNSUPPORTED_ESCAPE_SEQUENCE": {
+            "value": 19,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_UNSUPPORTED_PROPERTY": {
+            "value": 65802,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_UNTERMINATED_QUOTE": {
+            "value": 65556,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_USELESS_COLLATOR_ERROR": {
+            "value": 29,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_USING_DEFAULT_WARNING": {
+            "value": -127,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_USING_FALLBACK_WARNING": {
+            "value": -128,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_VARIABLE_RANGE_EXHAUSTED": {
+            "value": 65565,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_VARIABLE_RANGE_OVERLAP": {
+            "value": 65566,
+            "type": "int",
+            "deprecated": false
+        },
+        "U_ZERO_ERROR": {
+            "value": 0,
+            "type": "int",
+            "deprecated": false
+        }
+    },
     "json": {
         "JSON_BIGINT_AS_STRING": {
             "value": 2,
@@ -7407,12 +8259,12 @@
             "deprecated": false
         },
         "OPENSSL_VERSION_NUMBER": {
-            "value": 811597824,
+            "value": 811597872,
             "type": "int",
             "deprecated": false
         },
         "OPENSSL_VERSION_TEXT": {
-            "value": "OpenSSL 3.6.0 1 Oct 2025",
+            "value": "OpenSSL 3.6.3 9 Jun 2026",
             "type": "string",
             "deprecated": false
         },
@@ -8243,12 +9095,12 @@
             "deprecated": false
         },
         "PGSQL_LIBPQ_VERSION": {
-            "value": "18.1",
+            "value": "18.6",
             "type": "string",
             "deprecated": false
         },
         "PGSQL_LIBPQ_VERSION_STR": {
-            "value": "18.1",
+            "value": "18.6",
             "type": "string",
             "deprecated": true
         },
@@ -8344,6 +9196,11 @@
         },
         "PGSQL_TRACE_REGRESS_MODE": {
             "value": 2,
+            "type": "int",
+            "deprecated": false
+        },
+        "PGSQL_TRACE_SUPPRESS_TIMESTAMPS": {
+            "value": 1,
             "type": "int",
             "deprecated": false
         },
@@ -10419,12 +11276,12 @@
             "deprecated": false
         },
         "SODIUM_LIBRARY_MINOR_VERSION": {
-            "value": 2,
+            "value": 4,
             "type": "int",
             "deprecated": false
         },
         "SODIUM_LIBRARY_VERSION": {
-            "value": "1.0.20",
+            "value": "1.0.22",
             "type": "string",
             "deprecated": false
         }

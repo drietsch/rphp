@@ -164,12 +164,45 @@ pub struct FuncRt {
     pub profile: std::cell::Cell<(u64, u64)>,
     /// Whether any parameter is typed (else `activate` skips the check).
     pub has_typed_params: bool,
+    /// Bit `i` set when parameter `i` is by-reference (the first 63), bit
+    /// 63 when a trailing by-ref variadic takes the rest by reference —
+    /// every `Send*` op asks.
+    pub by_ref_mask: u64,
 }
 
 impl FuncRt {
     /// Whether this is the unit's `{main}`.
     pub fn is_main(&self) -> bool {
         self.id == self.unit.main
+    }
+
+    /// Whether argument `pos` is taken by reference (a by-ref variadic
+    /// takes everything past the declared parameters by reference).
+    #[inline]
+    pub fn by_ref(&self, pos: usize) -> bool {
+        if pos < 63 {
+            self.by_ref_mask & (1 << pos) != 0
+        } else {
+            match self.f.params.get(pos) {
+                Some(pd) => pd.by_ref,
+                None => self.by_ref_mask & (1 << 63) != 0,
+            }
+        }
+    }
+
+    /// [`FuncRt::by_ref_mask`] of a function's parameters.
+    fn by_ref_mask_of(params: &[rphp_bytecode::ParamDef]) -> u64 {
+        let mut mask = 0u64;
+        for (i, p) in params.iter().enumerate().take(63) {
+            if p.by_ref {
+                mask |= 1 << i;
+            }
+        }
+        if params.last().is_some_and(|l| l.variadic && l.by_ref) {
+            // The variadic's own position and everything past it.
+            mask |= u64::MAX << (params.len() - 1).min(63);
+        }
+        mask
     }
 
     /// The variable name of register `reg`, if it is a named variable.
@@ -303,6 +336,7 @@ impl Interp {
             let deprecated = RefCell::new(if f.attrs.is_empty() { Some(None) } else { None });
             let required = f.required_params();
             let has_typed_params = f.params.iter().any(|p| p.ty.is_some());
+            let by_ref_mask = FuncRt::by_ref_mask_of(&f.params);
             self.funcs.push(Rc::new(FuncRt {
                 id: func_base + i as u32,
                 f,
@@ -315,6 +349,7 @@ impl Interp {
                 const_values,
                 required,
                 has_typed_params,
+                by_ref_mask,
                 profile: std::cell::Cell::new((0, 0)),
             }));
         }

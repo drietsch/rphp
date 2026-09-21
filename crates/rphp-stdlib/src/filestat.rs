@@ -215,11 +215,13 @@ fn filetype(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `realpath(string $path): string|false` — canonical path, `false` when it
 /// does not exist.
+/// `realpath()` through php's realpath cache (shared with the include
+/// path; `clearstatcache(true)` drops it).
 fn realpath(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let p = arg_path(ctx, &args[0]);
-    Ok(match fs::canonicalize(&p) {
-        Ok(c) => Value::string(c.to_string_lossy().as_bytes()),
-        Err(_) => Value::Bool(false),
+    Ok(match rphp_runtime::realpath_cached(&p) {
+        Some(c) => Value::string(c.to_string_lossy().as_bytes()),
+        None => Value::Bool(false),
     })
 }
 
@@ -245,6 +247,7 @@ fn touch(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 }
 
 /// `clearstatcache(bool $clear_realpath_cache = false, string $filename = ""): void`
+/// `clearstatcache(bool $clear_realpath_cache = false, string $filename = "")`.
 fn clearstatcache(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     match args.get(1) {
         Some(v) if !v.to_php_bytes().is_empty() => {
@@ -252,6 +255,9 @@ fn clearstatcache(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             invalidate(ctx, &p);
         }
         _ => ctx.ext.stat_cache.clear(),
+    }
+    if args.first().is_some_and(|v| v.to_bool()) {
+        rphp_runtime::clear_realpath_cache();
     }
     Ok(Value::Null)
 }

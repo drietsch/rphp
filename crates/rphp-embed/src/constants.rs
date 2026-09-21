@@ -1,6 +1,6 @@
 //! Engine constants (`Zend/zend_constants.c`, `main/main.c`): the `PHP_*`,
-//! `E_*`, `DIRECTORY_SEPARATOR` … set, with the values `manifest/php-8.5.0/
-//! constants.json` records for stock PHP 8.5.0 (platform values from the
+//! `E_*`, `DIRECTORY_SEPARATOR` … set, with the values `manifest/php-8.5.10/
+//! constants.json` records for stock PHP 8.5.10 (platform values from the
 //! build target). Not reachable as bare names from PHP code until the
 //! compiler lowers constant fetches (F3/E3); `constant()`/`defined()` see them.
 
@@ -56,12 +56,12 @@ pub fn register(r: &mut Registry, sapi: SapiKind) {
     let windows = cfg!(target_os = "windows");
 
     // Version.
-    r.constant("PHP_VERSION", s("8.5.0"));
+    r.constant("PHP_VERSION", s("8.5.10"));
     r.constant("PHP_MAJOR_VERSION", Value::Int(8));
     r.constant("PHP_MINOR_VERSION", Value::Int(5));
-    r.constant("PHP_RELEASE_VERSION", Value::Int(0));
+    r.constant("PHP_RELEASE_VERSION", Value::Int(10));
     r.constant("PHP_EXTRA_VERSION", s(""));
-    r.constant("PHP_VERSION_ID", Value::Int(80500));
+    r.constant("PHP_VERSION_ID", Value::Int(80510));
     r.constant("PHP_ZTS", Value::Bool(false));
     r.constant("PHP_DEBUG", Value::Bool(false));
     r.constant("ZEND_THREAD_SAFE", Value::Bool(false));

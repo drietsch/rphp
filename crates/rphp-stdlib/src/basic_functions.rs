@@ -851,7 +851,7 @@ mod tests {
         );
         assert_eq!(
             it.call_function(b"phpversion", &[]).unwrap(),
-            Value::string(b"8.5.0")
+            Value::string(b"8.5.10")
         );
         assert_eq!(
             it.call_function(b"function_exists", &[Value::string(b"StrLen")])

@@ -288,8 +288,8 @@
         "extension": "Core"
     },
     "extension_dir": {
-        "global_value": "/opt/homebrew/Cellar/php/8.5.0/lib/php/20250925",
-        "local_value": "/opt/homebrew/Cellar/php/8.5.0/lib/php/20250925",
+        "global_value": "/opt/homebrew/Cellar/php/8.5.10/lib/php/20250925",
+        "local_value": "/opt/homebrew/Cellar/php/8.5.10/lib/php/20250925",
         "access": 4,
         "extension": "Core"
     },
@@ -432,8 +432,8 @@
         "extension": "Core"
     },
     "include_path": {
-        "global_value": ".:/opt/homebrew/Cellar/php/8.5.0/share/php/pear",
-        "local_value": ".:/opt/homebrew/Cellar/php/8.5.0/share/php/pear",
+        "global_value": ".:/opt/homebrew/Cellar/php/8.5.10/share/php/pear",
+        "local_value": ".:/opt/homebrew/Cellar/php/8.5.10/share/php/pear",
         "access": 7,
         "extension": "Core"
     },
@@ -448,6 +448,24 @@
         "local_value": null,
         "access": 7,
         "extension": "Core"
+    },
+    "intl.default_locale": {
+        "global_value": null,
+        "local_value": null,
+        "access": 7,
+        "extension": "intl"
+    },
+    "intl.error_level": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "intl"
+    },
+    "intl.use_exceptions": {
+        "global_value": "0",
+        "local_value": "0",
+        "access": 7,
+        "extension": "intl"
     },
     "ldap.max_links": {
         "global_value": "-1",

@@ -7,7 +7,7 @@
 //!
 //! Everything here is `'static` data: `cargo xtask gen` emits one `pub static`
 //! per function/method/class from the PHP oracle manifest
-//! (`manifest/php-8.5.0`), so an extension crate never hand-types a signature
+//! (`manifest/php-8.5.10`), so an extension crate never hand-types a signature
 //! and reflection, named arguments, defaults and `TypeError` messages all read
 //! from the same table.
 #![forbid(unsafe_code)]

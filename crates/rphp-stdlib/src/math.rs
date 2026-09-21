@@ -554,7 +554,8 @@ fn base_to_number(ctx: &mut Ctx, s: &[u8], base: i64) -> NativeResult {
 
 /// `_php_math_zvaltobase`: an int renders as its unsigned 64-bit pattern; a
 /// float is floored and peeled digit by digit with `fmod`, php's imprecision
-/// included (at most 64 digits).
+/// included (8.5.10 sized its buffer for the largest double, 1076 digits;
+/// before, a 64-digit buffer truncated a big binary).
 fn number_to_base(n: &Value, base: i64) -> String {
     const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut buf = Vec::new();
@@ -568,7 +569,7 @@ fn number_to_base(n: &Value, base: i64) -> String {
                 let i = (fvalue % base as f64) as usize;
                 buf.push(DIGITS[i.min(35)]);
                 fvalue /= base as f64;
-                if buf.len() >= 64 || fvalue.abs() < 1.0 {
+                if buf.len() >= 1076 || fvalue.abs() < 1.0 {
                     break;
                 }
             }
@@ -652,7 +653,7 @@ mod tests {
         );
         assert_eq!(
             call_named(b"base_convert", &[s("zzzzzzzzzzzzzzzzzzzz"), Value::Int(36), Value::Int(2)]),
-            s("0001111111101000000000000000000000000000000000000000000000000000")
+            s("10101000101110001011010001010010001010010001111111101000000000000000000000000000000000000000000000000000")
         );
         assert_eq!(call_named(b"hexdec", &[s("0x1A")]), Value::Int(26));
         assert_eq!(call_named(b"octdec", &[s("0o17")]), Value::Int(15));

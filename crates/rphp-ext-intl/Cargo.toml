@@ -1,0 +1,21 @@
+[package]
+name = "rphp-ext-intl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rphp-runtime.workspace = true
+rphp-value.workspace = true
+rphp-ext-api.workspace = true
+rphp-stdlib.workspace = true
+icu.workspace = true
+icu_experimental.workspace = true
+icu_provider.workspace = true
+fixed_decimal.workspace = true
+writeable.workspace = true
+idna.workspace = true
+unicode_names2.workspace = true
+jiff.workspace = true
+hashbrown.workspace = true

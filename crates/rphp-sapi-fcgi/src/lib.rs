@@ -28,7 +28,7 @@ mod record;
 use record::*;
 
 /// php's version, for `X-Powered-By`.
-const PHP_VERSION: &str = "8.5.0";
+const PHP_VERSION: &str = "8.5.10";
 
 /// What `rphp -b` runs with.
 pub struct FcgiOptions {

@@ -92,9 +92,9 @@ pub(crate) fn register_constants(r: &mut Registry) {
 }
 
 /// The version string every bundled extension reports (`phpversion($ext)`).
-pub(crate) const PHP_VERSION: &str = "8.5.0";
+pub(crate) const PHP_VERSION: &str = "8.5.10";
 /// `zend_version()` of the engine we track.
-const ZEND_VERSION: &str = "4.5.0";
+const ZEND_VERSION: &str = "4.5.10";
 
 // ---- uname ------------------------------------------------------------------
 
@@ -814,7 +814,7 @@ mod tests {
     fn uname_modes_and_versions() {
         assert!(!call_named(b"php_uname", &[s("s")]).to_php_bytes().is_empty());
         assert_eq!(call_err(b"php_uname", &[s("x")]).kind(), Some(ErrorKind::ValueError));
-        assert_eq!(call_named(b"zend_version", &[]), s("4.5.0"));
+        assert_eq!(call_named(b"zend_version", &[]), s("4.5.10"));
         assert_eq!(call_named(b"extension_loaded", &[s("STANDARD")]), Value::Bool(true));
         assert_eq!(call_named(b"extension_loaded", &[s("nope")]), Value::Bool(false));
         assert_eq!(call_named(b"get_extension_funcs", &[s("nope")]), Value::Bool(false));

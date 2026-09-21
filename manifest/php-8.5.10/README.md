@@ -1,23 +1,23 @@
-# PHP 8.5.0 oracle manifest
+# PHP 8.5.10 oracle manifest
 
 Reflection dump of the stock PHP this project is measured against:
 
 ```
-PHP 8.5.0 (cli) (built: Nov 18 2025 08:02:20) (NTS)
+PHP 8.5.10 (cli) (built: Aug 25 2026 21:09:32) (NTS)
 ```
 
 (Homebrew `php` on macOS arm64, `/opt/homebrew/bin/php`.) Regenerate with,
 from the repository root:
 
 ```
-php -n tools/manifest/dump.php manifest/php-8.5.0
+php -n tools/manifest/dump.php manifest/php-8.5.10
 ```
 
 `-n` skips every php.ini, so:
 
 - `ini.json` holds the **compiled-in** defaults (`global_value`/`local_value`
   are what `ini_get_all(null, true)` reports with no ini file loaded), and the
-  extension set is the one statically linked into this build (65 extensions;
+  extension set is the one statically linked into this build (66 extensions, intl included;
   nothing loaded via `extension=` lines).
 - Runtime-computed constants in `constants.json` (`PHP_BINARY`, `PHP_OS`,
   `PHP_OS_FAMILY`, `DIRECTORY_SEPARATOR`, `STDIN`/`STDOUT`/`STDERR`, the

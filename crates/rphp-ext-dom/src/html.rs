@@ -664,6 +664,7 @@ impl<'a> Html<'a> {
                     RefError::NamedNoSemicolon | RefError::NumericNoSemicolon { .. } => {
                         "missing-semicolon-after-character-reference"
                     }
+                    RefError::UnknownName => "unknown-named-character-reference",
                     RefError::Control => "control-character-reference",
                     RefError::Null => "null-character-reference",
                     RefError::Surrogate => "surrogate-character-reference",
@@ -1457,6 +1458,9 @@ pub enum RefError {
     NoName,
     /// A named reference without its `;`.
     NamedNoSemicolon,
+    /// A `;`-terminated name that is no entity (HTML5's ambiguous
+    /// ampersand; lexbor reports it since php 8.5.10).
+    UnknownName,
     /// A numeric reference without its `;` (`hex` tells which form).
     NumericNoSemicolon {
         hex: bool,
@@ -1576,6 +1580,9 @@ pub fn decode_entities_in(
                         break;
                     }
                     k -= 1;
+                }
+                if matched.is_none() && terminated {
+                    errors.push((j, RefError::UnknownName));
                 }
             }
             match matched {

@@ -79,7 +79,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
 ];
 
 /// The `MB_CASE_*` constants, `MB_ONIGURUMA_VERSION`, and the ini
-/// directives (`manifest/php-8.5.0/ini.json`; `internal_encoding` /
+/// directives (`manifest/php-8.5.10/ini.json`; `internal_encoding` /
 /// `input_encoding` / `output_encoding` are the core directives the
 /// defaults fall back to).
 pub(crate) fn register_constants(r: &mut Registry) {

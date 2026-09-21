@@ -4206,6 +4206,417 @@
         "params": [],
         "extension": "standard"
     },
+    "collator_asort": {
+        "name": "collator_asort",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "array",
+                "type": "array",
+                "nullable": false,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "flags",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "Collator::SORT_REGULAR",
+                "default": {
+                    "const": "Collator::SORT_REGULAR"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_compare": {
+        "name": "collator_compare",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "string1",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "string2",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_create": {
+        "name": "collator_create",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?Collator",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_get_attribute": {
+        "name": "collator_get_attribute",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "attribute",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_get_error_code": {
+        "name": "collator_get_error_code",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_get_error_message": {
+        "name": "collator_get_error_message",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_get_locale": {
+        "name": "collator_get_locale",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "type",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_get_sort_key": {
+        "name": "collator_get_sort_key",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_get_strength": {
+        "name": "collator_get_strength",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_set_attribute": {
+        "name": "collator_set_attribute",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "attribute",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "value",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_set_strength": {
+        "name": "collator_set_strength",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "true",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "strength",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_sort": {
+        "name": "collator_sort",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "array",
+                "type": "array",
+                "nullable": false,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "flags",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "Collator::SORT_REGULAR",
+                "default": {
+                    "const": "Collator::SORT_REGULAR"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
+    "collator_sort_with_sort_keys": {
+        "name": "collator_sort_with_sort_keys",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "object",
+                "type": "Collator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "array",
+                "type": "array",
+                "nullable": false,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
     "compact": {
         "name": "compact",
         "deprecated": false,
@@ -6740,6 +7151,625 @@
             }
         ],
         "extension": "date"
+    },
+    "datefmt_create": {
+        "name": "datefmt_create",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?IntlDateFormatter",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "dateType",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "IntlDateFormatter::FULL",
+                "default": {
+                    "const": "IntlDateFormatter::FULL"
+                }
+            },
+            {
+                "name": "timeType",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "IntlDateFormatter::FULL",
+                "default": {
+                    "const": "IntlDateFormatter::FULL"
+                }
+            },
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone|DateTimeZone|string|null",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            },
+            {
+                "name": "calendar",
+                "type": "IntlCalendar|int|null",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            },
+            {
+                "name": "pattern",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_format": {
+        "name": "datefmt_format",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "datetime",
+                "type": null,
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_format_object": {
+        "name": "datefmt_format_object",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "datetime",
+                "type": null,
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "format",
+                "type": null,
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            },
+            {
+                "name": "locale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_get_calendar": {
+        "name": "datefmt_get_calendar",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_get_calendar_object": {
+        "name": "datefmt_get_calendar_object",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "IntlCalendar|false|null",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_get_datetype": {
+        "name": "datefmt_get_datetype",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_get_error_code": {
+        "name": "datefmt_get_error_code",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_get_error_message": {
+        "name": "datefmt_get_error_message",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_get_locale": {
+        "name": "datefmt_get_locale",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "type",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "ULOC_ACTUAL_LOCALE",
+                "default": {
+                    "const": "ULOC_ACTUAL_LOCALE"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_get_pattern": {
+        "name": "datefmt_get_pattern",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_get_timetype": {
+        "name": "datefmt_get_timetype",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_get_timezone": {
+        "name": "datefmt_get_timezone",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "IntlTimeZone|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_get_timezone_id": {
+        "name": "datefmt_get_timezone_id",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_is_lenient": {
+        "name": "datefmt_is_lenient",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_localtime": {
+        "name": "datefmt_localtime",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "array|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "offset",
+                "type": null,
+                "nullable": true,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_parse": {
+        "name": "datefmt_parse",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|float|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "offset",
+                "type": null,
+                "nullable": true,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_set_calendar": {
+        "name": "datefmt_set_calendar",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "calendar",
+                "type": "IntlCalendar|int|null",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_set_lenient": {
+        "name": "datefmt_set_lenient",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "void",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "lenient",
+                "type": "bool",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_set_pattern": {
+        "name": "datefmt_set_pattern",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "pattern",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "datefmt_set_timezone": {
+        "name": "datefmt_set_timezone",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "IntlDateFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone|DateTimeZone|string|null",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
     },
     "dba_close": {
         "name": "dba_close",
@@ -15272,6 +16302,573 @@
         ],
         "extension": "date"
     },
+    "grapheme_extract": {
+        "name": "grapheme_extract",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "haystack",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "size",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "type",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "GRAPHEME_EXTR_COUNT",
+                "default": {
+                    "const": "GRAPHEME_EXTR_COUNT"
+                }
+            },
+            {
+                "name": "offset",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "0",
+                "default": 0
+            },
+            {
+                "name": "next",
+                "type": null,
+                "nullable": true,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "grapheme_levenshtein": {
+        "name": "grapheme_levenshtein",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "string1",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "string2",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "insertion_cost",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "1",
+                "default": 1
+            },
+            {
+                "name": "replacement_cost",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "1",
+                "default": 1
+            },
+            {
+                "name": "deletion_cost",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "1",
+                "default": 1
+            },
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "\"\"",
+                "default": ""
+            }
+        ],
+        "extension": "intl"
+    },
+    "grapheme_str_split": {
+        "name": "grapheme_str_split",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "array|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "length",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "1",
+                "default": 1
+            }
+        ],
+        "extension": "intl"
+    },
+    "grapheme_stripos": {
+        "name": "grapheme_stripos",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "haystack",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "needle",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "offset",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "0",
+                "default": 0
+            },
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "\"\"",
+                "default": ""
+            }
+        ],
+        "extension": "intl"
+    },
+    "grapheme_stristr": {
+        "name": "grapheme_stristr",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "haystack",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "needle",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "beforeNeedle",
+                "type": "bool",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "false",
+                "default": false
+            },
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "\"\"",
+                "default": ""
+            }
+        ],
+        "extension": "intl"
+    },
+    "grapheme_strlen": {
+        "name": "grapheme_strlen",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int|false|null",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "grapheme_strpos": {
+        "name": "grapheme_strpos",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "haystack",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "needle",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "offset",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "0",
+                "default": 0
+            },
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "\"\"",
+                "default": ""
+            }
+        ],
+        "extension": "intl"
+    },
+    "grapheme_strripos": {
+        "name": "grapheme_strripos",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "haystack",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "needle",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "offset",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "0",
+                "default": 0
+            },
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "\"\"",
+                "default": ""
+            }
+        ],
+        "extension": "intl"
+    },
+    "grapheme_strrpos": {
+        "name": "grapheme_strrpos",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "haystack",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "needle",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "offset",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "0",
+                "default": 0
+            },
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "\"\"",
+                "default": ""
+            }
+        ],
+        "extension": "intl"
+    },
+    "grapheme_strstr": {
+        "name": "grapheme_strstr",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "haystack",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "needle",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "beforeNeedle",
+                "type": "bool",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "false",
+                "default": false
+            },
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "\"\"",
+                "default": ""
+            }
+        ],
+        "extension": "intl"
+    },
+    "grapheme_substr": {
+        "name": "grapheme_substr",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "offset",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "length",
+                "type": "?int",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            },
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "\"\"",
+                "default": ""
+            }
+        ],
+        "extension": "intl"
+    },
     "gregoriantojd": {
         "name": "gregoriantojd",
         "deprecated": false,
@@ -17644,6 +19241,124 @@
             }
         ],
         "extension": "date"
+    },
+    "idn_to_ascii": {
+        "name": "idn_to_ascii",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "domain",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "flags",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "IDNA_DEFAULT",
+                "default": {
+                    "const": "IDNA_DEFAULT"
+                }
+            },
+            {
+                "name": "variant",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "INTL_IDNA_VARIANT_UTS46",
+                "default": {
+                    "const": "INTL_IDNA_VARIANT_UTS46"
+                }
+            },
+            {
+                "name": "idna_info",
+                "type": null,
+                "nullable": true,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "idn_to_utf8": {
+        "name": "idn_to_utf8",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "domain",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "flags",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "IDNA_DEFAULT",
+                "default": {
+                    "const": "IDNA_DEFAULT"
+                }
+            },
+            {
+                "name": "variant",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "INTL_IDNA_VARIANT_UTS46",
+                "default": {
+                    "const": "INTL_IDNA_VARIANT_UTS46"
+                }
+            },
+            {
+                "name": "idna_info",
+                "type": null,
+                "nullable": true,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
     },
     "ignore_user_abort": {
         "name": "ignore_user_abort",
@@ -22886,6 +24601,2228 @@
         ],
         "extension": "Core"
     },
+    "intl_error_name": {
+        "name": "intl_error_name",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "errorCode",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intl_get_error_code": {
+        "name": "intl_get_error_code",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [],
+        "extension": "intl"
+    },
+    "intl_get_error_message": {
+        "name": "intl_get_error_message",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "string",
+            "nullable": false
+        },
+        "params": [],
+        "extension": "intl"
+    },
+    "intl_is_failure": {
+        "name": "intl_is_failure",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "errorCode",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_add": {
+        "name": "intlcal_add",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "value",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_after": {
+        "name": "intlcal_after",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "other",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_before": {
+        "name": "intlcal_before",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "other",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_clear": {
+        "name": "intlcal_clear",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "true",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "?int",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_create_instance": {
+        "name": "intlcal_create_instance",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "?IntlCalendar",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone|DateTimeZone|string|null",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            },
+            {
+                "name": "locale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_equals": {
+        "name": "intlcal_equals",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "other",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_field_difference": {
+        "name": "intlcal_field_difference",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "timestamp",
+                "type": "float",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_from_date_time": {
+        "name": "intlcal_from_date_time",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?IntlCalendar",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "datetime",
+                "type": "DateTime|string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "locale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get": {
+        "name": "intlcal_get",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_actual_maximum": {
+        "name": "intlcal_get_actual_maximum",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_actual_minimum": {
+        "name": "intlcal_get_actual_minimum",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_available_locales": {
+        "name": "intlcal_get_available_locales",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "array",
+            "nullable": false
+        },
+        "params": [],
+        "extension": "intl"
+    },
+    "intlcal_get_day_of_week_type": {
+        "name": "intlcal_get_day_of_week_type",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "dayOfWeek",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_error_code": {
+        "name": "intlcal_get_error_code",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_error_message": {
+        "name": "intlcal_get_error_message",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_first_day_of_week": {
+        "name": "intlcal_get_first_day_of_week",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_greatest_minimum": {
+        "name": "intlcal_get_greatest_minimum",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_keyword_values_for_locale": {
+        "name": "intlcal_get_keyword_values_for_locale",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "IntlIterator|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "keyword",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "onlyCommon",
+                "type": "bool",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_least_maximum": {
+        "name": "intlcal_get_least_maximum",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_locale": {
+        "name": "intlcal_get_locale",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "type",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_maximum": {
+        "name": "intlcal_get_maximum",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_minimal_days_in_first_week": {
+        "name": "intlcal_get_minimal_days_in_first_week",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_minimum": {
+        "name": "intlcal_get_minimum",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_now": {
+        "name": "intlcal_get_now",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "float",
+            "nullable": false
+        },
+        "params": [],
+        "extension": "intl"
+    },
+    "intlcal_get_repeated_wall_time_option": {
+        "name": "intlcal_get_repeated_wall_time_option",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_skipped_wall_time_option": {
+        "name": "intlcal_get_skipped_wall_time_option",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_time": {
+        "name": "intlcal_get_time",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "float|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_time_zone": {
+        "name": "intlcal_get_time_zone",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "IntlTimeZone|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_type": {
+        "name": "intlcal_get_type",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_get_weekend_transition": {
+        "name": "intlcal_get_weekend_transition",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "dayOfWeek",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_in_daylight_time": {
+        "name": "intlcal_in_daylight_time",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_is_equivalent_to": {
+        "name": "intlcal_is_equivalent_to",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "other",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_is_lenient": {
+        "name": "intlcal_is_lenient",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_is_set": {
+        "name": "intlcal_is_set",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_is_weekend": {
+        "name": "intlcal_is_weekend",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "timestamp",
+                "type": "?float",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_roll": {
+        "name": "intlcal_roll",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "field",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "value",
+                "type": null,
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_set": {
+        "name": "intlcal_set",
+        "deprecated": true,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "true",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "year",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "month",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "dayOfMonth",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true
+            },
+            {
+                "name": "hour",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true
+            },
+            {
+                "name": "minute",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true
+            },
+            {
+                "name": "second",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true
+            }
+        ],
+        "attributes": [
+            {
+                "name": "Deprecated",
+                "args": {
+                    "message": "use IntlCalendar::set(), IntlCalendar::setDate(), or IntlCalendar::setDateTime() instead",
+                    "since": "8.4"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_set_first_day_of_week": {
+        "name": "intlcal_set_first_day_of_week",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "true",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "dayOfWeek",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_set_lenient": {
+        "name": "intlcal_set_lenient",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "true",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "lenient",
+                "type": "bool",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_set_minimal_days_in_first_week": {
+        "name": "intlcal_set_minimal_days_in_first_week",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "true",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "days",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_set_repeated_wall_time_option": {
+        "name": "intlcal_set_repeated_wall_time_option",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "true",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "option",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_set_skipped_wall_time_option": {
+        "name": "intlcal_set_skipped_wall_time_option",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "true",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "option",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_set_time": {
+        "name": "intlcal_set_time",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "timestamp",
+                "type": "float",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_set_time_zone": {
+        "name": "intlcal_set_time_zone",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone|DateTimeZone|string|null",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlcal_to_date_time": {
+        "name": "intlcal_to_date_time",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "DateTime|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlgregcal_create_instance": {
+        "name": "intlgregcal_create_instance",
+        "deprecated": true,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "?IntlGregorianCalendar",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "timezoneOrYear",
+                "type": null,
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true
+            },
+            {
+                "name": "localeOrMonth",
+                "type": null,
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true
+            },
+            {
+                "name": "day",
+                "type": null,
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true
+            },
+            {
+                "name": "hour",
+                "type": null,
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true
+            },
+            {
+                "name": "minute",
+                "type": null,
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true
+            },
+            {
+                "name": "second",
+                "type": null,
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true
+            }
+        ],
+        "attributes": [
+            {
+                "name": "Deprecated",
+                "args": {
+                    "message": "use IntlGregorianCalendar::__construct(), IntlGregorianCalendar::createFromDate(), or IntlGregorianCalendar::createFromDateTime() instead",
+                    "since": "8.4"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlgregcal_get_gregorian_change": {
+        "name": "intlgregcal_get_gregorian_change",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "float",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlGregorianCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlgregcal_is_leap_year": {
+        "name": "intlgregcal_is_leap_year",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlGregorianCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "year",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intlgregcal_set_gregorian_change": {
+        "name": "intlgregcal_set_gregorian_change",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "calendar",
+                "type": "IntlGregorianCalendar",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "timestamp",
+                "type": "float",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_count_equivalent_ids": {
+        "name": "intltz_count_equivalent_ids",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezoneId",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_create_default": {
+        "name": "intltz_create_default",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "IntlTimeZone",
+            "nullable": false
+        },
+        "params": [],
+        "extension": "intl"
+    },
+    "intltz_create_enumeration": {
+        "name": "intltz_create_enumeration",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "IntlIterator|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "countryOrRawOffset",
+                "type": "string|int|null",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_create_time_zone": {
+        "name": "intltz_create_time_zone",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?IntlTimeZone",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "timezoneId",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_create_time_zone_id_enumeration": {
+        "name": "intltz_create_time_zone_id_enumeration",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "IntlIterator|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "type",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "region",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            },
+            {
+                "name": "rawOffset",
+                "type": "?int",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_from_date_time_zone": {
+        "name": "intltz_from_date_time_zone",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?IntlTimeZone",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "DateTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_canonical_id": {
+        "name": "intltz_get_canonical_id",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezoneId",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "isSystemId",
+                "type": null,
+                "nullable": true,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_display_name": {
+        "name": "intltz_get_display_name",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "dst",
+                "type": "bool",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "false",
+                "default": false
+            },
+            {
+                "name": "style",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "IntlTimeZone::DISPLAY_LONG",
+                "default": {
+                    "const": "IntlTimeZone::DISPLAY_LONG"
+                }
+            },
+            {
+                "name": "locale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_dst_savings": {
+        "name": "intltz_get_dst_savings",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_equivalent_id": {
+        "name": "intltz_get_equivalent_id",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezoneId",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "offset",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_error_code": {
+        "name": "intltz_get_error_code",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_error_message": {
+        "name": "intltz_get_error_message",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_gmt": {
+        "name": "intltz_get_gmt",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "IntlTimeZone",
+            "nullable": false
+        },
+        "params": [],
+        "extension": "intl"
+    },
+    "intltz_get_iana_id": {
+        "name": "intltz_get_iana_id",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezoneId",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_id": {
+        "name": "intltz_get_id",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_id_for_windows_id": {
+        "name": "intltz_get_id_for_windows_id",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezoneId",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "region",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_offset": {
+        "name": "intltz_get_offset",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 5,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "timestamp",
+                "type": "float",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "local",
+                "type": "bool",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "rawOffset",
+                "type": null,
+                "nullable": true,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "dstOffset",
+                "type": null,
+                "nullable": true,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_raw_offset": {
+        "name": "intltz_get_raw_offset",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_region": {
+        "name": "intltz_get_region",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezoneId",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_get_tz_data_version": {
+        "name": "intltz_get_tz_data_version",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [],
+        "extension": "intl"
+    },
+    "intltz_get_unknown": {
+        "name": "intltz_get_unknown",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "IntlTimeZone",
+            "nullable": false
+        },
+        "params": [],
+        "extension": "intl"
+    },
+    "intltz_get_windows_id": {
+        "name": "intltz_get_windows_id",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezoneId",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_has_same_rules": {
+        "name": "intltz_has_same_rules",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "other",
+                "type": "IntlTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_to_date_time_zone": {
+        "name": "intltz_to_date_time_zone",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "DateTimeZone|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "intltz_use_daylight_time": {
+        "name": "intltz_use_daylight_time",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "timezone",
+                "type": "IntlTimeZone",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
     "intval": {
         "name": "intval",
         "deprecated": false,
@@ -27343,6 +31280,564 @@
         ],
         "extension": "standard"
     },
+    "locale_accept_from_http": {
+        "name": "locale_accept_from_http",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "header",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_add_likely_subtags": {
+        "name": "locale_add_likely_subtags",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_canonicalize": {
+        "name": "locale_canonicalize",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?string",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_compose": {
+        "name": "locale_compose",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "subtags",
+                "type": "array",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_filter_matches": {
+        "name": "locale_filter_matches",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "?bool",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "languageTag",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "canonicalize",
+                "type": "bool",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "false",
+                "default": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_get_all_variants": {
+        "name": "locale_get_all_variants",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?array",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_get_default": {
+        "name": "locale_get_default",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "string",
+            "nullable": false
+        },
+        "params": [],
+        "extension": "intl"
+    },
+    "locale_get_display_language": {
+        "name": "locale_get_display_language",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "displayLocale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_get_display_name": {
+        "name": "locale_get_display_name",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "displayLocale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_get_display_region": {
+        "name": "locale_get_display_region",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "displayLocale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_get_display_script": {
+        "name": "locale_get_display_script",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "displayLocale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_get_display_variant": {
+        "name": "locale_get_display_variant",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "displayLocale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_get_keywords": {
+        "name": "locale_get_keywords",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "array|false|null",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_get_primary_language": {
+        "name": "locale_get_primary_language",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?string",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_get_region": {
+        "name": "locale_get_region",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?string",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_get_script": {
+        "name": "locale_get_script",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?string",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_is_right_to_left": {
+        "name": "locale_is_right_to_left",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_lookup": {
+        "name": "locale_lookup",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "?string",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "languageTag",
+                "type": "array",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "canonicalize",
+                "type": "bool",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "false",
+                "default": false
+            },
+            {
+                "name": "defaultLocale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_minimize_subtags": {
+        "name": "locale_minimize_subtags",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_parse": {
+        "name": "locale_parse",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?array",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "locale_set_default": {
+        "name": "locale_set_default",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "true",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
     "localeconv": {
         "name": "localeconv",
         "deprecated": false,
@@ -31074,6 +35569,298 @@
         ],
         "extension": "sysvmsg"
     },
+    "msgfmt_create": {
+        "name": "msgfmt_create",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "?MessageFormatter",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "pattern",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "msgfmt_format": {
+        "name": "msgfmt_format",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "MessageFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "values",
+                "type": "array",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "msgfmt_format_message": {
+        "name": "msgfmt_format_message",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "pattern",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "values",
+                "type": "array",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "msgfmt_get_error_code": {
+        "name": "msgfmt_get_error_code",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "MessageFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "msgfmt_get_error_message": {
+        "name": "msgfmt_get_error_message",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "MessageFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "msgfmt_get_locale": {
+        "name": "msgfmt_get_locale",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "MessageFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "msgfmt_get_pattern": {
+        "name": "msgfmt_get_pattern",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "MessageFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "msgfmt_parse": {
+        "name": "msgfmt_parse",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "array|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "MessageFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "msgfmt_parse_message": {
+        "name": "msgfmt_parse_message",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "array|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "pattern",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "message",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "msgfmt_set_pattern": {
+        "name": "msgfmt_set_pattern",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "MessageFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "pattern",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
     "mt_getrandmax": {
         "name": "mt_getrandmax",
         "deprecated": false,
@@ -34332,6 +39119,111 @@
         ],
         "extension": "standard"
     },
+    "normalizer_get_raw_decomposition": {
+        "name": "normalizer_get_raw_decomposition",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?string",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "form",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "Normalizer::FORM_C",
+                "default": {
+                    "const": "Normalizer::FORM_C"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
+    "normalizer_is_normalized": {
+        "name": "normalizer_is_normalized",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "form",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "Normalizer::FORM_C",
+                "default": {
+                    "const": "Normalizer::FORM_C"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
+    "normalizer_normalize": {
+        "name": "normalizer_normalize",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "form",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "Normalizer::FORM_C",
+                "default": {
+                    "const": "Normalizer::FORM_C"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
     "number_format": {
         "name": "number_format",
         "deprecated": false,
@@ -34386,6 +39278,583 @@
             }
         ],
         "extension": "standard"
+    },
+    "numfmt_create": {
+        "name": "numfmt_create",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "?NumberFormatter",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "style",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "pattern",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_format": {
+        "name": "numfmt_format",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "num",
+                "type": "int|float",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "type",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "NumberFormatter::TYPE_DEFAULT",
+                "default": {
+                    "const": "NumberFormatter::TYPE_DEFAULT"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_format_currency": {
+        "name": "numfmt_format_currency",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "amount",
+                "type": "float",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "currency",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_get_attribute": {
+        "name": "numfmt_get_attribute",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|float|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "attribute",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_get_error_code": {
+        "name": "numfmt_get_error_code",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_get_error_message": {
+        "name": "numfmt_get_error_message",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_get_locale": {
+        "name": "numfmt_get_locale",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "type",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "ULOC_ACTUAL_LOCALE",
+                "default": {
+                    "const": "ULOC_ACTUAL_LOCALE"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_get_pattern": {
+        "name": "numfmt_get_pattern",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_get_symbol": {
+        "name": "numfmt_get_symbol",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "symbol",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_get_text_attribute": {
+        "name": "numfmt_get_text_attribute",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "attribute",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_parse": {
+        "name": "numfmt_parse",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "int|float|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "type",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "NumberFormatter::TYPE_DOUBLE",
+                "default": {
+                    "const": "NumberFormatter::TYPE_DOUBLE"
+                }
+            },
+            {
+                "name": "offset",
+                "type": null,
+                "nullable": true,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_parse_currency": {
+        "name": "numfmt_parse_currency",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "float|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "currency",
+                "type": null,
+                "nullable": true,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "offset",
+                "type": null,
+                "nullable": true,
+                "by_ref": true,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "null",
+                "default": null
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_set_attribute": {
+        "name": "numfmt_set_attribute",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "attribute",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "value",
+                "type": "int|float",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_set_pattern": {
+        "name": "numfmt_set_pattern",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "pattern",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_set_symbol": {
+        "name": "numfmt_set_symbol",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "symbol",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "value",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "numfmt_set_text_attribute": {
+        "name": "numfmt_set_text_attribute",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 3,
+        "return": {
+            "type": "bool",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "formatter",
+                "type": "NumberFormatter",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "attribute",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "value",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
     },
     "ob_clean": {
         "name": "ob_clean",
@@ -47832,6 +53301,178 @@
             }
         ],
         "extension": "standard"
+    },
+    "resourcebundle_count": {
+        "name": "resourcebundle_count",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "bundle",
+                "type": "ResourceBundle",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "resourcebundle_create": {
+        "name": "resourcebundle_create",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "?ResourceBundle",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "locale",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "bundle",
+                "type": "?string",
+                "nullable": true,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "fallback",
+                "type": "bool",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "true",
+                "default": true
+            }
+        ],
+        "extension": "intl"
+    },
+    "resourcebundle_get": {
+        "name": "resourcebundle_get",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "ResourceBundle|array|string|int|null",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "bundle",
+                "type": "ResourceBundle",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "index",
+                "type": "string|int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "fallback",
+                "type": "bool",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "true",
+                "default": true
+            }
+        ],
+        "extension": "intl"
+    },
+    "resourcebundle_get_error_code": {
+        "name": "resourcebundle_get_error_code",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "bundle",
+                "type": "ResourceBundle",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "resourcebundle_get_error_message": {
+        "name": "resourcebundle_get_error_message",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "bundle",
+                "type": "ResourceBundle",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "resourcebundle_locales": {
+        "name": "resourcebundle_locales",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "array|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "bundle",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
     },
     "restore_error_handler": {
         "name": "restore_error_handler",
@@ -61354,6 +66995,207 @@
             }
         ],
         "extension": "Core"
+    },
+    "transliterator_create": {
+        "name": "transliterator_create",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?Transliterator",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "id",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "direction",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "Transliterator::FORWARD",
+                "default": {
+                    "const": "Transliterator::FORWARD"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
+    "transliterator_create_from_rules": {
+        "name": "transliterator_create_from_rules",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?Transliterator",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "rules",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "direction",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "Transliterator::FORWARD",
+                "default": {
+                    "const": "Transliterator::FORWARD"
+                }
+            }
+        ],
+        "extension": "intl"
+    },
+    "transliterator_create_inverse": {
+        "name": "transliterator_create_inverse",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "?Transliterator",
+            "nullable": true
+        },
+        "params": [
+            {
+                "name": "transliterator",
+                "type": "Transliterator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "transliterator_get_error_code": {
+        "name": "transliterator_get_error_code",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "int",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "transliterator",
+                "type": "Transliterator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "transliterator_get_error_message": {
+        "name": "transliterator_get_error_message",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 1,
+        "return": {
+            "type": "string",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "transliterator",
+                "type": "Transliterator",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            }
+        ],
+        "extension": "intl"
+    },
+    "transliterator_list_ids": {
+        "name": "transliterator_list_ids",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 0,
+        "return": {
+            "type": "array|false",
+            "nullable": false
+        },
+        "params": [],
+        "extension": "intl"
+    },
+    "transliterator_transliterate": {
+        "name": "transliterator_transliterate",
+        "deprecated": false,
+        "returns_ref": false,
+        "required": 2,
+        "return": {
+            "type": "string|false",
+            "nullable": false
+        },
+        "params": [
+            {
+                "name": "transliterator",
+                "type": "Transliterator|string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "string",
+                "type": "string",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": false
+            },
+            {
+                "name": "start",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "0",
+                "default": 0
+            },
+            {
+                "name": "end",
+                "type": "int",
+                "nullable": false,
+                "by_ref": false,
+                "prefer_ref": false,
+                "variadic": false,
+                "optional": true,
+                "default_expr": "-1",
+                "default": -1
+            }
+        ],
+        "extension": "intl"
     },
     "trigger_error": {
         "name": "trigger_error",

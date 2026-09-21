@@ -33,7 +33,7 @@ use rphp_value::Value;
 use http::{ReadError, Request};
 
 /// The version the server announces (`X-Powered-By`, `SERVER_SOFTWARE`).
-pub const PHP_VERSION: &str = "8.5.0";
+pub const PHP_VERSION: &str = "8.5.10";
 
 /// What `rphp -S` was asked to serve.
 #[derive(Clone, Debug)]

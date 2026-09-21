@@ -206,6 +206,7 @@ fn from_iso(ctx: &mut Ctx, o: &Object, spec: &[u8], options: i64, who: &str) -> 
     let text = String::from_utf8_lossy(spec).into_owned();
     let mut recurrences = 0i64;
     let mut begin: Option<[i64; 6]> = None;
+    let mut end: Option<[i64; 6]> = None;
     let mut duration: Option<&[u8]> = None;
     let mut components = 0usize;
     for part in spec.split(|&c| c == b'/') {
@@ -241,10 +242,13 @@ fn from_iso(ctx: &mut Ctx, o: &Object, spec: &[u8], options: i64, who: &str) -> 
         let Some(fields) = iso_instant(part) else {
             return Err(bad_format(ctx, &text));
         };
-        if begin.is_none() && duration.is_none() {
+        // timelib: a date after any date or duration is the end date (the
+        // last one wins), the first one otherwise is the start.
+        if begin.is_none() && end.is_none() && duration.is_none() {
             begin = Some(fields);
+        } else {
+            end = Some(fields);
         }
-        // Any later date is the end date, which this constructor never uses.
     }
     if components == 0 {
         return Err(bad_format(ctx, &text));
@@ -263,7 +267,16 @@ fn from_iso(ctx: &mut Ctx, o: &Object, spec: &[u8], options: i64, who: &str) -> 
             format!("{who}(): ISO interval must contain an interval, \"{text}\" given"),
         ));
     };
-    if !(1..2_147_483_640).contains(&recurrences) {
+    // 8.5.10: without an end date the count must be given (8.5.0 compared
+    // the pointer and fell through to the range check below).
+    if end.is_none() && recurrences == 0 {
+        return Err(date_throw(
+            ctx,
+            "DateMalformedPeriodStringException",
+            format!("{who}(): ISO interval must contain an end date or a recurrence count, \"{text}\" given"),
+        ));
+    }
+    if end.is_none() && !(1..2_147_483_640).contains(&recurrences) {
         return Err(date_throw(
             ctx,
             "DateMalformedPeriodStringException",
@@ -272,7 +285,7 @@ fn from_iso(ctx: &mut Ctx, o: &Object, spec: &[u8], options: i64, who: &str) -> 
             ),
         ));
     }
-    let start = {
+    let instant = |ctx: &mut Ctx, fields: [i64; 6]| -> Result<Object, Unwind> {
         let tz = Tz::Offset(0);
         let cid = ctx
             .class_by_name(b"DateTimeImmutable")
@@ -284,7 +297,12 @@ fn from_iso(ctx: &mut Ctx, o: &Object, spec: &[u8], options: i64, who: &str) -> 
             + fields[4] * 60
             + fields[5];
         put_dt(&inst, DtState { ts, usec: 0, tz });
-        inst
+        Ok(inst)
+    };
+    let start = instant(ctx, fields)?;
+    let end = match end {
+        Some(fields) => Some(instant(ctx, fields)?),
+        None => None,
     };
     let interval = {
         let cid = ctx
@@ -300,7 +318,7 @@ fn from_iso(ctx: &mut Ctx, o: &Object, spec: &[u8], options: i64, who: &str) -> 
     seed(
         o,
         start,
-        None,
+        end,
         interval,
         recurrences + extra,
         include_start,

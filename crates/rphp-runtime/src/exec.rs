@@ -1561,6 +1561,11 @@ impl Interp {
                 }
                 Op::JmpUnless { kind, a, b, target } => {
                     if !self.compare(&func, base, kind, a, b)? {
+                        // A loop condition's exit is forward; the safepoint
+                        // is on a backward target.
+                        if (target as usize) <= pc && self.interrupt.is_raised() {
+                            return Err(self.interrupted());
+                        }
                         pc = target as usize;
                         continue;
                     }
@@ -1889,14 +1894,39 @@ impl Interp {
                     // an `Iterator`, an `IteratorAggregate`) is drained first —
                     // `f(...$generator)` is how doctrine/inflector builds its
                     // rule sets. String keys become named arguments (8.1).
-                    let items: Vec<(Value, Value)> = match &*v.deref() {
-                        Value::Array(a) => a.iter().map(|(k, val)| (k.to_value(), val.clone())).collect(),
+                    let items: Option<Vec<(Value, Value)>> = match &*v.deref() {
+                        Value::Array(a) => {
+                            // The common case, without a copy of the entries.
+                            for (k, val) in a.iter() {
+                                match k {
+                                    rphp_value::ArrayKey::Str(s) => {
+                                        let p = self.frames[fi].pending.last_mut().expect("pending");
+                                        p.named.push((Box::from(s.as_bytes()), val.deref().into_owned()));
+                                    }
+                                    rphp_value::ArrayKey::Int(_) => {
+                                        if !self.frames[fi].pending.last().expect("pending").named.is_empty() {
+                                            return Err(Unwind::error(
+                                                "Cannot use positional argument after named argument during unpacking",
+                                            ));
+                                        }
+                                        let pos = self.frames[fi].pending.last().expect("pending").argc;
+                                        let v = if self.pending_by_ref(fi, pos) {
+                                            val.clone()
+                                        } else {
+                                            val.deref().into_owned()
+                                        };
+                                        self.send(fi, v);
+                                    }
+                                }
+                            }
+                            None
+                        }
                         Value::Object(o)
                             if self.generator_id(o).is_some()
                                 || self.well_known.traversable.is_some_and(|t| self.object_instanceof(o, t)) =>
                         {
                             let o = o.clone();
-                            self.iterate_traversable(&o)?
+                            Some(self.iterate_traversable(&o)?)
                         }
                         Value::Object(o) => {
                             let name = self.class_name_of(o);
@@ -1909,7 +1939,7 @@ impl Interp {
                             )))
                         }
                     };
-                    for (k, val) in items {
+                    for (k, val) in items.unwrap_or_default() {
                         match k {
                             Value::Str(s) => {
                                 let p = self.frames[fi].pending.last_mut().expect("pending");
@@ -2947,15 +2977,7 @@ impl Interp {
             return false;
         };
         match &p.target {
-            CallTarget::User { func, .. } => {
-                let params = &func.f.params;
-                match params.get(pos) {
-                    Some(pd) => pd.by_ref,
-                    // Past the declared parameters: a by-ref variadic takes
-                    // the rest by reference.
-                    None => params.last().is_some_and(|l| l.variadic && l.by_ref),
-                }
-            }
+            CallTarget::User { func, .. } => func.by_ref(pos),
             CallTarget::Native(id) => self.natives[id.0 as usize].is_by_ref(pos),
             CallTarget::NativeMethod(m) => match &m.body {
                 MethodBody::Native(nm) => nm.is_by_ref(pos),
@@ -3335,6 +3357,8 @@ impl Interp {
         }
         let bytes = match std::fs::read(&resolved) {
             Ok(b) => b,
+            // A directory opens and fails to read (EISDIR): a missing file
+            // to php too.
             Err(_) => {
                 self.warn(&format!(
                     "{keyword}({path_str}): Failed to open stream: No such file or directory"
@@ -3344,6 +3368,9 @@ impl Interp {
                         "Failed opening required '{path_str}' (include_path='{include_path}')"
                     )));
                 }
+                self.warn(&format!(
+                    "{keyword}(): Failed opening '{path_str}' for inclusion (include_path='{include_path}')"
+                ))?;
                 self.stack[dst_abs] = Value::Bool(false);
                 return Ok(false);
             }
@@ -3398,11 +3425,14 @@ impl Interp {
 
     /// Resolve an include path: absolute as is; otherwise the `include_path`
     /// entries, then the including file's directory, then the cwd.
+    ///
+    /// An absolute path is not `stat`ed here: the unit cache answers for a
+    /// file it holds without a syscall (opcache's `revalidate_freq`), and
+    /// the read reports a missing file the same way.
     fn resolve_include_path(&self, path: &[u8]) -> Option<std::path::PathBuf> {
         let p = std::path::PathBuf::from(String::from_utf8_lossy(path).into_owned());
         if p.is_absolute() || path.starts_with(b"./") || path.starts_with(b"../") {
-            let full = if p.is_absolute() { p } else { self.cwd.join(p) };
-            return full.is_file().then_some(full);
+            return Some(if p.is_absolute() { p } else { self.cwd.join(p) });
         }
         let include_path = self.ini_get("include_path").unwrap_or(".").to_string();
         let mut candidates: Vec<std::path::PathBuf> = include_path
@@ -3498,6 +3528,14 @@ thread_local! {
 /// The canonical form of `path` through the thread's realpath cache (the
 /// path itself when it cannot be canonicalized).
 fn canonical_path(path: &std::path::Path) -> std::path::PathBuf {
+    realpath_cached(path).unwrap_or_else(|| path.to_path_buf())
+}
+
+/// `realpath(3)` through the thread's realpath cache: an answer is trusted
+/// for php's `realpath_cache_ttl` (120 s); a path that does not resolve is
+/// asked again each time, as php does. `realpath()` and the include path
+/// share it.
+pub fn realpath_cached(path: &std::path::Path) -> Option<std::path::PathBuf> {
     const TTL: std::time::Duration = std::time::Duration::from_secs(120);
     let hit = REALPATHS.with(|c| {
         c.borrow()
@@ -3505,10 +3543,10 @@ fn canonical_path(path: &std::path::Path) -> std::path::PathBuf {
             .filter(|(_, at)| at.elapsed() < TTL)
             .map(|(p, _)| p.clone())
     });
-    if let Some(p) = hit {
-        return p;
+    if hit.is_some() {
+        return hit;
     }
-    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let canonical = path.canonicalize().ok()?;
     REALPATHS.with(|c| {
         let mut c = c.borrow_mut();
         if c.len() > 65536 {
@@ -3516,7 +3554,12 @@ fn canonical_path(path: &std::path::Path) -> std::path::PathBuf {
         }
         c.insert(path.to_path_buf(), (canonical.clone(), std::time::Instant::now()));
     });
-    canonical
+    Some(canonical)
+}
+
+/// `clearstatcache(true)`: drop the thread's realpath cache.
+pub fn clear_realpath_cache() {
+    REALPATHS.with(|c| c.borrow_mut().clear());
 }
 
 /// The variant name of an op, for the `profile` feature's per-kind table.

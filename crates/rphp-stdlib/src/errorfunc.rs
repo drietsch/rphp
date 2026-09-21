@@ -123,16 +123,13 @@ pub(crate) fn error_clear_last(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
 /// `error_log(string $message, int $message_type = 0, ?string $destination = null, ?string $additional_headers = null): bool`
 /// — type 0/4 write the line to stderr (the CLI's log), type 3 appends to
 /// `$destination`; mail (1) and the removed type 2 are `false`.
-pub(crate) fn error_log(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn error_log(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let message = args[0].to_php_bytes();
     let kind = args.get(1).map_or(0, Value::to_int);
     match kind {
+        // The SAPI's log (or the `error_log` file).
         0 | 4 => {
-            use std::io::Write;
-            let mut err = std::io::stderr().lock();
-            let _ = err.write_all(&message);
-            let _ = err.write_all(b"\n");
-            let _ = err.flush();
+            ctx.log_message(&String::from_utf8_lossy(&message));
             Ok(Value::Bool(true))
         }
         3 => {

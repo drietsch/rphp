@@ -48,6 +48,12 @@ pub trait OutputSink: Send {
     fn write(&mut self, bytes: &[u8]);
     /// Push everything delivered so far to its destination.
     fn flush(&mut self);
+    /// `fastcgi_finish_request()`: end the response now (the client is
+    /// answered; later output is dropped). `false` when the SAPI has no
+    /// such notion.
+    fn finish_request(&mut self) -> bool {
+        false
+    }
 }
 
 /// One `ob_start` level.
@@ -221,6 +227,12 @@ impl OutputStack {
     pub fn flush_sink(&mut self) {
         self.flush_pending();
         self.sink.flush();
+    }
+
+    /// See [`OutputSink::finish_request`].
+    pub fn finish_request(&mut self) -> bool {
+        self.flush_pending();
+        self.sink.finish_request()
     }
 
     /// Number of active levels (`ob_get_level()`).

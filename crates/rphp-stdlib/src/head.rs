@@ -37,11 +37,24 @@ static SERVER_FUNCTIONS: &[NativeFn] = &[
     nf!("apache_response_headers", 0, Some(0), apache_response_headers),
 ];
 
+/// The FastCGI SAPI's own function.
+static FCGI_FUNCTIONS: &[NativeFn] = &[nf!("fastcgi_finish_request", 0, Some(0), fastcgi_finish_request)];
+
 /// Register the web-only functions when the SAPI is one.
 pub(crate) fn register_server_functions(r: &mut Registry) {
-    if r.interp().sapi == SapiKind::Server {
+    if r.interp().sapi.is_web() {
         r.functions(SERVER_FUNCTIONS);
     }
+    if r.interp().sapi == SapiKind::Fcgi {
+        r.functions(FCGI_FUNCTIONS);
+    }
+}
+
+/// `fastcgi_finish_request(): bool` — flush every output buffer and the
+/// head, end the response, and go on running with output discarded.
+fn fastcgi_finish_request(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
+    ctx.finish_output();
+    Ok(Value::Bool(ctx.out.finish_request()))
 }
 
 /// php's complaint, with the place the output started when there was any

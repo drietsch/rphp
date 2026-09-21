@@ -18,7 +18,6 @@
 
 mod http;
 mod mime;
-mod multipart;
 mod request;
 mod resolve;
 

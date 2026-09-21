@@ -155,11 +155,20 @@ impl crate::Interp {
         let seed = match name {
             b"_ENV" => {
                 let mut env = rphp_value::Array::new();
-                for (k, v) in std::env::vars_os() {
-                    env.set(
-                        rphp_value::ArrayKey::str(k.to_string_lossy().as_bytes()),
-                        Value::string(v.to_string_lossy().as_bytes()),
-                    );
+                match &self.request_env {
+                    Some(vars) => {
+                        for (k, v) in vars {
+                            env.set(rphp_value::ArrayKey::str(k.as_bytes()), Value::string(v.as_bytes()));
+                        }
+                    }
+                    None => {
+                        for (k, v) in std::env::vars_os() {
+                            env.set(
+                                rphp_value::ArrayKey::str(k.to_string_lossy().as_bytes()),
+                                Value::string(v.to_string_lossy().as_bytes()),
+                            );
+                        }
+                    }
                 }
                 Value::Array(env)
             }

@@ -1354,6 +1354,7 @@ dependencies = [
 name = "rphp-runtime"
 version = "0.0.0"
 dependencies = [
+ "jiff",
  "rphp-bytecode",
  "rphp-ext-api",
  "rphp-intern",
@@ -1370,10 +1371,22 @@ dependencies = [
  "rphp-hir",
  "rphp-intern",
  "rphp-parser",
+ "rphp-sapi-fcgi",
  "rphp-sapi-server",
  "rphp-source",
  "rphp-span",
  "rphp-tokenizer",
+]
+
+[[package]]
+name = "rphp-sapi-fcgi"
+version = "0.0.0"
+dependencies = [
+ "jiff",
+ "rphp-embed",
+ "rphp-runtime",
+ "rphp-stdlib",
+ "rphp-value",
 ]
 
 [[package]]

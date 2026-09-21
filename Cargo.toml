@@ -15,6 +15,7 @@ members = [
     "crates/rphp-runtime",
     "crates/rphp-sapi-cli",
     "crates/rphp-sapi-server",
+    "crates/rphp-sapi-fcgi",
     "crates/rphp-ext-pdo",
     "crates/rphp-ext-dom",
     "crates/rphp-ext-api",
@@ -52,6 +53,7 @@ rphp-stdlib = { path = "crates/rphp-stdlib" }
 rphp-runtime = { path = "crates/rphp-runtime" }
 rphp-sapi-cli = { path = "crates/rphp-sapi-cli" }
 rphp-sapi-server = { path = "crates/rphp-sapi-server" }
+rphp-sapi-fcgi = { path = "crates/rphp-sapi-fcgi" }
 rphp-ext-pdo = { path = "crates/rphp-ext-pdo" }
 rphp-ext-dom = { path = "crates/rphp-ext-dom" }
 rphp-ext-api = { path = "crates/rphp-ext-api" }

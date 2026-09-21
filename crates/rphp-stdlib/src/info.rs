@@ -332,13 +332,21 @@ pub(crate) fn set_include_path(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
 // ---- environment ------------------------------------------------------------
 
 /// `getenv(?string $name = null, bool $local_only = false): string|array|false`
-pub(crate) fn getenv(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn getenv(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     match args.first() {
         Some(v) if !matches!(*v.deref(), Value::Null) => {
             let name = v.to_php_bytes();
             let name = String::from_utf8_lossy(&name).into_owned();
             if name.is_empty() || name.contains(['=', '\0']) {
                 return Ok(Value::Bool(false));
+            }
+            // A CGI SAPI answers from the request's environment (case
+            // matters there, as in php-fpm's table).
+            if let Some(vars) = &ctx.request_env {
+                return Ok(match vars.iter().find(|(k, _)| *k == name) {
+                    Some((_, val)) => Value::string(val.as_bytes()),
+                    None => Value::Bool(false),
+                });
             }
             Ok(match std::env::var_os(&name) {
                 Some(val) => Value::string(val.to_string_lossy().as_bytes()),
@@ -347,6 +355,12 @@ pub(crate) fn getenv(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
         }
         _ => {
             let mut a = Array::new();
+            if let Some(vars) = &ctx.request_env {
+                for (k, v) in vars {
+                    a.set(ArrayKey::str(k.as_bytes()), Value::string(v.as_bytes()));
+                }
+                return Ok(Value::Array(a));
+            }
             for (k, v) in std::env::vars_os() {
                 a.set(
                     ArrayKey::str(k.to_string_lossy().as_bytes()),
@@ -360,7 +374,7 @@ pub(crate) fn getenv(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `putenv(string $assignment): bool` — `NAME=value` sets, a bare `NAME`
 /// unsets; the change is visible to `getenv` and to child processes.
-pub(crate) fn putenv(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn putenv(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let assignment = args[0].to_php_bytes();
     let text = String::from_utf8_lossy(&assignment).into_owned();
     let (name, value) = match text.split_once('=') {
@@ -369,6 +383,13 @@ pub(crate) fn putenv(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     };
     if name.is_empty() || name.contains('\0') || value.as_ref().is_some_and(|v| v.contains('\0')) {
         return Err(Unwind::value_error("putenv(): Argument #1 ($assignment) must have a valid syntax"));
+    }
+    if let Some(vars) = &mut ctx.request_env {
+        vars.retain(|(k, _)| *k != name);
+        if let Some(v) = value {
+            vars.push((name, v));
+        }
+        return Ok(Value::Bool(true));
     }
     match value {
         Some(v) => std::env::set_var(&name, v),
@@ -380,14 +401,32 @@ pub(crate) fn putenv(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `sys_get_temp_dir(): string` — the `sys_temp_dir` ini, else `TMPDIR`,
 /// else `/tmp`; without a trailing slash.
 pub(crate) fn sys_get_temp_dir(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
-    let mut dir = match ctx.ini_get("sys_temp_dir") {
-        Some(d) if !d.is_empty() => d.to_string(),
-        _ => std::env::var("TMPDIR").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| "/tmp".to_string()),
-    };
-    while dir.len() > 1 && dir.ends_with('/') {
-        dir.pop();
+    Ok(Value::string(temp_dir(ctx).as_bytes()))
+}
+
+/// php's `php_get_temporary_directory`: the `sys_temp_dir` ini, else
+/// `TMPDIR` (of the request's environment under a CGI SAPI) without its
+/// trailing slashes, else the C library's `P_tmpdir` as it is (`/var/tmp/`
+/// on macOS, `/tmp` elsewhere).
+pub(crate) fn temp_dir(ctx: &Ctx) -> String {
+    if let Some(d) = ctx.ini_get("sys_temp_dir").filter(|d| !d.is_empty()) {
+        let mut d = d.to_string();
+        while d.len() > 1 && d.ends_with('/') {
+            d.pop();
+        }
+        return d;
     }
-    Ok(Value::string(dir.as_bytes()))
+    let tmpdir = match &ctx.request_env {
+        Some(vars) => vars.iter().find(|(k, _)| k == "TMPDIR").map(|(_, v)| v.clone()),
+        None => std::env::var("TMPDIR").ok(),
+    };
+    if let Some(mut d) = tmpdir.filter(|d| !d.is_empty()) {
+        while d.len() > 1 && d.ends_with('/') {
+            d.pop();
+        }
+        return d;
+    }
+    if cfg!(target_os = "macos") { "/var/tmp/".to_string() } else { "/tmp".to_string() }
 }
 
 // ---- process / script --------------------------------------------------------

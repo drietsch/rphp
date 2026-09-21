@@ -66,8 +66,10 @@ after stripping php's `log_errors` duplicates and normalizing, exit code exact;
 a timeout on either side is an `exit` mismatch. Artifacts are compared
 byte-for-byte after `%FIXTURE%` normalization (a pattern matching nothing on
 the php side, a file missing under rphp, or a file only rphp produced all
-fail). HTTP rungs (`http = true`) are parsed and reported as
-"HTTP rungs need SAPI-3; skipped".
+fail). HTTP rungs (`http = true`) start `php -S` and `rphp -S` on the
+working copy's `docroot` (ephemeral ports) and compare each request's raw
+response — status line, headers, body — the same way, with the port and the
+`Date` header as placeholders.
 
 ## `ladder.toml` schema
 
@@ -102,7 +104,7 @@ artifacts = ["var/cache/dev/*Container.php"]  # optional; globs, byte-identical 
                                               # all commands ran (vendor/ only searched
                                               # when the pattern starts with `vendor`)
 
-[[rung]]                           # HTTP rung (L7): parsed, skipped until SAPI-3
+[[rung]]                           # HTTP rung (L7, L8http): `php -S` vs `rphp -S`
 id       = "L7"
 http     = true
 docroot  = "public"

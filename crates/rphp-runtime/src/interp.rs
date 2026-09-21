@@ -31,6 +31,8 @@ pub enum SapiKind {
     Embed,
     /// An HTTP server SAPI (`cli-server`).
     Server,
+    /// The FastCGI SAPI (`fpm-fcgi`, as php-fpm names itself).
+    Fcgi,
 }
 
 impl SapiKind {
@@ -40,7 +42,13 @@ impl SapiKind {
             SapiKind::Cli => "cli",
             SapiKind::Embed => "embed",
             SapiKind::Server => "cli-server",
+            SapiKind::Fcgi => "fpm-fcgi",
         }
+    }
+
+    /// Whether the SAPI serves HTTP requests (headers, `getallheaders()`).
+    pub fn is_web(self) -> bool {
+        matches!(self, SapiKind::Server | SapiKind::Fcgi)
     }
 }
 
@@ -207,6 +215,10 @@ pub struct Interp {
     /// The request's header fields as received, in order and with their
     /// original spelling (`getallheaders()`); empty outside a web SAPI.
     pub request_headers: Vec<(String, String)>,
+    /// A CGI SAPI's environment for the request (php-fpm's: `USER`, `HOME`,
+    /// the FastCGI parameters, `FCGI_ROLE`), which `getenv()`, `putenv()`
+    /// and `$_ENV` see in place of the process's; `None` = the process's.
+    pub request_env: Option<Vec<(String, String)>>,
     /// The raw request body (`php://input`); `None` outside a web SAPI.
     pub request_body: Option<std::sync::Arc<[u8]>>,
     /// Where `log_errors` entries go (`PHP Warning:  …`): stderr when
@@ -300,6 +312,7 @@ impl Interp {
             pending_site: None,
             head: crate::output::SharedHead::default(),
             request_headers: Vec::new(),
+            request_env: None,
             request_body: None,
             error_log: None,
             request_time: None,

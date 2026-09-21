@@ -25,6 +25,8 @@ use rphp_runtime::CompileFailure;
 use rphp_source::SourceMap;
 use rphp_value::{Array, ArrayKey, PhpRef, Value};
 
+pub mod cgi;
+
 pub use constants::{php_os, php_os_family};
 pub use rphp_runtime::{Interp, OutputSink, Registry, SapiKind, Unwind};
 pub use sink::{BufferSink, StdoutSink};
@@ -128,6 +130,14 @@ impl EngineConfig {
     pub fn server() -> EngineConfig {
         EngineConfig {
             sapi: SapiKind::Server,
+            ..EngineConfig::embed()
+        }
+    }
+
+    /// The FastCGI SAPI's configuration (php-fpm's).
+    pub fn fcgi() -> EngineConfig {
+        EngineConfig {
+            sapi: SapiKind::Fcgi,
             ..EngineConfig::embed()
         }
     }
@@ -281,7 +291,7 @@ impl Engine {
         }
         it.argv = cfg.argv.iter().map(|s| s.as_bytes().to_vec()).collect();
         it.script_path = cfg.script_path.clone();
-        if cfg.sapi == SapiKind::Server {
+        if cfg.sapi.is_web() {
             for (k, v) in rphp_runtime::SERVER_DEFAULTS {
                 it.ini_set(k, v);
             }

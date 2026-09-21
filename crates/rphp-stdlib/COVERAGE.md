@@ -870,3 +870,60 @@ copy-on-write copies and a per-worker compiled-unit cache (opcache's role:
 `rphp -S` keeps one long-lived thread per worker, so the cache lives across
 requests; a changed file recompiles by size and mtime) brought it to
 0.48 s, which is the interpreter's own per-op cost (`examples/bench`).
+
+## SAPI-4: FastCGI (2026-09-21)
+
+**`rphp -b host:port`** (php-cgi's flag; `PHP_FCGI_CHILDREN` sets the
+worker count) is a FastCGI responder (crate `rphp-sapi-fcgi`, no unsafe)
+measured against `php-fpm -n` through a FastCGI client in
+`tools/rphp/tests/fcgi.rs` — 37 request cases over `examples/http/docroot`,
+byte-identical stdout, stderr and end-request status once request times,
+session ids, upload temp names and clock reads are placeholders. php-fpm's
+ways, as found:
+
+- `PHP_SAPI` is `fpm-fcgi`; `$_SERVER` is `USER`, `HOME` (its cleared
+  process environment), the parameters in the reverse of their arrival
+  (php-fpm's hash yields them so), `FCGI_ROLE`, `PHP_SELF`
+  (`SCRIPT_NAME` + `PATH_INFO`), `REQUEST_TIME_FLOAT`, `REQUEST_TIME`;
+  `PHP_AUTH_*` from `HTTP_AUTHORIZATION`. `getenv()`, `putenv()` and
+  `$_ENV` work on that request environment (the engine's new
+  `Interp::request_env`), so `getenv('PATH')` is `false` as under php-fpm
+  and `getenv()` lists the parameters; `TMPDIR` is read from it too, and
+  php's temporary-directory rule is now php's (`P_tmpdir`, `/var/tmp/` on
+  macOS, when `TMPDIR` is unset — `sys_get_temp_dir()` and uploads).
+- The CGI head: `Status: <code> <reason>` only for a code other than 200
+  (a script's own `HTTP/1.1 418 Teapot` line gives `Status: 418 Teapot`; a
+  code php's table has no phrase for is `Status: 418`; `HTTP/1.1 200 OK`,
+  which Symfony sends, earns nothing), `X-Powered-By` first when
+  `expose_php`, the header list, the default `Content-type`. `HEAD` sends
+  the head alone.
+- A missing `SCRIPT_FILENAME` is `Status: 404` + `File not found.` with
+  `Primary script unknown` on `FCGI_STDERR`; a directory is `Status: 403`
+  + `Access denied.` with php-fpm's `security.limit_extensions` message.
+- `error_log()` (and `log_errors`) go to the web server on `FCGI_STDERR`
+  as `PHP message: …` while the request is open; `fastcgi_finish_request()`
+  flushes every buffer and the head, ends the request (`FCGI_END_REQUEST`)
+  and lets the script run on with its output dropped — php-fpm keeps only
+  its own log after that. The `error_log` ini file, when set, takes
+  `[20-Sep-2026 17:03:37 UTC] message` lines (`date.timezone`) from every
+  SAPI now.
+- `FCGI_GET_VALUES` answers only `FCGI_MPXS_CONNS: 0`, as php-fpm does;
+  one request per connection (a second `FCGI_BEGIN_REQUEST` is refused with
+  `FCGI_CANT_MPX_CONN`), `FCGI_KEEP_CONN` honoured, unknown record types
+  answered with `FCGI_UNKNOWN_TYPE`, the end-request app status 0 whatever
+  `exit()` said (php-fpm's).
+- The request binding (`$_GET`/`$_POST`/`$_FILES`/`$_COOKIE`/`$_REQUEST`,
+  `php://input`, `getallheaders()`, multipart uploads) moved from the `-S`
+  server into `rphp-embed`'s `cgi` module, shared by both SAPIs; php's
+  status-code reason table lives there too.
+
+symfony/demo serves through it as through php-fpm (nginx-style parameters
+with `SCRIPT_FILENAME=public/index.php`): the same pages, byte-identical
+apart from the profiler tokens.
+
+**Not done:** php-fpm's process management (pools, `pm.*`, request
+limits, slow log, the status/ping pages), the `-C`/`--fpm-config`
+configuration file (only `-d` overrides), a Unix-socket listener,
+`security.limit_extensions`, `cgi.fix_pathinfo`'s re-derivation of
+`PATH_INFO` when the web server passes a script that is a prefix of the
+path, `clear_env = no`, `env[]`/`php_value` pool directives.

@@ -318,6 +318,8 @@ fn responses_match_php_s() {
         ("status via header()", get("/status.php"), "HTTP/1.1"),
         ("content types", get("/ct.php"), "HTTP/1.1"),
         ("ob_flush + flush", get("/flush.php"), "HTTP/1.1"),
+        ("status line naming 200", get("/status200.php"), "HTTP/1.1"),
+        ("fcgi-only functions absent", get("/fcgi.php"), "HTTP/1.1"),
     ];
     for (name, req, version) in &cases {
         compare(&php_srv, &rphp_srv, name, req, version, &mut failures);

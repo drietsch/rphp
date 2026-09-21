@@ -1,0 +1,13 @@
+[package]
+name = "rphp-sapi-fcgi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rphp-embed.workspace = true
+rphp-runtime.workspace = true
+rphp-stdlib.workspace = true
+rphp-value.workspace = true
+jiff.workspace = true

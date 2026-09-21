@@ -48,35 +48,47 @@ echo json_encode($c), "\n";             // {"count":12}
 
 ## What works today
 
-**Language**
-- Scalars (`null`, `bool`, `int` full `i64`, `float` `f64`) with PHP 8 semantics —
-  arithmetic with int→float overflow promotion, the PHP 8 comparison rules, lenient
-  numeric-string coercion, and `%.14G` float formatting verified against stock PHP.
-- Byte-safe **strings** (binary-safe `echo`, concatenation, C-style + `$var`/`{$var}`
-  interpolation) and copy-on-write **arrays** (ordered int/string keys, literals,
-  indexing, append, `foreach`).
-- Control flow: `if`/`else`/`else if`, `while`, `foreach` (with optional key),
-  `return`; short-circuiting `&&`/`||`.
-- **Functions** — declarations (forward references resolve), recursion, by-reference
-  builtin parameters.
-- **Closures & arrow functions** — first-class, by-value capture (`use (...)` /
-  auto-capture), direct dynamic calls `$f(...)`, higher-order builtins.
-- **Objects & classes** — class declarations, properties with constant defaults,
-  constructors, methods, `$this`, method chaining, **reference semantics**,
-  identity (`===`), and `json_encode` over public properties.
-- **Inheritance, visibility & `instanceof`** *(newest slice)* — single inheritance
-  (`extends`) with **virtual dispatch** and inherited constructors,
-  `parent::`/`self::`/`Class::` scoped calls (so `parent::__construct()` works),
-  `instanceof` over the class chain, and **runtime-enforced** `public`/`protected`/
-  `private` visibility. (Interfaces, traits, statics, class constants, magic
-  methods, and `clone` are still pending — see
-  [the coverage dashboard](crates/rphp-stdlib/COVERAGE.md).)
+**Language** — PHP 8.5 as the differential oracle sees it: the full object
+model (interfaces, traits, abstract/final, statics, class constants, enums,
+readonly, property hooks and asymmetric visibility, lazy objects, magic
+methods, `clone`), closures and first-class callables, generators with
+`yield from`, fibers, named arguments (to user and native functions),
+references everywhere php has them, exceptions with php's exact messages and
+traces, attributes and Reflection, `include`/`require`/autoloading,
+`declare(strict_types=1)`, `match`, `eval`.
 
-**Standard library** — ~180 registry entries across `ctype`, `math`, `string`,
-`array` (incl. by-reference sort/mutators and higher-order `array_map`/`usort`/…),
-`json`, `hash`, and `pcre` (over PCRE2). Each is differentially tested against PHP
-8.5. The per-extension burn-down and known divergences are tracked in
-[`crates/rphp-stdlib/COVERAGE.md`](crates/rphp-stdlib/COVERAGE.md).
+**Standard library** — the burn-down is tracked per extension in
+[`crates/rphp-stdlib/COVERAGE.md`](crates/rphp-stdlib/COVERAGE.md):
+standard (strings, arrays, math, var, files/streams/dirs, output buffering,
+http/url, info), ctype, json, pcre (over PCRE2), hash, random, date (own
+timelib port), mbstring/iconv (pure Rust), spl, reflection, session,
+filter, tokenizer, zlib, **pdo + pdo_sqlite**, **dom/libxml/simplexml**
+(no libxml2; XPath 1.0, php 8.4's `Dom\*` API with an HTML5 parser and CSS
+selectors), plus the engine classes (`Closure`, `Generator`, `Fiber`,
+`WeakMap`, …).
+
+**SAPIs** — the CLI (`rphp script.php`, `-r`, `-l`, `-d`), the built-in web
+server (`rphp -S host:port -t docroot [router.php]`, byte-compared with
+`php -S`), and a FastCGI server (`rphp -b host:port`, byte-compared with
+`php-fpm`) for nginx/Caddy deployments. Each keeps php's `$_SERVER` layout,
+response head, upload handling and error rendering for that SAPI.
+
+**Applications** — the Symfony ladder (`fixtures/ladder/`) runs
+`symfony/skeleton` and `symfony/demo` (Doctrine over SQLite, Twig, security,
+forms, translations, the web profiler) on both engines and compares the
+output of every console command and HTTP page byte for byte after a
+declared set of normalizations: `bin/console about|debug:router|
+lint:container`, the demo's blog, posts, search, feeds, login and error
+pages are identical to php's.
+
+```sh
+rphp -S 127.0.0.1:8000 -t public          # like php -S
+rphp -b 127.0.0.1:9000                    # FastCGI, like php-fpm (PHP_FCGI_CHILDREN=4 for workers)
+```
+
+**Performance** is not there yet: the interpreter runs php's own benchmarks
+at 12–50× php's per-op cost (`examples/bench/`); symfony/demo's blog page
+takes ~0.5 s against php's 75 ms. See the perf notes in COVERAGE.md.
 
 ---
 
@@ -103,9 +115,13 @@ described in the specs are not built yet.)
 | `rphp-lexer`, `rphp-parser`, `rphp-ast` | front end → owned typed AST |
 | `rphp-bytecode` | register ISA, function/class tables, constant pools |
 | `rphp-compiler` | AST → bytecode (register allocation, closures, classes) |
+| `rphp-hir`, `rphp-tokenizer`, `rphp-pcre2` | resolution/validation pass, byte-exact `token_get_all`, the PCRE2 binding |
 | `rphp-stdlib` | native-function registry, feature-organized per extension |
+| `rphp-ext-pdo`, `rphp-ext-dom` | `ext/pdo` (+ sqlite) and `ext/dom` + libxml + simplexml, as extension crates |
 | `rphp-runtime` | the Tier-0 interpreter, call ABI, object/method dispatch |
-| `rphp-sapi-cli` + `tools/rphp` | the CLI SAPI and the `rphp` binary |
+| `rphp-embed` | the engine a SAPI embeds: interpreters, compile hook, the compiled-unit cache, CGI request binding |
+| `rphp-sapi-cli`, `rphp-sapi-server`, `rphp-sapi-fcgi` + `tools/rphp` | the CLI, `-S` and FastCGI SAPIs and the `rphp` binary |
+| `rphp-test`, `xtask` | the differential oracle, the `.phpt` runner, the Symfony ladder |
 
 Dependencies point strictly downward; `rphp-value` is the foundation everything
 agrees with.
@@ -116,13 +132,16 @@ agrees with.
 
 The correctness gate is **differential testing against stock PHP 8.5**: every snippet
 in [`examples/tier-a/`](examples/tier-a/) is run through both rPHP and the system
-`php` and required to match byte-for-byte (`crates/rphp-sapi-cli/tests/differential.rs`).
+`php` and required to match byte-for-byte (`tools/rphp/tests/differential.rs`).
 The comparison is skipped (not failed) when no `php` is on `PATH`, so the suite stays
 green in PHP-less CI while remaining a real oracle locally.
 
 ```sh
-cargo test --workspace          # unit + end-to-end + differential
-cargo test -p rphp-sapi-cli --test differential
+cargo test --workspace                 # unit + end-to-end + differential
+cargo test -p rphp --test differential # the tier-a snippets against php
+cargo test -p rphp --test http         # rphp -S against php -S
+cargo test -p rphp --test fcgi         # rphp -b against php-fpm
+cargo xtask ladder                     # the Symfony rungs (needs the fixtures set up)
 ```
 
 ---

@@ -30,6 +30,7 @@ USAGE:
 
 OPTIONS:
     -S <host>:<port>                 run the built-in web server (`php -S`)
+    -b <host>:<port>                 run the FastCGI server (php-cgi's `-b`; PHP_FCGI_CHILDREN workers)
     -t <docroot>                     the server's document root (default: the working directory)
     -d key[=value]                   set an ini directive (repeatable; `-d display_errors=0`)
     -f <file>                        the script to run
@@ -67,6 +68,8 @@ struct Cli {
     script_args: Vec<String>,
     /// `-S host:port`: run the web server instead of a script.
     serve: Option<String>,
+    /// `-b host:port`: the FastCGI server.
+    fcgi: Option<String>,
     /// `-t docroot`.
     docroot: Option<String>,
 }
@@ -94,7 +97,7 @@ fn parse_args(args: &[String]) -> Result<Cli, i32> {
             "run" if cli.code.is_none() => {}
             "-l" | "--lint" => cli.lint_only = true,
             "-n" => {}
-            "-d" | "-r" | "-f" | "-S" | "-t" => {
+            "-d" | "-r" | "-f" | "-S" | "-t" | "-b" => {
                 let Some(v) = args.get(i) else {
                     eprintln!("rphp: `{a}` needs an argument\n");
                     eprint!("{USAGE}");
@@ -116,7 +119,7 @@ fn parse_args(args: &[String]) -> Result<Cli, i32> {
                     }
                 });
             }
-            _ if a.starts_with("-d") || a.starts_with("-r") || a.starts_with("-f") || a.starts_with("-S") || a.starts_with("-t") => {
+            _ if a.starts_with("-d") || a.starts_with("-r") || a.starts_with("-f") || a.starts_with("-S") || a.starts_with("-t") || a.starts_with("-b") => {
                 let (flag, v) = a.split_at(2);
                 apply_option(&mut cli, flag, v);
             }
@@ -149,6 +152,7 @@ fn apply_option(cli: &mut Cli, flag: &str, value: &str) {
         }
         "-r" => cli.code = Some(value.to_string()),
         "-S" => cli.serve = Some(value.to_string()),
+        "-b" => cli.fcgi = Some(value.to_string()),
         "-t" => cli.docroot = Some(value.to_string()),
         _ => cli.file = Some(value.to_string()),
     }
@@ -167,6 +171,12 @@ pub fn run(args: Vec<String>) -> i32 {
         Ok(cli) => cli,
         Err(code) => return code,
     };
+
+    // `-b host:port`: the FastCGI server (SAPI-4), php-cgi's flag.
+    if let Some(bind) = &cli.fcgi {
+        let workers = std::env::var("PHP_FCGI_CHILDREN").ok().and_then(|w| w.parse().ok()).unwrap_or(1);
+        return rphp_sapi_fcgi::run(rphp_sapi_fcgi::FcgiOptions { bind: bind.clone(), ini: cli.ini.clone(), workers });
+    }
 
     // `-S host:port [-t docroot] [router.php]`: the built-in web server
     // (SAPI-3); a positional file is the router.

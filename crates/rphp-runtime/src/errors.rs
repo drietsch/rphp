@@ -195,6 +195,32 @@ impl DisplayMode {
 }
 
 impl Interp {
+    /// php's `php_log_err`: the `error_log` ini file when set (a
+    /// `[20-Sep-2026 17:03:37 UTC] ` stamp in `date.timezone` ahead), else
+    /// the SAPI's logger (the built-in server's log, FastCGI's stderr
+    /// stream), else the process's stderr.
+    pub fn log_message(&mut self, entry: &str) {
+        if let Some(path) = self.ini.get("error_log").filter(|p| !p.is_empty()).map(str::to_string) {
+            let zone = self.ini.get("date.timezone").filter(|z| !z.is_empty()).unwrap_or("UTC").to_string();
+            let stamp = match jiff::tz::TimeZone::get(&zone) {
+                Ok(tz) => jiff::Timestamp::now().to_zoned(tz).strftime("%d-%b-%Y %H:%M:%S").to_string(),
+                Err(_) => jiff::Timestamp::now().strftime("%d-%b-%Y %H:%M:%S").to_string(),
+            };
+            let line = format!("[{stamp} {zone}] {entry}\n");
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                use std::io::Write;
+                let _ = f.write_all(line.as_bytes());
+                return;
+            }
+        }
+        match &mut self.error_log {
+            Some(log) => log(entry),
+            None => eprintln!("{entry}"),
+        }
+    }
+}
+
+impl Interp {
     /// The `error_reporting` mask in effect: the configured mask, reduced to
     /// [`SILENCE_MASK`] inside an `@` bracket.
     pub fn effective_error_reporting(&self) -> i64 {
@@ -295,10 +321,7 @@ impl Interp {
             let label = level.label();
             if self.ini.bool("log_errors") {
                 let entry = format!("PHP {label}:  {message} in {file} on line {line}{trace}");
-                match &mut self.error_log {
-                    Some(log) => log(&entry),
-                    None => eprintln!("{entry}"),
-                }
+                self.log_message(&entry);
             }
             let prepend = self
                 .ini

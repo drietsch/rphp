@@ -64,7 +64,8 @@
 //!   which this module cannot open.
 
 use rphp_runtime::{
-    nm, ClassFlags, Ctx, Interp, NativeFn, NativeResult, Registry, Unwind, Visibility,
+    nm, ClassFlags, Ctx, Interp, IterRole, NativeFn, NativeIter, NativeResult, Registry, Unwind,
+    Visibility,
 };
 use rphp_value::{array_key, Array, ArrayKey, Object, Payload, PhpRef, Value};
 
@@ -410,7 +411,7 @@ fn dual_valid(ctx: &mut Ctx, o: &Object) -> Result<bool, Unwind> {
     let Some(d) = driver_of(o) else {
         return Ok(false);
     };
-    Ok(ctx.call_method(&d, b"valid", &[])?.to_bool())
+    Ok(ctx.iter_call(&d, IterRole::Valid)?.to_bool())
 }
 
 /// php's `spl_dual_it_fetch`: drop the cache, then read `current()` and
@@ -424,8 +425,8 @@ fn dual_fetch(ctx: &mut Ctx, o: &Object, check_more: bool) -> Result<(), Unwind>
     let Some(d) = driver_of(o) else {
         return Ok(());
     };
-    let data = ctx.call_method(&d, b"current", &[])?.deref().into_owned();
-    let key = ctx.call_method(&d, b"key", &[])?.deref().into_owned();
+    let data = ctx.iter_call(&d, IterRole::Current)?.deref().into_owned();
+    let key = ctx.iter_call(&d, IterRole::Key)?.deref().into_owned();
     with_state::<Dual, _>(o, |s| {
         s.data = Some(data);
         s.key = Some(key);
@@ -439,7 +440,7 @@ fn dual_rewind(ctx: &mut Ctx, o: &Object) -> Result<(), Unwind> {
     dual_free(o);
     with_state::<Dual, _>(o, |s| s.pos = 0);
     if let Some(d) = driver_of(o) {
-        ctx.call_method(&d, b"rewind", &[])?;
+        ctx.iter_call(&d, IterRole::Rewind)?;
     }
     Ok(())
 }
@@ -449,7 +450,7 @@ fn dual_rewind(ctx: &mut Ctx, o: &Object) -> Result<(), Unwind> {
 fn dual_next(ctx: &mut Ctx, o: &Object) -> Result<(), Unwind> {
     dual_free(o);
     if let Some(d) = driver_of(o) {
-        ctx.call_method(&d, b"next", &[])?;
+        ctx.iter_call(&d, IterRole::Next)?;
     }
     with_state::<Dual, _>(o, |s| s.pos += 1);
     Ok(())
@@ -856,7 +857,7 @@ fn norewind_current(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Nativ
             return Ok(v);
         }
     }
-    let v = ctx.call_method(&d, b"current", &[])?.deref().into_owned();
+    let v = ctx.iter_call(&d, IterRole::Current)?.deref().into_owned();
     if cached_kind {
         let stored = v.clone();
         with_state::<Dual, _>(o, |s| s.peek = Some(stored));
@@ -870,7 +871,7 @@ fn norewind_key(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRes
     let Some(d) = driver_of(o) else {
         return Ok(Value::Null);
     };
-    Ok(ctx.call_method(&d, b"key", &[])?.deref().into_owned())
+    Ok(ctx.iter_call(&d, IterRole::Key)?.deref().into_owned())
 }
 
 /// `NoRewindIterator::next(): void`
@@ -930,7 +931,7 @@ fn append_array_it(ctx: &mut Ctx, o: &Object) -> Result<Object, Unwind> {
 /// Whether the cursor over the appended iterators still points at one.
 fn append_array_valid(ctx: &mut Ctx, o: &Object) -> Result<bool, Unwind> {
     let a = append_array_it(ctx, o)?;
-    Ok(ctx.call_method(&a, b"valid", &[])?.to_bool())
+    Ok(ctx.iter_call(&a, IterRole::Valid)?.to_bool())
 }
 
 /// php's `spl_append_it_next_iterator`: adopt the iterator under the cursor
@@ -939,7 +940,7 @@ fn append_next_iterator(ctx: &mut Ctx, o: &Object) -> Result<(), Unwind> {
     dual_free(o);
     if append_array_valid(ctx, o)? {
         let a = append_array_it(ctx, o)?;
-        let cur = ctx.call_method(&a, b"current", &[])?.deref().into_owned();
+        let cur = ctx.iter_call(&a, IterRole::Current)?.deref().into_owned();
         if let Value::Object(it) = cur {
             let driver = it.clone();
             with_state::<Dual, _>(o, |s| {
@@ -962,7 +963,7 @@ fn append_next_iterator(ctx: &mut Ctx, o: &Object) -> Result<(), Unwind> {
 fn append_fetch(ctx: &mut Ctx, o: &Object) -> Result<(), Unwind> {
     while driver_of(o).is_some() && !dual_valid(ctx, o)? {
         let a = append_array_it(ctx, o)?;
-        ctx.call_method(&a, b"next", &[])?;
+        ctx.iter_call(&a, IterRole::Next)?;
         append_next_iterator(ctx, o)?;
     }
     if driver_of(o).is_some() {
@@ -997,7 +998,7 @@ fn append_append(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nativ
     }
     if !append_array_valid(ctx, o)? {
         let a = append_array_it(ctx, o)?;
-        ctx.call_method(&a, b"rewind", &[])?;
+        ctx.iter_call(&a, IterRole::Rewind)?;
     }
     append_next_iterator(ctx, o)?;
     append_fetch(ctx, o)?;
@@ -1008,7 +1009,7 @@ fn append_append(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nativ
 fn append_rewind(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     let a = append_array_it(ctx, o)?;
-    ctx.call_method(&a, b"rewind", &[])?;
+    ctx.iter_call(&a, IterRole::Rewind)?;
     append_next_iterator(ctx, o)?;
     append_fetch(ctx, o)?;
     Ok(Value::Null)
@@ -1039,7 +1040,7 @@ fn append_index(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRes
         return Ok(Value::Null);
     }
     let a = append_array_it(ctx, o)?;
-    Ok(ctx.call_method(&a, b"key", &[])?.deref().into_owned())
+    Ok(ctx.iter_call(&a, IterRole::Key)?.deref().into_owned())
 }
 
 /// `AppendIterator::getArrayIterator(): ArrayIterator`
@@ -1148,7 +1149,7 @@ fn caching_fetch(ctx: &mut Ctx, o: &Object) -> Result<(), Unwind> {
     }
 
     if let Some(d) = driver_of(o) {
-        ctx.call_method(&d, b"next", &[])?;
+        ctx.iter_call(&d, IterRole::Next)?;
     }
     Ok(())
 }
@@ -1718,7 +1719,7 @@ fn rec_caching_get_children(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) ->
 /// this goes through `current()` because the cursor lives in
 /// `spl_containers.rs`'s private payload (see the module header).
 fn rai_current(ctx: &mut Ctx, o: &Object) -> Result<Value, Unwind> {
-    Ok(ctx.call_method(o, b"current", &[])?.deref().into_owned())
+    Ok(ctx.iter_call(o, IterRole::Current)?.deref().into_owned())
 }
 
 /// `RecursiveArrayIterator::hasChildren(): bool` — an array always, an object
@@ -1900,13 +1901,13 @@ fn rii_advance(ctx: &mut Ctx, o: &Object) -> Result<(), Unwind> {
         match rii_step(o) {
             Step::Next => {
                 if let Some(it) = rii_sub(o) {
-                    ctx.call_method(&it, b"next", &[])?;
+                    ctx.iter_call(&it, IterRole::Next)?;
                 }
                 rii_set_step(o, Step::Start);
             }
             Step::Start => {
                 let valid = match rii_sub(o) {
-                    Some(it) => ctx.call_method(&it, b"valid", &[])?.to_bool(),
+                    Some(it) => ctx.iter_call(&it, IterRole::Valid)?.to_bool(),
                     None => false,
                 };
                 if valid {
@@ -1978,7 +1979,7 @@ fn rii_advance(ctx: &mut Ctx, o: &Object) -> Result<(), Unwind> {
                 };
                 match kids {
                     Some(Value::Object(child)) => {
-                        ctx.call_method(&child, b"rewind", &[])?;
+                        ctx.iter_call(&child, IterRole::Rewind)?;
                         with_state::<Rii, _>(o, |s| {
                             s.level += 1;
                             let lvl = s.level;
@@ -2008,7 +2009,7 @@ fn rii_rewind(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResul
         }
     });
     if let Some(it) = rii_sub(o) {
-        ctx.call_method(&it, b"rewind", &[])?;
+        ctx.iter_call(&it, IterRole::Rewind)?;
     }
     ctx.call_method(o, b"beginIteration", &[])?;
     rii_advance(ctx, o)?;
@@ -2022,7 +2023,7 @@ fn rii_valid(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult
     let o = this(o)?;
     loop {
         let valid = match rii_sub(o) {
-            Some(it) => ctx.call_method(&it, b"valid", &[])?.to_bool(),
+            Some(it) => ctx.iter_call(&it, IterRole::Valid)?.to_bool(),
             None => false,
         };
         if valid {
@@ -2043,7 +2044,7 @@ fn rii_valid(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult
 fn rii_current(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     match rii_sub(o) {
-        Some(it) => Ok(ctx.call_method(&it, b"current", &[])?.deref().into_owned()),
+        Some(it) => Ok(ctx.iter_call(&it, IterRole::Current)?.deref().into_owned()),
         None => Ok(Value::Null),
     }
 }
@@ -2052,7 +2053,7 @@ fn rii_current(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResu
 fn rii_key(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     match rii_sub(o) {
-        Some(it) => Ok(ctx.call_method(&it, b"key", &[])?.deref().into_owned()),
+        Some(it) => Ok(ctx.iter_call(&it, IterRole::Key)?.deref().into_owned()),
         None => Ok(Value::Null),
     }
 }
@@ -2297,7 +2298,7 @@ fn multi_items(o: &Object) -> Vec<(Object, Value)> {
 fn multi_rewind(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     for (it, _) in multi_items(o) {
-        ctx.call_method(&it, b"rewind", &[])?;
+        ctx.iter_call(&it, IterRole::Rewind)?;
     }
     Ok(Value::Null)
 }
@@ -2306,7 +2307,7 @@ fn multi_rewind(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRes
 fn multi_next(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
     for (it, _) in multi_items(o) {
-        ctx.call_method(&it, b"next", &[])?;
+        ctx.iter_call(&it, IterRole::Next)?;
     }
     Ok(Value::Null)
 }
@@ -2321,7 +2322,7 @@ fn multi_valid(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResu
     }
     let need_all = flags & MIT_NEED_ALL != 0;
     for (it, _) in items {
-        let v = ctx.call_method(&it, b"valid", &[])?.to_bool();
+        let v = ctx.iter_call(&it, IterRole::Valid)?.to_bool();
         if need_all && !v {
             return Ok(Value::Bool(false));
         }
@@ -2346,7 +2347,7 @@ fn multi_gather(ctx: &mut Ctx, o: &Object, method: &[u8], what: &str) -> NativeR
     let assoc = flags & MIT_KEYS_ASSOC != 0;
     let mut out = Array::new();
     for (n, (it, info)) in items.into_iter().enumerate() {
-        let value = if ctx.call_method(&it, b"valid", &[])?.to_bool() {
+        let value = if ctx.iter_call(&it, IterRole::Valid)?.to_bool() {
             ctx.call_method(&it, method, &[])?.deref().into_owned()
         } else if need_all {
             return Err(Unwind::exception(
@@ -2460,6 +2461,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
     r.class("IteratorIterator")
         .implements(&["OuterIterator"])
         .payload_clone(dual_clone)
+        .native_iter(NativeIter { rewind: ii_rewind, valid: ii_valid, current: ii_current, key: ii_key, next: ii_next })
         .method("__construct", nm!(1, Some(2), ii_construct))
         .method("getInnerIterator", nm!(0, Some(0), ii_get_inner))
         .method("rewind", nm!(0, Some(0), ii_rewind))
@@ -2471,6 +2473,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
 
     r.class("FilterIterator")
         .extends("IteratorIterator")
+        .native_iter(NativeIter { rewind: filter_rewind, valid: ii_valid, current: ii_current, key: ii_key, next: filter_next })
         .flags(ClassFlags::ABSTRACT)
         .abstract_method("accept", sig(0, Some(0), &[]))
         .method("__construct", nm!(1, Some(1), filter_construct))
@@ -2509,6 +2512,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
 
     r.class("LimitIterator")
         .extends("IteratorIterator")
+        .native_iter(NativeIter { rewind: limit_rewind, valid: limit_valid, current: ii_current, key: ii_key, next: limit_next })
         .method("__construct", nm!(1, Some(3), limit_construct))
         .method("rewind", nm!(0, Some(0), limit_rewind))
         .method("valid", nm!(0, Some(0), limit_valid))
@@ -2520,6 +2524,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
     r.class("CachingIterator")
         .extends("IteratorIterator")
         .implements(&["ArrayAccess", "Countable", "Stringable"])
+        .native_iter(NativeIter { rewind: caching_rewind, valid: ii_valid, current: ii_current, key: ii_key, next: caching_next })
         .class_const("CALL_TOSTRING", Value::Int(CIT_CALL_TOSTRING))
         .class_const("CATCH_GET_CHILD", Value::Int(CIT_CATCH_GET_CHILD))
         .class_const("TOSTRING_USE_KEY", Value::Int(CIT_TOSTRING_USE_KEY))
@@ -2552,6 +2557,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
 
     r.class("NoRewindIterator")
         .extends("IteratorIterator")
+        .native_iter(NativeIter { rewind: norewind_rewind, valid: norewind_valid, current: norewind_current, key: norewind_key, next: norewind_next })
         .method("__construct", nm!(1, Some(1), norewind_construct))
         .method("rewind", nm!(0, Some(0), norewind_rewind))
         .method("valid", nm!(0, Some(0), norewind_valid))
@@ -2562,6 +2568,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
 
     r.class("InfiniteIterator")
         .extends("IteratorIterator")
+        .native_iter(NativeIter { rewind: ii_rewind, valid: ii_valid, current: ii_current, key: ii_key, next: infinite_next })
         .method("__construct", nm!(1, Some(1), infinite_construct))
         .method("next", nm!(0, Some(0), infinite_next))
         .finish();
@@ -2577,6 +2584,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
 
     r.class("AppendIterator")
         .extends("IteratorIterator")
+        .native_iter(NativeIter { rewind: append_rewind, valid: ii_valid, current: append_current, key: ii_key, next: append_next })
         .method("__construct", nm!(0, Some(0), append_construct))
         .method("append", nm!(1, Some(1), append_append))
         .method("rewind", nm!(0, Some(0), append_rewind))
@@ -2626,6 +2634,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .class_const("CHILD_FIRST", Value::Int(RIT_CHILD_FIRST))
         .class_const("CATCH_GET_CHILD", Value::Int(RIT_CATCH_GET_CHILD))
         .payload_clone(rii_clone)
+        .native_iter(NativeIter { rewind: rii_rewind, valid: rii_valid, current: rii_current, key: rii_key, next: rii_next })
         .method("__construct", nm!(1, Some(3), rii_construct))
         .method("rewind", nm!(0, Some(0), rii_rewind))
         .method("valid", nm!(0, Some(0), rii_valid))

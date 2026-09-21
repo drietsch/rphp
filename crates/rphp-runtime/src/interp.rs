@@ -246,6 +246,10 @@ pub struct Interp {
     pub silence: u32,
     /// Under the `profile` feature: inclusive time and calls per native.
     pub profile_natives: HashMap<String, (std::time::Duration, u64)>,
+    /// Under the `profile` feature: time and count per op kind (inclusive
+    /// of what the op calls into — a `DoCall` includes the callee's run
+    /// only up to the frame switch, since the loop times one op at a time).
+    pub profile_ops: HashMap<String, (std::time::Duration, u64)>,
     /// A `FnFlags::LIGHT` native is running without a frame: a
     /// diagnostic it emits cannot be attributed, so `emit_error` aborts
     /// the call with `Unwind::Retry` and the engine re-runs it on the
@@ -331,6 +335,17 @@ impl Interp {
         if !cfg!(feature = "profile") {
             return;
         }
+        let mut ops: Vec<(&String, &(std::time::Duration, u64))> = self.profile_ops.iter().collect();
+        ops.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        let total_ops: std::time::Duration = ops.iter().map(|(_, (d, _))| *d).sum();
+        eprintln!("== ops by kind: {:.1} ms in the dispatch loop", total_ops.as_secs_f64() * 1e3);
+        for (name, (d, n)) in ops.iter().take(40) {
+            eprintln!(
+                "{:9.2} ms {n:>9} ops {:6.1} ns/op  {name}",
+                d.as_secs_f64() * 1e3,
+                d.as_nanos() as f64 / (*n).max(1) as f64
+            );
+        }
         let mut natives: Vec<(&String, &(std::time::Duration, u64))> = self.profile_natives.iter().collect();
         natives.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
         let total: std::time::Duration = natives.iter().map(|(_, (d, _))| *d).sum();
@@ -395,6 +410,7 @@ impl Interp {
             stack: Vec::new(),
             light_native: false,
             profile_natives: HashMap::new(),
+            profile_ops: HashMap::new(),
             reentry_depth: 0,
             included: HashSet::new(),
             generators: Vec::new(),

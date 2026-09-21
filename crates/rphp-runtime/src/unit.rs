@@ -607,6 +607,7 @@ impl Interp {
             native_props: None,
             native_compare: None,
             dim_ref: None,
+            native_iter: None,
             declared_at: stub.declared_at.clone(),
             internal: false,
             static_props,
@@ -712,7 +713,20 @@ impl Interp {
         let obj = self.instantiate(class);
         for p in &c.props {
             if let PropDefault::Thunk(fid) = p.default {
-                let v = self.run_thunk(fid, None, Some(p.decl))?;
+                // Evaluated once per class; every instance gets a copy.
+                let cached = c.default_cache.borrow().get(p.slot as usize).cloned().flatten();
+                let v = match cached {
+                    Some(v) => v,
+                    None => {
+                        let v = self.run_thunk(fid, None, Some(p.decl))?;
+                        let mut cache = c.default_cache.borrow_mut();
+                        if cache.len() < c.props.len() {
+                            cache.resize(c.props.len(), None);
+                        }
+                        cache[p.slot as usize] = Some(v.clone());
+                        v
+                    }
+                };
                 obj.set_slot(p.slot, v);
             }
         }

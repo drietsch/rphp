@@ -25,7 +25,7 @@
 //! The two classes share almost every method; the implementations below are
 //! written once and registered on both.
 
-use rphp_runtime::{nm, Ctx, Interp, NativeProps, NativeResult, Registry, Unwind};
+use rphp_runtime::{nm, Ctx, Interp, NativeIter, NativeProps, NativeResult, Registry, Unwind};
 use rphp_value::{array_key, Array, ArrayKey, Object, Payload, PhpRef, Value};
 
 /// Everything about an instance php keeps out of the property table.
@@ -33,6 +33,11 @@ struct ContainerState {
     /// The backing array (`ArrayObject`/`ArrayIterator`), or the entry
     /// list (`SplObjectStorage`).
     storage: Array,
+    /// Another container whose storage this one *shares* (php's
+    /// `SPL_ARRAY_USE_OTHER`): `ArrayObject::getIterator()`'s iterator, or
+    /// a container built over another (`new ArrayObject($arrayObject)`).
+    /// The cursor stays this instance's own.
+    backing: Option<Object>,
     /// The `STD_PROP_LIST` / `ARRAY_AS_PROPS` word.
     flags: i64,
     /// The iterator cursor as a *raw* position into the backing array
@@ -51,6 +56,7 @@ impl Default for ContainerState {
     fn default() -> ContainerState {
         ContainerState {
             storage: Array::new(),
+            backing: None,
             flags: 0,
             pos: 0,
             iterator_class: b"ArrayIterator".to_vec(),
@@ -76,14 +82,29 @@ fn this(o: Option<&Object>) -> Result<&Object, Unwind> {
     o.ok_or_else(|| Unwind::error("Non-static method called statically"))
 }
 
+/// The instance whose state holds the storage: the one this container
+/// shares (php follows the `USE_OTHER` link as far as it goes), else the
+/// instance itself.
+fn storage_holder(o: &Object) -> Object {
+    let mut cur = o.clone();
+    for _ in 0..64 {
+        let next = cur.with_payload::<ContainerState, _>(|s| s.backing.clone()).flatten();
+        match next {
+            Some(b) if !b.ptr_eq(o) => cur = b,
+            _ => break,
+        }
+    }
+    cur
+}
+
 /// The backing array (shared: a read).
 fn storage(o: &Object) -> Array {
-    with_state(o, |s| s.storage.clone())
+    with_state(&storage_holder(o), |s| s.storage.clone())
 }
 
 /// Replace the backing array.
 fn set_storage(o: &Object, a: Array) {
-    with_state(o, |s| s.storage = a);
+    with_state(&storage_holder(o), |s| s.storage = a);
 }
 
 /// The backing array **moved out** of the state (an empty one is left
@@ -91,15 +112,16 @@ fn set_storage(o: &Object, a: Array) {
 /// clone would leave two handles and make every `$ao[$k] = $v` copy the
 /// whole array.
 fn take_storage(o: &Object) -> Array {
-    with_state(o, |s| std::mem::take(&mut s.storage))
+    with_state(&storage_holder(o), |s| std::mem::take(&mut s.storage))
 }
 
 /// `clone` copies the whole state along with the ordinary properties.
 fn container_clone(_: &mut Interp, src: &Object, dst: &Object) -> Result<(), Unwind> {
-    let (storage, flags, pos, iterator_class) =
-        with_state(src, |s| (s.storage.clone(), s.flags, s.pos, s.iterator_class.clone()));
+    let (storage, backing, flags, pos, iterator_class) =
+        with_state(src, |s| (s.storage.clone(), s.backing.clone(), s.flags, s.pos, s.iterator_class.clone()));
     with_state(dst, |s| {
         s.storage = storage;
+        s.backing = backing;
         s.flags = flags;
         s.pos = pos;
         s.iterator_class = iterator_class;
@@ -111,7 +133,7 @@ fn container_clone(_: &mut Interp, src: &Object, dst: &Object) -> Result<(), Unw
 /// The `dim_ref` hook: the cell behind `$ao[$k]`, autovivified — what php
 /// hands out for `&$ao['k']`.
 fn dim_ref(o: &Object, k: &ArrayKey) -> Option<PhpRef> {
-    Some(with_state(o, |s| s.storage.get_ref(k.clone())))
+    Some(with_state(&storage_holder(o), |s| s.storage.get_ref(k.clone())))
 }
 
 /// The `native_compare` hook (php's `spl_array_compare_objects`): the
@@ -173,23 +195,32 @@ fn undefined_key(k: &ArrayKey) -> String {
 /// The backing array a constructor / `exchangeArray` argument supplies.
 /// `$array` may be an array, or — deprecated since 8.something and warned
 /// about by php — an object, whose properties become the entries.
-fn backing(ctx: &mut Ctx, who: &str, arg: &Value) -> Result<Array, Unwind> {
+/// What a constructor / `exchangeArray` argument supplies: an array, or
+/// another container whose storage this one then *shares* (`Link`), or —
+/// deprecated — an object whose properties become the entries.
+enum Backing {
+    Array(Array),
+    Link(Object),
+}
+
+fn backing(ctx: &mut Ctx, who: &str, arg: &Value) -> Result<Backing, Unwind> {
     match &*arg.deref() {
-        Value::Array(a) => Ok(a.clone()),
+        Value::Array(a) => Ok(Backing::Array(a.clone())),
         Value::Object(src) => {
+            let class = who.split("::").next().unwrap_or("ArrayObject");
             ctx.deprecated(&format!(
-                "{who}(): Using an object as a backing array for ArrayObject is deprecated, as it allows violating class constraints and invariants"
+                "{who}(): Using an object as a backing array for {class} is deprecated, as it allows violating class constraints and invariants"
             ))?;
-            // An `ArrayObject`/`ArrayIterator` source contributes its
-            // backing array, anything else its properties.
-            if let Some(a) = src.with_payload::<ContainerState, _>(|s| s.storage.clone()) {
-                return Ok(a);
+            // An `ArrayObject`/`ArrayIterator` source is shared, live;
+            // anything else contributes its properties.
+            if src.with_payload::<ContainerState, _>(|_| ()).is_some() {
+                return Ok(Backing::Link(src.clone()));
             }
             let mut out = Array::new();
             for (name, value, _) in src.props_snapshot() {
                 out.set(array_key(&Value::string(&name)).expect("a property name is a valid key"), value);
             }
-            Ok(out)
+            Ok(Backing::Array(out))
         }
         other => Err(Unwind::type_error(format!(
             "{who}(): Argument #1 ($array) must be of type array, {} given",
@@ -205,8 +236,13 @@ fn backing(ctx: &mut Ctx, who: &str, arg: &Value) -> Result<Array, Unwind> {
 fn construct(ctx: &mut Ctx, who: &str, o: &Object, args: &mut [Value]) -> NativeResult {
     let first = args.first().cloned();
     if let Some(a) = first {
-        let items = backing(ctx, who, &a)?;
-        set_storage(o, items);
+        match backing(ctx, who, &a)? {
+            Backing::Array(items) => {
+                with_state(o, |s| s.backing = None);
+                set_storage(o, items);
+            }
+            Backing::Link(other) => with_state(o, |s| s.backing = Some(other)),
+        }
     }
     let flags = args.get(1).map(|f| f.to_int());
     let iter_class = args.get(2).map(|c| c.to_php_bytes());
@@ -327,8 +363,13 @@ fn exchange_array(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> Nati
     let o = this(o)?;
     let old = storage(o);
     let a = args[0].clone();
-    let new = backing(ctx, "ArrayObject::exchangeArray", &a)?;
-    set_storage(o, new);
+    match backing(ctx, "ArrayObject::exchangeArray", &a)? {
+        Backing::Array(new) => {
+            with_state(o, |s| s.backing = None);
+            set_storage(o, new);
+        }
+        Backing::Link(other) => with_state(o, |s| s.backing = Some(other)),
+    }
     Ok(Value::Array(old))
 }
 
@@ -486,8 +527,21 @@ fn get_iterator(ctx: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeRes
         ))
     })?;
     let it = ctx.new_object(cid)?;
-    let args = [Value::Array(storage(o)), Value::Int(flags)];
-    ctx.call_method(&it, b"__construct", &args)?;
+    // The iterator walks this object's storage, live (php's `USE_OTHER`);
+    // a user iterator class gets the object through its constructor, as
+    // php passes it (without the deprecation php's own path skips).
+    if ctx.class_by_name(b"ArrayIterator") == Some(cid) {
+        with_state(&it, |s| {
+            s.backing = Some(o.clone());
+            s.flags = flags;
+        });
+    } else {
+        let args = [Value::Object(o.clone()), Value::Int(flags)];
+        ctx.silence += 1;
+        let r = ctx.call_method(&it, b"__construct", &args);
+        ctx.silence -= 1;
+        r?;
+    }
     Ok(Value::Object(it))
 }
 
@@ -1042,6 +1096,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .native_props(ARRAY_PROPS)
         .native_compare(array_compare)
         .dim_ref(dim_ref)
+        .native_iter(NativeIter { rewind, valid, current, key, next })
         .method("__construct", nm!(0, Some(2), array_iterator_construct))
         .method("offsetExists", nm!(1, Some(1), offset_exists))
         .method("offsetGet", nm!(1, Some(1), offset_get))
@@ -1106,6 +1161,13 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .implements(&["Countable", "SeekableIterator", "Serializable", "ArrayAccess"])
         .payload_clone(container_clone)
         .native_compare(sos_compare)
+        .native_iter(NativeIter {
+            rewind: sos_rewind,
+            valid: sos_valid,
+            current: sos_current,
+            key: sos_key,
+            next: sos_next,
+        })
         .method("attach", nm!(1, Some(2), sos_attach))
         .method("detach", nm!(1, Some(1), sos_detach))
         .method("contains", nm!(1, Some(1), sos_contains))

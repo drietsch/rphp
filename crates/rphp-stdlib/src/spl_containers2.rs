@@ -24,7 +24,7 @@
 
 use std::collections::VecDeque;
 
-use rphp_runtime::{nm, Ctx, Interp, NativeFn, NativeResult, Registry, Unwind};
+use rphp_runtime::{nm, Ctx, Interp, NativeFn, NativeIter, NativeResult, Registry, Unwind};
 use rphp_value::{Array, ArrayKey, Object, Payload, Value};
 
 /// Functions this module provides. The SPL *functions* live in
@@ -621,6 +621,13 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .class_const("IT_MODE_DELETE", Value::Int(IT_MODE_DELETE))
         .class_const("IT_MODE_KEEP", Value::Int(0))
         .native_init(dll_init)
+        .native_iter(NativeIter {
+            rewind: dll_rewind,
+            valid: dll_valid,
+            current: dll_current,
+            key: dll_key,
+            next: dll_next,
+        })
         .payload_clone(dll_clone)
         .method("push", nm!(1, Some(1), dll_push))
         .method("pop", nm!(0, Some(0), dll_pop))

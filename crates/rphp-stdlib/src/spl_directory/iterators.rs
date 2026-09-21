@@ -41,7 +41,7 @@
 //! `GlobIterator` is also **uncloneable**, as php marks it; the other three
 //! clone their cursor.
 
-use rphp_runtime::{nm, Ctx, NativeResult, Registry, Unwind, Visibility};
+use rphp_runtime::{nm, Ctx, NativeIter, NativeResult, Registry, Unwind, Visibility};
 use rphp_value::{Object, Str, Value};
 
 use super::common::{
@@ -572,6 +572,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .implements(&["SeekableIterator"])
         .prop("glob", Visibility::Private, Value::Uninit)
         .payload_clone(clone_payload)
+        .native_iter(NativeIter { rewind: di_rewind, valid: di_valid, current: di_current, key: di_key, next: di_next })
         .method("__construct", nm!(1, Some(1), di_construct))
         .method("getFilename", nm!(0, Some(0), di_get_filename))
         .method("getExtension", nm!(0, Some(0), di_get_extension))
@@ -604,6 +605,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .class_const("OTHER_MODE_MASK", Value::Int(OTHER_MODE_MASK))
         .class_const("SKIP_DOTS", Value::Int(SKIP_DOTS))
         .class_const("UNIX_PATHS", Value::Int(UNIX_PATHS))
+        .native_iter(NativeIter { rewind: di_rewind, valid: di_valid, current: fi_current, key: fi_key, next: di_next })
         .method("__construct", nm!(1, Some(2), fi_construct))
         .method("rewind", nm!(0, Some(0), di_rewind))
         .method("key", nm!(0, Some(0), fi_key))

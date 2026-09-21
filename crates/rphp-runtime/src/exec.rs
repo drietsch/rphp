@@ -487,16 +487,32 @@ impl Interp {
         // real instance.
         let o = &self.lazy_resolve(o)?;
         if let Some(iter) = self.resolve_iterator(o)? {
-            if by_ref {
-                return Err(Unwind::error(
-                    "An iterator cannot be used with foreach by reference",
+            // By reference: only an iterator whose elements are real
+            // storage (`ArrayIterator`, the `dim_ref` hook) can hand out
+            // cells; a generator has php's own exception, a user iterator
+            // its error.
+            if by_ref && self.generator_id(&iter).is_some() {
+                return Err(Unwind::exception(
+                    "Exception",
+                    "You can only iterate a generator by-reference if it declared that it yields by-reference",
                 ));
             }
             // A generator is driven directly (no `Generator->rewind()`
-            // frame in a trace); a user iterator through its method.
+            // frame in a trace); a native iterator through its class's
+            // handlers when none of the five methods was overridden
+            // (php's `get_iterator`); a user iterator through its methods.
             if self.generator_id(&iter).is_some() {
                 self.generator_rewind(&iter)?;
+            } else if let Some(native) = self.native_iter_of(&iter) {
+                if by_ref && self.class_of(&iter).dim_ref.is_none() {
+                    return Err(Unwind::error("An iterator cannot be used with foreach by reference"));
+                }
+                (native.rewind)(&mut Ctx(self), Some(&iter), &mut [])?;
+                return Ok(IterState::Native { obj: iter, iter: native, pos: 0, by_ref });
             } else {
+                if by_ref {
+                    return Err(Unwind::error("An iterator cannot be used with foreach by reference"));
+                }
                 self.call_method(&iter, b"rewind", &[])?;
             }
             return Ok(IterState::ByRef {
@@ -606,6 +622,55 @@ impl Interp {
         Ok(Some((k, v, None)))
     }
 
+    /// One of the five `Iterator` methods on `o`, the way `foreach` drives
+    /// it: a native iterator's handler directly, anything else through the
+    /// method call. What a decorator (`IteratorIterator`, the recursive
+    /// walkers) uses on its inner iterator.
+    pub fn iter_call(&mut self, o: &Object, role: crate::IterRole) -> crate::NativeResult {
+        if let Some(it) = self.native_iter_of(o) {
+            let handler = match role {
+                crate::IterRole::Rewind => it.rewind,
+                crate::IterRole::Valid => it.valid,
+                crate::IterRole::Current => it.current,
+                crate::IterRole::Key => it.key,
+                crate::IterRole::Next => it.next,
+            };
+            return handler(&mut Ctx(self), Some(o), &mut []);
+        }
+        let name: &[u8] = match role {
+            crate::IterRole::Rewind => b"rewind",
+            crate::IterRole::Valid => b"valid",
+            crate::IterRole::Current => b"current",
+            crate::IterRole::Key => b"key",
+            crate::IterRole::Next => b"next",
+        };
+        self.call_method(o, name, &[])
+    }
+
+    /// The class's native iteration handlers, when `rewind`, `valid`,
+    /// `current`, `key` and `next` all still resolve to the class that
+    /// registered them (a user subclass overriding one steps through
+    /// method calls instead).
+    fn native_iter_of(&self, o: &Object) -> Option<crate::class::NativeIter> {
+        let cid = o.class_id();
+        let (it, _) = self.classes[cid as usize].native_iter?;
+        let roles: [(&[u8], crate::NativeMethodHandler); 5] = [
+            (b"rewind", it.rewind),
+            (b"valid", it.valid),
+            (b"current", it.current),
+            (b"key", it.key),
+            (b"next", it.next),
+        ];
+        for (name, handler) in roles {
+            let m = self.resolve_method(cid, name)?;
+            match &m.body {
+                MethodBody::Native(nm) if nm.handler as usize == handler as usize => {}
+                _ => return None,
+            }
+        }
+        Some(it)
+    }
+
     /// Whether the object implements `Iterator`.
     fn is_iterator(&self, o: &Object) -> bool {
         self.well_known
@@ -659,17 +724,30 @@ impl Interp {
             let (ops, calls) = func.profile.get();
             func.profile.set((ops, calls + u64::from(pc == 0)));
         }
+        #[cfg(feature = "profile")]
+        let mut prev_op: Option<(&'static str, std::time::Instant)> = None;
         loop {
             #[cfg(feature = "profile")]
             {
                 let (ops, calls) = func.profile.get();
                 func.profile.set((ops + 1, calls));
+                if let Some((kind, started)) = prev_op.take() {
+                    let e = self.profile_ops.entry(kind.to_string()).or_default();
+                    e.0 += started.elapsed();
+                    e.1 += 1;
+                }
             }
             if rphp_value::has_pending_destructors() {
                 // ADR-017: objects whose last handle dropped during the
                 // previous op get their `__destruct` now.
                 self.frames[fi].pc = pc;
                 self.run_pending_destructors()?;
+            }
+            #[cfg(feature = "profile")]
+            {
+                if let Some(o) = code.get(pc) {
+                    prev_op = Some((op_kind_name(o), std::time::Instant::now()));
+                }
             }
             let Some(&op) = code.get(pc) else {
                 // Falling off the end is an implicit `return null`.
@@ -1311,7 +1389,44 @@ impl Interp {
                         }
                         _ => None,
                     };
-                    let step = if let Some((o, pos)) = iter_obj {
+                    // A native iterator: its handlers, no frames.
+                    let native = match &self.frames[fi].extra().iters[idx].1 {
+                        IterState::Native { obj, iter, pos, by_ref } => Some((obj.clone(), *iter, *pos, *by_ref)),
+                        _ => None,
+                    };
+                    let step = if let Some((o, it, pos, by_ref)) = native {
+                        if let IterState::Native { pos, .. } = &mut self.frames[fi].extra_mut().iters[idx].1 {
+                            *pos += 1;
+                        }
+                        if pos > 0 {
+                            (it.next)(&mut Ctx(self), Some(&o), &mut [])?;
+                        }
+                        if !(it.valid)(&mut Ctx(self), Some(&o), &mut [])?.to_bool() {
+                            None
+                        } else if by_ref {
+                            // The element's own cell, by its key.
+                            let k = (it.key)(&mut Ctx(self), Some(&o), &mut [])?.unref();
+                            let cell = self
+                                .class_of(&o)
+                                .dim_ref
+                                .and_then(|f| array_key(&k).and_then(|ak| f(&o, &ak)));
+                            match cell {
+                                Some(cell) => Some((k, Value::Null, Some(cell))),
+                                None => {
+                                    let v = (it.current)(&mut Ctx(self), Some(&o), &mut [])?.unref();
+                                    Some((k, v, None))
+                                }
+                            }
+                        } else {
+                            let v = (it.current)(&mut Ctx(self), Some(&o), &mut [])?.unref();
+                            let k = if key.is_some() {
+                                (it.key)(&mut Ctx(self), Some(&o), &mut [])?.unref()
+                            } else {
+                                Value::Null
+                            };
+                            Some((k, v, None))
+                        }
+                    } else if let Some((o, pos)) = iter_obj {
                         let step = self.iterator_step(&o, pos, key.is_some())?;
                         if let IterState::ByRef { pos, .. } = &mut self.frames[fi].extra_mut().iters[idx].1 {
                             *pos += 1;
@@ -1320,7 +1435,7 @@ impl Interp {
                     } else {
                         let f = &mut self.frames[fi];
                         match &mut f.extra_mut().iters[idx].1 {
-                            IterState::Empty => None,
+                            IterState::Empty | IterState::Native { .. } => None,
                             IterState::Array { arr, pos } => match arr.next_live_from(*pos) {
                                 Some((raw, k, v)) => {
                                     *pos = raw + 1;
@@ -3325,4 +3440,26 @@ fn canonical_path(path: &std::path::Path) -> std::path::PathBuf {
         c.insert(path.to_path_buf(), (canonical.clone(), std::time::Instant::now()));
     });
     canonical
+}
+
+/// The variant name of an op, for the `profile` feature's per-kind table.
+#[cfg(feature = "profile")]
+fn op_kind_name(op: &Op) -> &'static str {
+    // `Debug` prints `Variant { .. }` / `Variant(..)` / `Variant`; the
+    // leaked name is one small allocation per distinct kind.
+    thread_local! {
+        static NAMES: std::cell::RefCell<hashbrown::HashMap<std::mem::Discriminant<Op>, &'static str>> =
+            std::cell::RefCell::new(hashbrown::HashMap::new());
+    }
+    NAMES.with(|n| {
+        let d = std::mem::discriminant(op);
+        if let Some(s) = n.borrow().get(&d) {
+            return *s;
+        }
+        let full = format!("{op:?}");
+        let name = full.split(|c: char| c == ' ' || c == '(' || c == '{').next().unwrap_or("?").to_string();
+        let leaked: &'static str = Box::leak(name.into_boxed_str());
+        n.borrow_mut().insert(d, leaked);
+        leaked
+    })
 }

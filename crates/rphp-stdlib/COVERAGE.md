@@ -1151,3 +1151,31 @@ mean the defaults now. Corpus: `lang/native-params.php` (with
 `in_array()`/`array_key_exists()` with a literal array into an opcode
 that skips parsing, so `in_array("1", [1], "1")` raises no `TypeError`
 under `strict_types` there.
+
+## Native iteration, and what the op profile said (2026-09-21)
+
+`foreach` over an SPL iterator made four method calls per step — frame
+push, argument copy and all — for `ArrayIterator` as for a user class.
+Now a native `Iterator` class registers php's `get_iterator` equivalent
+(`ClassBuilder::native_iter`, `NativeIter`: its own `rewind`/`valid`/
+`current`/`key`/`next` handlers) and `foreach` steps the object through
+those directly, while the object's class still resolves all five methods
+to those handlers — a user subclass overriding one is stepped through its
+methods again, hooks included (`spl/native-iterators.php`). Registered on
+`ArrayIterator`, the `SplDoublyLinkedList` family, `SplObjectStorage`,
+`SplHeap`/`SplPriorityQueue`, `IteratorIterator`, `FilterIterator`,
+`LimitIterator`, `CachingIterator`, `NoRewindIterator`,
+`InfiniteIterator`, `AppendIterator`, `RecursiveIteratorIterator`,
+`DirectoryIterator`, `FilesystemIterator`. `ArrayIterator` 200k steps
+~500 → 108 ns (php 25). With it, php's rules for `foreach … as &$v` over
+an iterator: an `ArrayIterator`/`ArrayObject` hands out its storage
+element's cell, a generator throws php's "You can only iterate a
+generator by-reference…", a user iterator the `Error`. And an iterator
+made over an `ArrayObject` — `getIterator()`, `new ArrayIterator($ao)`,
+`new ArrayObject($ao)` — **shares its storage live** (php's
+`SPL_ARRAY_USE_OTHER`; the deprecation for an arbitrary object stays).
+
+A property default that is a thunk (`= self::X`, `= E::Case`) is
+evaluated once per class and copied into every instance
+(`ClassDef::default_cache`, php's `zend_update_class_constants`); it was
+a function call per `new`.

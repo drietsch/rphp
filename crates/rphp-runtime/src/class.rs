@@ -43,6 +43,30 @@ pub type NativeInit = fn(&mut Interp, &Object) -> Result<(), Unwind>;
 /// silently.
 pub type PayloadClone = fn(&mut Interp, &Object, &Object) -> Result<(), Unwind>;
 
+/// One of the five `Iterator` methods, for [`Interp::iter_call`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IterRole {
+    Rewind,
+    Valid,
+    Current,
+    Key,
+    Next,
+}
+
+/// A native `Iterator` class's stepping functions — php's `get_iterator`
+/// handler for an internal class: `foreach` drives them directly, without
+/// a method call and frame per step, when the object's class has not
+/// overridden any of the five methods. Each is the class's own method
+/// handler, called with no arguments.
+#[derive(Clone, Copy)]
+pub struct NativeIter {
+    pub rewind: NativeMethodHandler,
+    pub valid: NativeMethodHandler,
+    pub current: NativeMethodHandler,
+    pub key: NativeMethodHandler,
+    pub next: NativeMethodHandler,
+}
+
 /// The `dim_ref` hook of a native `ArrayAccess` class whose elements are
 /// real storage (`ArrayObject`): the cell behind `$o[$key]`, autovivified,
 /// for `&$o[$key]` and a by-reference argument. `None` when the key is
@@ -535,8 +559,17 @@ pub struct ClassDef {
     pub native_compare: Option<rphp_value::NativeCompare>,
     /// The native element-reference hook (own or inherited).
     pub dim_ref: Option<NativeDimRef>,
+    /// The native iteration hook and the class that registered it (own or
+    /// inherited): `foreach` uses it only while `rewind`/`valid`/`current`/
+    /// `key`/`next` still resolve to that class's methods.
+    pub native_iter: Option<(NativeIter, u32)>,
     /// The instance layout, shared by every instance.
     pub layout: Rc<Layout>,
+    /// A property default that is a thunk (`= self::X`, `= E::Case`),
+    /// evaluated once per class and copied into every instance from then
+    /// on — php's `zend_update_class_constants` (one function call per
+    /// `new` otherwise). Indexed by slot; `None` until evaluated.
+    pub default_cache: std::cell::RefCell<Vec<Option<Value>>>,
     /// The unit that declared the class and the declaration line, for
     /// `Cannot redeclare class X (previously declared in file:line)`;
     /// `None` for native classes.
@@ -598,7 +631,9 @@ impl ClassDef {
             native_props: None,
             native_compare: None,
             dim_ref: None,
+            native_iter: None,
             layout: Rc::new(Layout::empty(Rc::from(name))),
+            default_cache: std::cell::RefCell::new(Vec::new()),
             declared_at,
             linked: false,
             internal: false,
@@ -691,6 +726,8 @@ pub struct ClassSpec {
     pub native_compare: Option<rphp_value::NativeCompare>,
     /// The native element-reference hook (own).
     pub dim_ref: Option<NativeDimRef>,
+    /// The native iteration hook (own).
+    pub native_iter: Option<NativeIter>,
     /// Where it was declared.
     pub declared_at: Option<(std::sync::Arc<str>, u32)>,
     /// Registered by the engine / an extension.
@@ -768,6 +805,7 @@ impl Interp {
             native_props,
             native_compare,
             dim_ref,
+            native_iter,
             declared_at,
             internal,
             static_props,
@@ -820,6 +858,7 @@ impl Interp {
             def.native_props = p.native_props;
             def.native_compare = p.native_compare;
             def.dim_ref = p.dim_ref;
+            def.native_iter = p.native_iter;
             // Static properties are inherited by *sharing* the parent's cell:
             // `B::$n` and `A::$n` are one location unless B redeclares it.
             def.static_props = p.static_props.clone();
@@ -1024,6 +1063,9 @@ impl Interp {
         }
         if let Some(f) = dim_ref {
             def.dim_ref = Some(f);
+        }
+        if let Some(it) = native_iter {
+            def.native_iter = Some((it, id));
         }
         // php implicitly implements `Stringable` for any class that declares
         // `__toString()`, so `$o instanceof Stringable` and a `Stringable`

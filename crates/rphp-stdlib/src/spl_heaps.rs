@@ -51,8 +51,8 @@
 //!   raising php's `Error: Call to protected method …`.
 
 use rphp_runtime::{
-    nm, ClassFlags, Ctx, Interp, NativeFn, NativeMethod, NativeResult, Registry, Unwind,
-    Visibility,
+    nm, ClassFlags, Ctx, Interp, NativeFn, NativeIter, NativeMethod, NativeResult, Registry,
+    Unwind, Visibility,
 };
 use rphp_value::{Array, ArrayKey, Object, Payload, Value};
 
@@ -737,6 +737,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .flags(ClassFlags::ABSTRACT)
         .implements(&["Iterator", "Countable"])
         .payload_clone(heap_clone)
+        .native_iter(NativeIter { rewind, valid, current: heap_current, key, next: heap_next })
         .abstract_method("compare", sig(2, Some(2), &["value1", "value2"]))
         .method("insert", nm!(1, Some(1), heap_insert_method))
         .method("extract", nm!(0, Some(0), heap_extract))
@@ -774,6 +775,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
         .class_const("EXTR_BOTH", Value::Int(EXTR_BOTH))
         .native_init(queue_init)
         .payload_clone(heap_clone)
+        .native_iter(NativeIter { rewind, valid, current: queue_current, key, next: queue_next })
         .method("compare", nm!(2, Some(2), queue_compare))
         .method("insert", nm!(2, Some(2), queue_insert_method))
         .method("extract", nm!(0, Some(0), queue_extract))

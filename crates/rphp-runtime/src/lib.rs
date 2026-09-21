@@ -52,7 +52,7 @@ pub use api::parse_error_reporting;
 pub use call::Callable;
 pub use class::{
     ClassConst, ClassDef, ClassSpec, ConstSpec, ConstState, EnumBacking, EnumCaseInfo, MagicFlags,
-    MethodBody, MethodDef, MethodSpec, NativeInit, NativeMethod, NativeMethodHandler, NativeProps,
+    IterRole, MethodBody, MethodDef, MethodSpec, NativeInit, NativeIter, NativeMethod, NativeMethodHandler, NativeProps,
     PayloadClone, PropDefault, PropHooks, PropInfo, PropSpec, StaticPropInfo, WellKnown,
 };
 pub use errors::{

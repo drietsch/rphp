@@ -372,6 +372,7 @@ impl Registry<'_> {
             native_props: None,
             native_compare: None,
             dim_ref: None,
+            native_iter: None,
         }
     }
 
@@ -402,6 +403,7 @@ pub struct ClassBuilder<'a> {
     native_props: Option<crate::class::NativeProps>,
     native_compare: Option<rphp_value::NativeCompare>,
     dim_ref: Option<crate::class::NativeDimRef>,
+    native_iter: Option<crate::class::NativeIter>,
 }
 
 impl ClassBuilder<'_> {
@@ -520,6 +522,15 @@ impl ClassBuilder<'_> {
         self
     }
 
+    /// php's `get_iterator` for an internal `Iterator` class: `foreach`
+    /// steps the object through these handlers directly (no method call
+    /// and frame per step) while a subclass has not overridden the
+    /// methods. See [`NativeIter`](crate::class::NativeIter).
+    pub fn native_iter(mut self, it: crate::class::NativeIter) -> Self {
+        self.native_iter = Some(it);
+        self
+    }
+
     /// Link and register the class; returns its process-wide id. Re-registering
     /// a name keeps the earlier id (the definition is replaced).
     ///
@@ -543,6 +554,7 @@ impl ClassBuilder<'_> {
             native_props,
             native_compare,
             dim_ref,
+            native_iter,
         } = self;
         let lookup = |interp: &Interp, n: &str| {
             interp.class_by_name(n.as_bytes()).unwrap_or_else(|| {
@@ -572,6 +584,7 @@ impl ClassBuilder<'_> {
             native_props,
             native_compare,
             dim_ref,
+            native_iter,
             declared_at: None,
             internal: true,
             static_props: Vec::new(),

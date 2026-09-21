@@ -102,6 +102,11 @@ pub enum IterState {
     Array { arr: rphp_value::Array, pos: usize },
     /// A by-reference loop over the array behind a reference cell.
     ByRef { cell: PhpRef, pos: usize },
+    /// A native `Iterator` stepped through its class's handlers directly
+    /// (`ClassDef::native_iter`); `pos` counts the steps taken. `by_ref`
+    /// binds the loop variable to the element cell the class's `dim_ref`
+    /// hook hands out (`foreach ($arrayIterator as &$v)`).
+    Native { obj: rphp_value::Object, iter: crate::class::NativeIter, pos: usize, by_ref: bool },
     /// Nothing to iterate (non-iterable subject: the loop is skipped).
     Empty,
 }

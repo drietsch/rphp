@@ -297,6 +297,7 @@ impl Interp {
             is_abstract: false,
             is_final: false,
             decl: dispatch,
+            specs: None,
         })
     }
 
@@ -1369,6 +1370,7 @@ impl Interp {
             is_abstract: false,
             is_final: false,
             decl: self.well_known.closure.unwrap_or(0),
+            specs: None,
         })
     }
 

@@ -468,6 +468,11 @@ impl Interp {
             return Err(Unwind::argument_count_error(f.arity_message(args.len())));
         }
         self.coerce_object_params(f.name, args)?;
+        // php's parameter parsing, under the caller's strictness.
+        if let Some(specs) = self.native_specs[id.0 as usize].clone() {
+            let strict = self.frames.last().is_some_and(|fr| fr.is_user() && fr.strict);
+            self.parse_native_params(&f, &specs, args, strict)?;
+        }
         let cells = Interp::unwrap_native_args(f.name, args, |i| f.is_by_ref(i));
         let silence = self.silence;
         let copy = self.frame_args_for(args, &cells);
@@ -773,6 +778,13 @@ impl Interp {
                 String::from_utf8_lossy(&m.name)
             );
             self.coerce_object_params(&key, args)?;
+        }
+        // php's parameter parsing, under the caller's strictness.
+        if let Some(specs) = &m.specs {
+            let strict = self.frames.last().is_some_and(|fr| fr.is_user() && fr.strict);
+            let class = self.classes[m.decl as usize].clone();
+            let display = || format!("{}::{}", class.name_str(), String::from_utf8_lossy(&m.name));
+            self.parse_params_named(&display, nm.by_ref, specs, args, strict)?;
         }
         // (The name is only needed when a reference is passed.)
         let key = if args.iter().any(|a| matches!(a, Value::Ref(_))) {

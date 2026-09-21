@@ -847,8 +847,8 @@ fn parse_number(bytes: &[u8], require_full: bool) -> Option<Value> {
 }
 
 /// `is_numeric_string`: the whole string is a number (PHP 8 leading/trailing
-/// whitespace allowed).
-fn numeric_string(bytes: &[u8]) -> Option<Value> {
+/// whitespace allowed) — the `Int` or `Float` it denotes.
+pub fn numeric_string(bytes: &[u8]) -> Option<Value> {
     parse_number(bytes, true)
 }
 

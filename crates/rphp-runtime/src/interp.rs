@@ -124,6 +124,9 @@ pub const MAX_FRAMES: usize = 1_000_000;
 /// tables and the frame stack go through methods.
 pub struct Interp {
     pub(crate) natives: Vec<NativeFn>,
+    /// Per native (parallel to `natives`): the parameter contracts php's
+    /// stub declares, for `native_zpp`; `None` when the table has no row.
+    pub(crate) native_specs: Vec<Option<std::rc::Rc<[crate::native_zpp::ParamSpec]>>>,
     /// Argument vectors a native call takes and hands back (the drained
     /// window and the frame's copy for traces), so a call allocates nothing.
     pub(crate) vec_pool: Vec<Vec<Value>>,
@@ -370,6 +373,7 @@ impl Interp {
     pub fn new(sink: Box<dyn crate::OutputSink>) -> Interp {
         let mut it = Interp {
             natives: Vec::new(),
+            native_specs: Vec::new(),
             native_index: HashMap::new(),
             constants: HashMap::new(),
             deprecated_constants: HashMap::new(),
@@ -532,12 +536,16 @@ impl Interp {
         if f.by_ref == 0 && LIGHT_NATIVES.iter().any(|n| n.as_bytes() == &*key) {
             f.flags |= FnFlags::LIGHT;
         }
+        let specs = crate::native_args::params_of(std::str::from_utf8(&key).unwrap_or(""))
+            .map(crate::native_zpp::specs_of);
         if let Some(&id) = self.native_index.get(&key) {
             self.natives[id.0 as usize] = f;
+            self.native_specs[id.0 as usize] = specs;
             return id;
         }
         let id = NativeId(self.natives.len() as u32);
         self.natives.push(f);
+        self.native_specs.push(specs);
         self.native_index.insert(key, id);
         self.func_gen += 1;
         id

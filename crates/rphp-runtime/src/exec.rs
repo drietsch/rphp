@@ -1827,7 +1827,14 @@ impl Interp {
                                 let mut saved = self.take_vec();
                                 saved.extend(args.iter().cloned());
                                 self.light_native = true;
-                                let r = (f.handler)(&mut Ctx(self), &mut args);
+                                let r = match self.native_specs[id.0 as usize].clone() {
+                                    Some(specs) => {
+                                        let strict = self.frames[fi].strict;
+                                        self.parse_native_params(&f, &specs, &mut args, strict)
+                                            .and_then(|()| (f.handler)(&mut Ctx(self), &mut args))
+                                    }
+                                    None => (f.handler)(&mut Ctx(self), &mut args),
+                                };
                                 self.light_native = false;
                                 self.give_vec(args);
                                 match r {

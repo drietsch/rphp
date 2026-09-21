@@ -1121,14 +1121,33 @@ variable warn where they read it. `unset($$name)` works
 `Function::var_count`, `Op::result_reg`. The frameless native path
 (`FnFlags::LIGHT`, bench README) is covered by `lang/light-natives.php`.
 
-Two gaps that probing it exposed, both on the full path too: **php's
-scalar parameter parsing for natives is not implemented** — `strlen([])`
-answers 5 (php: `TypeError … must be of type string, array given`) and
-`strlen(null)` says nothing (php 8.1's "Passing null to parameter #1
-(\$string) of type string is deprecated"); the generated arginfo table
-has the types, so a generic `zend_parse_parameters` layer at the call
-boundary is the fix. And a `TypeError` php throws while *parsing* a
-native's arguments carries a trace without the native's own frame
-(`#0 {main}` for `count(1)` at the top level), where an exception the
-function throws later (`intdiv(1, 0)`) has it; the engine puts the frame
-in both.
+A gap that probing it exposed, on the full path too: a `TypeError` php
+throws while *parsing* a native's arguments carries a trace without the
+native's own frame (`#0 {main}` for `count(1)` at the top level), where
+an exception the function throws later (`intdiv(1, 0)`) has it; the
+engine puts the frame in both.
+
+## php's parameter parsing for natives (2026-09-21)
+
+`strlen([])` answered 5 and `strlen(null)` said nothing. Every native
+function and method now goes through php's `zend_parse_parameters`
+rules at the call boundary (`crates/rphp-runtime/src/native_zpp.rs`,
+from the generated stub table): a scalar parameter takes what weak mode
+converts — an int a whole float, a numeric string or a bool (a
+fractional float or float-string with "Implicit conversion … loses
+precision"), an `int|float` a numeric string as the number it spells, a
+float any numeric scalar, a string any scalar, a bool any scalar —
+`null` for a non-nullable scalar is the 8.1 deprecation and the scalar's
+zero, an `array` takes nothing else, and anything else is
+`F(): Argument #n ($x) must be of type T, U given`; under the caller's
+`strict_types` only an int widens to a float. Parameters that list
+`callable`, `iterable`, `object`, a class, `resource` or `mixed`, and
+by-reference positions, stay the handler's to judge. The contracts are
+resolved once, at registration (`ParamSpec`), so a call pays a
+discriminant check per argument; the frameless path re-runs on the full
+one when a deprecation is due. `number_format()`'s nullable separators
+mean the defaults now. Corpus: `lang/native-params.php` (with
+`native-params-strict.inc`). Known: php's compiler specializes
+`in_array()`/`array_key_exists()` with a literal array into an opcode
+that skips parsing, so `in_array("1", [1], "1")` raises no `TypeError`
+under `strict_types` there.

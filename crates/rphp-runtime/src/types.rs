@@ -131,7 +131,7 @@ impl Interp {
     }
 
     /// `zend_parse_arg_long_weak`.
-    fn to_int_weak(&mut self, v: &Value) -> Result<Option<i64>, Unwind> {
+    pub(crate) fn to_int_weak(&mut self, v: &Value) -> Result<Option<i64>, Unwind> {
         Ok(match v {
             Value::Int(i) => Some(*i),
             Value::Float(f) => self.float_to_int_weak(*f, None)?,
@@ -151,7 +151,7 @@ impl Interp {
     }
 
     /// `zend_parse_arg_double_weak`.
-    fn to_float_weak(&self, v: &Value) -> Option<f64> {
+    pub(crate) fn to_float_weak(&self, v: &Value) -> Option<f64> {
         match v {
             Value::Int(i) => Some(*i as f64),
             Value::Float(f) => Some(*f),

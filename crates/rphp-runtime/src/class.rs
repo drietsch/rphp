@@ -181,6 +181,9 @@ pub struct MethodDef {
     /// The declaring class (process-wide id): the scope for visibility
     /// checks and `self::`.
     pub decl: u32,
+    /// For a native method: the parameter contracts php's stub declares
+    /// (`native_zpp`), resolved when the class was linked.
+    pub specs: Option<Rc<[crate::native_zpp::ParamSpec]>>,
 }
 
 impl MethodDef {
@@ -981,6 +984,18 @@ impl Interp {
             }
             def.magic |= MagicFlags::of_method(&key);
             own_order.push(key.clone());
+            // A native method's parameter contracts, from the table row
+            // `class::method` (lowercase).
+            let specs = match &m.body {
+                MethodBody::Native(_) => {
+                    let mut k = def.lname.to_vec();
+                    k.extend_from_slice(b"::");
+                    k.extend_from_slice(&key);
+                    crate::native_args::params_of(std::str::from_utf8(&k).unwrap_or(""))
+                        .map(crate::native_zpp::specs_of)
+                }
+                _ => None,
+            };
             def.methods.insert(
                 key,
                 Rc::new(MethodDef {
@@ -991,6 +1006,7 @@ impl Interp {
                     is_abstract: m.is_abstract,
                     is_final: m.is_final,
                     decl: id,
+                    specs,
                 }),
             );
         }

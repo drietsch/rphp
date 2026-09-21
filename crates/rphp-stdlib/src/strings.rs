@@ -1197,13 +1197,14 @@ pub(crate) fn number_format(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     }
     let dec_arg = args.get(1).map_or(0, Value::to_int);
     let dec = dec_arg.max(0) as usize;
+    // `?string`: null means the default separator, not an empty one.
     let dec_point = match args.get(2) {
-        Some(v) => bytes(v).into_owned(),
-        None => vec![b'.'],
+        Some(v) if !matches!(v, Value::Null | Value::Uninit) => bytes(v).into_owned(),
+        _ => vec![b'.'],
     };
     let thousands = match args.get(3) {
-        Some(v) => bytes(v).into_owned(),
-        None => vec![b','],
+        Some(v) if !matches!(v, Value::Null | Value::Uninit) => bytes(v).into_owned(),
+        _ => vec![b','],
     };
     // php rounds first (half away from zero on the decimal the float
     // denotes), then prints the rounded double's exact digits with `%.NF`.

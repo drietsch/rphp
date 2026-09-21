@@ -32,6 +32,7 @@ mod interp;
 mod methods;
 mod native_args;
 mod native_params;
+mod native_zpp;
 mod objects;
 mod ops;
 mod output;

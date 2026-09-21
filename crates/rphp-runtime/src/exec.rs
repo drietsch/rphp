@@ -2200,7 +2200,15 @@ impl Interp {
                 Op::RecvInit { param, init } => {
                     let f = &self.frames[fi];
                     let slot = &self.stack[base + param as usize];
-                    let missing = f.argc <= param as usize || slot.is_uninit();
+                    // A position a named-argument call skipped is left
+                    // uninitialized under `argc`. In a symbol-table frame
+                    // `BindSymtab` has already wrapped the register in its
+                    // cell, so look through the cell too.
+                    let unfilled = match slot {
+                        Value::Ref(cell) => cell.get().is_uninit(),
+                        other => other.is_uninit(),
+                    };
+                    let missing = f.argc <= param as usize || unfilled;
                     if missing {
                         let v = match init {
                             InitRef::Const(k) => self.const_value(&func, k),

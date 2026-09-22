@@ -67,10 +67,10 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
 const TRANSPORTS: &[&str] = &["tcp", "udp", "unix", "udg"];
 
 /// The wrappers this build registers, in the order `stream_get_wrappers()`
-/// lists them. php's own list is longer (`ftp`, `phar`, `zip`,
+/// lists them. php's own list is longer (`https`, `ftp`, `phar`, `zip`,
 /// `compress.*`); naming one here that `fopen()` cannot open would be worse
 /// than leaving it out, since the whole point of the call is a feature test.
-const WRAPPERS: &[&str] = &["php", "file", "glob", "data"];
+const WRAPPERS: &[&str] = &["php", "file", "glob", "data", "http"];
 
 /// Which transport an address named, and what it addresses.
 enum Target {
@@ -213,6 +213,24 @@ fn duration_of(secs: f64) -> Duration {
 }
 
 // ---- connecting --------------------------------------------------------------------
+
+/// Open a plain tcp connection to `host:port` — what the http wrapper
+/// builds a request on top of.
+pub(crate) fn connect_tcp(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<Conn, (i64, String)> {
+    connect(&Target::Tcp(host.to_string(), port), timeout)
+}
+
+/// `default_socket_timeout`, for a wrapper that was given no timeout.
+pub(crate) fn wrapper_timeout(ctx: &mut Ctx, given: Option<f64>) -> Duration {
+    match given {
+        Some(secs) => duration_of(secs),
+        None => default_timeout(ctx),
+    }
+}
 
 /// Open a client connection, as `(errno, error text)` when it fails.
 fn connect(target: &Target, timeout: Duration) -> Result<Conn, (i64, String)> {
@@ -699,6 +717,16 @@ fn stream_set_timeout(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         set_read_timeout(conn, d)
     })?;
     Ok(Value::Bool(set.unwrap_or(false)))
+}
+
+/// `SO_RCVTIMEO` on a connection a wrapper owns.
+pub(crate) fn set_read_timeout_on(conn: &Conn, d: Option<Duration>) {
+    // A zero wait means "no timeout" to the kernel, which is the opposite
+    // of what it means to php, so it is left alone.
+    if d.is_some_and(|d| d.is_zero()) {
+        return;
+    }
+    set_read_timeout(conn, d);
 }
 
 /// `SO_RCVTIMEO` on whichever socket this is.

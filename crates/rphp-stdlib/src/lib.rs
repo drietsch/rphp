@@ -31,6 +31,7 @@ mod funcs;
 mod hash;
 mod head;
 mod html;
+mod http;
 mod iconv;
 mod info;
 mod json;
@@ -94,6 +95,7 @@ const MODULES: &[&[NativeFn]] = &[
     math::FUNCTIONS,
     net::FUNCTIONS,
     socket::FUNCTIONS,
+    http::FUNCTIONS,
     session::FUNCTIONS,
     tokenizer::FUNCTIONS,
     highlight::FUNCTIONS,
@@ -199,6 +201,7 @@ pub fn request_shutdown(it: &mut rphp_runtime::Interp) {
     string2::request_shutdown();
     date::funcs::request_shutdown();
     random::request_shutdown();
+    http::request_shutdown();
 }
 
 /// Every native this crate provides (for tooling: coverage, `xtask missing`).

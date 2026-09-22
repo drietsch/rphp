@@ -123,6 +123,11 @@ pub(crate) struct Pipe {
     pub(crate) conn: Conn,
     /// `stream_set_blocking(false)`: `O_NONBLOCK` is set on the descriptor.
     pub(crate) nonblocking: bool,
+    /// Bytes already taken off the descriptor that reads must serve before
+    /// they go back to it — the body the http wrapper read while it was
+    /// looking for the end of the headers. php counts what is left of this
+    /// as a stream's `unread_bytes`.
+    pub(crate) prefix: Vec<u8>,
 }
 
 /// What a live descriptor actually is.
@@ -173,7 +178,7 @@ impl Conn {
 
     /// One `read(2)`. A listening socket has nothing to read, which is what
     /// php's `fread()` on one comes back with too.
-    fn read_once(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+    pub(crate) fn read_once(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         use std::io::Read;
         match self {
             Conn::File(f) => f.read(buf),
@@ -186,7 +191,7 @@ impl Conn {
     }
 
     /// One `write(2)`, repeated until everything is gone.
-    fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
+    pub(crate) fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
         use std::io::Write;
         match self {
             Conn::File(f) => f.write_all(data),
@@ -218,6 +223,10 @@ impl Pipe {
     /// yet — a non-blocking descriptor with no data, or a blocking one whose
     /// receive timeout ran out — and `Ok(Some(empty))` at end of stream.
     fn read(&mut self, len: usize) -> std::io::Result<Option<Vec<u8>>> {
+        if !self.prefix.is_empty() {
+            let n = len.min(self.prefix.len());
+            return Ok(Some(self.prefix.drain(..n).collect()));
+        }
         let mut buf = vec![0u8; len.max(1)];
         loop {
             match self.conn.read_once(&mut buf) {
@@ -251,6 +260,11 @@ pub(crate) struct Sock {
     /// `stream_get_meta_data()` and cleared by the next successful read,
     /// exactly as php's `EOF`-independent flag behaves.
     pub(crate) timed_out: bool,
+    /// The wrapper that opened this socket, when one did: its name, and the
+    /// response's header lines. php reports them as `wrapper_type` and
+    /// `wrapper_data`, which is where Symfony's `NativeHttpClient` reads a
+    /// response's headers from.
+    pub(crate) wrapper: Option<(Box<str>, Array)>,
 }
 
 /// php's `stream_type` for a socket, which names the transport rather than
@@ -349,6 +363,14 @@ fn file_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         let body = ctx.request_body.as_deref().map(<[u8]>::to_vec).unwrap_or_default();
         return Ok(Value::Str(Str::from_vec(body)));
     }
+    if let Some(url) = wrapper_url(&args[0]) {
+        // `file_get_contents($f, $use_include_path, $context, $offset, $length)`
+        let context = args.get(2).cloned();
+        return Ok(match crate::http::read_all(ctx, &url, context.as_ref(), "file_get_contents")? {
+            Some(b) => Value::Str(Str::from_vec(b)),
+            None => Value::Bool(false),
+        });
+    }
     let p = arg_path(ctx, &args[0]);
     match fs::read(&p) {
         Ok(b) => Ok(Value::Str(Str::from_vec(b))),
@@ -446,8 +468,21 @@ fn split_lines(data: &[u8], flags: i64) -> Vec<Vec<u8>> {
 
 /// `file(string $filename, int $flags = 0, ...): array|false`
 fn file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let p = arg_path(ctx, &args[0]);
     let flags = args.get(1).map_or(0, Value::to_int);
+    if let Some(url) = wrapper_url(&args[0]) {
+        let context = args.get(2).cloned();
+        return Ok(match crate::http::read_all(ctx, &url, context.as_ref(), "file")? {
+            Some(b) => {
+                let mut a = Array::new();
+                for line in split_lines(&b, flags) {
+                    a.push(Value::Str(Str::from_vec(line)));
+                }
+                Value::Array(a)
+            }
+            None => Value::Bool(false),
+        });
+    }
+    let p = arg_path(ctx, &args[0]);
     match fs::read(&p) {
         Ok(b) => {
             let mut a = Array::new();
@@ -468,6 +503,17 @@ fn file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `readfile(string $filename, ...): int|false` — write the file to output.
 fn readfile(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    if let Some(url) = wrapper_url(&args[0]) {
+        let context = args.get(2).cloned();
+        return Ok(match crate::http::read_all(ctx, &url, context.as_ref(), "readfile")? {
+            Some(b) => {
+                let n = b.len() as i64;
+                ctx.echo(&b);
+                Value::Int(n)
+            }
+            None => Value::Bool(false),
+        });
+    }
     let p = arg_path(ctx, &args[0]);
     match fs::read(&p) {
         Ok(b) => {
@@ -761,6 +807,12 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let truncate = m.starts_with('w');
 
     let path_str = String::from_utf8_lossy(&name).into_owned();
+    // The network wrappers open a connection rather than a path.
+    if crate::http::is_http_url(&path_str) {
+        let context = args.get(3).cloned();
+        return Ok(crate::http::open(ctx, &path_str, context.as_ref(), "fopen")?
+            .unwrap_or(Value::Bool(false)));
+    }
     // php:// wrappers: memory and temp are buffers, the rest are output.
     let stream = if let Some(rest) = path_str.strip_prefix("php://") {
         let sink = match rest {
@@ -906,10 +958,40 @@ pub(crate) fn pipe_resource(ctx: &mut Ctx, file: fs::File, readable: bool) -> Va
         uri: "php://stdio".into(),
         fill_end: 0,
         chunk_size: 8192,
-        pipe: Some(Pipe { conn: Conn::File(file), nonblocking: false }),
+        pipe: Some(Pipe { conn: Conn::File(file), nonblocking: false, prefix: Vec::new() }),
         sock: None,
     };
     ctx.resources.add("stream", Box::new(stream))
+}
+
+/// Whether the first argument names a url the http wrapper handles, and
+/// the url if so. The wrappers that read from the network are the only
+/// place a path is not a path.
+fn wrapper_url(v: &Value) -> Option<String> {
+    let bytes = v.to_php_bytes();
+    let url = String::from_utf8_lossy(&bytes);
+    crate::http::is_http_url(&url).then(|| url.into_owned())
+}
+
+/// A stream context's options, for a wrapper to read its own section out
+/// of. Anything that is not a context resource simply has none.
+pub(crate) fn context_options_of(_ctx: &mut Ctx, v: &Value) -> Option<Array> {
+    let Value::Resource(r) = &*v.deref() else { return None };
+    if r.kind() != "stream-context" {
+        return None;
+    }
+    let mut payload = r.payload_mut();
+    let c = payload.as_mut()?.downcast_mut::<StreamContext>()?;
+    Some(c.options.clone())
+}
+
+/// Read a stream to its end — what `file_get_contents()` does with a
+/// wrapper's handle once the headers are off it.
+pub(crate) fn drain_stream(ctx: &mut Ctx, v: &Value) -> Vec<u8> {
+    match pipe_read(ctx, v, "file_get_contents", PipeRead::All(None)) {
+        Ok(Some(b)) => b,
+        _ => Vec::new(),
+    }
 }
 
 /// A stream over a socket, which is what every `stream_socket_*` function
@@ -921,6 +1003,22 @@ pub(crate) fn socket_resource(
     kind: SockKind,
     uri: Option<String>,
 ) -> Value {
+    socket_resource_with(ctx, conn, kind, uri, Vec::new(), None)
+}
+
+/// `socket_resource` for a socket a wrapper opened: `prefix` is what it
+/// already read off the descriptor, and `wrapper` what php reports as
+/// `wrapper_type`/`wrapper_data`.
+pub(crate) fn socket_resource_with(
+    ctx: &mut Ctx,
+    conn: Conn,
+    kind: SockKind,
+    uri: Option<String>,
+    prefix: Vec<u8>,
+    wrapper: Option<(Box<str>, Array)>,
+) -> Value {
+    // A stream a wrapper opened is read-only; a bare socket is `r+`.
+    let mode = if wrapper.is_some() { "r" } else { "r+" };
     let stream = Stream {
         buf: Vec::new(),
         pos: 0,
@@ -932,16 +1030,17 @@ pub(crate) fn socket_resource(
         writable: true,
         eof: false,
         dirty: false,
-        mode: "r+".into(),
+        mode: mode.into(),
         uri: uri.clone().unwrap_or_default().into(),
         fill_end: 0,
         chunk_size: 8192,
-        pipe: Some(Pipe { conn, nonblocking: false }),
+        pipe: Some(Pipe { conn, nonblocking: false, prefix }),
         sock: Some(Sock {
             kind,
             uri: uri.map(Into::into),
             timeout: None,
             timed_out: false,
+            wrapper,
         }),
     };
     ctx.resources.add("stream", Box::new(stream))
@@ -1453,9 +1552,15 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             set("timed_out", Value::Bool(sock.timed_out));
             set("blocked", Value::Bool(s.pipe.as_ref().is_none_or(|p| !p.nonblocking)));
             set("eof", Value::Bool(s.eof));
+            if let Some((name, data)) = &sock.wrapper {
+                set("wrapper_data", Value::Array(data.clone()));
+                set("wrapper_type", Value::string(name.as_bytes()));
+            }
             set("stream_type", Value::string(sock.kind.stream_type().as_bytes()));
             set("mode", Value::string(s.mode.as_bytes()));
-            set("unread_bytes", Value::Int(0));
+            // What a wrapper read ahead and has not handed out yet.
+            let pending = s.pipe.as_ref().map_or(0, |p| p.prefix.len());
+            set("unread_bytes", Value::Int(pending as i64));
             set("seekable", Value::Bool(false));
             if let Some(uri) = &sock.uri {
                 set("uri", Value::string(uri.as_bytes()));

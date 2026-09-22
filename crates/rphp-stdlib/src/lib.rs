@@ -45,6 +45,7 @@ mod password;
 mod pcre;
 mod random;
 mod session;
+mod socket;
 mod tokenizer;
 mod highlight;
 mod reflection;
@@ -92,6 +93,7 @@ const MODULES: &[&[NativeFn]] = &[
     arrays::FUNCTIONS,
     math::FUNCTIONS,
     net::FUNCTIONS,
+    socket::FUNCTIONS,
     session::FUNCTIONS,
     tokenizer::FUNCTIONS,
     highlight::FUNCTIONS,

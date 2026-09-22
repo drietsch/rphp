@@ -40,6 +40,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("rewind", 1, Some(1), rewind),
     nf!("fflush", 1, Some(1), fflush),
     nf!("stream_get_contents", 1, Some(3), stream_get_contents),
+    nf!("stream_get_line", 2, Some(3), stream_get_line),
     nf!("stream_get_meta_data", 1, Some(1), stream_get_meta_data),
     nf!("stream_set_blocking", 2, Some(2), stream_set_blocking),
     nf!("stream_context_create", 0, Some(2), stream_context_create),
@@ -109,45 +110,171 @@ pub(crate) struct Stream {
     /// `stream_set_chunk_size()`: what the function reports back; the
     /// buffer-backed reads here do not chunk.
     chunk_size: i64,
-    /// A live descriptor (a `proc_open` pipe): reads and writes go straight
-    /// to it, nothing is buffered, and the cursor means nothing.
+    /// A live descriptor (a `proc_open` pipe, a socket): reads and writes go
+    /// straight to it, nothing is buffered, and the cursor means nothing.
     pipe: Option<Pipe>,
+    /// What a socket stream knows about itself beyond its descriptor
+    /// (`socket.rs`); `None` for everything that is not a socket.
+    pub(crate) sock: Option<Sock>,
 }
 
-/// The descriptor behind a pipe stream.
+/// The descriptor behind a pipe or socket stream.
 pub(crate) struct Pipe {
-    pub(crate) file: fs::File,
+    pub(crate) conn: Conn,
     /// `stream_set_blocking(false)`: `O_NONBLOCK` is set on the descriptor.
     pub(crate) nonblocking: bool,
+}
+
+/// What a live descriptor actually is.
+///
+/// Everything here is a descriptor, so one `read(2)`/`write(2)`/`poll(2)`
+/// path serves all of it; the variants are kept apart only because the
+/// socket calls that are *not* reads and writes — the peer's name, a
+/// half-close, a datagram's address, a receive timeout — are std's, and
+/// reaching them through a raw `sockaddr` would buy nothing but `unsafe`.
+pub(crate) enum Conn {
+    /// A `proc_open` pipe, or any other plain descriptor.
+    File(fs::File),
+    Tcp(std::net::TcpStream),
+    TcpListen(std::net::TcpListener),
+    Udp(std::net::UdpSocket),
+    Unix(std::os::unix::net::UnixStream),
+    UnixListen(std::os::unix::net::UnixListener),
+    UnixDgram(std::os::unix::net::UnixDatagram),
+}
+
+impl Conn {
+    /// The descriptor, borrowed — what `poll(2)` and `fcntl(2)` want.
+    pub(crate) fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        match self {
+            Conn::File(f) => f.as_fd(),
+            Conn::Tcp(s) => s.as_fd(),
+            Conn::TcpListen(s) => s.as_fd(),
+            Conn::Udp(s) => s.as_fd(),
+            Conn::Unix(s) => s.as_fd(),
+            Conn::UnixListen(s) => s.as_fd(),
+            Conn::UnixDgram(s) => s.as_fd(),
+        }
+    }
+
+    /// A second handle on the same descriptor (`dup(2)`).
+    pub(crate) fn try_clone(&self) -> std::io::Result<Conn> {
+        Ok(match self {
+            Conn::File(f) => Conn::File(f.try_clone()?),
+            Conn::Tcp(s) => Conn::Tcp(s.try_clone()?),
+            Conn::TcpListen(s) => Conn::TcpListen(s.try_clone()?),
+            Conn::Udp(s) => Conn::Udp(s.try_clone()?),
+            Conn::Unix(s) => Conn::Unix(s.try_clone()?),
+            Conn::UnixListen(s) => Conn::UnixListen(s.try_clone()?),
+            Conn::UnixDgram(s) => Conn::UnixDgram(s.try_clone()?),
+        })
+    }
+
+    /// One `read(2)`. A listening socket has nothing to read, which is what
+    /// php's `fread()` on one comes back with too.
+    fn read_once(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::Read;
+        match self {
+            Conn::File(f) => f.read(buf),
+            Conn::Tcp(s) => s.read(buf),
+            Conn::Udp(s) => s.recv(buf),
+            Conn::Unix(s) => s.read(buf),
+            Conn::UnixDgram(s) => s.recv(buf),
+            Conn::TcpListen(_) | Conn::UnixListen(_) => Ok(0),
+        }
+    }
+
+    /// One `write(2)`, repeated until everything is gone.
+    fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        match self {
+            Conn::File(f) => f.write_all(data),
+            Conn::Tcp(s) => s.write_all(data),
+            Conn::Udp(s) => s.send(data).map(|_| ()),
+            Conn::Unix(s) => s.write_all(data),
+            Conn::UnixDgram(s) => s.send(data).map(|_| ()),
+            Conn::TcpListen(_) | Conn::UnixListen(_) => {
+                Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+            }
+        }
+    }
 }
 
 impl Pipe {
     /// Set or clear `O_NONBLOCK`.
     fn set_blocking(&mut self, blocking: bool) -> bool {
-        let Ok(mut flags) = rustix::fs::fcntl_getfl(&self.file) else { return false };
+        let fd = self.conn.as_fd();
+        let Ok(mut flags) = rustix::fs::fcntl_getfl(fd) else { return false };
         flags.set(rustix::fs::OFlags::NONBLOCK, !blocking);
-        if rustix::fs::fcntl_setfl(&self.file, flags).is_err() {
+        if rustix::fs::fcntl_setfl(fd, flags).is_err() {
             return false;
         }
         self.nonblocking = !blocking;
         true
     }
 
-    /// One `read(2)` of up to `len` bytes: `Ok(None)` when a non-blocking
-    /// pipe has nothing yet, `Ok(Some(empty))` at end of stream.
+    /// One `read(2)` of up to `len` bytes: `Ok(None)` when nothing is there
+    /// yet — a non-blocking descriptor with no data, or a blocking one whose
+    /// receive timeout ran out — and `Ok(Some(empty))` at end of stream.
     fn read(&mut self, len: usize) -> std::io::Result<Option<Vec<u8>>> {
-        use std::io::Read;
         let mut buf = vec![0u8; len.max(1)];
         loop {
-            match self.file.read(&mut buf) {
+            match self.conn.read_once(&mut buf) {
                 Ok(n) => {
                     buf.truncate(n);
                     return Ok(Some(buf));
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+                // macOS reports an expired `SO_RCVTIMEO` as `EAGAIN`, Linux
+                // as `ETIMEDOUT`; both mean "nothing, and not the end".
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return Ok(None),
                 Err(e) => return Err(e),
             }
+        }
+    }
+}
+
+/// What a socket stream knows beyond its descriptor.
+pub(crate) struct Sock {
+    /// Which `stream_type` `stream_get_meta_data()` reports.
+    pub(crate) kind: SockKind,
+    /// The address the stream was opened under, as given — php reports it
+    /// back as `uri`, unresolved. A `stream_socket_pair()` end has none, and
+    /// php's metadata then has no `uri` key at all.
+    pub(crate) uri: Option<Box<str>>,
+    /// `stream_set_timeout()`: how long a blocking read waits before it
+    /// gives up. `None` is php's default, which is `default_socket_timeout`.
+    pub(crate) timeout: Option<std::time::Duration>,
+    /// Set by a read that ran that timeout out, reported by
+    /// `stream_get_meta_data()` and cleared by the next successful read,
+    /// exactly as php's `EOF`-independent flag behaves.
+    pub(crate) timed_out: bool,
+}
+
+/// php's `stream_type` for a socket, which names the transport rather than
+/// the wrapper. `tcp_socket/ssl` is what a plain tcp stream reports too:
+/// php names the transport by the module that registered it, and openssl
+/// registers over tcp.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum SockKind {
+    Tcp,
+    Udp,
+    Unix,
+    UnixDgram,
+    /// A `stream_socket_pair()` end, which php leaves generic.
+    Generic,
+}
+
+impl SockKind {
+    pub(crate) fn stream_type(self) -> &'static str {
+        match self {
+            SockKind::Tcp => "tcp_socket/ssl",
+            SockKind::Udp => "udp_socket",
+            SockKind::Unix => "unix_socket",
+            SockKind::UnixDgram => "udg_socket",
+            SockKind::Generic => "generic_socket",
         }
     }
 }
@@ -669,6 +796,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             fill_end: 0,
             chunk_size: 8192,
             pipe: None,
+            sock: None,
         }
     } else {
         let p = arg_path(ctx, &args[0]);
@@ -718,6 +846,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             fill_end: pos,
             chunk_size: 8192,
             pipe: None,
+            sock: None,
         }
     };
     Ok(ctx.resources.add("stream", Box::new(stream)))
@@ -753,6 +882,7 @@ pub(crate) fn open_resource(ctx: &mut Ctx, path: &std::path::Path, mode: &str) -
         fill_end: 0,
         chunk_size: 8192,
         pipe: None,
+        sock: None,
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -776,15 +906,78 @@ pub(crate) fn pipe_resource(ctx: &mut Ctx, file: fs::File, readable: bool) -> Va
         uri: "php://stdio".into(),
         fill_end: 0,
         chunk_size: 8192,
-        pipe: Some(Pipe { file, nonblocking: false }),
+        pipe: Some(Pipe { conn: Conn::File(file), nonblocking: false }),
+        sock: None,
     };
     ctx.resources.add("stream", Box::new(stream))
 }
 
-/// A duplicate of the descriptor behind a pipe stream, for `stream_select`
-/// and for handing a pipe on to a child: `None` for any other stream.
+/// A stream over a socket, which is what every `stream_socket_*` function
+/// and `fsockopen()` hands back (`socket.rs`). php opens a transport `r+`
+/// and blocking, and its cursor means nothing.
+pub(crate) fn socket_resource(
+    ctx: &mut Ctx,
+    conn: Conn,
+    kind: SockKind,
+    uri: Option<String>,
+) -> Value {
+    let stream = Stream {
+        buf: Vec::new(),
+        pos: 0,
+        file: None,
+        path: None,
+        append: false,
+        sink: Sink::Buffer,
+        readable: true,
+        writable: true,
+        eof: false,
+        dirty: false,
+        mode: "r+".into(),
+        uri: uri.clone().unwrap_or_default().into(),
+        fill_end: 0,
+        chunk_size: 8192,
+        pipe: Some(Pipe { conn, nonblocking: false }),
+        sock: Some(Sock {
+            kind,
+            uri: uri.map(Into::into),
+            timeout: None,
+            timed_out: false,
+        }),
+    };
+    ctx.resources.add("stream", Box::new(stream))
+}
+
+/// Run `f` over the socket behind a resource; `Ok(None)` when the resource
+/// is a stream but not a socket, which is php's "not a socket" answer for
+/// every `stream_socket_*` function.
+pub(crate) fn with_socket<R>(
+    ctx: &mut Ctx,
+    v: &Value,
+    func: &str,
+    f: impl FnOnce(&mut Conn, &mut Sock) -> R,
+) -> Result<Option<R>, Unwind> {
+    with_stream(ctx, v, func, |s| {
+        let (Some(p), Some(sock)) = (s.pipe.as_mut(), s.sock.as_mut()) else {
+            return None;
+        };
+        Some(f(&mut p.conn, sock))
+    })
+}
+
+/// A duplicate of the descriptor behind a *pipe* stream, for handing it on
+/// to a child: `None` for anything else, sockets included, since a child
+/// inherits a pipe and reopens everything else.
 pub(crate) fn pipe_dup(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<fs::File>, Unwind> {
-    with_stream(ctx, v, func, |s| s.pipe.as_ref().and_then(|p| p.file.try_clone().ok()))
+    with_stream(ctx, v, func, |s| match s.pipe.as_ref().map(|p| &p.conn) {
+        Some(Conn::File(f)) => f.try_clone().ok(),
+        _ => None,
+    })
+}
+
+/// A duplicate of the descriptor behind *any* live stream — a pipe or a
+/// socket — for `stream_select` to poll.
+fn conn_dup(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<Conn>, Unwind> {
+    with_stream(ctx, v, func, |s| s.pipe.as_ref().and_then(|p| p.conn.try_clone().ok()))
 }
 
 /// Whether a stream is one of the process's output handles (`php://stdout`,
@@ -820,6 +1013,7 @@ fn std_stream(sink: Sink, uri: &str, mode: &str) -> Stream {
         fill_end: 0,
         chunk_size: 8192,
         pipe: None,
+        sock: None,
     }
 }
 
@@ -865,8 +1059,7 @@ fn fwrite(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         if !s.writable {
             return Some(Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
         }
-        use std::io::Write;
-        Some(p.file.write_all(&data).map(|()| data.len()))
+        Some(p.conn.write_all(&data).map(|()| data.len()))
     })?;
     if let Some(r) = piped {
         return match r {
@@ -956,6 +1149,11 @@ enum PipeRead {
 fn pipe_read(ctx: &mut Ctx, v: &Value, func: &str, how: PipeRead) -> Result<Option<Vec<u8>>, Unwind> {
     with_stream(ctx, v, func, |s| {
         let p = s.pipe.as_mut()?;
+        // A *blocking* descriptor that comes back with nothing did not find
+        // the stream empty — it ran its receive timeout out. That is all
+        // php's `timed_out` means, and a read that gets somewhere clears it.
+        let blocking = !p.nonblocking;
+        let mut starved = false;
         let mut out = Vec::new();
         match how {
             PipeRead::Some(len) => match p.read(len) {
@@ -965,7 +1163,7 @@ fn pipe_read(ctx: &mut Ctx, v: &Value, func: &str, how: PipeRead) -> Result<Opti
                     }
                     out = b;
                 }
-                Ok(None) => {}
+                Ok(None) => starved = true,
                 Err(_) => s.eof = true,
             },
             PipeRead::Line => loop {
@@ -980,7 +1178,10 @@ fn pipe_read(ctx: &mut Ctx, v: &Value, func: &str, how: PipeRead) -> Result<Opti
                         s.eof = true;
                         break;
                     }
-                    Ok(None) => break,
+                    Ok(None) => {
+                        starved = true;
+                        break;
+                    }
                 }
             },
             PipeRead::All(max) => loop {
@@ -995,9 +1196,15 @@ fn pipe_read(ctx: &mut Ctx, v: &Value, func: &str, how: PipeRead) -> Result<Opti
                         s.eof = true;
                         break;
                     }
-                    Ok(None) => break,
+                    Ok(None) => {
+                        starved = true;
+                        break;
+                    }
                 }
             },
+        }
+        if let Some(sock) = s.sock.as_mut() {
+            sock.timed_out = starved && blocking && out.is_empty();
         }
         Some(out)
     })
@@ -1054,6 +1261,75 @@ fn fgets(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     })
 }
 
+/// `stream_get_line(resource $stream, int $length, string $ending = ""): string|false`
+///
+/// `fgets()` with a delimiter of any length, which — unlike `fgets()`'s
+/// newline — is *not* part of what comes back. A length of `0` means php's
+/// default chunk. `false` only when there was nothing left at all.
+fn stream_get_line(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    let max = args[1].to_int();
+    if max < 0 {
+        return Err(Unwind::value_error(
+            "stream_get_line(): Argument #2 ($length) must be greater than or equal to 0",
+        ));
+    }
+    let ending = args.get(2).map(|v| v.to_php_bytes().to_vec()).unwrap_or_default();
+    let ending = if ending.is_empty() { b"\n".to_vec() } else { ending };
+    let cap = if max == 0 { CHUNK } else { max as usize };
+    if read_denied(ctx, &stream, "stream_get_line")? {
+        return Ok(Value::Bool(false));
+    }
+    // A live descriptor has to be read up to the delimiter and no further:
+    // anything taken past it belongs to the next call.
+    let piped = with_stream(ctx, &stream, "stream_get_line", |s| s.pipe.is_some())?;
+    if piped {
+        let mut out: Vec<u8> = Vec::new();
+        while out.len() < cap {
+            let Some(b) = pipe_read(ctx, &stream, "stream_get_line", PipeRead::Some(1))? else {
+                break;
+            };
+            if b.is_empty() {
+                break;
+            }
+            out.push(b[0]);
+            if out.ends_with(&ending) {
+                out.truncate(out.len() - ending.len());
+                return Ok(Value::Str(Str::from_vec(out)));
+            }
+        }
+        return Ok(if out.is_empty() {
+            Value::Bool(false)
+        } else {
+            Value::Str(Str::from_vec(out))
+        });
+    }
+    with_stream(ctx, &stream, "stream_get_line", |s| {
+        record_fill(s);
+        if s.pos >= s.buf.len() {
+            s.eof = true;
+            return Value::Bool(false);
+        }
+        let start = s.pos;
+        let limit = (start + cap).min(s.buf.len());
+        let hay = &s.buf[start..limit];
+        match hay
+            .windows(ending.len())
+            .position(|w| w == &ending[..])
+        {
+            Some(i) => {
+                s.pos = start + i + ending.len();
+                Value::Str(Str::from_vec(hay[..i].to_vec()))
+            }
+            None => {
+                s.pos = limit;
+                s.eof = limit == s.buf.len();
+                Value::Str(Str::from_vec(hay.to_vec()))
+            }
+        }
+    })
+}
+
 /// `fgetc(resource $stream): string|false`
 fn fgetc(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
@@ -1078,7 +1354,18 @@ fn fgetc(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `feof(resource $stream): bool`
 fn feof(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
-    with_stream(ctx, &stream, "feof", |s| Value::Bool(s.eof))
+    with_stream(ctx, &stream, "feof", |s| {
+        // A socket is asked, not remembered: php checks the peer is still
+        // there (`socket::socket_eof`) rather than waiting for a read to
+        // come back short, so `feof()` is true as soon as the other end
+        // closes. Every other stream keeps the flag its reads set.
+        if !s.eof && s.sock.is_some() {
+            if let Some(p) = s.pipe.as_ref() {
+                s.eof = crate::socket::socket_eof(&p.conn);
+            }
+        }
+        Value::Bool(s.eof)
+    })
 }
 
 /// `ftell(resource $stream): int|false`
@@ -1156,6 +1443,25 @@ fn stream_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
     with_stream(ctx, &stream, "stream_get_meta_data", |s| {
+        // A socket's metadata is php's *without* a `wrapper_type`: a
+        // transport is registered as a transport, not as a wrapper, so
+        // `_php_stream_populate_meta_data` never fills that key. A pair has
+        // no address either, so it has no `uri` key.
+        if let Some(sock) = &s.sock {
+            let mut out = Array::new();
+            let mut set = |k: &str, v: Value| out.set(ArrayKey::str(k.as_bytes()), v);
+            set("timed_out", Value::Bool(sock.timed_out));
+            set("blocked", Value::Bool(s.pipe.as_ref().is_none_or(|p| !p.nonblocking)));
+            set("eof", Value::Bool(s.eof));
+            set("stream_type", Value::string(sock.kind.stream_type().as_bytes()));
+            set("mode", Value::string(s.mode.as_bytes()));
+            set("unread_bytes", Value::Int(0));
+            set("seekable", Value::Bool(false));
+            if let Some(uri) = &sock.uri {
+                set("uri", Value::string(uri.as_bytes()));
+            }
+            return Value::Array(out);
+        }
         let php_stream = s.path.is_none();
         let (wrapper, kind, seekable) = if s.pipe.is_some() {
             ("PHP", "STDIO".to_string(), false)
@@ -1217,12 +1523,12 @@ fn stream_select(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // (array index, key, dup of the descriptor) for every pipe stream;
     // ready flags for the rest.
     let mut sets: [Vec<(ArrayKey, Value, bool)>; 2] = [Vec::new(), Vec::new()];
-    let mut fds: Vec<(usize, usize, fs::File)> = Vec::new();
+    let mut fds: Vec<(usize, usize, Conn)> = Vec::new();
     for (which, arg) in args.iter().take(2).enumerate() {
         let Value::Array(a) = &*arg.deref() else { continue };
         for (k, v) in a.iter() {
             let v = v.deref().into_owned();
-            match pipe_dup(ctx, &v, "stream_select")? {
+            match conn_dup(ctx, &v, "stream_select")? {
                 Some(f) => {
                     fds.push((which, sets[which].len(), f));
                     sets[which].push((k.clone(), v, false));
@@ -1235,7 +1541,10 @@ fn stream_select(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     if !fds.is_empty() {
         let mut polls: Vec<PollFd<'_>> = fds
             .iter()
-            .map(|(which, _, f)| PollFd::new(f, if *which == 0 { PollFlags::IN | PollFlags::HUP } else { PollFlags::OUT }))
+            .map(|(which, _, c)| {
+                let want = if *which == 0 { PollFlags::IN | PollFlags::HUP } else { PollFlags::OUT };
+                PollFd::from_borrowed_fd(c.as_fd(), want)
+            })
             .collect();
         // Everything else being ready already, a poll with descriptors only
         // asks whether they are too.

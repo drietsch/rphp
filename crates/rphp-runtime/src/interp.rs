@@ -65,10 +65,16 @@ pub struct ExtState {
     pub json_last_error: i64,
     /// `json_last_error_msg()`.
     pub json_last_error_msg: String,
-    /// php's per-request stat cache (`filestat.rs`): path → metadata, with
-    /// `None` meaning "checked, does not exist". `clearstatcache()` empties
-    /// it and anything that changes a path drops its entry.
-    pub stat_cache: std::collections::HashMap<std::path::PathBuf, Option<std::fs::Metadata>>,
+    /// php's per-request stat cache (`filestat.rs`).
+    ///
+    /// **One entry**, as php's is: php keeps the `stat(2)` of the last file
+    /// it looked at (`BG(CurrentStatFile)`) and nothing else, so stat'ing a
+    /// second path drops the first. A cache that kept every path would be
+    /// stale in ways php never is — an entry survives its directory being
+    /// moved away, which is how Symfony's cache-directory dance broke on it.
+    /// `None` in the pair means "checked, does not exist"; `clearstatcache()`
+    /// empties it and anything that changes a path drops it.
+    pub stat_cache: Option<(std::path::PathBuf, Option<std::fs::Metadata>)>,
     /// What `openlog()` set (`syslog.rs`): `(ident, flags, facility)`.
     pub syslog: (Option<Vec<u8>>, i64, i64),
     /// Per-extension state an extension crate keeps under its own key

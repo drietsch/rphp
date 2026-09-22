@@ -2,10 +2,11 @@
 //! over the real filesystem.
 //!
 //! php keeps a **per-request stat cache** so repeated `file_exists`/`filesize`
-//! on the same path do not re-`stat`; `clearstatcache()` drops it. The cache
-//! is modelled here because code that writes a file and immediately re-stats
-//! it depends on the invalidation — every function in this module that
-//! *changes* a path clears its entry.
+//! on the same path do not re-`stat`; `clearstatcache()` drops it. It holds
+//! exactly one path — the last one looked at — and this models that, because
+//! a cache that held more would be stale where php is not (an entry whose
+//! directory has since been moved away). Every function here that *changes*
+//! a path clears the entry too.
 //!
 //! A failing predicate returns `false` and, for the ones php warns about,
 //! emits through the ordinary warning channel so `@` suppresses it.
@@ -43,17 +44,27 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
 /// Look `path` up through php's per-request stat cache
 /// (`ExtState::stat_cache`).
 fn stat(ctx: &mut Ctx, path: &Path) -> Option<fs::Metadata> {
-    if let Some(hit) = ctx.ext.stat_cache.get(path) {
-        return hit.clone();
+    cached_stat(ctx, path)
+}
+
+/// php's one-entry stat cache: the last path stat'ed, and what it said.
+/// Looking at a different path replaces it, exactly as php's does.
+pub(crate) fn cached_stat(ctx: &mut Ctx, path: &Path) -> Option<fs::Metadata> {
+    if let Some((cached, md)) = &ctx.ext.stat_cache {
+        if cached == path {
+            return md.clone();
+        }
     }
     let md = fs::metadata(path).ok();
-    ctx.ext.stat_cache.insert(path.to_path_buf(), md.clone());
+    ctx.ext.stat_cache = Some((path.to_path_buf(), md.clone()));
     md
 }
 
 /// Drop `path` from the stat cache (after anything that changes it).
 pub(crate) fn invalidate(ctx: &mut Ctx, path: &Path) {
-    ctx.ext.stat_cache.remove(path);
+    if ctx.ext.stat_cache.as_ref().is_some_and(|(cached, _)| cached == path) {
+        ctx.ext.stat_cache = None;
+    }
 }
 
 /// The argument as a path, resolved against the interpreter's cwd so a
@@ -254,7 +265,7 @@ fn clearstatcache(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             let p = arg_path(ctx, v);
             invalidate(ctx, &p);
         }
-        _ => ctx.ext.stat_cache.clear(),
+        _ => ctx.ext.stat_cache = None,
     }
     if args.first().is_some_and(|v| v.to_bool()) {
         rphp_runtime::clear_realpath_cache();

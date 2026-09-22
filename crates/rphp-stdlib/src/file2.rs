@@ -124,16 +124,9 @@ fn shown(v: &Value) -> String {
     String::from_utf8_lossy(&v.to_php_bytes()).into_owned()
 }
 
-/// Look `path` up through php's per-request stat cache. `filestat.rs` keeps
-/// the same helper private, so this is the one duplicated body in the module;
-/// both read and write `ExtState::stat_cache`, so the two views never drift.
+/// Look `path` up through php's one-entry stat cache (`filestat.rs`).
 fn cached_stat(ctx: &mut Ctx, path: &Path) -> Option<fs::Metadata> {
-    if let Some(hit) = ctx.ext.stat_cache.get(path) {
-        return hit.clone();
-    }
-    let md = fs::metadata(path).ok();
-    ctx.ext.stat_cache.insert(path.to_path_buf(), md.clone());
-    md
+    crate::filestat::cached_stat(ctx, path)
 }
 
 // ---- stat ------------------------------------------------------------------

@@ -499,12 +499,7 @@ pub(crate) fn as_path(ctx: &Ctx, name: &[u8]) -> PathBuf {
 /// `file_put_contents()` are visible here too.
 pub(crate) fn stat(ctx: &mut Ctx, name: &[u8]) -> Option<fs::Metadata> {
     let p = as_path(ctx, name);
-    if let Some(hit) = ctx.ext.stat_cache.get(&p) {
-        return hit.clone();
-    }
-    let md = fs::metadata(&p).ok();
-    ctx.ext.stat_cache.insert(p, md.clone());
-    md
+    crate::filestat::cached_stat(ctx, &p)
 }
 
 /// An `lstat(2)`, which does *not* go through the cache: the cache holds

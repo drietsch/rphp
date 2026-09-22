@@ -18,6 +18,7 @@ members = [
     "crates/rphp-sapi-fcgi",
     "crates/rphp-ext-pdo",
     "crates/rphp-ext-dom",
+    "crates/rphp-ext-intl",
     "crates/rphp-ext-api",
     "crates/rphp-test",
     "crates/rphp-tokenizer",
@@ -56,6 +57,7 @@ rphp-sapi-server = { path = "crates/rphp-sapi-server" }
 rphp-sapi-fcgi = { path = "crates/rphp-sapi-fcgi" }
 rphp-ext-pdo = { path = "crates/rphp-ext-pdo" }
 rphp-ext-dom = { path = "crates/rphp-ext-dom" }
+rphp-ext-intl = { path = "crates/rphp-ext-intl" }
 rphp-ext-api = { path = "crates/rphp-ext-api" }
 rphp-test = { path = "crates/rphp-test" }
 rphp-tokenizer = { path = "crates/rphp-tokenizer" }
@@ -110,6 +112,20 @@ pwhash = "1"
 rusqlite = { version = "0.40", features = ["bundled", "functions", "collation", "column_decltype", "column_metadata", "load_extension"] }
 argon2 = "0.5"
 password-hash = "0.5"
+# intl (ADR-037): ICU4X with its data compiled in — the collator, normalizer,
+# segmenter, decimal/datetime/list/plural formatters, locale canonicalization,
+# character properties and the CLDR transliteration rules php's ext/intl
+# answers for through ICU. `icu_experimental` carries the display names,
+# currency data and transliterator; `idna` the UTS #46 processing behind
+# `idn_to_ascii()`; `unicode_names2` the character names `IntlChar` lists.
+icu = { version = "2.3", features = ["compiled_data", "unstable"] }
+icu_experimental = { version = "0.6", features = ["compiled_data"] }
+icu_provider = "2.3"
+tinystr = "0.8"
+fixed_decimal = "0.7"
+writeable = "0.6"
+idna = "1.1"
+unicode_names2 = "2"
 
 # Dependencies are compiled with optimization even in a dev build: the crypto
 # and regex crates are the slow part of the test suite, and an unoptimized

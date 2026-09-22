@@ -337,6 +337,7 @@ impl Engine {
         rphp_stdlib::register(&mut Registry(&mut it));
         rphp_ext_pdo::register(&mut Registry(&mut it));
         rphp_ext_dom::register(&mut Registry(&mut it));
+        rphp_ext_intl::register(&mut Registry(&mut it));
         // `Generator` is the engine's own class but implements the stdlib's
         // `Iterator`, so it is registered after the extensions (E8).
         rphp_runtime::register_generator_class(&mut Registry(&mut it));

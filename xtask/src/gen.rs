@@ -759,13 +759,7 @@ fn gen_arginfo(
     let mut functions = Vec::new();
     for f in &ext.functions {
         let id = idents.claim(ident(&f.sig.name), &f.sig.name)?;
-        emit_fn_sig(
-            &mut out,
-            &id,
-            &f.sig.name.to_ascii_lowercase(),
-            &f.sig.name,
-            &f.sig,
-        )?;
+        emit_fn_sig(&mut out, &id, &f.sig.name, &f.sig.name, &f.sig)?;
         functions.push(id);
     }
     let mut methods = Vec::new();
@@ -777,12 +771,10 @@ fn gen_arginfo(
                 format!("{}__{}", ident(&c.name), ident(&m.sig.name)),
                 &display,
             )?;
-            let name = format!(
-                "{}::{}",
-                c.name.to_ascii_lowercase(),
-                m.sig.name.to_ascii_lowercase()
-            );
-            emit_fn_sig(&mut out, &id, &name, &display, &m.sig)?;
+            // The name as php declares it (`Locale::composeLocale`): the
+            // registry matches names case-insensitively, and traces print
+            // the declared spelling.
+            emit_fn_sig(&mut out, &id, &display, &display, &m.sig)?;
             method_ids.insert(display, id.clone());
             methods.push(id);
         }
@@ -1486,7 +1478,7 @@ mod tests {
         assert!(classes.contains("MethodSig { sig: &arginfo::EXCEPTION__GETMESSAGE, vis: Vis::Public, is_static: false, is_abstract: false, is_final: true },"));
         assert!(classes.contains("MethodSig { sig: &arginfo::THROWABLE__GETMESSAGE, vis: Vis::Public, is_static: false, is_abstract: true, is_final: false },"));
         let arginfo = &files["arginfo.rs"];
-        assert!(arginfo.contains("pub static EXCEPTION__GETMESSAGE: FnSig = FnSig {\n    name: \"exception::getmessage\",\n"));
+        assert!(arginfo.contains("pub static EXCEPTION__GETMESSAGE: FnSig = FnSig {\n    name: \"Exception::getMessage\",\n"));
         // unevaluated constant-expression defaults keep their stub text
         let standard = generate(&ExtData::collect(&m, "standard"), "manifest/php-8.5.10").unwrap();
         assert!(standard["arginfo.rs"].contains(

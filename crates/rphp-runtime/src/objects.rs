@@ -111,8 +111,9 @@ impl Interp {
                 )))
             }
         };
-        // php refuses to clone an enum case: the cases are singletons.
-        if o.flags().contains(rphp_value::ObjFlags::ENUM_CASE) {
+        // php refuses to clone an enum case (the cases are singletons) and
+        // an instance of a class without a clone handler.
+        if o.flags().contains(rphp_value::ObjFlags::ENUM_CASE) || self.classes[o.class_id() as usize].uncloneable {
             return Err(Unwind::error(format!(
                 "Trying to clone an uncloneable object of class {}",
                 self.class_name_of(&o)

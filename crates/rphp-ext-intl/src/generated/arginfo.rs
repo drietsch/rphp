@@ -2597,7 +2597,7 @@ pub static TRANSLITERATOR_TRANSLITERATE: FnSig = FnSig {
 
 /// `Collator::__construct(string $locale)`
 pub static COLLATOR____CONSTRUCT: FnSig = FnSig {
-    name: "collator::__construct",
+    name: "Collator::__construct",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -2610,7 +2610,7 @@ pub static COLLATOR____CONSTRUCT: FnSig = FnSig {
 
 /// `Collator::create(string $locale): ?Collator`
 pub static COLLATOR__CREATE: FnSig = FnSig {
-    name: "collator::create",
+    name: "Collator::create",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -2623,7 +2623,7 @@ pub static COLLATOR__CREATE: FnSig = FnSig {
 
 /// `Collator::compare(string $string1, string $string2): int|false`
 pub static COLLATOR__COMPARE: FnSig = FnSig {
-    name: "collator::compare",
+    name: "Collator::compare",
     params: &[
         ParamInfo { name: "string1", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "string2", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -2637,7 +2637,7 @@ pub static COLLATOR__COMPARE: FnSig = FnSig {
 
 /// `Collator::sort(array &$array, int $flags = Collator::SORT_REGULAR): bool`
 pub static COLLATOR__SORT: FnSig = FnSig {
-    name: "collator::sort",
+    name: "Collator::sort",
     params: &[
         ParamInfo { name: "array", ty: TypeMask::ARRAY, class: None, by_ref: true, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "flags", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("Collator::SORT_REGULAR")) },
@@ -2651,7 +2651,7 @@ pub static COLLATOR__SORT: FnSig = FnSig {
 
 /// `Collator::sortWithSortKeys(array &$array): bool`
 pub static COLLATOR__SORTWITHSORTKEYS: FnSig = FnSig {
-    name: "collator::sortwithsortkeys",
+    name: "Collator::sortWithSortKeys",
     params: &[
         ParamInfo { name: "array", ty: TypeMask::ARRAY, class: None, by_ref: true, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -2664,7 +2664,7 @@ pub static COLLATOR__SORTWITHSORTKEYS: FnSig = FnSig {
 
 /// `Collator::asort(array &$array, int $flags = Collator::SORT_REGULAR): bool`
 pub static COLLATOR__ASORT: FnSig = FnSig {
-    name: "collator::asort",
+    name: "Collator::asort",
     params: &[
         ParamInfo { name: "array", ty: TypeMask::ARRAY, class: None, by_ref: true, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "flags", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("Collator::SORT_REGULAR")) },
@@ -2678,7 +2678,7 @@ pub static COLLATOR__ASORT: FnSig = FnSig {
 
 /// `Collator::getAttribute(int $attribute): int|false`
 pub static COLLATOR__GETATTRIBUTE: FnSig = FnSig {
-    name: "collator::getattribute",
+    name: "Collator::getAttribute",
     params: &[
         ParamInfo { name: "attribute", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -2691,7 +2691,7 @@ pub static COLLATOR__GETATTRIBUTE: FnSig = FnSig {
 
 /// `Collator::setAttribute(int $attribute, int $value): bool`
 pub static COLLATOR__SETATTRIBUTE: FnSig = FnSig {
-    name: "collator::setattribute",
+    name: "Collator::setAttribute",
     params: &[
         ParamInfo { name: "attribute", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "value", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -2705,7 +2705,7 @@ pub static COLLATOR__SETATTRIBUTE: FnSig = FnSig {
 
 /// `Collator::getStrength(): int`
 pub static COLLATOR__GETSTRENGTH: FnSig = FnSig {
-    name: "collator::getstrength",
+    name: "Collator::getStrength",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -2716,7 +2716,7 @@ pub static COLLATOR__GETSTRENGTH: FnSig = FnSig {
 
 /// `Collator::setStrength(int $strength): true`
 pub static COLLATOR__SETSTRENGTH: FnSig = FnSig {
-    name: "collator::setstrength",
+    name: "Collator::setStrength",
     params: &[
         ParamInfo { name: "strength", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -2729,7 +2729,7 @@ pub static COLLATOR__SETSTRENGTH: FnSig = FnSig {
 
 /// `Collator::getLocale(int $type): string|false`
 pub static COLLATOR__GETLOCALE: FnSig = FnSig {
-    name: "collator::getlocale",
+    name: "Collator::getLocale",
     params: &[
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -2742,7 +2742,7 @@ pub static COLLATOR__GETLOCALE: FnSig = FnSig {
 
 /// `Collator::getErrorCode(): int|false`
 pub static COLLATOR__GETERRORCODE: FnSig = FnSig {
-    name: "collator::geterrorcode",
+    name: "Collator::getErrorCode",
     params: &[],
     required: 0,
     ret: TypeMask::INT.union(TypeMask::FALSE),
@@ -2753,7 +2753,7 @@ pub static COLLATOR__GETERRORCODE: FnSig = FnSig {
 
 /// `Collator::getErrorMessage(): string|false`
 pub static COLLATOR__GETERRORMESSAGE: FnSig = FnSig {
-    name: "collator::geterrormessage",
+    name: "Collator::getErrorMessage",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE),
@@ -2764,7 +2764,7 @@ pub static COLLATOR__GETERRORMESSAGE: FnSig = FnSig {
 
 /// `Collator::getSortKey(string $string): string|false`
 pub static COLLATOR__GETSORTKEY: FnSig = FnSig {
-    name: "collator::getsortkey",
+    name: "Collator::getSortKey",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -2777,7 +2777,7 @@ pub static COLLATOR__GETSORTKEY: FnSig = FnSig {
 
 /// `IntlBreakIterator::createCharacterInstance(?string $locale = null): ?IntlBreakIterator`
 pub static INTLBREAKITERATOR__CREATECHARACTERINSTANCE: FnSig = FnSig {
-    name: "intlbreakiterator::createcharacterinstance",
+    name: "IntlBreakIterator::createCharacterInstance",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -2790,7 +2790,7 @@ pub static INTLBREAKITERATOR__CREATECHARACTERINSTANCE: FnSig = FnSig {
 
 /// `IntlBreakIterator::createCodePointInstance(): IntlCodePointBreakIterator`
 pub static INTLBREAKITERATOR__CREATECODEPOINTINSTANCE: FnSig = FnSig {
-    name: "intlbreakiterator::createcodepointinstance",
+    name: "IntlBreakIterator::createCodePointInstance",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -2801,7 +2801,7 @@ pub static INTLBREAKITERATOR__CREATECODEPOINTINSTANCE: FnSig = FnSig {
 
 /// `IntlBreakIterator::createLineInstance(?string $locale = null): ?IntlBreakIterator`
 pub static INTLBREAKITERATOR__CREATELINEINSTANCE: FnSig = FnSig {
-    name: "intlbreakiterator::createlineinstance",
+    name: "IntlBreakIterator::createLineInstance",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -2814,7 +2814,7 @@ pub static INTLBREAKITERATOR__CREATELINEINSTANCE: FnSig = FnSig {
 
 /// `IntlBreakIterator::createSentenceInstance(?string $locale = null): ?IntlBreakIterator`
 pub static INTLBREAKITERATOR__CREATESENTENCEINSTANCE: FnSig = FnSig {
-    name: "intlbreakiterator::createsentenceinstance",
+    name: "IntlBreakIterator::createSentenceInstance",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -2827,7 +2827,7 @@ pub static INTLBREAKITERATOR__CREATESENTENCEINSTANCE: FnSig = FnSig {
 
 /// `IntlBreakIterator::createTitleInstance(?string $locale = null): ?IntlBreakIterator`
 pub static INTLBREAKITERATOR__CREATETITLEINSTANCE: FnSig = FnSig {
-    name: "intlbreakiterator::createtitleinstance",
+    name: "IntlBreakIterator::createTitleInstance",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -2840,7 +2840,7 @@ pub static INTLBREAKITERATOR__CREATETITLEINSTANCE: FnSig = FnSig {
 
 /// `IntlBreakIterator::createWordInstance(?string $locale = null): ?IntlBreakIterator`
 pub static INTLBREAKITERATOR__CREATEWORDINSTANCE: FnSig = FnSig {
-    name: "intlbreakiterator::createwordinstance",
+    name: "IntlBreakIterator::createWordInstance",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -2853,7 +2853,7 @@ pub static INTLBREAKITERATOR__CREATEWORDINSTANCE: FnSig = FnSig {
 
 /// `IntlBreakIterator::__construct()`
 pub static INTLBREAKITERATOR____CONSTRUCT: FnSig = FnSig {
-    name: "intlbreakiterator::__construct",
+    name: "IntlBreakIterator::__construct",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -2864,7 +2864,7 @@ pub static INTLBREAKITERATOR____CONSTRUCT: FnSig = FnSig {
 
 /// `IntlBreakIterator::current(): int`
 pub static INTLBREAKITERATOR__CURRENT: FnSig = FnSig {
-    name: "intlbreakiterator::current",
+    name: "IntlBreakIterator::current",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -2875,7 +2875,7 @@ pub static INTLBREAKITERATOR__CURRENT: FnSig = FnSig {
 
 /// `IntlBreakIterator::first(): int`
 pub static INTLBREAKITERATOR__FIRST: FnSig = FnSig {
-    name: "intlbreakiterator::first",
+    name: "IntlBreakIterator::first",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -2886,7 +2886,7 @@ pub static INTLBREAKITERATOR__FIRST: FnSig = FnSig {
 
 /// `IntlBreakIterator::following(int $offset): int`
 pub static INTLBREAKITERATOR__FOLLOWING: FnSig = FnSig {
-    name: "intlbreakiterator::following",
+    name: "IntlBreakIterator::following",
     params: &[
         ParamInfo { name: "offset", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -2899,7 +2899,7 @@ pub static INTLBREAKITERATOR__FOLLOWING: FnSig = FnSig {
 
 /// `IntlBreakIterator::getErrorCode(): int`
 pub static INTLBREAKITERATOR__GETERRORCODE: FnSig = FnSig {
-    name: "intlbreakiterator::geterrorcode",
+    name: "IntlBreakIterator::getErrorCode",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -2910,7 +2910,7 @@ pub static INTLBREAKITERATOR__GETERRORCODE: FnSig = FnSig {
 
 /// `IntlBreakIterator::getErrorMessage(): string`
 pub static INTLBREAKITERATOR__GETERRORMESSAGE: FnSig = FnSig {
-    name: "intlbreakiterator::geterrormessage",
+    name: "IntlBreakIterator::getErrorMessage",
     params: &[],
     required: 0,
     ret: TypeMask::STRING,
@@ -2921,7 +2921,7 @@ pub static INTLBREAKITERATOR__GETERRORMESSAGE: FnSig = FnSig {
 
 /// `IntlBreakIterator::getLocale(int $type): string|false`
 pub static INTLBREAKITERATOR__GETLOCALE: FnSig = FnSig {
-    name: "intlbreakiterator::getlocale",
+    name: "IntlBreakIterator::getLocale",
     params: &[
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -2934,7 +2934,7 @@ pub static INTLBREAKITERATOR__GETLOCALE: FnSig = FnSig {
 
 /// `IntlBreakIterator::getPartsIterator(string $type = IntlPartsIterator::KEY_SEQUENTIAL): IntlPartsIterator`
 pub static INTLBREAKITERATOR__GETPARTSITERATOR: FnSig = FnSig {
-    name: "intlbreakiterator::getpartsiterator",
+    name: "IntlBreakIterator::getPartsIterator",
     params: &[
         ParamInfo { name: "type", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("IntlPartsIterator::KEY_SEQUENTIAL")) },
     ],
@@ -2947,7 +2947,7 @@ pub static INTLBREAKITERATOR__GETPARTSITERATOR: FnSig = FnSig {
 
 /// `IntlBreakIterator::getText(): ?string`
 pub static INTLBREAKITERATOR__GETTEXT: FnSig = FnSig {
-    name: "intlbreakiterator::gettext",
+    name: "IntlBreakIterator::getText",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::NULL),
@@ -2958,7 +2958,7 @@ pub static INTLBREAKITERATOR__GETTEXT: FnSig = FnSig {
 
 /// `IntlBreakIterator::isBoundary(int $offset): bool`
 pub static INTLBREAKITERATOR__ISBOUNDARY: FnSig = FnSig {
-    name: "intlbreakiterator::isboundary",
+    name: "IntlBreakIterator::isBoundary",
     params: &[
         ParamInfo { name: "offset", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -2971,7 +2971,7 @@ pub static INTLBREAKITERATOR__ISBOUNDARY: FnSig = FnSig {
 
 /// `IntlBreakIterator::last(): int`
 pub static INTLBREAKITERATOR__LAST: FnSig = FnSig {
-    name: "intlbreakiterator::last",
+    name: "IntlBreakIterator::last",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -2982,7 +2982,7 @@ pub static INTLBREAKITERATOR__LAST: FnSig = FnSig {
 
 /// `IntlBreakIterator::next(?int $offset = null): int`
 pub static INTLBREAKITERATOR__NEXT: FnSig = FnSig {
-    name: "intlbreakiterator::next",
+    name: "IntlBreakIterator::next",
     params: &[
         ParamInfo { name: "offset", ty: TypeMask::INT.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -2995,7 +2995,7 @@ pub static INTLBREAKITERATOR__NEXT: FnSig = FnSig {
 
 /// `IntlBreakIterator::preceding(int $offset): int`
 pub static INTLBREAKITERATOR__PRECEDING: FnSig = FnSig {
-    name: "intlbreakiterator::preceding",
+    name: "IntlBreakIterator::preceding",
     params: &[
         ParamInfo { name: "offset", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3008,7 +3008,7 @@ pub static INTLBREAKITERATOR__PRECEDING: FnSig = FnSig {
 
 /// `IntlBreakIterator::previous(): int`
 pub static INTLBREAKITERATOR__PREVIOUS: FnSig = FnSig {
-    name: "intlbreakiterator::previous",
+    name: "IntlBreakIterator::previous",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -3019,7 +3019,7 @@ pub static INTLBREAKITERATOR__PREVIOUS: FnSig = FnSig {
 
 /// `IntlBreakIterator::setText(string $text): bool`
 pub static INTLBREAKITERATOR__SETTEXT: FnSig = FnSig {
-    name: "intlbreakiterator::settext",
+    name: "IntlBreakIterator::setText",
     params: &[
         ParamInfo { name: "text", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3032,7 +3032,7 @@ pub static INTLBREAKITERATOR__SETTEXT: FnSig = FnSig {
 
 /// `IntlBreakIterator::getIterator(): Iterator`
 pub static INTLBREAKITERATOR__GETITERATOR: FnSig = FnSig {
-    name: "intlbreakiterator::getiterator",
+    name: "IntlBreakIterator::getIterator",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -3043,7 +3043,7 @@ pub static INTLBREAKITERATOR__GETITERATOR: FnSig = FnSig {
 
 /// `IntlCalendar::__construct()`
 pub static INTLCALENDAR____CONSTRUCT: FnSig = FnSig {
-    name: "intlcalendar::__construct",
+    name: "IntlCalendar::__construct",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -3054,7 +3054,7 @@ pub static INTLCALENDAR____CONSTRUCT: FnSig = FnSig {
 
 /// `IntlCalendar::createInstance(IntlTimeZone|DateTimeZone|string|null $timezone = null, ?string $locale = null): ?IntlCalendar`
 pub static INTLCALENDAR__CREATEINSTANCE: FnSig = FnSig {
-    name: "intlcalendar::createinstance",
+    name: "IntlCalendar::createInstance",
     params: &[
         ParamInfo { name: "timezone", ty: TypeMask::STRING.union(TypeMask::NULL), class: Some("IntlTimeZone|DateTimeZone"), by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -3068,7 +3068,7 @@ pub static INTLCALENDAR__CREATEINSTANCE: FnSig = FnSig {
 
 /// `IntlCalendar::equals(IntlCalendar $other): bool`
 pub static INTLCALENDAR__EQUALS: FnSig = FnSig {
-    name: "intlcalendar::equals",
+    name: "IntlCalendar::equals",
     params: &[
         ParamInfo { name: "other", ty: TypeMask::EMPTY, class: Some("IntlCalendar"), by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3081,7 +3081,7 @@ pub static INTLCALENDAR__EQUALS: FnSig = FnSig {
 
 /// `IntlCalendar::fieldDifference(float $timestamp, int $field): int|false`
 pub static INTLCALENDAR__FIELDDIFFERENCE: FnSig = FnSig {
-    name: "intlcalendar::fielddifference",
+    name: "IntlCalendar::fieldDifference",
     params: &[
         ParamInfo { name: "timestamp", ty: TypeMask::FLOAT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "field", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -3095,7 +3095,7 @@ pub static INTLCALENDAR__FIELDDIFFERENCE: FnSig = FnSig {
 
 /// `IntlCalendar::add(int $field, int $value): bool`
 pub static INTLCALENDAR__ADD: FnSig = FnSig {
-    name: "intlcalendar::add",
+    name: "IntlCalendar::add",
     params: &[
         ParamInfo { name: "field", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "value", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -3109,7 +3109,7 @@ pub static INTLCALENDAR__ADD: FnSig = FnSig {
 
 /// `IntlCalendar::after(IntlCalendar $other): bool`
 pub static INTLCALENDAR__AFTER: FnSig = FnSig {
-    name: "intlcalendar::after",
+    name: "IntlCalendar::after",
     params: &[
         ParamInfo { name: "other", ty: TypeMask::EMPTY, class: Some("IntlCalendar"), by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3122,7 +3122,7 @@ pub static INTLCALENDAR__AFTER: FnSig = FnSig {
 
 /// `IntlCalendar::before(IntlCalendar $other): bool`
 pub static INTLCALENDAR__BEFORE: FnSig = FnSig {
-    name: "intlcalendar::before",
+    name: "IntlCalendar::before",
     params: &[
         ParamInfo { name: "other", ty: TypeMask::EMPTY, class: Some("IntlCalendar"), by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3135,7 +3135,7 @@ pub static INTLCALENDAR__BEFORE: FnSig = FnSig {
 
 /// `IntlCalendar::clear(?int $field = null): true`
 pub static INTLCALENDAR__CLEAR: FnSig = FnSig {
-    name: "intlcalendar::clear",
+    name: "IntlCalendar::clear",
     params: &[
         ParamInfo { name: "field", ty: TypeMask::INT.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -3148,7 +3148,7 @@ pub static INTLCALENDAR__CLEAR: FnSig = FnSig {
 
 /// `IntlCalendar::fromDateTime(DateTime|string $datetime, ?string $locale = null): ?IntlCalendar`
 pub static INTLCALENDAR__FROMDATETIME: FnSig = FnSig {
-    name: "intlcalendar::fromdatetime",
+    name: "IntlCalendar::fromDateTime",
     params: &[
         ParamInfo { name: "datetime", ty: TypeMask::STRING, class: Some("DateTime"), by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -3162,7 +3162,7 @@ pub static INTLCALENDAR__FROMDATETIME: FnSig = FnSig {
 
 /// `IntlCalendar::get(int $field): int|false`
 pub static INTLCALENDAR__GET: FnSig = FnSig {
-    name: "intlcalendar::get",
+    name: "IntlCalendar::get",
     params: &[
         ParamInfo { name: "field", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3175,7 +3175,7 @@ pub static INTLCALENDAR__GET: FnSig = FnSig {
 
 /// `IntlCalendar::getActualMaximum(int $field): int|false`
 pub static INTLCALENDAR__GETACTUALMAXIMUM: FnSig = FnSig {
-    name: "intlcalendar::getactualmaximum",
+    name: "IntlCalendar::getActualMaximum",
     params: &[
         ParamInfo { name: "field", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3188,7 +3188,7 @@ pub static INTLCALENDAR__GETACTUALMAXIMUM: FnSig = FnSig {
 
 /// `IntlCalendar::getActualMinimum(int $field): int|false`
 pub static INTLCALENDAR__GETACTUALMINIMUM: FnSig = FnSig {
-    name: "intlcalendar::getactualminimum",
+    name: "IntlCalendar::getActualMinimum",
     params: &[
         ParamInfo { name: "field", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3201,7 +3201,7 @@ pub static INTLCALENDAR__GETACTUALMINIMUM: FnSig = FnSig {
 
 /// `IntlCalendar::getAvailableLocales(): array`
 pub static INTLCALENDAR__GETAVAILABLELOCALES: FnSig = FnSig {
-    name: "intlcalendar::getavailablelocales",
+    name: "IntlCalendar::getAvailableLocales",
     params: &[],
     required: 0,
     ret: TypeMask::ARRAY,
@@ -3212,7 +3212,7 @@ pub static INTLCALENDAR__GETAVAILABLELOCALES: FnSig = FnSig {
 
 /// `IntlCalendar::getDayOfWeekType(int $dayOfWeek): int|false`
 pub static INTLCALENDAR__GETDAYOFWEEKTYPE: FnSig = FnSig {
-    name: "intlcalendar::getdayofweektype",
+    name: "IntlCalendar::getDayOfWeekType",
     params: &[
         ParamInfo { name: "dayOfWeek", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3225,7 +3225,7 @@ pub static INTLCALENDAR__GETDAYOFWEEKTYPE: FnSig = FnSig {
 
 /// `IntlCalendar::getErrorCode(): int|false`
 pub static INTLCALENDAR__GETERRORCODE: FnSig = FnSig {
-    name: "intlcalendar::geterrorcode",
+    name: "IntlCalendar::getErrorCode",
     params: &[],
     required: 0,
     ret: TypeMask::INT.union(TypeMask::FALSE),
@@ -3236,7 +3236,7 @@ pub static INTLCALENDAR__GETERRORCODE: FnSig = FnSig {
 
 /// `IntlCalendar::getErrorMessage(): string|false`
 pub static INTLCALENDAR__GETERRORMESSAGE: FnSig = FnSig {
-    name: "intlcalendar::geterrormessage",
+    name: "IntlCalendar::getErrorMessage",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE),
@@ -3247,7 +3247,7 @@ pub static INTLCALENDAR__GETERRORMESSAGE: FnSig = FnSig {
 
 /// `IntlCalendar::getFirstDayOfWeek(): int|false`
 pub static INTLCALENDAR__GETFIRSTDAYOFWEEK: FnSig = FnSig {
-    name: "intlcalendar::getfirstdayofweek",
+    name: "IntlCalendar::getFirstDayOfWeek",
     params: &[],
     required: 0,
     ret: TypeMask::INT.union(TypeMask::FALSE),
@@ -3258,7 +3258,7 @@ pub static INTLCALENDAR__GETFIRSTDAYOFWEEK: FnSig = FnSig {
 
 /// `IntlCalendar::getGreatestMinimum(int $field): int|false`
 pub static INTLCALENDAR__GETGREATESTMINIMUM: FnSig = FnSig {
-    name: "intlcalendar::getgreatestminimum",
+    name: "IntlCalendar::getGreatestMinimum",
     params: &[
         ParamInfo { name: "field", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3271,7 +3271,7 @@ pub static INTLCALENDAR__GETGREATESTMINIMUM: FnSig = FnSig {
 
 /// `IntlCalendar::getKeywordValuesForLocale(string $keyword, string $locale, bool $onlyCommon): IntlIterator|false`
 pub static INTLCALENDAR__GETKEYWORDVALUESFORLOCALE: FnSig = FnSig {
-    name: "intlcalendar::getkeywordvaluesforlocale",
+    name: "IntlCalendar::getKeywordValuesForLocale",
     params: &[
         ParamInfo { name: "keyword", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -3286,7 +3286,7 @@ pub static INTLCALENDAR__GETKEYWORDVALUESFORLOCALE: FnSig = FnSig {
 
 /// `IntlCalendar::getLeastMaximum(int $field): int|false`
 pub static INTLCALENDAR__GETLEASTMAXIMUM: FnSig = FnSig {
-    name: "intlcalendar::getleastmaximum",
+    name: "IntlCalendar::getLeastMaximum",
     params: &[
         ParamInfo { name: "field", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3299,7 +3299,7 @@ pub static INTLCALENDAR__GETLEASTMAXIMUM: FnSig = FnSig {
 
 /// `IntlCalendar::getLocale(int $type): string|false`
 pub static INTLCALENDAR__GETLOCALE: FnSig = FnSig {
-    name: "intlcalendar::getlocale",
+    name: "IntlCalendar::getLocale",
     params: &[
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3312,7 +3312,7 @@ pub static INTLCALENDAR__GETLOCALE: FnSig = FnSig {
 
 /// `IntlCalendar::getMaximum(int $field): int|false`
 pub static INTLCALENDAR__GETMAXIMUM: FnSig = FnSig {
-    name: "intlcalendar::getmaximum",
+    name: "IntlCalendar::getMaximum",
     params: &[
         ParamInfo { name: "field", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3325,7 +3325,7 @@ pub static INTLCALENDAR__GETMAXIMUM: FnSig = FnSig {
 
 /// `IntlCalendar::getMinimalDaysInFirstWeek(): int|false`
 pub static INTLCALENDAR__GETMINIMALDAYSINFIRSTWEEK: FnSig = FnSig {
-    name: "intlcalendar::getminimaldaysinfirstweek",
+    name: "IntlCalendar::getMinimalDaysInFirstWeek",
     params: &[],
     required: 0,
     ret: TypeMask::INT.union(TypeMask::FALSE),
@@ -3336,7 +3336,7 @@ pub static INTLCALENDAR__GETMINIMALDAYSINFIRSTWEEK: FnSig = FnSig {
 
 /// `IntlCalendar::setMinimalDaysInFirstWeek(int $days): true`
 pub static INTLCALENDAR__SETMINIMALDAYSINFIRSTWEEK: FnSig = FnSig {
-    name: "intlcalendar::setminimaldaysinfirstweek",
+    name: "IntlCalendar::setMinimalDaysInFirstWeek",
     params: &[
         ParamInfo { name: "days", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3349,7 +3349,7 @@ pub static INTLCALENDAR__SETMINIMALDAYSINFIRSTWEEK: FnSig = FnSig {
 
 /// `IntlCalendar::getMinimum(int $field): int|false`
 pub static INTLCALENDAR__GETMINIMUM: FnSig = FnSig {
-    name: "intlcalendar::getminimum",
+    name: "IntlCalendar::getMinimum",
     params: &[
         ParamInfo { name: "field", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3362,7 +3362,7 @@ pub static INTLCALENDAR__GETMINIMUM: FnSig = FnSig {
 
 /// `IntlCalendar::getNow(): float`
 pub static INTLCALENDAR__GETNOW: FnSig = FnSig {
-    name: "intlcalendar::getnow",
+    name: "IntlCalendar::getNow",
     params: &[],
     required: 0,
     ret: TypeMask::FLOAT,
@@ -3373,7 +3373,7 @@ pub static INTLCALENDAR__GETNOW: FnSig = FnSig {
 
 /// `IntlCalendar::getRepeatedWallTimeOption(): int`
 pub static INTLCALENDAR__GETREPEATEDWALLTIMEOPTION: FnSig = FnSig {
-    name: "intlcalendar::getrepeatedwalltimeoption",
+    name: "IntlCalendar::getRepeatedWallTimeOption",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -3384,7 +3384,7 @@ pub static INTLCALENDAR__GETREPEATEDWALLTIMEOPTION: FnSig = FnSig {
 
 /// `IntlCalendar::getSkippedWallTimeOption(): int`
 pub static INTLCALENDAR__GETSKIPPEDWALLTIMEOPTION: FnSig = FnSig {
-    name: "intlcalendar::getskippedwalltimeoption",
+    name: "IntlCalendar::getSkippedWallTimeOption",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -3395,7 +3395,7 @@ pub static INTLCALENDAR__GETSKIPPEDWALLTIMEOPTION: FnSig = FnSig {
 
 /// `IntlCalendar::getTime(): float|false`
 pub static INTLCALENDAR__GETTIME: FnSig = FnSig {
-    name: "intlcalendar::gettime",
+    name: "IntlCalendar::getTime",
     params: &[],
     required: 0,
     ret: TypeMask::FLOAT.union(TypeMask::FALSE),
@@ -3406,7 +3406,7 @@ pub static INTLCALENDAR__GETTIME: FnSig = FnSig {
 
 /// `IntlCalendar::getTimeZone(): IntlTimeZone|false`
 pub static INTLCALENDAR__GETTIMEZONE: FnSig = FnSig {
-    name: "intlcalendar::gettimezone",
+    name: "IntlCalendar::getTimeZone",
     params: &[],
     required: 0,
     ret: TypeMask::FALSE,
@@ -3417,7 +3417,7 @@ pub static INTLCALENDAR__GETTIMEZONE: FnSig = FnSig {
 
 /// `IntlCalendar::getType(): string`
 pub static INTLCALENDAR__GETTYPE: FnSig = FnSig {
-    name: "intlcalendar::gettype",
+    name: "IntlCalendar::getType",
     params: &[],
     required: 0,
     ret: TypeMask::STRING,
@@ -3428,7 +3428,7 @@ pub static INTLCALENDAR__GETTYPE: FnSig = FnSig {
 
 /// `IntlCalendar::getWeekendTransition(int $dayOfWeek): int|false`
 pub static INTLCALENDAR__GETWEEKENDTRANSITION: FnSig = FnSig {
-    name: "intlcalendar::getweekendtransition",
+    name: "IntlCalendar::getWeekendTransition",
     params: &[
         ParamInfo { name: "dayOfWeek", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3441,7 +3441,7 @@ pub static INTLCALENDAR__GETWEEKENDTRANSITION: FnSig = FnSig {
 
 /// `IntlCalendar::inDaylightTime(): bool`
 pub static INTLCALENDAR__INDAYLIGHTTIME: FnSig = FnSig {
-    name: "intlcalendar::indaylighttime",
+    name: "IntlCalendar::inDaylightTime",
     params: &[],
     required: 0,
     ret: TypeMask::BOOL,
@@ -3452,7 +3452,7 @@ pub static INTLCALENDAR__INDAYLIGHTTIME: FnSig = FnSig {
 
 /// `IntlCalendar::isEquivalentTo(IntlCalendar $other): bool`
 pub static INTLCALENDAR__ISEQUIVALENTTO: FnSig = FnSig {
-    name: "intlcalendar::isequivalentto",
+    name: "IntlCalendar::isEquivalentTo",
     params: &[
         ParamInfo { name: "other", ty: TypeMask::EMPTY, class: Some("IntlCalendar"), by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3465,7 +3465,7 @@ pub static INTLCALENDAR__ISEQUIVALENTTO: FnSig = FnSig {
 
 /// `IntlCalendar::isLenient(): bool`
 pub static INTLCALENDAR__ISLENIENT: FnSig = FnSig {
-    name: "intlcalendar::islenient",
+    name: "IntlCalendar::isLenient",
     params: &[],
     required: 0,
     ret: TypeMask::BOOL,
@@ -3476,7 +3476,7 @@ pub static INTLCALENDAR__ISLENIENT: FnSig = FnSig {
 
 /// `IntlCalendar::isWeekend(?float $timestamp = null): bool`
 pub static INTLCALENDAR__ISWEEKEND: FnSig = FnSig {
-    name: "intlcalendar::isweekend",
+    name: "IntlCalendar::isWeekend",
     params: &[
         ParamInfo { name: "timestamp", ty: TypeMask::FLOAT.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -3489,7 +3489,7 @@ pub static INTLCALENDAR__ISWEEKEND: FnSig = FnSig {
 
 /// `IntlCalendar::roll(int $field, $value): bool`
 pub static INTLCALENDAR__ROLL: FnSig = FnSig {
-    name: "intlcalendar::roll",
+    name: "IntlCalendar::roll",
     params: &[
         ParamInfo { name: "field", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "value", ty: TypeMask::EMPTY, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -3503,7 +3503,7 @@ pub static INTLCALENDAR__ROLL: FnSig = FnSig {
 
 /// `IntlCalendar::isSet(int $field): bool`
 pub static INTLCALENDAR__ISSET: FnSig = FnSig {
-    name: "intlcalendar::isset",
+    name: "IntlCalendar::isSet",
     params: &[
         ParamInfo { name: "field", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3516,7 +3516,7 @@ pub static INTLCALENDAR__ISSET: FnSig = FnSig {
 
 /// `IntlCalendar::set(int $year, int $month, int $dayOfMonth, int $hour, int $minute, int $second): true`
 pub static INTLCALENDAR__SET: FnSig = FnSig {
-    name: "intlcalendar::set",
+    name: "IntlCalendar::set",
     params: &[
         ParamInfo { name: "year", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "month", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -3534,7 +3534,7 @@ pub static INTLCALENDAR__SET: FnSig = FnSig {
 
 /// `IntlCalendar::setDate(int $year, int $month, int $dayOfMonth): void`
 pub static INTLCALENDAR__SETDATE: FnSig = FnSig {
-    name: "intlcalendar::setdate",
+    name: "IntlCalendar::setDate",
     params: &[
         ParamInfo { name: "year", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "month", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -3549,7 +3549,7 @@ pub static INTLCALENDAR__SETDATE: FnSig = FnSig {
 
 /// `IntlCalendar::setDateTime(int $year, int $month, int $dayOfMonth, int $hour, int $minute, ?int $second = null): void`
 pub static INTLCALENDAR__SETDATETIME: FnSig = FnSig {
-    name: "intlcalendar::setdatetime",
+    name: "IntlCalendar::setDateTime",
     params: &[
         ParamInfo { name: "year", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "month", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -3567,7 +3567,7 @@ pub static INTLCALENDAR__SETDATETIME: FnSig = FnSig {
 
 /// `IntlCalendar::setFirstDayOfWeek(int $dayOfWeek): true`
 pub static INTLCALENDAR__SETFIRSTDAYOFWEEK: FnSig = FnSig {
-    name: "intlcalendar::setfirstdayofweek",
+    name: "IntlCalendar::setFirstDayOfWeek",
     params: &[
         ParamInfo { name: "dayOfWeek", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3580,7 +3580,7 @@ pub static INTLCALENDAR__SETFIRSTDAYOFWEEK: FnSig = FnSig {
 
 /// `IntlCalendar::setLenient(bool $lenient): true`
 pub static INTLCALENDAR__SETLENIENT: FnSig = FnSig {
-    name: "intlcalendar::setlenient",
+    name: "IntlCalendar::setLenient",
     params: &[
         ParamInfo { name: "lenient", ty: TypeMask::BOOL, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3593,7 +3593,7 @@ pub static INTLCALENDAR__SETLENIENT: FnSig = FnSig {
 
 /// `IntlCalendar::setRepeatedWallTimeOption(int $option): true`
 pub static INTLCALENDAR__SETREPEATEDWALLTIMEOPTION: FnSig = FnSig {
-    name: "intlcalendar::setrepeatedwalltimeoption",
+    name: "IntlCalendar::setRepeatedWallTimeOption",
     params: &[
         ParamInfo { name: "option", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3606,7 +3606,7 @@ pub static INTLCALENDAR__SETREPEATEDWALLTIMEOPTION: FnSig = FnSig {
 
 /// `IntlCalendar::setSkippedWallTimeOption(int $option): true`
 pub static INTLCALENDAR__SETSKIPPEDWALLTIMEOPTION: FnSig = FnSig {
-    name: "intlcalendar::setskippedwalltimeoption",
+    name: "IntlCalendar::setSkippedWallTimeOption",
     params: &[
         ParamInfo { name: "option", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3619,7 +3619,7 @@ pub static INTLCALENDAR__SETSKIPPEDWALLTIMEOPTION: FnSig = FnSig {
 
 /// `IntlCalendar::setTime(float $timestamp): bool`
 pub static INTLCALENDAR__SETTIME: FnSig = FnSig {
-    name: "intlcalendar::settime",
+    name: "IntlCalendar::setTime",
     params: &[
         ParamInfo { name: "timestamp", ty: TypeMask::FLOAT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3632,7 +3632,7 @@ pub static INTLCALENDAR__SETTIME: FnSig = FnSig {
 
 /// `IntlCalendar::setTimeZone(IntlTimeZone|DateTimeZone|string|null $timezone): bool`
 pub static INTLCALENDAR__SETTIMEZONE: FnSig = FnSig {
-    name: "intlcalendar::settimezone",
+    name: "IntlCalendar::setTimeZone",
     params: &[
         ParamInfo { name: "timezone", ty: TypeMask::STRING.union(TypeMask::NULL), class: Some("IntlTimeZone|DateTimeZone"), by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -3645,7 +3645,7 @@ pub static INTLCALENDAR__SETTIMEZONE: FnSig = FnSig {
 
 /// `IntlCalendar::toDateTime(): DateTime|false`
 pub static INTLCALENDAR__TODATETIME: FnSig = FnSig {
-    name: "intlcalendar::todatetime",
+    name: "IntlCalendar::toDateTime",
     params: &[],
     required: 0,
     ret: TypeMask::FALSE,
@@ -3656,7 +3656,7 @@ pub static INTLCALENDAR__TODATETIME: FnSig = FnSig {
 
 /// `IntlChar::hasBinaryProperty(string|int $codepoint, int $property): ?bool`
 pub static INTLCHAR__HASBINARYPROPERTY: FnSig = FnSig {
-    name: "intlchar::hasbinaryproperty",
+    name: "IntlChar::hasBinaryProperty",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "property", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -3670,7 +3670,7 @@ pub static INTLCHAR__HASBINARYPROPERTY: FnSig = FnSig {
 
 /// `IntlChar::charAge(string|int $codepoint): ?array`
 pub static INTLCHAR__CHARAGE: FnSig = FnSig {
-    name: "intlchar::charage",
+    name: "IntlChar::charAge",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3683,7 +3683,7 @@ pub static INTLCHAR__CHARAGE: FnSig = FnSig {
 
 /// `IntlChar::charDigitValue(string|int $codepoint): ?int`
 pub static INTLCHAR__CHARDIGITVALUE: FnSig = FnSig {
-    name: "intlchar::chardigitvalue",
+    name: "IntlChar::charDigitValue",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3696,7 +3696,7 @@ pub static INTLCHAR__CHARDIGITVALUE: FnSig = FnSig {
 
 /// `IntlChar::charDirection(string|int $codepoint): ?int`
 pub static INTLCHAR__CHARDIRECTION: FnSig = FnSig {
-    name: "intlchar::chardirection",
+    name: "IntlChar::charDirection",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3709,7 +3709,7 @@ pub static INTLCHAR__CHARDIRECTION: FnSig = FnSig {
 
 /// `IntlChar::charFromName(string $name, int $type = IntlChar::UNICODE_CHAR_NAME): ?int`
 pub static INTLCHAR__CHARFROMNAME: FnSig = FnSig {
-    name: "intlchar::charfromname",
+    name: "IntlChar::charFromName",
     params: &[
         ParamInfo { name: "name", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("IntlChar::UNICODE_CHAR_NAME")) },
@@ -3723,7 +3723,7 @@ pub static INTLCHAR__CHARFROMNAME: FnSig = FnSig {
 
 /// `IntlChar::charMirror(string|int $codepoint): string|int|null`
 pub static INTLCHAR__CHARMIRROR: FnSig = FnSig {
-    name: "intlchar::charmirror",
+    name: "IntlChar::charMirror",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3736,7 +3736,7 @@ pub static INTLCHAR__CHARMIRROR: FnSig = FnSig {
 
 /// `IntlChar::charName(string|int $codepoint, int $type = IntlChar::UNICODE_CHAR_NAME): ?string`
 pub static INTLCHAR__CHARNAME: FnSig = FnSig {
-    name: "intlchar::charname",
+    name: "IntlChar::charName",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("IntlChar::UNICODE_CHAR_NAME")) },
@@ -3750,7 +3750,7 @@ pub static INTLCHAR__CHARNAME: FnSig = FnSig {
 
 /// `IntlChar::charType(string|int $codepoint): ?int`
 pub static INTLCHAR__CHARTYPE: FnSig = FnSig {
-    name: "intlchar::chartype",
+    name: "IntlChar::charType",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3763,7 +3763,7 @@ pub static INTLCHAR__CHARTYPE: FnSig = FnSig {
 
 /// `IntlChar::chr(string|int $codepoint): ?string`
 pub static INTLCHAR__CHR: FnSig = FnSig {
-    name: "intlchar::chr",
+    name: "IntlChar::chr",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3776,7 +3776,7 @@ pub static INTLCHAR__CHR: FnSig = FnSig {
 
 /// `IntlChar::digit(string|int $codepoint, int $base = 10): int|false|null`
 pub static INTLCHAR__DIGIT: FnSig = FnSig {
-    name: "intlchar::digit",
+    name: "IntlChar::digit",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "base", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Int(10)) },
@@ -3790,7 +3790,7 @@ pub static INTLCHAR__DIGIT: FnSig = FnSig {
 
 /// `IntlChar::enumCharNames(string|int $start, string|int $end, callable $callback, int $type = IntlChar::UNICODE_CHAR_NAME): bool`
 pub static INTLCHAR__ENUMCHARNAMES: FnSig = FnSig {
-    name: "intlchar::enumcharnames",
+    name: "IntlChar::enumCharNames",
     params: &[
         ParamInfo { name: "start", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "end", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -3806,7 +3806,7 @@ pub static INTLCHAR__ENUMCHARNAMES: FnSig = FnSig {
 
 /// `IntlChar::enumCharTypes(callable $callback): void`
 pub static INTLCHAR__ENUMCHARTYPES: FnSig = FnSig {
-    name: "intlchar::enumchartypes",
+    name: "IntlChar::enumCharTypes",
     params: &[
         ParamInfo { name: "callback", ty: TypeMask::CALLABLE, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3819,7 +3819,7 @@ pub static INTLCHAR__ENUMCHARTYPES: FnSig = FnSig {
 
 /// `IntlChar::foldCase(string|int $codepoint, int $options = IntlChar::FOLD_CASE_DEFAULT): string|int|null`
 pub static INTLCHAR__FOLDCASE: FnSig = FnSig {
-    name: "intlchar::foldcase",
+    name: "IntlChar::foldCase",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "options", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("IntlChar::FOLD_CASE_DEFAULT")) },
@@ -3833,7 +3833,7 @@ pub static INTLCHAR__FOLDCASE: FnSig = FnSig {
 
 /// `IntlChar::forDigit(int $digit, int $base = 10): int`
 pub static INTLCHAR__FORDIGIT: FnSig = FnSig {
-    name: "intlchar::fordigit",
+    name: "IntlChar::forDigit",
     params: &[
         ParamInfo { name: "digit", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "base", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Int(10)) },
@@ -3847,7 +3847,7 @@ pub static INTLCHAR__FORDIGIT: FnSig = FnSig {
 
 /// `IntlChar::getBidiPairedBracket(string|int $codepoint): string|int|null`
 pub static INTLCHAR__GETBIDIPAIREDBRACKET: FnSig = FnSig {
-    name: "intlchar::getbidipairedbracket",
+    name: "IntlChar::getBidiPairedBracket",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3860,7 +3860,7 @@ pub static INTLCHAR__GETBIDIPAIREDBRACKET: FnSig = FnSig {
 
 /// `IntlChar::getBlockCode(string|int $codepoint): ?int`
 pub static INTLCHAR__GETBLOCKCODE: FnSig = FnSig {
-    name: "intlchar::getblockcode",
+    name: "IntlChar::getBlockCode",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3873,7 +3873,7 @@ pub static INTLCHAR__GETBLOCKCODE: FnSig = FnSig {
 
 /// `IntlChar::getCombiningClass(string|int $codepoint): ?int`
 pub static INTLCHAR__GETCOMBININGCLASS: FnSig = FnSig {
-    name: "intlchar::getcombiningclass",
+    name: "IntlChar::getCombiningClass",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3886,7 +3886,7 @@ pub static INTLCHAR__GETCOMBININGCLASS: FnSig = FnSig {
 
 /// `IntlChar::getFC_NFKC_Closure(string|int $codepoint): string|false|null`
 pub static INTLCHAR__GETFC_NFKC_CLOSURE: FnSig = FnSig {
-    name: "intlchar::getfc_nfkc_closure",
+    name: "IntlChar::getFC_NFKC_Closure",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3899,7 +3899,7 @@ pub static INTLCHAR__GETFC_NFKC_CLOSURE: FnSig = FnSig {
 
 /// `IntlChar::getIntPropertyMaxValue(int $property): int`
 pub static INTLCHAR__GETINTPROPERTYMAXVALUE: FnSig = FnSig {
-    name: "intlchar::getintpropertymaxvalue",
+    name: "IntlChar::getIntPropertyMaxValue",
     params: &[
         ParamInfo { name: "property", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3912,7 +3912,7 @@ pub static INTLCHAR__GETINTPROPERTYMAXVALUE: FnSig = FnSig {
 
 /// `IntlChar::getIntPropertyMinValue(int $property): int`
 pub static INTLCHAR__GETINTPROPERTYMINVALUE: FnSig = FnSig {
-    name: "intlchar::getintpropertyminvalue",
+    name: "IntlChar::getIntPropertyMinValue",
     params: &[
         ParamInfo { name: "property", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3925,7 +3925,7 @@ pub static INTLCHAR__GETINTPROPERTYMINVALUE: FnSig = FnSig {
 
 /// `IntlChar::getIntPropertyValue(string|int $codepoint, int $property): ?int`
 pub static INTLCHAR__GETINTPROPERTYVALUE: FnSig = FnSig {
-    name: "intlchar::getintpropertyvalue",
+    name: "IntlChar::getIntPropertyValue",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "property", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -3939,7 +3939,7 @@ pub static INTLCHAR__GETINTPROPERTYVALUE: FnSig = FnSig {
 
 /// `IntlChar::getNumericValue(string|int $codepoint): ?float`
 pub static INTLCHAR__GETNUMERICVALUE: FnSig = FnSig {
-    name: "intlchar::getnumericvalue",
+    name: "IntlChar::getNumericValue",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3952,7 +3952,7 @@ pub static INTLCHAR__GETNUMERICVALUE: FnSig = FnSig {
 
 /// `IntlChar::getPropertyEnum(string $alias): int`
 pub static INTLCHAR__GETPROPERTYENUM: FnSig = FnSig {
-    name: "intlchar::getpropertyenum",
+    name: "IntlChar::getPropertyEnum",
     params: &[
         ParamInfo { name: "alias", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -3965,7 +3965,7 @@ pub static INTLCHAR__GETPROPERTYENUM: FnSig = FnSig {
 
 /// `IntlChar::getPropertyName(int $property, int $type = IntlChar::LONG_PROPERTY_NAME): string|false`
 pub static INTLCHAR__GETPROPERTYNAME: FnSig = FnSig {
-    name: "intlchar::getpropertyname",
+    name: "IntlChar::getPropertyName",
     params: &[
         ParamInfo { name: "property", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("IntlChar::LONG_PROPERTY_NAME")) },
@@ -3979,7 +3979,7 @@ pub static INTLCHAR__GETPROPERTYNAME: FnSig = FnSig {
 
 /// `IntlChar::getPropertyValueEnum(int $property, string $name): int`
 pub static INTLCHAR__GETPROPERTYVALUEENUM: FnSig = FnSig {
-    name: "intlchar::getpropertyvalueenum",
+    name: "IntlChar::getPropertyValueEnum",
     params: &[
         ParamInfo { name: "property", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "name", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -3993,7 +3993,7 @@ pub static INTLCHAR__GETPROPERTYVALUEENUM: FnSig = FnSig {
 
 /// `IntlChar::getPropertyValueName(int $property, int $value, int $type = IntlChar::LONG_PROPERTY_NAME): string|false`
 pub static INTLCHAR__GETPROPERTYVALUENAME: FnSig = FnSig {
-    name: "intlchar::getpropertyvaluename",
+    name: "IntlChar::getPropertyValueName",
     params: &[
         ParamInfo { name: "property", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "value", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -4008,7 +4008,7 @@ pub static INTLCHAR__GETPROPERTYVALUENAME: FnSig = FnSig {
 
 /// `IntlChar::getUnicodeVersion(): array`
 pub static INTLCHAR__GETUNICODEVERSION: FnSig = FnSig {
-    name: "intlchar::getunicodeversion",
+    name: "IntlChar::getUnicodeVersion",
     params: &[],
     required: 0,
     ret: TypeMask::ARRAY,
@@ -4019,7 +4019,7 @@ pub static INTLCHAR__GETUNICODEVERSION: FnSig = FnSig {
 
 /// `IntlChar::isalnum(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISALNUM: FnSig = FnSig {
-    name: "intlchar::isalnum",
+    name: "IntlChar::isalnum",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4032,7 +4032,7 @@ pub static INTLCHAR__ISALNUM: FnSig = FnSig {
 
 /// `IntlChar::isalpha(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISALPHA: FnSig = FnSig {
-    name: "intlchar::isalpha",
+    name: "IntlChar::isalpha",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4045,7 +4045,7 @@ pub static INTLCHAR__ISALPHA: FnSig = FnSig {
 
 /// `IntlChar::isbase(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISBASE: FnSig = FnSig {
-    name: "intlchar::isbase",
+    name: "IntlChar::isbase",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4058,7 +4058,7 @@ pub static INTLCHAR__ISBASE: FnSig = FnSig {
 
 /// `IntlChar::isblank(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISBLANK: FnSig = FnSig {
-    name: "intlchar::isblank",
+    name: "IntlChar::isblank",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4071,7 +4071,7 @@ pub static INTLCHAR__ISBLANK: FnSig = FnSig {
 
 /// `IntlChar::iscntrl(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISCNTRL: FnSig = FnSig {
-    name: "intlchar::iscntrl",
+    name: "IntlChar::iscntrl",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4084,7 +4084,7 @@ pub static INTLCHAR__ISCNTRL: FnSig = FnSig {
 
 /// `IntlChar::isdefined(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISDEFINED: FnSig = FnSig {
-    name: "intlchar::isdefined",
+    name: "IntlChar::isdefined",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4097,7 +4097,7 @@ pub static INTLCHAR__ISDEFINED: FnSig = FnSig {
 
 /// `IntlChar::isdigit(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISDIGIT: FnSig = FnSig {
-    name: "intlchar::isdigit",
+    name: "IntlChar::isdigit",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4110,7 +4110,7 @@ pub static INTLCHAR__ISDIGIT: FnSig = FnSig {
 
 /// `IntlChar::isgraph(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISGRAPH: FnSig = FnSig {
-    name: "intlchar::isgraph",
+    name: "IntlChar::isgraph",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4123,7 +4123,7 @@ pub static INTLCHAR__ISGRAPH: FnSig = FnSig {
 
 /// `IntlChar::isIDIgnorable(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISIDIGNORABLE: FnSig = FnSig {
-    name: "intlchar::isidignorable",
+    name: "IntlChar::isIDIgnorable",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4136,7 +4136,7 @@ pub static INTLCHAR__ISIDIGNORABLE: FnSig = FnSig {
 
 /// `IntlChar::isIDPart(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISIDPART: FnSig = FnSig {
-    name: "intlchar::isidpart",
+    name: "IntlChar::isIDPart",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4149,7 +4149,7 @@ pub static INTLCHAR__ISIDPART: FnSig = FnSig {
 
 /// `IntlChar::isIDStart(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISIDSTART: FnSig = FnSig {
-    name: "intlchar::isidstart",
+    name: "IntlChar::isIDStart",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4162,7 +4162,7 @@ pub static INTLCHAR__ISIDSTART: FnSig = FnSig {
 
 /// `IntlChar::isISOControl(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISISOCONTROL: FnSig = FnSig {
-    name: "intlchar::isisocontrol",
+    name: "IntlChar::isISOControl",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4175,7 +4175,7 @@ pub static INTLCHAR__ISISOCONTROL: FnSig = FnSig {
 
 /// `IntlChar::isJavaIDPart(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISJAVAIDPART: FnSig = FnSig {
-    name: "intlchar::isjavaidpart",
+    name: "IntlChar::isJavaIDPart",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4188,7 +4188,7 @@ pub static INTLCHAR__ISJAVAIDPART: FnSig = FnSig {
 
 /// `IntlChar::isJavaIDStart(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISJAVAIDSTART: FnSig = FnSig {
-    name: "intlchar::isjavaidstart",
+    name: "IntlChar::isJavaIDStart",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4201,7 +4201,7 @@ pub static INTLCHAR__ISJAVAIDSTART: FnSig = FnSig {
 
 /// `IntlChar::isJavaSpaceChar(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISJAVASPACECHAR: FnSig = FnSig {
-    name: "intlchar::isjavaspacechar",
+    name: "IntlChar::isJavaSpaceChar",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4214,7 +4214,7 @@ pub static INTLCHAR__ISJAVASPACECHAR: FnSig = FnSig {
 
 /// `IntlChar::islower(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISLOWER: FnSig = FnSig {
-    name: "intlchar::islower",
+    name: "IntlChar::islower",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4227,7 +4227,7 @@ pub static INTLCHAR__ISLOWER: FnSig = FnSig {
 
 /// `IntlChar::isMirrored(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISMIRRORED: FnSig = FnSig {
-    name: "intlchar::ismirrored",
+    name: "IntlChar::isMirrored",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4240,7 +4240,7 @@ pub static INTLCHAR__ISMIRRORED: FnSig = FnSig {
 
 /// `IntlChar::isprint(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISPRINT: FnSig = FnSig {
-    name: "intlchar::isprint",
+    name: "IntlChar::isprint",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4253,7 +4253,7 @@ pub static INTLCHAR__ISPRINT: FnSig = FnSig {
 
 /// `IntlChar::ispunct(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISPUNCT: FnSig = FnSig {
-    name: "intlchar::ispunct",
+    name: "IntlChar::ispunct",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4266,7 +4266,7 @@ pub static INTLCHAR__ISPUNCT: FnSig = FnSig {
 
 /// `IntlChar::isspace(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISSPACE: FnSig = FnSig {
-    name: "intlchar::isspace",
+    name: "IntlChar::isspace",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4279,7 +4279,7 @@ pub static INTLCHAR__ISSPACE: FnSig = FnSig {
 
 /// `IntlChar::istitle(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISTITLE: FnSig = FnSig {
-    name: "intlchar::istitle",
+    name: "IntlChar::istitle",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4292,7 +4292,7 @@ pub static INTLCHAR__ISTITLE: FnSig = FnSig {
 
 /// `IntlChar::isUAlphabetic(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISUALPHABETIC: FnSig = FnSig {
-    name: "intlchar::isualphabetic",
+    name: "IntlChar::isUAlphabetic",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4305,7 +4305,7 @@ pub static INTLCHAR__ISUALPHABETIC: FnSig = FnSig {
 
 /// `IntlChar::isULowercase(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISULOWERCASE: FnSig = FnSig {
-    name: "intlchar::isulowercase",
+    name: "IntlChar::isULowercase",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4318,7 +4318,7 @@ pub static INTLCHAR__ISULOWERCASE: FnSig = FnSig {
 
 /// `IntlChar::isupper(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISUPPER: FnSig = FnSig {
-    name: "intlchar::isupper",
+    name: "IntlChar::isupper",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4331,7 +4331,7 @@ pub static INTLCHAR__ISUPPER: FnSig = FnSig {
 
 /// `IntlChar::isUUppercase(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISUUPPERCASE: FnSig = FnSig {
-    name: "intlchar::isuuppercase",
+    name: "IntlChar::isUUppercase",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4344,7 +4344,7 @@ pub static INTLCHAR__ISUUPPERCASE: FnSig = FnSig {
 
 /// `IntlChar::isUWhiteSpace(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISUWHITESPACE: FnSig = FnSig {
-    name: "intlchar::isuwhitespace",
+    name: "IntlChar::isUWhiteSpace",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4357,7 +4357,7 @@ pub static INTLCHAR__ISUWHITESPACE: FnSig = FnSig {
 
 /// `IntlChar::isWhitespace(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISWHITESPACE: FnSig = FnSig {
-    name: "intlchar::iswhitespace",
+    name: "IntlChar::isWhitespace",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4370,7 +4370,7 @@ pub static INTLCHAR__ISWHITESPACE: FnSig = FnSig {
 
 /// `IntlChar::isxdigit(string|int $codepoint): ?bool`
 pub static INTLCHAR__ISXDIGIT: FnSig = FnSig {
-    name: "intlchar::isxdigit",
+    name: "IntlChar::isxdigit",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4383,7 +4383,7 @@ pub static INTLCHAR__ISXDIGIT: FnSig = FnSig {
 
 /// `IntlChar::ord(string|int $character): ?int`
 pub static INTLCHAR__ORD: FnSig = FnSig {
-    name: "intlchar::ord",
+    name: "IntlChar::ord",
     params: &[
         ParamInfo { name: "character", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4396,7 +4396,7 @@ pub static INTLCHAR__ORD: FnSig = FnSig {
 
 /// `IntlChar::tolower(string|int $codepoint): string|int|null`
 pub static INTLCHAR__TOLOWER: FnSig = FnSig {
-    name: "intlchar::tolower",
+    name: "IntlChar::tolower",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4409,7 +4409,7 @@ pub static INTLCHAR__TOLOWER: FnSig = FnSig {
 
 /// `IntlChar::totitle(string|int $codepoint): string|int|null`
 pub static INTLCHAR__TOTITLE: FnSig = FnSig {
-    name: "intlchar::totitle",
+    name: "IntlChar::totitle",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4422,7 +4422,7 @@ pub static INTLCHAR__TOTITLE: FnSig = FnSig {
 
 /// `IntlChar::toupper(string|int $codepoint): string|int|null`
 pub static INTLCHAR__TOUPPER: FnSig = FnSig {
-    name: "intlchar::toupper",
+    name: "IntlChar::toupper",
     params: &[
         ParamInfo { name: "codepoint", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4435,7 +4435,7 @@ pub static INTLCHAR__TOUPPER: FnSig = FnSig {
 
 /// `IntlCodePointBreakIterator::getLastCodePoint(): int`
 pub static INTLCODEPOINTBREAKITERATOR__GETLASTCODEPOINT: FnSig = FnSig {
-    name: "intlcodepointbreakiterator::getlastcodepoint",
+    name: "IntlCodePointBreakIterator::getLastCodePoint",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -4446,7 +4446,7 @@ pub static INTLCODEPOINTBREAKITERATOR__GETLASTCODEPOINT: FnSig = FnSig {
 
 /// `IntlDateFormatter::__construct(?string $locale, int $dateType = IntlDateFormatter::FULL, int $timeType = IntlDateFormatter::FULL, IntlTimeZone|DateTimeZone|string|null $timezone = null, $calendar = null, ?string $pattern = null)`
 pub static INTLDATEFORMATTER____CONSTRUCT: FnSig = FnSig {
-    name: "intldateformatter::__construct",
+    name: "IntlDateFormatter::__construct",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
         ParamInfo { name: "dateType", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("IntlDateFormatter::FULL")) },
@@ -4464,7 +4464,7 @@ pub static INTLDATEFORMATTER____CONSTRUCT: FnSig = FnSig {
 
 /// `IntlDateFormatter::create(?string $locale, int $dateType = IntlDateFormatter::FULL, int $timeType = IntlDateFormatter::FULL, IntlTimeZone|DateTimeZone|string|null $timezone = null, IntlCalendar|int|null $calendar = null, ?string $pattern = null): ?IntlDateFormatter`
 pub static INTLDATEFORMATTER__CREATE: FnSig = FnSig {
-    name: "intldateformatter::create",
+    name: "IntlDateFormatter::create",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
         ParamInfo { name: "dateType", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("IntlDateFormatter::FULL")) },
@@ -4482,7 +4482,7 @@ pub static INTLDATEFORMATTER__CREATE: FnSig = FnSig {
 
 /// `IntlDateFormatter::getDateType(): int|false`
 pub static INTLDATEFORMATTER__GETDATETYPE: FnSig = FnSig {
-    name: "intldateformatter::getdatetype",
+    name: "IntlDateFormatter::getDateType",
     params: &[],
     required: 0,
     ret: TypeMask::INT.union(TypeMask::FALSE),
@@ -4493,7 +4493,7 @@ pub static INTLDATEFORMATTER__GETDATETYPE: FnSig = FnSig {
 
 /// `IntlDateFormatter::getTimeType(): int|false`
 pub static INTLDATEFORMATTER__GETTIMETYPE: FnSig = FnSig {
-    name: "intldateformatter::gettimetype",
+    name: "IntlDateFormatter::getTimeType",
     params: &[],
     required: 0,
     ret: TypeMask::INT.union(TypeMask::FALSE),
@@ -4504,7 +4504,7 @@ pub static INTLDATEFORMATTER__GETTIMETYPE: FnSig = FnSig {
 
 /// `IntlDateFormatter::getCalendar(): int|false`
 pub static INTLDATEFORMATTER__GETCALENDAR: FnSig = FnSig {
-    name: "intldateformatter::getcalendar",
+    name: "IntlDateFormatter::getCalendar",
     params: &[],
     required: 0,
     ret: TypeMask::INT.union(TypeMask::FALSE),
@@ -4515,7 +4515,7 @@ pub static INTLDATEFORMATTER__GETCALENDAR: FnSig = FnSig {
 
 /// `IntlDateFormatter::setCalendar(IntlCalendar|int|null $calendar): bool`
 pub static INTLDATEFORMATTER__SETCALENDAR: FnSig = FnSig {
-    name: "intldateformatter::setcalendar",
+    name: "IntlDateFormatter::setCalendar",
     params: &[
         ParamInfo { name: "calendar", ty: TypeMask::INT.union(TypeMask::NULL), class: Some("IntlCalendar"), by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -4528,7 +4528,7 @@ pub static INTLDATEFORMATTER__SETCALENDAR: FnSig = FnSig {
 
 /// `IntlDateFormatter::getTimeZoneId(): string|false`
 pub static INTLDATEFORMATTER__GETTIMEZONEID: FnSig = FnSig {
-    name: "intldateformatter::gettimezoneid",
+    name: "IntlDateFormatter::getTimeZoneId",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE),
@@ -4539,7 +4539,7 @@ pub static INTLDATEFORMATTER__GETTIMEZONEID: FnSig = FnSig {
 
 /// `IntlDateFormatter::getCalendarObject(): IntlCalendar|false|null`
 pub static INTLDATEFORMATTER__GETCALENDAROBJECT: FnSig = FnSig {
-    name: "intldateformatter::getcalendarobject",
+    name: "IntlDateFormatter::getCalendarObject",
     params: &[],
     required: 0,
     ret: TypeMask::FALSE.union(TypeMask::NULL),
@@ -4550,7 +4550,7 @@ pub static INTLDATEFORMATTER__GETCALENDAROBJECT: FnSig = FnSig {
 
 /// `IntlDateFormatter::getTimeZone(): IntlTimeZone|false`
 pub static INTLDATEFORMATTER__GETTIMEZONE: FnSig = FnSig {
-    name: "intldateformatter::gettimezone",
+    name: "IntlDateFormatter::getTimeZone",
     params: &[],
     required: 0,
     ret: TypeMask::FALSE,
@@ -4561,7 +4561,7 @@ pub static INTLDATEFORMATTER__GETTIMEZONE: FnSig = FnSig {
 
 /// `IntlDateFormatter::setTimeZone(IntlTimeZone|DateTimeZone|string|null $timezone): bool`
 pub static INTLDATEFORMATTER__SETTIMEZONE: FnSig = FnSig {
-    name: "intldateformatter::settimezone",
+    name: "IntlDateFormatter::setTimeZone",
     params: &[
         ParamInfo { name: "timezone", ty: TypeMask::STRING.union(TypeMask::NULL), class: Some("IntlTimeZone|DateTimeZone"), by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -4574,7 +4574,7 @@ pub static INTLDATEFORMATTER__SETTIMEZONE: FnSig = FnSig {
 
 /// `IntlDateFormatter::setPattern(string $pattern): bool`
 pub static INTLDATEFORMATTER__SETPATTERN: FnSig = FnSig {
-    name: "intldateformatter::setpattern",
+    name: "IntlDateFormatter::setPattern",
     params: &[
         ParamInfo { name: "pattern", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4587,7 +4587,7 @@ pub static INTLDATEFORMATTER__SETPATTERN: FnSig = FnSig {
 
 /// `IntlDateFormatter::getPattern(): string|false`
 pub static INTLDATEFORMATTER__GETPATTERN: FnSig = FnSig {
-    name: "intldateformatter::getpattern",
+    name: "IntlDateFormatter::getPattern",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE),
@@ -4598,7 +4598,7 @@ pub static INTLDATEFORMATTER__GETPATTERN: FnSig = FnSig {
 
 /// `IntlDateFormatter::getLocale(int $type = ULOC_ACTUAL_LOCALE): string|false`
 pub static INTLDATEFORMATTER__GETLOCALE: FnSig = FnSig {
-    name: "intldateformatter::getlocale",
+    name: "IntlDateFormatter::getLocale",
     params: &[
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("ULOC_ACTUAL_LOCALE")) },
     ],
@@ -4611,7 +4611,7 @@ pub static INTLDATEFORMATTER__GETLOCALE: FnSig = FnSig {
 
 /// `IntlDateFormatter::setLenient(bool $lenient): void`
 pub static INTLDATEFORMATTER__SETLENIENT: FnSig = FnSig {
-    name: "intldateformatter::setlenient",
+    name: "IntlDateFormatter::setLenient",
     params: &[
         ParamInfo { name: "lenient", ty: TypeMask::BOOL, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4624,7 +4624,7 @@ pub static INTLDATEFORMATTER__SETLENIENT: FnSig = FnSig {
 
 /// `IntlDateFormatter::isLenient(): bool`
 pub static INTLDATEFORMATTER__ISLENIENT: FnSig = FnSig {
-    name: "intldateformatter::islenient",
+    name: "IntlDateFormatter::isLenient",
     params: &[],
     required: 0,
     ret: TypeMask::BOOL,
@@ -4635,7 +4635,7 @@ pub static INTLDATEFORMATTER__ISLENIENT: FnSig = FnSig {
 
 /// `IntlDateFormatter::format($datetime): string|false`
 pub static INTLDATEFORMATTER__FORMAT: FnSig = FnSig {
-    name: "intldateformatter::format",
+    name: "IntlDateFormatter::format",
     params: &[
         ParamInfo { name: "datetime", ty: TypeMask::EMPTY, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -4648,7 +4648,7 @@ pub static INTLDATEFORMATTER__FORMAT: FnSig = FnSig {
 
 /// `IntlDateFormatter::formatObject($datetime, $format = null, ?string $locale = null): string|false`
 pub static INTLDATEFORMATTER__FORMATOBJECT: FnSig = FnSig {
-    name: "intldateformatter::formatobject",
+    name: "IntlDateFormatter::formatObject",
     params: &[
         ParamInfo { name: "datetime", ty: TypeMask::EMPTY, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
         ParamInfo { name: "format", ty: TypeMask::EMPTY, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -4663,7 +4663,7 @@ pub static INTLDATEFORMATTER__FORMATOBJECT: FnSig = FnSig {
 
 /// `IntlDateFormatter::parse(string $string, &$offset = null): int|float|false`
 pub static INTLDATEFORMATTER__PARSE: FnSig = FnSig {
-    name: "intldateformatter::parse",
+    name: "IntlDateFormatter::parse",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "offset", ty: TypeMask::EMPTY, class: None, by_ref: true, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -4677,7 +4677,7 @@ pub static INTLDATEFORMATTER__PARSE: FnSig = FnSig {
 
 /// `IntlDateFormatter::parseToCalendar(string $string, &$offset = null): int|float|false`
 pub static INTLDATEFORMATTER__PARSETOCALENDAR: FnSig = FnSig {
-    name: "intldateformatter::parsetocalendar",
+    name: "IntlDateFormatter::parseToCalendar",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "offset", ty: TypeMask::EMPTY, class: None, by_ref: true, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -4691,7 +4691,7 @@ pub static INTLDATEFORMATTER__PARSETOCALENDAR: FnSig = FnSig {
 
 /// `IntlDateFormatter::localtime(string $string, &$offset = null): array|false`
 pub static INTLDATEFORMATTER__LOCALTIME: FnSig = FnSig {
-    name: "intldateformatter::localtime",
+    name: "IntlDateFormatter::localtime",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "offset", ty: TypeMask::EMPTY, class: None, by_ref: true, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -4705,7 +4705,7 @@ pub static INTLDATEFORMATTER__LOCALTIME: FnSig = FnSig {
 
 /// `IntlDateFormatter::getErrorCode(): int`
 pub static INTLDATEFORMATTER__GETERRORCODE: FnSig = FnSig {
-    name: "intldateformatter::geterrorcode",
+    name: "IntlDateFormatter::getErrorCode",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -4716,7 +4716,7 @@ pub static INTLDATEFORMATTER__GETERRORCODE: FnSig = FnSig {
 
 /// `IntlDateFormatter::getErrorMessage(): string`
 pub static INTLDATEFORMATTER__GETERRORMESSAGE: FnSig = FnSig {
-    name: "intldateformatter::geterrormessage",
+    name: "IntlDateFormatter::getErrorMessage",
     params: &[],
     required: 0,
     ret: TypeMask::STRING,
@@ -4727,7 +4727,7 @@ pub static INTLDATEFORMATTER__GETERRORMESSAGE: FnSig = FnSig {
 
 /// `IntlDatePatternGenerator::__construct(?string $locale = null)`
 pub static INTLDATEPATTERNGENERATOR____CONSTRUCT: FnSig = FnSig {
-    name: "intldatepatterngenerator::__construct",
+    name: "IntlDatePatternGenerator::__construct",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -4740,7 +4740,7 @@ pub static INTLDATEPATTERNGENERATOR____CONSTRUCT: FnSig = FnSig {
 
 /// `IntlDatePatternGenerator::create(?string $locale = null): ?IntlDatePatternGenerator`
 pub static INTLDATEPATTERNGENERATOR__CREATE: FnSig = FnSig {
-    name: "intldatepatterngenerator::create",
+    name: "IntlDatePatternGenerator::create",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -4753,7 +4753,7 @@ pub static INTLDATEPATTERNGENERATOR__CREATE: FnSig = FnSig {
 
 /// `IntlDatePatternGenerator::getBestPattern(string $skeleton): string|false`
 pub static INTLDATEPATTERNGENERATOR__GETBESTPATTERN: FnSig = FnSig {
-    name: "intldatepatterngenerator::getbestpattern",
+    name: "IntlDatePatternGenerator::getBestPattern",
     params: &[
         ParamInfo { name: "skeleton", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4766,7 +4766,7 @@ pub static INTLDATEPATTERNGENERATOR__GETBESTPATTERN: FnSig = FnSig {
 
 /// `IntlGregorianCalendar::createFromDate(int $year, int $month, int $dayOfMonth): static`
 pub static INTLGREGORIANCALENDAR__CREATEFROMDATE: FnSig = FnSig {
-    name: "intlgregoriancalendar::createfromdate",
+    name: "IntlGregorianCalendar::createFromDate",
     params: &[
         ParamInfo { name: "year", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "month", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -4781,7 +4781,7 @@ pub static INTLGREGORIANCALENDAR__CREATEFROMDATE: FnSig = FnSig {
 
 /// `IntlGregorianCalendar::createFromDateTime(int $year, int $month, int $dayOfMonth, int $hour, int $minute, ?int $second = null): static`
 pub static INTLGREGORIANCALENDAR__CREATEFROMDATETIME: FnSig = FnSig {
-    name: "intlgregoriancalendar::createfromdatetime",
+    name: "IntlGregorianCalendar::createFromDateTime",
     params: &[
         ParamInfo { name: "year", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "month", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -4799,7 +4799,7 @@ pub static INTLGREGORIANCALENDAR__CREATEFROMDATETIME: FnSig = FnSig {
 
 /// `IntlGregorianCalendar::__construct($timezoneOrYear, $localeOrMonth, $day, $hour, $minute, $second)`
 pub static INTLGREGORIANCALENDAR____CONSTRUCT: FnSig = FnSig {
-    name: "intlgregoriancalendar::__construct",
+    name: "IntlGregorianCalendar::__construct",
     params: &[
         ParamInfo { name: "timezoneOrYear", ty: TypeMask::EMPTY, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
         ParamInfo { name: "localeOrMonth", ty: TypeMask::EMPTY, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -4817,7 +4817,7 @@ pub static INTLGREGORIANCALENDAR____CONSTRUCT: FnSig = FnSig {
 
 /// `IntlGregorianCalendar::setGregorianChange(float $timestamp): bool`
 pub static INTLGREGORIANCALENDAR__SETGREGORIANCHANGE: FnSig = FnSig {
-    name: "intlgregoriancalendar::setgregorianchange",
+    name: "IntlGregorianCalendar::setGregorianChange",
     params: &[
         ParamInfo { name: "timestamp", ty: TypeMask::FLOAT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4830,7 +4830,7 @@ pub static INTLGREGORIANCALENDAR__SETGREGORIANCHANGE: FnSig = FnSig {
 
 /// `IntlGregorianCalendar::getGregorianChange(): float`
 pub static INTLGREGORIANCALENDAR__GETGREGORIANCHANGE: FnSig = FnSig {
-    name: "intlgregoriancalendar::getgregorianchange",
+    name: "IntlGregorianCalendar::getGregorianChange",
     params: &[],
     required: 0,
     ret: TypeMask::FLOAT,
@@ -4841,7 +4841,7 @@ pub static INTLGREGORIANCALENDAR__GETGREGORIANCHANGE: FnSig = FnSig {
 
 /// `IntlGregorianCalendar::isLeapYear(int $year): bool`
 pub static INTLGREGORIANCALENDAR__ISLEAPYEAR: FnSig = FnSig {
-    name: "intlgregoriancalendar::isleapyear",
+    name: "IntlGregorianCalendar::isLeapYear",
     params: &[
         ParamInfo { name: "year", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4854,7 +4854,7 @@ pub static INTLGREGORIANCALENDAR__ISLEAPYEAR: FnSig = FnSig {
 
 /// `IntlIterator::current(): mixed`
 pub static INTLITERATOR__CURRENT: FnSig = FnSig {
-    name: "intliterator::current",
+    name: "IntlIterator::current",
     params: &[],
     required: 0,
     ret: TypeMask::MIXED,
@@ -4865,7 +4865,7 @@ pub static INTLITERATOR__CURRENT: FnSig = FnSig {
 
 /// `IntlIterator::key(): mixed`
 pub static INTLITERATOR__KEY: FnSig = FnSig {
-    name: "intliterator::key",
+    name: "IntlIterator::key",
     params: &[],
     required: 0,
     ret: TypeMask::MIXED,
@@ -4876,7 +4876,7 @@ pub static INTLITERATOR__KEY: FnSig = FnSig {
 
 /// `IntlIterator::next(): void`
 pub static INTLITERATOR__NEXT: FnSig = FnSig {
-    name: "intliterator::next",
+    name: "IntlIterator::next",
     params: &[],
     required: 0,
     ret: TypeMask::VOID,
@@ -4887,7 +4887,7 @@ pub static INTLITERATOR__NEXT: FnSig = FnSig {
 
 /// `IntlIterator::rewind(): void`
 pub static INTLITERATOR__REWIND: FnSig = FnSig {
-    name: "intliterator::rewind",
+    name: "IntlIterator::rewind",
     params: &[],
     required: 0,
     ret: TypeMask::VOID,
@@ -4898,7 +4898,7 @@ pub static INTLITERATOR__REWIND: FnSig = FnSig {
 
 /// `IntlIterator::valid(): bool`
 pub static INTLITERATOR__VALID: FnSig = FnSig {
-    name: "intliterator::valid",
+    name: "IntlIterator::valid",
     params: &[],
     required: 0,
     ret: TypeMask::BOOL,
@@ -4909,7 +4909,7 @@ pub static INTLITERATOR__VALID: FnSig = FnSig {
 
 /// `IntlListFormatter::__construct(string $locale, int $type = IntlListFormatter::TYPE_AND, int $width = IntlListFormatter::WIDTH_WIDE)`
 pub static INTLLISTFORMATTER____CONSTRUCT: FnSig = FnSig {
-    name: "intllistformatter::__construct",
+    name: "IntlListFormatter::__construct",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("IntlListFormatter::TYPE_AND")) },
@@ -4924,7 +4924,7 @@ pub static INTLLISTFORMATTER____CONSTRUCT: FnSig = FnSig {
 
 /// `IntlListFormatter::format(array $strings): string|false`
 pub static INTLLISTFORMATTER__FORMAT: FnSig = FnSig {
-    name: "intllistformatter::format",
+    name: "IntlListFormatter::format",
     params: &[
         ParamInfo { name: "strings", ty: TypeMask::ARRAY, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -4937,7 +4937,7 @@ pub static INTLLISTFORMATTER__FORMAT: FnSig = FnSig {
 
 /// `IntlListFormatter::getErrorCode(): int`
 pub static INTLLISTFORMATTER__GETERRORCODE: FnSig = FnSig {
-    name: "intllistformatter::geterrorcode",
+    name: "IntlListFormatter::getErrorCode",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -4948,7 +4948,7 @@ pub static INTLLISTFORMATTER__GETERRORCODE: FnSig = FnSig {
 
 /// `IntlListFormatter::getErrorMessage(): string`
 pub static INTLLISTFORMATTER__GETERRORMESSAGE: FnSig = FnSig {
-    name: "intllistformatter::geterrormessage",
+    name: "IntlListFormatter::getErrorMessage",
     params: &[],
     required: 0,
     ret: TypeMask::STRING,
@@ -4959,7 +4959,7 @@ pub static INTLLISTFORMATTER__GETERRORMESSAGE: FnSig = FnSig {
 
 /// `IntlPartsIterator::getBreakIterator(): IntlBreakIterator`
 pub static INTLPARTSITERATOR__GETBREAKITERATOR: FnSig = FnSig {
-    name: "intlpartsiterator::getbreakiterator",
+    name: "IntlPartsIterator::getBreakIterator",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -4970,7 +4970,7 @@ pub static INTLPARTSITERATOR__GETBREAKITERATOR: FnSig = FnSig {
 
 /// `IntlPartsIterator::getRuleStatus(): int`
 pub static INTLPARTSITERATOR__GETRULESTATUS: FnSig = FnSig {
-    name: "intlpartsiterator::getrulestatus",
+    name: "IntlPartsIterator::getRuleStatus",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -4981,7 +4981,7 @@ pub static INTLPARTSITERATOR__GETRULESTATUS: FnSig = FnSig {
 
 /// `IntlRuleBasedBreakIterator::__construct(string $rules, bool $compiled = false)`
 pub static INTLRULEBASEDBREAKITERATOR____CONSTRUCT: FnSig = FnSig {
-    name: "intlrulebasedbreakiterator::__construct",
+    name: "IntlRuleBasedBreakIterator::__construct",
     params: &[
         ParamInfo { name: "rules", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "compiled", ty: TypeMask::BOOL, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Bool(false)) },
@@ -4995,7 +4995,7 @@ pub static INTLRULEBASEDBREAKITERATOR____CONSTRUCT: FnSig = FnSig {
 
 /// `IntlRuleBasedBreakIterator::getBinaryRules(): string|false`
 pub static INTLRULEBASEDBREAKITERATOR__GETBINARYRULES: FnSig = FnSig {
-    name: "intlrulebasedbreakiterator::getbinaryrules",
+    name: "IntlRuleBasedBreakIterator::getBinaryRules",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE),
@@ -5006,7 +5006,7 @@ pub static INTLRULEBASEDBREAKITERATOR__GETBINARYRULES: FnSig = FnSig {
 
 /// `IntlRuleBasedBreakIterator::getRules(): string|false`
 pub static INTLRULEBASEDBREAKITERATOR__GETRULES: FnSig = FnSig {
-    name: "intlrulebasedbreakiterator::getrules",
+    name: "IntlRuleBasedBreakIterator::getRules",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE),
@@ -5017,7 +5017,7 @@ pub static INTLRULEBASEDBREAKITERATOR__GETRULES: FnSig = FnSig {
 
 /// `IntlRuleBasedBreakIterator::getRuleStatus(): int`
 pub static INTLRULEBASEDBREAKITERATOR__GETRULESTATUS: FnSig = FnSig {
-    name: "intlrulebasedbreakiterator::getrulestatus",
+    name: "IntlRuleBasedBreakIterator::getRuleStatus",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -5028,7 +5028,7 @@ pub static INTLRULEBASEDBREAKITERATOR__GETRULESTATUS: FnSig = FnSig {
 
 /// `IntlRuleBasedBreakIterator::getRuleStatusVec(): array|false`
 pub static INTLRULEBASEDBREAKITERATOR__GETRULESTATUSVEC: FnSig = FnSig {
-    name: "intlrulebasedbreakiterator::getrulestatusvec",
+    name: "IntlRuleBasedBreakIterator::getRuleStatusVec",
     params: &[],
     required: 0,
     ret: TypeMask::ARRAY.union(TypeMask::FALSE),
@@ -5039,7 +5039,7 @@ pub static INTLRULEBASEDBREAKITERATOR__GETRULESTATUSVEC: FnSig = FnSig {
 
 /// `IntlTimeZone::__construct()`
 pub static INTLTIMEZONE____CONSTRUCT: FnSig = FnSig {
-    name: "intltimezone::__construct",
+    name: "IntlTimeZone::__construct",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -5050,7 +5050,7 @@ pub static INTLTIMEZONE____CONSTRUCT: FnSig = FnSig {
 
 /// `IntlTimeZone::countEquivalentIDs(string $timezoneId): int|false`
 pub static INTLTIMEZONE__COUNTEQUIVALENTIDS: FnSig = FnSig {
-    name: "intltimezone::countequivalentids",
+    name: "IntlTimeZone::countEquivalentIDs",
     params: &[
         ParamInfo { name: "timezoneId", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5063,7 +5063,7 @@ pub static INTLTIMEZONE__COUNTEQUIVALENTIDS: FnSig = FnSig {
 
 /// `IntlTimeZone::createDefault(): IntlTimeZone`
 pub static INTLTIMEZONE__CREATEDEFAULT: FnSig = FnSig {
-    name: "intltimezone::createdefault",
+    name: "IntlTimeZone::createDefault",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -5074,7 +5074,7 @@ pub static INTLTIMEZONE__CREATEDEFAULT: FnSig = FnSig {
 
 /// `IntlTimeZone::createEnumeration(string|int|null $countryOrRawOffset = null): IntlIterator|false`
 pub static INTLTIMEZONE__CREATEENUMERATION: FnSig = FnSig {
-    name: "intltimezone::createenumeration",
+    name: "IntlTimeZone::createEnumeration",
     params: &[
         ParamInfo { name: "countryOrRawOffset", ty: TypeMask::STRING.union(TypeMask::INT).union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
     ],
@@ -5087,7 +5087,7 @@ pub static INTLTIMEZONE__CREATEENUMERATION: FnSig = FnSig {
 
 /// `IntlTimeZone::createTimeZone(string $timezoneId): ?IntlTimeZone`
 pub static INTLTIMEZONE__CREATETIMEZONE: FnSig = FnSig {
-    name: "intltimezone::createtimezone",
+    name: "IntlTimeZone::createTimeZone",
     params: &[
         ParamInfo { name: "timezoneId", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5100,7 +5100,7 @@ pub static INTLTIMEZONE__CREATETIMEZONE: FnSig = FnSig {
 
 /// `IntlTimeZone::createTimeZoneIDEnumeration(int $type, ?string $region = null, ?int $rawOffset = null): IntlIterator|false`
 pub static INTLTIMEZONE__CREATETIMEZONEIDENUMERATION: FnSig = FnSig {
-    name: "intltimezone::createtimezoneidenumeration",
+    name: "IntlTimeZone::createTimeZoneIDEnumeration",
     params: &[
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "region", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -5115,7 +5115,7 @@ pub static INTLTIMEZONE__CREATETIMEZONEIDENUMERATION: FnSig = FnSig {
 
 /// `IntlTimeZone::fromDateTimeZone(DateTimeZone $timezone): ?IntlTimeZone`
 pub static INTLTIMEZONE__FROMDATETIMEZONE: FnSig = FnSig {
-    name: "intltimezone::fromdatetimezone",
+    name: "IntlTimeZone::fromDateTimeZone",
     params: &[
         ParamInfo { name: "timezone", ty: TypeMask::EMPTY, class: Some("DateTimeZone"), by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5128,7 +5128,7 @@ pub static INTLTIMEZONE__FROMDATETIMEZONE: FnSig = FnSig {
 
 /// `IntlTimeZone::getCanonicalID(string $timezoneId, &$isSystemId = null): string|false`
 pub static INTLTIMEZONE__GETCANONICALID: FnSig = FnSig {
-    name: "intltimezone::getcanonicalid",
+    name: "IntlTimeZone::getCanonicalID",
     params: &[
         ParamInfo { name: "timezoneId", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "isSystemId", ty: TypeMask::EMPTY, class: None, by_ref: true, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -5142,7 +5142,7 @@ pub static INTLTIMEZONE__GETCANONICALID: FnSig = FnSig {
 
 /// `IntlTimeZone::getDisplayName(bool $dst = false, int $style = IntlTimeZone::DISPLAY_LONG, ?string $locale = null): string|false`
 pub static INTLTIMEZONE__GETDISPLAYNAME: FnSig = FnSig {
-    name: "intltimezone::getdisplayname",
+    name: "IntlTimeZone::getDisplayName",
     params: &[
         ParamInfo { name: "dst", ty: TypeMask::BOOL, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Bool(false)) },
         ParamInfo { name: "style", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("IntlTimeZone::DISPLAY_LONG")) },
@@ -5157,7 +5157,7 @@ pub static INTLTIMEZONE__GETDISPLAYNAME: FnSig = FnSig {
 
 /// `IntlTimeZone::getDSTSavings(): int`
 pub static INTLTIMEZONE__GETDSTSAVINGS: FnSig = FnSig {
-    name: "intltimezone::getdstsavings",
+    name: "IntlTimeZone::getDSTSavings",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -5168,7 +5168,7 @@ pub static INTLTIMEZONE__GETDSTSAVINGS: FnSig = FnSig {
 
 /// `IntlTimeZone::getEquivalentID(string $timezoneId, int $offset): string|false`
 pub static INTLTIMEZONE__GETEQUIVALENTID: FnSig = FnSig {
-    name: "intltimezone::getequivalentid",
+    name: "IntlTimeZone::getEquivalentID",
     params: &[
         ParamInfo { name: "timezoneId", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "offset", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5182,7 +5182,7 @@ pub static INTLTIMEZONE__GETEQUIVALENTID: FnSig = FnSig {
 
 /// `IntlTimeZone::getErrorCode(): int|false`
 pub static INTLTIMEZONE__GETERRORCODE: FnSig = FnSig {
-    name: "intltimezone::geterrorcode",
+    name: "IntlTimeZone::getErrorCode",
     params: &[],
     required: 0,
     ret: TypeMask::INT.union(TypeMask::FALSE),
@@ -5193,7 +5193,7 @@ pub static INTLTIMEZONE__GETERRORCODE: FnSig = FnSig {
 
 /// `IntlTimeZone::getErrorMessage(): string|false`
 pub static INTLTIMEZONE__GETERRORMESSAGE: FnSig = FnSig {
-    name: "intltimezone::geterrormessage",
+    name: "IntlTimeZone::getErrorMessage",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE),
@@ -5204,7 +5204,7 @@ pub static INTLTIMEZONE__GETERRORMESSAGE: FnSig = FnSig {
 
 /// `IntlTimeZone::getGMT(): IntlTimeZone`
 pub static INTLTIMEZONE__GETGMT: FnSig = FnSig {
-    name: "intltimezone::getgmt",
+    name: "IntlTimeZone::getGMT",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -5215,7 +5215,7 @@ pub static INTLTIMEZONE__GETGMT: FnSig = FnSig {
 
 /// `IntlTimeZone::getIanaID(string $timezoneId): string|false`
 pub static INTLTIMEZONE__GETIANAID: FnSig = FnSig {
-    name: "intltimezone::getianaid",
+    name: "IntlTimeZone::getIanaID",
     params: &[
         ParamInfo { name: "timezoneId", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5228,7 +5228,7 @@ pub static INTLTIMEZONE__GETIANAID: FnSig = FnSig {
 
 /// `IntlTimeZone::getID(): string|false`
 pub static INTLTIMEZONE__GETID: FnSig = FnSig {
-    name: "intltimezone::getid",
+    name: "IntlTimeZone::getID",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE),
@@ -5239,7 +5239,7 @@ pub static INTLTIMEZONE__GETID: FnSig = FnSig {
 
 /// `IntlTimeZone::getOffset(float $timestamp, bool $local, &$rawOffset, &$dstOffset): bool`
 pub static INTLTIMEZONE__GETOFFSET: FnSig = FnSig {
-    name: "intltimezone::getoffset",
+    name: "IntlTimeZone::getOffset",
     params: &[
         ParamInfo { name: "timestamp", ty: TypeMask::FLOAT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "local", ty: TypeMask::BOOL, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5255,7 +5255,7 @@ pub static INTLTIMEZONE__GETOFFSET: FnSig = FnSig {
 
 /// `IntlTimeZone::getRawOffset(): int`
 pub static INTLTIMEZONE__GETRAWOFFSET: FnSig = FnSig {
-    name: "intltimezone::getrawoffset",
+    name: "IntlTimeZone::getRawOffset",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -5266,7 +5266,7 @@ pub static INTLTIMEZONE__GETRAWOFFSET: FnSig = FnSig {
 
 /// `IntlTimeZone::getRegion(string $timezoneId): string|false`
 pub static INTLTIMEZONE__GETREGION: FnSig = FnSig {
-    name: "intltimezone::getregion",
+    name: "IntlTimeZone::getRegion",
     params: &[
         ParamInfo { name: "timezoneId", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5279,7 +5279,7 @@ pub static INTLTIMEZONE__GETREGION: FnSig = FnSig {
 
 /// `IntlTimeZone::getTZDataVersion(): string|false`
 pub static INTLTIMEZONE__GETTZDATAVERSION: FnSig = FnSig {
-    name: "intltimezone::gettzdataversion",
+    name: "IntlTimeZone::getTZDataVersion",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE),
@@ -5290,7 +5290,7 @@ pub static INTLTIMEZONE__GETTZDATAVERSION: FnSig = FnSig {
 
 /// `IntlTimeZone::getUnknown(): IntlTimeZone`
 pub static INTLTIMEZONE__GETUNKNOWN: FnSig = FnSig {
-    name: "intltimezone::getunknown",
+    name: "IntlTimeZone::getUnknown",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -5301,7 +5301,7 @@ pub static INTLTIMEZONE__GETUNKNOWN: FnSig = FnSig {
 
 /// `IntlTimeZone::getWindowsID(string $timezoneId): string|false`
 pub static INTLTIMEZONE__GETWINDOWSID: FnSig = FnSig {
-    name: "intltimezone::getwindowsid",
+    name: "IntlTimeZone::getWindowsID",
     params: &[
         ParamInfo { name: "timezoneId", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5314,7 +5314,7 @@ pub static INTLTIMEZONE__GETWINDOWSID: FnSig = FnSig {
 
 /// `IntlTimeZone::getIDForWindowsID(string $timezoneId, ?string $region = null): string|false`
 pub static INTLTIMEZONE__GETIDFORWINDOWSID: FnSig = FnSig {
-    name: "intltimezone::getidforwindowsid",
+    name: "IntlTimeZone::getIDForWindowsID",
     params: &[
         ParamInfo { name: "timezoneId", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "region", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -5328,7 +5328,7 @@ pub static INTLTIMEZONE__GETIDFORWINDOWSID: FnSig = FnSig {
 
 /// `IntlTimeZone::hasSameRules(IntlTimeZone $other): bool`
 pub static INTLTIMEZONE__HASSAMERULES: FnSig = FnSig {
-    name: "intltimezone::hassamerules",
+    name: "IntlTimeZone::hasSameRules",
     params: &[
         ParamInfo { name: "other", ty: TypeMask::EMPTY, class: Some("IntlTimeZone"), by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5341,7 +5341,7 @@ pub static INTLTIMEZONE__HASSAMERULES: FnSig = FnSig {
 
 /// `IntlTimeZone::toDateTimeZone(): DateTimeZone|false`
 pub static INTLTIMEZONE__TODATETIMEZONE: FnSig = FnSig {
-    name: "intltimezone::todatetimezone",
+    name: "IntlTimeZone::toDateTimeZone",
     params: &[],
     required: 0,
     ret: TypeMask::FALSE,
@@ -5352,7 +5352,7 @@ pub static INTLTIMEZONE__TODATETIMEZONE: FnSig = FnSig {
 
 /// `IntlTimeZone::useDaylightTime(): bool`
 pub static INTLTIMEZONE__USEDAYLIGHTTIME: FnSig = FnSig {
-    name: "intltimezone::usedaylighttime",
+    name: "IntlTimeZone::useDaylightTime",
     params: &[],
     required: 0,
     ret: TypeMask::BOOL,
@@ -5363,7 +5363,7 @@ pub static INTLTIMEZONE__USEDAYLIGHTTIME: FnSig = FnSig {
 
 /// `Locale::getDefault(): string`
 pub static LOCALE__GETDEFAULT: FnSig = FnSig {
-    name: "locale::getdefault",
+    name: "Locale::getDefault",
     params: &[],
     required: 0,
     ret: TypeMask::STRING,
@@ -5374,7 +5374,7 @@ pub static LOCALE__GETDEFAULT: FnSig = FnSig {
 
 /// `Locale::setDefault(string $locale): true`
 pub static LOCALE__SETDEFAULT: FnSig = FnSig {
-    name: "locale::setdefault",
+    name: "Locale::setDefault",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5387,7 +5387,7 @@ pub static LOCALE__SETDEFAULT: FnSig = FnSig {
 
 /// `Locale::getPrimaryLanguage(string $locale): ?string`
 pub static LOCALE__GETPRIMARYLANGUAGE: FnSig = FnSig {
-    name: "locale::getprimarylanguage",
+    name: "Locale::getPrimaryLanguage",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5400,7 +5400,7 @@ pub static LOCALE__GETPRIMARYLANGUAGE: FnSig = FnSig {
 
 /// `Locale::getScript(string $locale): ?string`
 pub static LOCALE__GETSCRIPT: FnSig = FnSig {
-    name: "locale::getscript",
+    name: "Locale::getScript",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5413,7 +5413,7 @@ pub static LOCALE__GETSCRIPT: FnSig = FnSig {
 
 /// `Locale::getRegion(string $locale): ?string`
 pub static LOCALE__GETREGION: FnSig = FnSig {
-    name: "locale::getregion",
+    name: "Locale::getRegion",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5426,7 +5426,7 @@ pub static LOCALE__GETREGION: FnSig = FnSig {
 
 /// `Locale::getKeywords(string $locale): array|false|null`
 pub static LOCALE__GETKEYWORDS: FnSig = FnSig {
-    name: "locale::getkeywords",
+    name: "Locale::getKeywords",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5439,7 +5439,7 @@ pub static LOCALE__GETKEYWORDS: FnSig = FnSig {
 
 /// `Locale::getDisplayScript(string $locale, ?string $displayLocale = null): string|false`
 pub static LOCALE__GETDISPLAYSCRIPT: FnSig = FnSig {
-    name: "locale::getdisplayscript",
+    name: "Locale::getDisplayScript",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "displayLocale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -5453,7 +5453,7 @@ pub static LOCALE__GETDISPLAYSCRIPT: FnSig = FnSig {
 
 /// `Locale::getDisplayRegion(string $locale, ?string $displayLocale = null): string|false`
 pub static LOCALE__GETDISPLAYREGION: FnSig = FnSig {
-    name: "locale::getdisplayregion",
+    name: "Locale::getDisplayRegion",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "displayLocale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -5467,7 +5467,7 @@ pub static LOCALE__GETDISPLAYREGION: FnSig = FnSig {
 
 /// `Locale::getDisplayName(string $locale, ?string $displayLocale = null): string|false`
 pub static LOCALE__GETDISPLAYNAME: FnSig = FnSig {
-    name: "locale::getdisplayname",
+    name: "Locale::getDisplayName",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "displayLocale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -5481,7 +5481,7 @@ pub static LOCALE__GETDISPLAYNAME: FnSig = FnSig {
 
 /// `Locale::getDisplayLanguage(string $locale, ?string $displayLocale = null): string|false`
 pub static LOCALE__GETDISPLAYLANGUAGE: FnSig = FnSig {
-    name: "locale::getdisplaylanguage",
+    name: "Locale::getDisplayLanguage",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "displayLocale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -5495,7 +5495,7 @@ pub static LOCALE__GETDISPLAYLANGUAGE: FnSig = FnSig {
 
 /// `Locale::getDisplayVariant(string $locale, ?string $displayLocale = null): string|false`
 pub static LOCALE__GETDISPLAYVARIANT: FnSig = FnSig {
-    name: "locale::getdisplayvariant",
+    name: "Locale::getDisplayVariant",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "displayLocale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -5509,7 +5509,7 @@ pub static LOCALE__GETDISPLAYVARIANT: FnSig = FnSig {
 
 /// `Locale::composeLocale(array $subtags): string|false`
 pub static LOCALE__COMPOSELOCALE: FnSig = FnSig {
-    name: "locale::composelocale",
+    name: "Locale::composeLocale",
     params: &[
         ParamInfo { name: "subtags", ty: TypeMask::ARRAY, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5522,7 +5522,7 @@ pub static LOCALE__COMPOSELOCALE: FnSig = FnSig {
 
 /// `Locale::parseLocale(string $locale): ?array`
 pub static LOCALE__PARSELOCALE: FnSig = FnSig {
-    name: "locale::parselocale",
+    name: "Locale::parseLocale",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5535,7 +5535,7 @@ pub static LOCALE__PARSELOCALE: FnSig = FnSig {
 
 /// `Locale::getAllVariants(string $locale): ?array`
 pub static LOCALE__GETALLVARIANTS: FnSig = FnSig {
-    name: "locale::getallvariants",
+    name: "Locale::getAllVariants",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5548,7 +5548,7 @@ pub static LOCALE__GETALLVARIANTS: FnSig = FnSig {
 
 /// `Locale::filterMatches(string $languageTag, string $locale, bool $canonicalize = false): ?bool`
 pub static LOCALE__FILTERMATCHES: FnSig = FnSig {
-    name: "locale::filtermatches",
+    name: "Locale::filterMatches",
     params: &[
         ParamInfo { name: "languageTag", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5563,7 +5563,7 @@ pub static LOCALE__FILTERMATCHES: FnSig = FnSig {
 
 /// `Locale::lookup(array $languageTag, string $locale, bool $canonicalize = false, ?string $defaultLocale = null): ?string`
 pub static LOCALE__LOOKUP: FnSig = FnSig {
-    name: "locale::lookup",
+    name: "Locale::lookup",
     params: &[
         ParamInfo { name: "languageTag", ty: TypeMask::ARRAY, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5579,7 +5579,7 @@ pub static LOCALE__LOOKUP: FnSig = FnSig {
 
 /// `Locale::canonicalize(string $locale): ?string`
 pub static LOCALE__CANONICALIZE: FnSig = FnSig {
-    name: "locale::canonicalize",
+    name: "Locale::canonicalize",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5592,7 +5592,7 @@ pub static LOCALE__CANONICALIZE: FnSig = FnSig {
 
 /// `Locale::acceptFromHttp(string $header): string|false`
 pub static LOCALE__ACCEPTFROMHTTP: FnSig = FnSig {
-    name: "locale::acceptfromhttp",
+    name: "Locale::acceptFromHttp",
     params: &[
         ParamInfo { name: "header", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5605,7 +5605,7 @@ pub static LOCALE__ACCEPTFROMHTTP: FnSig = FnSig {
 
 /// `Locale::isRightToLeft(string $locale): bool`
 pub static LOCALE__ISRIGHTTOLEFT: FnSig = FnSig {
-    name: "locale::isrighttoleft",
+    name: "Locale::isRightToLeft",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5618,7 +5618,7 @@ pub static LOCALE__ISRIGHTTOLEFT: FnSig = FnSig {
 
 /// `Locale::addLikelySubtags(string $locale): string|false`
 pub static LOCALE__ADDLIKELYSUBTAGS: FnSig = FnSig {
-    name: "locale::addlikelysubtags",
+    name: "Locale::addLikelySubtags",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5631,7 +5631,7 @@ pub static LOCALE__ADDLIKELYSUBTAGS: FnSig = FnSig {
 
 /// `Locale::minimizeSubtags(string $locale): string|false`
 pub static LOCALE__MINIMIZESUBTAGS: FnSig = FnSig {
-    name: "locale::minimizesubtags",
+    name: "Locale::minimizeSubtags",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5644,7 +5644,7 @@ pub static LOCALE__MINIMIZESUBTAGS: FnSig = FnSig {
 
 /// `MessageFormatter::__construct(string $locale, string $pattern)`
 pub static MESSAGEFORMATTER____CONSTRUCT: FnSig = FnSig {
-    name: "messageformatter::__construct",
+    name: "MessageFormatter::__construct",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "pattern", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5658,7 +5658,7 @@ pub static MESSAGEFORMATTER____CONSTRUCT: FnSig = FnSig {
 
 /// `MessageFormatter::create(string $locale, string $pattern): ?MessageFormatter`
 pub static MESSAGEFORMATTER__CREATE: FnSig = FnSig {
-    name: "messageformatter::create",
+    name: "MessageFormatter::create",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "pattern", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5672,7 +5672,7 @@ pub static MESSAGEFORMATTER__CREATE: FnSig = FnSig {
 
 /// `MessageFormatter::format(array $values): string|false`
 pub static MESSAGEFORMATTER__FORMAT: FnSig = FnSig {
-    name: "messageformatter::format",
+    name: "MessageFormatter::format",
     params: &[
         ParamInfo { name: "values", ty: TypeMask::ARRAY, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5685,7 +5685,7 @@ pub static MESSAGEFORMATTER__FORMAT: FnSig = FnSig {
 
 /// `MessageFormatter::formatMessage(string $locale, string $pattern, array $values): string|false`
 pub static MESSAGEFORMATTER__FORMATMESSAGE: FnSig = FnSig {
-    name: "messageformatter::formatmessage",
+    name: "MessageFormatter::formatMessage",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "pattern", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5700,7 +5700,7 @@ pub static MESSAGEFORMATTER__FORMATMESSAGE: FnSig = FnSig {
 
 /// `MessageFormatter::parse(string $string): array|false`
 pub static MESSAGEFORMATTER__PARSE: FnSig = FnSig {
-    name: "messageformatter::parse",
+    name: "MessageFormatter::parse",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5713,7 +5713,7 @@ pub static MESSAGEFORMATTER__PARSE: FnSig = FnSig {
 
 /// `MessageFormatter::parseMessage(string $locale, string $pattern, string $message): array|false`
 pub static MESSAGEFORMATTER__PARSEMESSAGE: FnSig = FnSig {
-    name: "messageformatter::parsemessage",
+    name: "MessageFormatter::parseMessage",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "pattern", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5728,7 +5728,7 @@ pub static MESSAGEFORMATTER__PARSEMESSAGE: FnSig = FnSig {
 
 /// `MessageFormatter::setPattern(string $pattern): bool`
 pub static MESSAGEFORMATTER__SETPATTERN: FnSig = FnSig {
-    name: "messageformatter::setpattern",
+    name: "MessageFormatter::setPattern",
     params: &[
         ParamInfo { name: "pattern", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5741,7 +5741,7 @@ pub static MESSAGEFORMATTER__SETPATTERN: FnSig = FnSig {
 
 /// `MessageFormatter::getPattern(): string|false`
 pub static MESSAGEFORMATTER__GETPATTERN: FnSig = FnSig {
-    name: "messageformatter::getpattern",
+    name: "MessageFormatter::getPattern",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE),
@@ -5752,7 +5752,7 @@ pub static MESSAGEFORMATTER__GETPATTERN: FnSig = FnSig {
 
 /// `MessageFormatter::getLocale(): string`
 pub static MESSAGEFORMATTER__GETLOCALE: FnSig = FnSig {
-    name: "messageformatter::getlocale",
+    name: "MessageFormatter::getLocale",
     params: &[],
     required: 0,
     ret: TypeMask::STRING,
@@ -5763,7 +5763,7 @@ pub static MESSAGEFORMATTER__GETLOCALE: FnSig = FnSig {
 
 /// `MessageFormatter::getErrorCode(): int`
 pub static MESSAGEFORMATTER__GETERRORCODE: FnSig = FnSig {
-    name: "messageformatter::geterrorcode",
+    name: "MessageFormatter::getErrorCode",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -5774,7 +5774,7 @@ pub static MESSAGEFORMATTER__GETERRORCODE: FnSig = FnSig {
 
 /// `MessageFormatter::getErrorMessage(): string`
 pub static MESSAGEFORMATTER__GETERRORMESSAGE: FnSig = FnSig {
-    name: "messageformatter::geterrormessage",
+    name: "MessageFormatter::getErrorMessage",
     params: &[],
     required: 0,
     ret: TypeMask::STRING,
@@ -5785,7 +5785,7 @@ pub static MESSAGEFORMATTER__GETERRORMESSAGE: FnSig = FnSig {
 
 /// `Normalizer::normalize(string $string, int $form = Normalizer::FORM_C): string|false`
 pub static NORMALIZER__NORMALIZE: FnSig = FnSig {
-    name: "normalizer::normalize",
+    name: "Normalizer::normalize",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "form", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("Normalizer::FORM_C")) },
@@ -5799,7 +5799,7 @@ pub static NORMALIZER__NORMALIZE: FnSig = FnSig {
 
 /// `Normalizer::isNormalized(string $string, int $form = Normalizer::FORM_C): bool`
 pub static NORMALIZER__ISNORMALIZED: FnSig = FnSig {
-    name: "normalizer::isnormalized",
+    name: "Normalizer::isNormalized",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "form", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("Normalizer::FORM_C")) },
@@ -5813,7 +5813,7 @@ pub static NORMALIZER__ISNORMALIZED: FnSig = FnSig {
 
 /// `Normalizer::getRawDecomposition(string $string, int $form = Normalizer::FORM_C): ?string`
 pub static NORMALIZER__GETRAWDECOMPOSITION: FnSig = FnSig {
-    name: "normalizer::getrawdecomposition",
+    name: "Normalizer::getRawDecomposition",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "form", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("Normalizer::FORM_C")) },
@@ -5827,7 +5827,7 @@ pub static NORMALIZER__GETRAWDECOMPOSITION: FnSig = FnSig {
 
 /// `NumberFormatter::__construct(string $locale, int $style, ?string $pattern = null)`
 pub static NUMBERFORMATTER____CONSTRUCT: FnSig = FnSig {
-    name: "numberformatter::__construct",
+    name: "NumberFormatter::__construct",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "style", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5842,7 +5842,7 @@ pub static NUMBERFORMATTER____CONSTRUCT: FnSig = FnSig {
 
 /// `NumberFormatter::create(string $locale, int $style, ?string $pattern = null): ?NumberFormatter`
 pub static NUMBERFORMATTER__CREATE: FnSig = FnSig {
-    name: "numberformatter::create",
+    name: "NumberFormatter::create",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "style", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5857,7 +5857,7 @@ pub static NUMBERFORMATTER__CREATE: FnSig = FnSig {
 
 /// `NumberFormatter::format(int|float $num, int $type = NumberFormatter::TYPE_DEFAULT): string|false`
 pub static NUMBERFORMATTER__FORMAT: FnSig = FnSig {
-    name: "numberformatter::format",
+    name: "NumberFormatter::format",
     params: &[
         ParamInfo { name: "num", ty: TypeMask::INT.union(TypeMask::FLOAT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("NumberFormatter::TYPE_DEFAULT")) },
@@ -5871,7 +5871,7 @@ pub static NUMBERFORMATTER__FORMAT: FnSig = FnSig {
 
 /// `NumberFormatter::parse(string $string, int $type = NumberFormatter::TYPE_DOUBLE, &$offset = null): int|float|false`
 pub static NUMBERFORMATTER__PARSE: FnSig = FnSig {
-    name: "numberformatter::parse",
+    name: "NumberFormatter::parse",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("NumberFormatter::TYPE_DOUBLE")) },
@@ -5886,7 +5886,7 @@ pub static NUMBERFORMATTER__PARSE: FnSig = FnSig {
 
 /// `NumberFormatter::formatCurrency(float $amount, string $currency): string|false`
 pub static NUMBERFORMATTER__FORMATCURRENCY: FnSig = FnSig {
-    name: "numberformatter::formatcurrency",
+    name: "NumberFormatter::formatCurrency",
     params: &[
         ParamInfo { name: "amount", ty: TypeMask::FLOAT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "currency", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5900,7 +5900,7 @@ pub static NUMBERFORMATTER__FORMATCURRENCY: FnSig = FnSig {
 
 /// `NumberFormatter::parseCurrency(string $string, &$currency, &$offset = null): float|false`
 pub static NUMBERFORMATTER__PARSECURRENCY: FnSig = FnSig {
-    name: "numberformatter::parsecurrency",
+    name: "NumberFormatter::parseCurrency",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "currency", ty: TypeMask::EMPTY, class: None, by_ref: true, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -5915,7 +5915,7 @@ pub static NUMBERFORMATTER__PARSECURRENCY: FnSig = FnSig {
 
 /// `NumberFormatter::setAttribute(int $attribute, int|float $value): bool`
 pub static NUMBERFORMATTER__SETATTRIBUTE: FnSig = FnSig {
-    name: "numberformatter::setattribute",
+    name: "NumberFormatter::setAttribute",
     params: &[
         ParamInfo { name: "attribute", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "value", ty: TypeMask::INT.union(TypeMask::FLOAT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5929,7 +5929,7 @@ pub static NUMBERFORMATTER__SETATTRIBUTE: FnSig = FnSig {
 
 /// `NumberFormatter::getAttribute(int $attribute): int|float|false`
 pub static NUMBERFORMATTER__GETATTRIBUTE: FnSig = FnSig {
-    name: "numberformatter::getattribute",
+    name: "NumberFormatter::getAttribute",
     params: &[
         ParamInfo { name: "attribute", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5942,7 +5942,7 @@ pub static NUMBERFORMATTER__GETATTRIBUTE: FnSig = FnSig {
 
 /// `NumberFormatter::setTextAttribute(int $attribute, string $value): bool`
 pub static NUMBERFORMATTER__SETTEXTATTRIBUTE: FnSig = FnSig {
-    name: "numberformatter::settextattribute",
+    name: "NumberFormatter::setTextAttribute",
     params: &[
         ParamInfo { name: "attribute", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "value", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5956,7 +5956,7 @@ pub static NUMBERFORMATTER__SETTEXTATTRIBUTE: FnSig = FnSig {
 
 /// `NumberFormatter::getTextAttribute(int $attribute): string|false`
 pub static NUMBERFORMATTER__GETTEXTATTRIBUTE: FnSig = FnSig {
-    name: "numberformatter::gettextattribute",
+    name: "NumberFormatter::getTextAttribute",
     params: &[
         ParamInfo { name: "attribute", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5969,7 +5969,7 @@ pub static NUMBERFORMATTER__GETTEXTATTRIBUTE: FnSig = FnSig {
 
 /// `NumberFormatter::setSymbol(int $symbol, string $value): bool`
 pub static NUMBERFORMATTER__SETSYMBOL: FnSig = FnSig {
-    name: "numberformatter::setsymbol",
+    name: "NumberFormatter::setSymbol",
     params: &[
         ParamInfo { name: "symbol", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "value", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -5983,7 +5983,7 @@ pub static NUMBERFORMATTER__SETSYMBOL: FnSig = FnSig {
 
 /// `NumberFormatter::getSymbol(int $symbol): string|false`
 pub static NUMBERFORMATTER__GETSYMBOL: FnSig = FnSig {
-    name: "numberformatter::getsymbol",
+    name: "NumberFormatter::getSymbol",
     params: &[
         ParamInfo { name: "symbol", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -5996,7 +5996,7 @@ pub static NUMBERFORMATTER__GETSYMBOL: FnSig = FnSig {
 
 /// `NumberFormatter::setPattern(string $pattern): bool`
 pub static NUMBERFORMATTER__SETPATTERN: FnSig = FnSig {
-    name: "numberformatter::setpattern",
+    name: "NumberFormatter::setPattern",
     params: &[
         ParamInfo { name: "pattern", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -6009,7 +6009,7 @@ pub static NUMBERFORMATTER__SETPATTERN: FnSig = FnSig {
 
 /// `NumberFormatter::getPattern(): string|false`
 pub static NUMBERFORMATTER__GETPATTERN: FnSig = FnSig {
-    name: "numberformatter::getpattern",
+    name: "NumberFormatter::getPattern",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE),
@@ -6020,7 +6020,7 @@ pub static NUMBERFORMATTER__GETPATTERN: FnSig = FnSig {
 
 /// `NumberFormatter::getLocale(int $type = ULOC_ACTUAL_LOCALE): string|false`
 pub static NUMBERFORMATTER__GETLOCALE: FnSig = FnSig {
-    name: "numberformatter::getlocale",
+    name: "NumberFormatter::getLocale",
     params: &[
         ParamInfo { name: "type", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("ULOC_ACTUAL_LOCALE")) },
     ],
@@ -6033,7 +6033,7 @@ pub static NUMBERFORMATTER__GETLOCALE: FnSig = FnSig {
 
 /// `NumberFormatter::getErrorCode(): int`
 pub static NUMBERFORMATTER__GETERRORCODE: FnSig = FnSig {
-    name: "numberformatter::geterrorcode",
+    name: "NumberFormatter::getErrorCode",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -6044,7 +6044,7 @@ pub static NUMBERFORMATTER__GETERRORCODE: FnSig = FnSig {
 
 /// `NumberFormatter::getErrorMessage(): string`
 pub static NUMBERFORMATTER__GETERRORMESSAGE: FnSig = FnSig {
-    name: "numberformatter::geterrormessage",
+    name: "NumberFormatter::getErrorMessage",
     params: &[],
     required: 0,
     ret: TypeMask::STRING,
@@ -6055,7 +6055,7 @@ pub static NUMBERFORMATTER__GETERRORMESSAGE: FnSig = FnSig {
 
 /// `ResourceBundle::__construct(?string $locale, ?string $bundle, bool $fallback = true)`
 pub static RESOURCEBUNDLE____CONSTRUCT: FnSig = FnSig {
-    name: "resourcebundle::__construct",
+    name: "ResourceBundle::__construct",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
         ParamInfo { name: "bundle", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -6070,7 +6070,7 @@ pub static RESOURCEBUNDLE____CONSTRUCT: FnSig = FnSig {
 
 /// `ResourceBundle::create(?string $locale, ?string $bundle, bool $fallback = true): ?ResourceBundle`
 pub static RESOURCEBUNDLE__CREATE: FnSig = FnSig {
-    name: "resourcebundle::create",
+    name: "ResourceBundle::create",
     params: &[
         ParamInfo { name: "locale", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
         ParamInfo { name: "bundle", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -6085,7 +6085,7 @@ pub static RESOURCEBUNDLE__CREATE: FnSig = FnSig {
 
 /// `ResourceBundle::get(string|int $index, bool $fallback = true): ResourceBundle|array|string|int|null`
 pub static RESOURCEBUNDLE__GET: FnSig = FnSig {
-    name: "resourcebundle::get",
+    name: "ResourceBundle::get",
     params: &[
         ParamInfo { name: "index", ty: TypeMask::STRING.union(TypeMask::INT), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "fallback", ty: TypeMask::BOOL, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Bool(true)) },
@@ -6099,7 +6099,7 @@ pub static RESOURCEBUNDLE__GET: FnSig = FnSig {
 
 /// `ResourceBundle::count(): int`
 pub static RESOURCEBUNDLE__COUNT: FnSig = FnSig {
-    name: "resourcebundle::count",
+    name: "ResourceBundle::count",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -6110,7 +6110,7 @@ pub static RESOURCEBUNDLE__COUNT: FnSig = FnSig {
 
 /// `ResourceBundle::getLocales(string $bundle): array|false`
 pub static RESOURCEBUNDLE__GETLOCALES: FnSig = FnSig {
-    name: "resourcebundle::getlocales",
+    name: "ResourceBundle::getLocales",
     params: &[
         ParamInfo { name: "bundle", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -6123,7 +6123,7 @@ pub static RESOURCEBUNDLE__GETLOCALES: FnSig = FnSig {
 
 /// `ResourceBundle::getErrorCode(): int`
 pub static RESOURCEBUNDLE__GETERRORCODE: FnSig = FnSig {
-    name: "resourcebundle::geterrorcode",
+    name: "ResourceBundle::getErrorCode",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -6134,7 +6134,7 @@ pub static RESOURCEBUNDLE__GETERRORCODE: FnSig = FnSig {
 
 /// `ResourceBundle::getErrorMessage(): string`
 pub static RESOURCEBUNDLE__GETERRORMESSAGE: FnSig = FnSig {
-    name: "resourcebundle::geterrormessage",
+    name: "ResourceBundle::getErrorMessage",
     params: &[],
     required: 0,
     ret: TypeMask::STRING,
@@ -6145,7 +6145,7 @@ pub static RESOURCEBUNDLE__GETERRORMESSAGE: FnSig = FnSig {
 
 /// `ResourceBundle::getIterator(): Iterator`
 pub static RESOURCEBUNDLE__GETITERATOR: FnSig = FnSig {
-    name: "resourcebundle::getiterator",
+    name: "ResourceBundle::getIterator",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -6156,7 +6156,7 @@ pub static RESOURCEBUNDLE__GETITERATOR: FnSig = FnSig {
 
 /// `Spoofchecker::__construct()`
 pub static SPOOFCHECKER____CONSTRUCT: FnSig = FnSig {
-    name: "spoofchecker::__construct",
+    name: "Spoofchecker::__construct",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -6167,7 +6167,7 @@ pub static SPOOFCHECKER____CONSTRUCT: FnSig = FnSig {
 
 /// `Spoofchecker::isSuspicious(string $string, &$errorCode = null): bool`
 pub static SPOOFCHECKER__ISSUSPICIOUS: FnSig = FnSig {
-    name: "spoofchecker::issuspicious",
+    name: "Spoofchecker::isSuspicious",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "errorCode", ty: TypeMask::EMPTY, class: None, by_ref: true, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -6181,7 +6181,7 @@ pub static SPOOFCHECKER__ISSUSPICIOUS: FnSig = FnSig {
 
 /// `Spoofchecker::areConfusable(string $string1, string $string2, &$errorCode = null): bool`
 pub static SPOOFCHECKER__ARECONFUSABLE: FnSig = FnSig {
-    name: "spoofchecker::areconfusable",
+    name: "Spoofchecker::areConfusable",
     params: &[
         ParamInfo { name: "string1", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "string2", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -6196,7 +6196,7 @@ pub static SPOOFCHECKER__ARECONFUSABLE: FnSig = FnSig {
 
 /// `Spoofchecker::setAllowedLocales(string $locales): void`
 pub static SPOOFCHECKER__SETALLOWEDLOCALES: FnSig = FnSig {
-    name: "spoofchecker::setallowedlocales",
+    name: "Spoofchecker::setAllowedLocales",
     params: &[
         ParamInfo { name: "locales", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -6209,7 +6209,7 @@ pub static SPOOFCHECKER__SETALLOWEDLOCALES: FnSig = FnSig {
 
 /// `Spoofchecker::setChecks(int $checks): void`
 pub static SPOOFCHECKER__SETCHECKS: FnSig = FnSig {
-    name: "spoofchecker::setchecks",
+    name: "Spoofchecker::setChecks",
     params: &[
         ParamInfo { name: "checks", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -6222,7 +6222,7 @@ pub static SPOOFCHECKER__SETCHECKS: FnSig = FnSig {
 
 /// `Spoofchecker::setRestrictionLevel(int $level): void`
 pub static SPOOFCHECKER__SETRESTRICTIONLEVEL: FnSig = FnSig {
-    name: "spoofchecker::setrestrictionlevel",
+    name: "Spoofchecker::setRestrictionLevel",
     params: &[
         ParamInfo { name: "level", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -6235,7 +6235,7 @@ pub static SPOOFCHECKER__SETRESTRICTIONLEVEL: FnSig = FnSig {
 
 /// `Spoofchecker::setAllowedChars(string $pattern, int $patternOptions = 0): void`
 pub static SPOOFCHECKER__SETALLOWEDCHARS: FnSig = FnSig {
-    name: "spoofchecker::setallowedchars",
+    name: "Spoofchecker::setAllowedChars",
     params: &[
         ParamInfo { name: "pattern", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "patternOptions", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Int(0)) },
@@ -6249,7 +6249,7 @@ pub static SPOOFCHECKER__SETALLOWEDCHARS: FnSig = FnSig {
 
 /// `Transliterator::__construct()`
 pub static TRANSLITERATOR____CONSTRUCT: FnSig = FnSig {
-    name: "transliterator::__construct",
+    name: "Transliterator::__construct",
     params: &[],
     required: 0,
     ret: TypeMask::EMPTY,
@@ -6260,7 +6260,7 @@ pub static TRANSLITERATOR____CONSTRUCT: FnSig = FnSig {
 
 /// `Transliterator::create(string $id, int $direction = Transliterator::FORWARD): ?Transliterator`
 pub static TRANSLITERATOR__CREATE: FnSig = FnSig {
-    name: "transliterator::create",
+    name: "Transliterator::create",
     params: &[
         ParamInfo { name: "id", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "direction", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("Transliterator::FORWARD")) },
@@ -6274,7 +6274,7 @@ pub static TRANSLITERATOR__CREATE: FnSig = FnSig {
 
 /// `Transliterator::createFromRules(string $rules, int $direction = Transliterator::FORWARD): ?Transliterator`
 pub static TRANSLITERATOR__CREATEFROMRULES: FnSig = FnSig {
-    name: "transliterator::createfromrules",
+    name: "Transliterator::createFromRules",
     params: &[
         ParamInfo { name: "rules", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "direction", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Const("Transliterator::FORWARD")) },
@@ -6288,7 +6288,7 @@ pub static TRANSLITERATOR__CREATEFROMRULES: FnSig = FnSig {
 
 /// `Transliterator::createInverse(): ?Transliterator`
 pub static TRANSLITERATOR__CREATEINVERSE: FnSig = FnSig {
-    name: "transliterator::createinverse",
+    name: "Transliterator::createInverse",
     params: &[],
     required: 0,
     ret: TypeMask::NULL,
@@ -6299,7 +6299,7 @@ pub static TRANSLITERATOR__CREATEINVERSE: FnSig = FnSig {
 
 /// `Transliterator::listIDs(): array|false`
 pub static TRANSLITERATOR__LISTIDS: FnSig = FnSig {
-    name: "transliterator::listids",
+    name: "Transliterator::listIDs",
     params: &[],
     required: 0,
     ret: TypeMask::ARRAY.union(TypeMask::FALSE),
@@ -6310,7 +6310,7 @@ pub static TRANSLITERATOR__LISTIDS: FnSig = FnSig {
 
 /// `Transliterator::transliterate(string $string, int $start = 0, int $end = -1): string|false`
 pub static TRANSLITERATOR__TRANSLITERATE: FnSig = FnSig {
-    name: "transliterator::transliterate",
+    name: "Transliterator::transliterate",
     params: &[
         ParamInfo { name: "string", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "start", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Int(0)) },
@@ -6325,7 +6325,7 @@ pub static TRANSLITERATOR__TRANSLITERATE: FnSig = FnSig {
 
 /// `Transliterator::getErrorCode(): int`
 pub static TRANSLITERATOR__GETERRORCODE: FnSig = FnSig {
-    name: "transliterator::geterrorcode",
+    name: "Transliterator::getErrorCode",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -6336,7 +6336,7 @@ pub static TRANSLITERATOR__GETERRORCODE: FnSig = FnSig {
 
 /// `Transliterator::getErrorMessage(): string`
 pub static TRANSLITERATOR__GETERRORMESSAGE: FnSig = FnSig {
-    name: "transliterator::geterrormessage",
+    name: "Transliterator::getErrorMessage",
     params: &[],
     required: 0,
     ret: TypeMask::STRING,
@@ -6347,7 +6347,7 @@ pub static TRANSLITERATOR__GETERRORMESSAGE: FnSig = FnSig {
 
 /// `UConverter::__construct(?string $destination_encoding = null, ?string $source_encoding = null)`
 pub static UCONVERTER____CONSTRUCT: FnSig = FnSig {
-    name: "uconverter::__construct",
+    name: "UConverter::__construct",
     params: &[
         ParamInfo { name: "destination_encoding", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
         ParamInfo { name: "source_encoding", ty: TypeMask::STRING.union(TypeMask::NULL), class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: true, default: None },
@@ -6361,7 +6361,7 @@ pub static UCONVERTER____CONSTRUCT: FnSig = FnSig {
 
 /// `UConverter::convert(string $str, bool $reverse = false): string|false`
 pub static UCONVERTER__CONVERT: FnSig = FnSig {
-    name: "uconverter::convert",
+    name: "UConverter::convert",
     params: &[
         ParamInfo { name: "str", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "reverse", ty: TypeMask::BOOL, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: Some(DefaultVal::Bool(false)) },
@@ -6375,7 +6375,7 @@ pub static UCONVERTER__CONVERT: FnSig = FnSig {
 
 /// `UConverter::fromUCallback(int $reason, array $source, int $codePoint, &$error): array|string|int|null`
 pub static UCONVERTER__FROMUCALLBACK: FnSig = FnSig {
-    name: "uconverter::fromucallback",
+    name: "UConverter::fromUCallback",
     params: &[
         ParamInfo { name: "reason", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "source", ty: TypeMask::ARRAY, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -6391,7 +6391,7 @@ pub static UCONVERTER__FROMUCALLBACK: FnSig = FnSig {
 
 /// `UConverter::getAliases(string $name): array|false|null`
 pub static UCONVERTER__GETALIASES: FnSig = FnSig {
-    name: "uconverter::getaliases",
+    name: "UConverter::getAliases",
     params: &[
         ParamInfo { name: "name", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -6404,7 +6404,7 @@ pub static UCONVERTER__GETALIASES: FnSig = FnSig {
 
 /// `UConverter::getAvailable(): array`
 pub static UCONVERTER__GETAVAILABLE: FnSig = FnSig {
-    name: "uconverter::getavailable",
+    name: "UConverter::getAvailable",
     params: &[],
     required: 0,
     ret: TypeMask::ARRAY,
@@ -6415,7 +6415,7 @@ pub static UCONVERTER__GETAVAILABLE: FnSig = FnSig {
 
 /// `UConverter::getDestinationEncoding(): string|false|null`
 pub static UCONVERTER__GETDESTINATIONENCODING: FnSig = FnSig {
-    name: "uconverter::getdestinationencoding",
+    name: "UConverter::getDestinationEncoding",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE).union(TypeMask::NULL),
@@ -6426,7 +6426,7 @@ pub static UCONVERTER__GETDESTINATIONENCODING: FnSig = FnSig {
 
 /// `UConverter::getDestinationType(): int|false|null`
 pub static UCONVERTER__GETDESTINATIONTYPE: FnSig = FnSig {
-    name: "uconverter::getdestinationtype",
+    name: "UConverter::getDestinationType",
     params: &[],
     required: 0,
     ret: TypeMask::INT.union(TypeMask::FALSE).union(TypeMask::NULL),
@@ -6437,7 +6437,7 @@ pub static UCONVERTER__GETDESTINATIONTYPE: FnSig = FnSig {
 
 /// `UConverter::getErrorCode(): int`
 pub static UCONVERTER__GETERRORCODE: FnSig = FnSig {
-    name: "uconverter::geterrorcode",
+    name: "UConverter::getErrorCode",
     params: &[],
     required: 0,
     ret: TypeMask::INT,
@@ -6448,7 +6448,7 @@ pub static UCONVERTER__GETERRORCODE: FnSig = FnSig {
 
 /// `UConverter::getErrorMessage(): ?string`
 pub static UCONVERTER__GETERRORMESSAGE: FnSig = FnSig {
-    name: "uconverter::geterrormessage",
+    name: "UConverter::getErrorMessage",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::NULL),
@@ -6459,7 +6459,7 @@ pub static UCONVERTER__GETERRORMESSAGE: FnSig = FnSig {
 
 /// `UConverter::getSourceEncoding(): string|false|null`
 pub static UCONVERTER__GETSOURCEENCODING: FnSig = FnSig {
-    name: "uconverter::getsourceencoding",
+    name: "UConverter::getSourceEncoding",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE).union(TypeMask::NULL),
@@ -6470,7 +6470,7 @@ pub static UCONVERTER__GETSOURCEENCODING: FnSig = FnSig {
 
 /// `UConverter::getSourceType(): int|false|null`
 pub static UCONVERTER__GETSOURCETYPE: FnSig = FnSig {
-    name: "uconverter::getsourcetype",
+    name: "UConverter::getSourceType",
     params: &[],
     required: 0,
     ret: TypeMask::INT.union(TypeMask::FALSE).union(TypeMask::NULL),
@@ -6481,7 +6481,7 @@ pub static UCONVERTER__GETSOURCETYPE: FnSig = FnSig {
 
 /// `UConverter::getStandards(): ?array`
 pub static UCONVERTER__GETSTANDARDS: FnSig = FnSig {
-    name: "uconverter::getstandards",
+    name: "UConverter::getStandards",
     params: &[],
     required: 0,
     ret: TypeMask::ARRAY.union(TypeMask::NULL),
@@ -6492,7 +6492,7 @@ pub static UCONVERTER__GETSTANDARDS: FnSig = FnSig {
 
 /// `UConverter::getSubstChars(): string|false|null`
 pub static UCONVERTER__GETSUBSTCHARS: FnSig = FnSig {
-    name: "uconverter::getsubstchars",
+    name: "UConverter::getSubstChars",
     params: &[],
     required: 0,
     ret: TypeMask::STRING.union(TypeMask::FALSE).union(TypeMask::NULL),
@@ -6503,7 +6503,7 @@ pub static UCONVERTER__GETSUBSTCHARS: FnSig = FnSig {
 
 /// `UConverter::reasonText(int $reason): string`
 pub static UCONVERTER__REASONTEXT: FnSig = FnSig {
-    name: "uconverter::reasontext",
+    name: "UConverter::reasonText",
     params: &[
         ParamInfo { name: "reason", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -6516,7 +6516,7 @@ pub static UCONVERTER__REASONTEXT: FnSig = FnSig {
 
 /// `UConverter::setDestinationEncoding(string $encoding): bool`
 pub static UCONVERTER__SETDESTINATIONENCODING: FnSig = FnSig {
-    name: "uconverter::setdestinationencoding",
+    name: "UConverter::setDestinationEncoding",
     params: &[
         ParamInfo { name: "encoding", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -6529,7 +6529,7 @@ pub static UCONVERTER__SETDESTINATIONENCODING: FnSig = FnSig {
 
 /// `UConverter::setSourceEncoding(string $encoding): bool`
 pub static UCONVERTER__SETSOURCEENCODING: FnSig = FnSig {
-    name: "uconverter::setsourceencoding",
+    name: "UConverter::setSourceEncoding",
     params: &[
         ParamInfo { name: "encoding", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -6542,7 +6542,7 @@ pub static UCONVERTER__SETSOURCEENCODING: FnSig = FnSig {
 
 /// `UConverter::setSubstChars(string $chars): bool`
 pub static UCONVERTER__SETSUBSTCHARS: FnSig = FnSig {
-    name: "uconverter::setsubstchars",
+    name: "UConverter::setSubstChars",
     params: &[
         ParamInfo { name: "chars", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
     ],
@@ -6555,7 +6555,7 @@ pub static UCONVERTER__SETSUBSTCHARS: FnSig = FnSig {
 
 /// `UConverter::toUCallback(int $reason, string $source, string $codeUnits, &$error): array|string|int|null`
 pub static UCONVERTER__TOUCALLBACK: FnSig = FnSig {
-    name: "uconverter::toucallback",
+    name: "UConverter::toUCallback",
     params: &[
         ParamInfo { name: "reason", ty: TypeMask::INT, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "source", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
@@ -6571,7 +6571,7 @@ pub static UCONVERTER__TOUCALLBACK: FnSig = FnSig {
 
 /// `UConverter::transcode(string $str, string $toEncoding, string $fromEncoding, ?array $options = null): string|false`
 pub static UCONVERTER__TRANSCODE: FnSig = FnSig {
-    name: "uconverter::transcode",
+    name: "UConverter::transcode",
     params: &[
         ParamInfo { name: "str", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },
         ParamInfo { name: "toEncoding", ty: TypeMask::STRING, class: None, by_ref: false, prefer_ref: false, variadic: false, nullable: false, default: None },

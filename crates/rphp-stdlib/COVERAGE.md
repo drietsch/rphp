@@ -1210,3 +1210,74 @@ that switches frames is now recorded by the next frame's first op (so
 `DoCall` counts user calls too, and `Ret` appears), one clock reading
 ends an op and starts the next, and `IterNext:<kind>` /
 `IterStep:<kind>` rows split the iteration ops by what they step.
+
+## ext/intl, wave one: the non-date half (2026-09-22)
+
+The oracle is php 8.5.10 with ICU 78.3, so ext/intl is measured like
+everything else: `LC_ALL=C` makes ICU's default locale `en_US_POSIX`,
+and the corpus (`examples/tier-a/intl/`) is byte-identical to php. The
+crate is `rphp-ext-intl`; it registers from the generated descriptor
+tables (`cargo xtask gen --ext intl`) so every class, constant, function
+and method php 8.5.10 exposes is declared; a method without an engine
+throws `Error "X::y() is not implemented by rphp's intl yet"`, and
+`extension_loaded('intl')` stays false for now (Symfony's polyfills key
+on `class_exists`, and turning it on before the date half lands would
+route Symfony's date formatting into the polyfill's `en`-only
+`IntlDateFormatter`).
+
+Where the data comes from: algorithms and names run on ICU4X
+(normalizer, segmenter, collator, properties, case mapping, likely
+subtags, display names, currency plural names), and everything that is
+locale-specific *pattern or symbol* data is dumped from the oracle
+itself by `tools/intl-data/dump-{numfmt,datefmt,currency}.php` into
+`crates/rphp-ext-intl/src/data/` — the six number patterns and 18
+symbols per locale, the currency symbols per locale, the fraction
+digits and cash increments per currency, the 25 date/time style
+patterns per locale. ICU4X's CLDR data differs from ICU 78's in small
+places (a locale whose currency symbol equals its code, HUF's zero
+digits), so the dump wins wherever php's output depends on it.
+
+What is implemented: `Locale` in full (ICU's `uloc` parsing rules,
+BCP 47 both ways, grandfathered tags, `filterMatches`/`lookup`,
+display names); `Normalizer` (NFC/NFD/NFKC/NFKD/NFKC_CF, raw
+decompositions, quick checks); the `grapheme_*` functions; `idn_*`
+(UTS #46 with ICU's error bits); `Collator` (ICU4X sort keys equal
+ICU's once each level's terminator is stripped; attributes, sorts,
+`sortWithSortKeys`); `IntlChar` (every predicate by ICU's definition,
+names, properties, case mapping); `NumberFormatter` for every
+pattern-driven style. The formatter is ICU's `DecimalFormat` rebuilt
+from its parts: the pattern parser (`numfmt/pattern.rs`) is
+`PatternParser::parseToExistingProperties` with the same property bag
+(`-1` for unset), the same "at least one digit" rules, grouping fields,
+rounding increments, `#¤#` currency-as-decimal, padding widths and
+error codes; `toPattern()` is `propertiesToPatternString` (the
+`dosMax` cap, the increment digits, the negative subpattern only when
+it is not the default, `pre'-'` escaping of literal affixes); each
+format resolves the bag the way `NumberPropertyMapper::oldToNew` does
+(currency digits fill unset fraction digits, min overrides max,
+scientific rounding from the raw digit counts, cash increments), rounds
+the shortest decimal form of the double under the eight rounding modes
+(`ROUND_UNNECESSARY` fails with `U_FORMAT_INEXACT_ERROR`), and renders
+with currency spacing (`[[:^S:]&[:^Z:]]` next to a digit), the plural
+name for the digits as displayed (`1.00 US dollars`), padding, custom
+digit strings. Parsing (`numfmt/parse.rs`) is `NumberParserImpl`: the
+affix pairs longest-first, the currency (own symbol, code and long
+names case-folded; every symbol and code of the locale for
+`parseCurrency`, long names too in lenient mode), NaN/∞, padding and
+ignorables, the digits with the strict separator classes and ICU's
+group-size validation (first ≤ secondary, middle = secondary, last =
+primary, or the whole run fails), the lenient one-digit-group back-out,
+the exponent; then the validators (a number; a whole affix pair in
+strict mode; a currency). The compact styles run on ICU4X's
+`CompactDecimalFormatter`, a currency amount in them through
+`format_with_exponent` with the currency's digits.
+
+Known gaps: the rule-based styles (SPELLOUT, ORDINAL, DURATION,
+PATTERN_RULEBASED) fail with `U_UNSUPPORTED_ERROR` — no RBNF engine;
+`parseCurrency` does not know ICU's extra parse aliases (`Rs` for INR
+in `en`, the `¥`/`￥` equivalences); `IntlDateFormatter`,
+`IntlCalendar`, `IntlTimeZone`, `MessageFormatter`, `Transliterator`,
+the break iterators, `IntlListFormatter`, `Spoofchecker`, `UConverter`,
+`ResourceBundle` and `IntlDatePatternGenerator` are declared but not
+implemented yet (the date half is next; the dump for it is already in
+`data/datefmt.rs`).

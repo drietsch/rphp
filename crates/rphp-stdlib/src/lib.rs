@@ -124,6 +124,7 @@ const MODULES: &[&[NativeFn]] = &[
 ];
 
 /// Register every module's functions and constants into an interpreter.
+pub use date::bridge as date_bridge;
 pub use url::{parse_query, register_variable};
 pub use weak::new_internal_iterator;
 

@@ -337,6 +337,18 @@ impl Interp {
         }
     }
 
+    /// php's `get_active_function_or_method_name()`: the running native as
+    /// `func` or `Class::method` (what ext/intl prefixes its messages with).
+    pub fn active_function_name(&self) -> String {
+        let Some(frame) = self.frames.last() else {
+            return String::new();
+        };
+        match self.frame_parts(frame) {
+            (Some(class), _, name) => format!("{class}::{name}"),
+            (None, _, name) => name,
+        }
+    }
+
     /// The `class`, `type` (`->`/`::`) and `function` a frame reports in a
     /// backtrace entry.
     pub fn frame_parts(&self, frame: &Frame) -> (Option<String>, Option<&'static str>, String) {

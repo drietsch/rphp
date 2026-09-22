@@ -19,13 +19,16 @@
 #![forbid(unsafe_code)]
 
 mod collator;
+mod data;
 mod generated;
 mod grapheme;
 mod idn;
 mod locale;
 mod normalizer;
+mod numfmt;
 mod shape;
 mod state;
+mod tables;
 mod uchar;
 
 pub use state::{error_name, is_failure};
@@ -40,7 +43,9 @@ pub fn register(r: &mut Registry) {
     if r.interp().class_by_name(b"IntlException").is_some() {
         return;
     }
-    r.extension("intl");
+    // `extension_loaded('intl')` stays false until the formatters are in:
+    // Symfony's polyfills key on the classes (`class_exists`), which is
+    // what lets the implemented ones take over one at a time.
     for ini in generated::ini::INI {
         r.interp().ini.register(ini.name, ini.default.unwrap_or(""));
     }
@@ -60,6 +65,7 @@ pub fn register(r: &mut Registry) {
     idn::register(r);
     collator::register(r);
     uchar::register(r);
+    numfmt::register(r);
 }
 
 /// The extension's own functions: the error accessors.

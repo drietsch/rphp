@@ -21,4 +21,5 @@ rphp-runtime.workspace = true
 rphp-stdlib.workspace = true
 rphp-ext-pdo.workspace = true
 rphp-ext-dom.workspace = true
+rphp-ext-intl.workspace = true
 rphp-value.workspace = true

@@ -6,6 +6,8 @@
 //! The message php keeps is `func(): <text>`, and `intl_get_error_message()`
 //! appends `: U_NAME`.
 
+#![allow(dead_code)]
+
 use rphp_runtime::{Ctx, ErrLevel, Unwind};
 use rphp_value::Value;
 
@@ -38,11 +40,18 @@ pub const U_UNSUPPORTED_ERROR: i64 = 16;
 /// `U_ILLEGAL_ESCAPE_SEQUENCE`.
 pub const U_ILLEGAL_ESCAPE_SEQUENCE: i64 = 18;
 /// `U_INVALID_STATE_ERROR`.
+pub const U_INVARIANT_CONVERSION_ERROR: i64 = 26;
 pub const U_INVALID_STATE_ERROR: i64 = 27;
 /// `U_INVALID_ID` (transliterator).
 pub const U_INVALID_ID: i64 = 65569;
 /// `U_PATTERN_SYNTAX_ERROR`.
+pub const U_UNQUOTED_SPECIAL: i64 = 65555;
+pub const U_UNEXPECTED_TOKEN: i64 = 65792;
+pub const U_MALFORMED_EXPONENTIAL_PATTERN: i64 = 65795;
+pub const U_MULTIPLE_PAD_SPECIFIERS: i64 = 65798;
 pub const U_PATTERN_SYNTAX_ERROR: i64 = 65799;
+pub const U_FORMAT_INEXACT_ERROR: i64 = 65809;
+pub const U_USING_DEFAULT_WARNING_CODE: i64 = -127;
 /// `U_UNSUPPORTED_ATTRIBUTE`.
 pub const U_UNSUPPORTED_ATTRIBUTE: i64 = 65803;
 /// `U_ARGUMENT_TYPE_MISMATCH`.
@@ -286,7 +295,7 @@ impl IntlError {
 }
 
 /// The request's global error (`ExtState::slot`).
-pub fn global(ctx: &mut Ctx) -> &mut IntlError {
+pub fn global<'a>(ctx: &'a mut Ctx<'_>) -> &'a mut IntlError {
     ctx.ext.slot::<IntlError>("intl")
 }
 
@@ -369,12 +378,33 @@ pub fn fail_null(ctx: &mut Ctx, who: &str, code: i64, msg: &str) -> Result<Value
     Ok(Value::Null)
 }
 
-/// `ini_get('intl.default_locale')`, or ICU's default (`en_US_POSIX` is
-/// what `-n` php answers without a locale environment; the engine
-/// standardises on `en_US`).
+/// ICU's default locale when the environment names none (`LC_ALL=C`,
+/// nothing set): the POSIX variant of US English.
+pub const ICU_DEFAULT_LOCALE: &str = "en_US_POSIX";
+
+/// `ini_get('intl.default_locale')`, or ICU's `uloc_getDefault()`: the
+/// `LC_ALL` / `LC_MESSAGES` / `LANG` environment as a locale ID
+/// (`de_AT.UTF-8` → `de_AT`), `en_US_POSIX` for `C`/`POSIX`/nothing.
 pub fn default_locale(ctx: &Ctx) -> String {
-    match ctx.ini.get("intl.default_locale") {
-        Some(l) if !l.is_empty() => l.to_string(),
-        _ => "en_US".to_string(),
+    if let Some(l) = ctx.ini.get("intl.default_locale") {
+        if !l.is_empty() {
+            return l.to_string();
+        }
     }
+    for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Some(v) = std::env::var_os(var) {
+            let v = v.to_string_lossy();
+            let v = v.trim();
+            if v.is_empty() {
+                continue;
+            }
+            if v == "C" || v == "POSIX" || v.starts_with("C.") {
+                return ICU_DEFAULT_LOCALE.to_string();
+            }
+            let head = v.split('.').next().unwrap_or(v);
+            let head = head.split('@').next().unwrap_or(head);
+            return head.to_string();
+        }
+    }
+    ICU_DEFAULT_LOCALE.to_string()
 }

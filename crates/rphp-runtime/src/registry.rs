@@ -373,6 +373,7 @@ impl Registry<'_> {
             native_compare: None,
             dim_ref: None,
             native_iter: None,
+            uncloneable: false,
         }
     }
 
@@ -404,6 +405,7 @@ pub struct ClassBuilder<'a> {
     native_compare: Option<rphp_value::NativeCompare>,
     dim_ref: Option<crate::class::NativeDimRef>,
     native_iter: Option<crate::class::NativeIter>,
+    uncloneable: bool,
 }
 
 impl ClassBuilder<'_> {
@@ -531,6 +533,13 @@ impl ClassBuilder<'_> {
         self
     }
 
+    /// php's `clone_obj = NULL`: a `clone` throws "Trying to clone an
+    /// uncloneable object of class X".
+    pub fn uncloneable(mut self) -> Self {
+        self.uncloneable = true;
+        self
+    }
+
     /// Link and register the class; returns its process-wide id. Re-registering
     /// a name keeps the earlier id (the definition is replaced).
     ///
@@ -555,6 +564,7 @@ impl ClassBuilder<'_> {
             native_compare,
             dim_ref,
             native_iter,
+            uncloneable,
         } = self;
         let lookup = |interp: &Interp, n: &str| {
             interp.class_by_name(n.as_bytes()).unwrap_or_else(|| {
@@ -585,6 +595,7 @@ impl ClassBuilder<'_> {
             native_compare,
             dim_ref,
             native_iter,
+            uncloneable,
             declared_at: None,
             internal: true,
             static_props: Vec::new(),

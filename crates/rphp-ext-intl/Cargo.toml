@@ -13,6 +13,7 @@ rphp-stdlib.workspace = true
 icu.workspace = true
 icu_experimental.workspace = true
 icu_provider.workspace = true
+tinystr.workspace = true
 fixed_decimal.workspace = true
 writeable.workspace = true
 idna.workspace = true

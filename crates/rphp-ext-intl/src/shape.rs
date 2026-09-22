@@ -8,10 +8,9 @@
 
 use rphp_ext_api::{ClassKind as ApiKind, ClassSig, ConstValue, FnSig, Vis};
 use rphp_runtime::{
-    ClassFlags, ClassKind, Ctx, FnFlags, NativeFn, NativeHandler, NativeMethod, NativeMethodHandler, NativeResult,
-    Registry, Unwind, Visibility,
+    ClassBuilder, ClassFlags, ClassKind, Ctx, FnFlags, NativeFn, NativeHandler, NativeMethod, NativeMethodHandler,
+    NativeResult, Registry, Unwind, Visibility,
 };
-use rphp_runtime::registry::ClassBuilder;
 use rphp_value::{Object, Value};
 
 /// A method implementation: the method name as php spells it, the handler.
@@ -68,9 +67,10 @@ pub fn register_class(
         ApiKind::Interface => r.interface(sig.name),
         _ => r.class(sig.name),
     };
+    // No intl class is a trait or an enum; the skeleton's kind is class or
+    // interface.
     b = match sig.kind {
         ApiKind::Trait => b.kind(ClassKind::Trait),
-        ApiKind::Enum => b.kind(ClassKind::Enum),
         _ => b,
     };
     if let Some(parent) = sig.parent {

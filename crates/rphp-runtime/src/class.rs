@@ -563,6 +563,9 @@ pub struct ClassDef {
     /// inherited): `foreach` uses it only while `rewind`/`valid`/`current`/
     /// `key`/`next` still resolve to that class's methods.
     pub native_iter: Option<(NativeIter, u32)>,
+    /// php's `clone_obj = NULL`: `clone` throws "Trying to clone an
+    /// uncloneable object" (`Collator`, `ResourceBundle`). Inherited.
+    pub uncloneable: bool,
     /// The instance layout, shared by every instance.
     pub layout: Rc<Layout>,
     /// A property default that is a thunk (`= self::X`, `= E::Case`),
@@ -632,6 +635,7 @@ impl ClassDef {
             native_compare: None,
             dim_ref: None,
             native_iter: None,
+            uncloneable: false,
             layout: Rc::new(Layout::empty(Rc::from(name))),
             default_cache: std::cell::RefCell::new(Vec::new()),
             declared_at,
@@ -728,6 +732,8 @@ pub struct ClassSpec {
     pub dim_ref: Option<NativeDimRef>,
     /// The native iteration hook (own).
     pub native_iter: Option<NativeIter>,
+    /// `clone` refused (see [`ClassDef::uncloneable`]).
+    pub uncloneable: bool,
     /// Where it was declared.
     pub declared_at: Option<(std::sync::Arc<str>, u32)>,
     /// Registered by the engine / an extension.
@@ -806,6 +812,7 @@ impl Interp {
             native_compare,
             dim_ref,
             native_iter,
+            uncloneable,
             declared_at,
             internal,
             static_props,
@@ -859,6 +866,7 @@ impl Interp {
             def.native_compare = p.native_compare;
             def.dim_ref = p.dim_ref;
             def.native_iter = p.native_iter;
+            def.uncloneable = p.uncloneable;
             // Static properties are inherited by *sharing* the parent's cell:
             // `B::$n` and `A::$n` are one location unless B redeclares it.
             def.static_props = p.static_props.clone();
@@ -1066,6 +1074,9 @@ impl Interp {
         }
         if let Some(it) = native_iter {
             def.native_iter = Some((it, id));
+        }
+        if uncloneable {
+            def.uncloneable = true;
         }
         // php implicitly implements `Stringable` for any class that declares
         // `__toString()`, so `$o instanceof Stringable` and a `Stringable`

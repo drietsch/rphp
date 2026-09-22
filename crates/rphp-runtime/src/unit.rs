@@ -643,6 +643,7 @@ impl Interp {
             native_compare: None,
             dim_ref: None,
             native_iter: None,
+            uncloneable: false,
             declared_at: stub.declared_at.clone(),
             internal: false,
             static_props,

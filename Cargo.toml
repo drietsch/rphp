@@ -103,7 +103,7 @@ pcre2-sys = "0.2.10"
 # RustCrypto's, byte-compatible with the libargon2 php links.
 # The one platform boundary the stdlib needs so far: `umask()` has no std API.
 # `rustix` wraps it safely, which keeps `#![forbid(unsafe_code)]` intact.
-rustix = { version = "1", features = ["fs", "process", "termios"] }
+rustix = { version = "1", features = ["fs", "process", "termios", "event"] }
 pwhash = "1"
 # PDO (S14, ADR-035): SQLite compiled in (`bundled`), with user-defined
 # functions, collations and declared column types for `pdo_sqlite`.

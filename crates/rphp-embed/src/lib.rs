@@ -35,6 +35,17 @@ pub mod pdo {
     pub use rphp_ext_pdo::{register_host_driver, DriverFactory, HostDsn};
 }
 pub use sink::{BufferSink, StdoutSink};
+/// A host's say over what scripts may spawn (`proc_open`, `exec`, …): a
+/// [`spawn::SpawnPolicy`] installed with [`spawn::set_policy`].
+pub mod spawn {
+    pub use rphp_stdlib::{SpawnPolicy, SpawnRequest};
+
+    /// Install `policy` on an interpreter; every spawn asks it first. With
+    /// none installed, nothing is refused.
+    pub fn set_policy(it: &mut rphp_runtime::Interp, policy: SpawnPolicy) {
+        it.ext.slots.insert(rphp_stdlib::SPAWN_POLICY_SLOT, Box::new(policy));
+    }
+}
 
 /// Why [`Engine::compile`] failed.
 #[derive(Clone, Debug)]
@@ -770,6 +781,36 @@ mod tests {
         let buffer = BufferSink::new();
         let code = engine.run_code(src, "Command line code", Box::new(buffer.clone()));
         (code, String::from_utf8_lossy(&buffer.take()).into_owned())
+    }
+
+    #[test]
+    fn spawn_policy_refuses_with_a_warning_and_false() {
+        let engine = Engine::new(EngineConfig::cli());
+        let buffer = BufferSink::new();
+        let sink = buffer.clone();
+        let src = b"<?php $r = proc_open(['/bin/echo', 'hi'], [1 => ['pipe', 'w']], $p); var_dump($r); var_dump(shell_exec('echo ok'));";
+        on_request_stack(move || {
+            let mut interp = engine.new_interp(Box::new(sink));
+            spawn::set_policy(
+                &mut interp,
+                Box::new(|req: &spawn::SpawnRequest<'_>| {
+                    // The shell is allowed, a direct program is not.
+                    if req.argv[0] == b"/bin/sh" {
+                        Ok(())
+                    } else {
+                        Err(format!("{} is not on the allowlist", String::from_utf8_lossy(&req.argv[0])))
+                    }
+                }),
+            );
+            engine.load(&mut interp, src, "Command line code").map_err(|e| e.into_rendered().join("\n"))?;
+            let _ = interp.run_main();
+            interp.finish_output();
+            Ok::<(), String>(())
+        })
+        .unwrap();
+        let out = String::from_utf8_lossy(&buffer.take()).into_owned();
+        assert!(out.contains("Warning: proc_open(): Unable to fork [/bin/echo hi]: /bin/echo is not on the allowlist"), "{out}");
+        assert!(out.contains("bool(false)\nstring(3) \"ok\n\""), "{out}");
     }
 
     #[test]

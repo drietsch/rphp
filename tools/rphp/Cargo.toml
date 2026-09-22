@@ -19,3 +19,7 @@ mimalloc.workspace = true
 
 [dev-dependencies]
 rphp-test.workspace = true
+# `tests/tls.rs` stands a TLS server of its own on loopback, so the
+# transports can be tested without reaching past the machine.
+rustls.workspace = true
+rustls-pemfile.workspace = true

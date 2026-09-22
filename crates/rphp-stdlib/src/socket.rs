@@ -21,13 +21,16 @@
 //! `stream_get_meta_data()` with `eof` still false, which is what the read
 //! path in `file.rs` records when a blocking descriptor comes back empty.
 //!
-//! **Known divergence.** `ssl://` and `tls://` are not transports here yet,
-//! so they answer php's unknown-transport error instead of connecting, and
-//! `stream_get_transports()` leaves them out rather than promising what it
-//! cannot do. `pfsockopen()` opens an ordinary connection: php's persistent
-//! list keeps one across requests within a worker, which nothing here yet
-//! shares. The peer name of an accepted `unix://` connection is `""`; php
-//! prints whatever its uninitialised `sockaddr_un` held.
+//! **Encrypted transports.** `ssl://` and `tls://` (and the version-named
+//! aliases) are tcp with a rustls session over it; `tls.rs` has the
+//! handshake and the `ssl` context options. A TLS *server* is not
+//! implemented, so binding one answers php's unknown-transport error rather
+//! than accepting connections it could not finish.
+//!
+//! **Known divergence.** `pfsockopen()` opens an ordinary connection: php's
+//! persistent list keeps one across requests within a worker, which nothing
+//! here yet shares. The peer name of an accepted `unix://` connection is
+//! `""`; php prints whatever its uninitialised `sockaddr_un` held.
 
 use std::net::{TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
@@ -47,6 +50,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("stream_socket_sendto", 2, Some(4), stream_socket_sendto),
     nf_ref!("stream_socket_recvfrom", 2, Some(4), 0b1000, stream_socket_recvfrom),
     nf!("stream_socket_shutdown", 2, Some(2), stream_socket_shutdown),
+    nf!("stream_socket_enable_crypto", 2, Some(4), stream_socket_enable_crypto),
     nf!("stream_socket_pair", 3, Some(3), stream_socket_pair),
     nf_ref!("fsockopen", 1, Some(5), 0b1100, fsockopen),
     nf_ref!("pfsockopen", 1, Some(5), 0b1100, fsockopen),
@@ -64,13 +68,15 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
 
 /// The transports this build registers, in the order
 /// `stream_get_transports()` lists them.
-const TRANSPORTS: &[&str] = &["tcp", "udp", "unix", "udg"];
+const TRANSPORTS: &[&str] = &[
+    "tcp", "udp", "unix", "udg", "ssl", "tls", "tlsv1.0", "tlsv1.1", "tlsv1.2", "tlsv1.3",
+];
 
 /// The wrappers this build registers, in the order `stream_get_wrappers()`
 /// lists them. php's own list is longer (`https`, `ftp`, `phar`, `zip`,
 /// `compress.*`); naming one here that `fopen()` cannot open would be worse
 /// than leaving it out, since the whole point of the call is a feature test.
-const WRAPPERS: &[&str] = &["php", "file", "glob", "data", "http"];
+const WRAPPERS: &[&str] = &["php", "file", "glob", "data", "http", "https"];
 
 /// Which transport an address named, and what it addresses.
 enum Target {
@@ -82,6 +88,10 @@ enum Target {
     Unix(String),
     /// `udg:///path`
     Udg(String),
+    /// `ssl://host:port`, `tls://…`, `tlsv1.2://…` — tcp with a TLS
+    /// session over it. rustls negotiates the version, so the four
+    /// version-named transports differ from `tls` only in name.
+    Tls(String, u16),
 }
 
 impl Target {
@@ -91,6 +101,10 @@ impl Target {
             Target::Udp(..) => SockKind::Udp,
             Target::Unix(_) => SockKind::Unix,
             Target::Udg(_) => SockKind::UnixDgram,
+            // php names the transport after the module that registered it,
+            // and openssl registers over tcp — an encrypted socket reports
+            // the same `tcp_socket/ssl` a plain one does.
+            Target::Tls(..) => SockKind::Tcp,
         }
     }
 }
@@ -128,12 +142,12 @@ fn parse_address(addr: &str) -> Result<Target, AddrErr> {
     match scheme {
         "unix" => Ok(Target::Unix(rest.to_string())),
         "udg" => Ok(Target::Udg(rest.to_string())),
-        "tcp" | "udp" => {
+        "tcp" | "udp" | "ssl" | "tls" | "tlsv1.0" | "tlsv1.1" | "tlsv1.2" | "tlsv1.3" => {
             let (host, port) = split_host_port(rest).ok_or_else(|| AddrErr::Parse(rest.to_string()))?;
-            Ok(if scheme == "tcp" {
-                Target::Tcp(host, port)
-            } else {
-                Target::Udp(host, port)
+            Ok(match scheme {
+                "tcp" => Target::Tcp(host, port),
+                "udp" => Target::Udp(host, port),
+                _ => Target::Tls(host, port),
             })
         }
         other => Err(AddrErr::Transport(other.to_string())),
@@ -214,14 +228,21 @@ fn duration_of(secs: f64) -> Duration {
 
 // ---- connecting --------------------------------------------------------------------
 
-/// Open a plain tcp connection to `host:port` — what the http wrapper
-/// builds a request on top of.
-pub(crate) fn connect_tcp(
+/// Open a connection to `host:port` for the http wrapper — encrypted when
+/// the url said `https`.
+pub(crate) fn connect_for_wrapper(
     host: &str,
     port: u16,
+    secure: bool,
     timeout: Duration,
+    ssl: &crate::tls::SslOptions,
 ) -> Result<Conn, (i64, String)> {
-    connect(&Target::Tcp(host.to_string(), port), timeout)
+    let target = if secure {
+        Target::Tls(host.to_string(), port)
+    } else {
+        Target::Tcp(host.to_string(), port)
+    };
+    connect(&target, timeout, ssl)
 }
 
 /// `default_socket_timeout`, for a wrapper that was given no timeout.
@@ -232,9 +253,49 @@ pub(crate) fn wrapper_timeout(ctx: &mut Ctx, given: Option<f64>) -> Duration {
     }
 }
 
+/// The `ssl` section of a stream context, as php spells its options.
+pub(crate) fn ssl_options_of(ctx: &mut Ctx, context: Option<&Value>) -> crate::tls::SslOptions {
+    let mut o = crate::tls::SslOptions::default();
+    let Some(v) = context else { return o };
+    let Some(all) = crate::file::context_options_of(ctx, v) else { return o };
+    let Some(ssl) = all.get(&ArrayKey::str(b"ssl")) else { return o };
+    let Value::Array(ssl) = &*ssl.deref() else { return o };
+    for (k, v) in ssl.iter() {
+        let ArrayKey::Str(name) = k else { continue };
+        let v = v.deref().into_owned();
+        let text = || String::from_utf8_lossy(&v.to_php_bytes()).into_owned();
+        match name.as_ref() {
+            b"verify_peer" => o.verify_peer = v.to_bool(),
+            b"verify_peer_name" => o.verify_peer_name = v.to_bool(),
+            b"allow_self_signed" => o.allow_self_signed = v.to_bool(),
+            b"cafile" => o.cafile = Some(text()),
+            b"peer_name" => o.peer_name = Some(text()),
+            b"SNI_enabled" => o.sni_enabled = v.to_bool(),
+            _ => {}
+        }
+    }
+    o
+}
+
 /// Open a client connection, as `(errno, error text)` when it fails.
-fn connect(target: &Target, timeout: Duration) -> Result<Conn, (i64, String)> {
+fn connect(
+    target: &Target,
+    timeout: Duration,
+    ssl: &crate::tls::SslOptions,
+) -> Result<Conn, (i64, String)> {
     match target {
+        Target::Tls(host, port) => {
+            // The handshake happens now, so a certificate that will not do
+            // is reported by the call that opened the stream.
+            let plain = connect(&Target::Tcp(host.clone(), *port), timeout, ssl)?;
+            let Conn::Tcp(sock) = plain else {
+                return Err((0, "tcp connection expected".to_string()));
+            };
+            match crate::tls::handshake(sock, host, ssl) {
+                Ok(t) => Ok(Conn::Tls(Box::new(t))),
+                Err((_, text)) => Err((0, text)),
+            }
+        }
         Target::Tcp(host, port) => {
             let addrs = resolve(host, *port).map_err(|_| (0, getaddrinfo_text(host)))?;
             // php walks the resolved list and reports the last failure.
@@ -301,6 +362,10 @@ fn bind(target: &Target, listen: bool) -> Result<Conn, (i64, String)> {
         Target::Udg(path) => UnixDatagram::bind(path)
             .map(Conn::UnixDgram)
             .map_err(|e| (os_errno(&e), os_text(&e))),
+        // A TLS *server* needs a certificate to present; `local_cert` is
+        // not implemented, so php's "transport not found" is the honest
+        // answer rather than a socket that cannot complete a handshake.
+        Target::Tls(..) => Err((0, AddrErr::Transport("tls".to_string()).text())),
     }
 }
 
@@ -338,10 +403,13 @@ fn stream_socket_client(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             return Ok(Value::Bool(false));
         }
     };
-    match connect(&target, timeout) {
+    let ssl = ssl_options_of(ctx, args.get(5));
+    match connect(&target, timeout, &ssl) {
         Ok(conn) => {
             set_err(args, 1, 0, "");
-            Ok(socket_resource(ctx, conn, target.kind(), Some(addr)))
+            let handle = socket_resource(ctx, conn, target.kind(), Some(addr));
+            crate::file::set_socket_ssl(ctx, &handle, ssl);
+            Ok(handle)
         }
         Err((code, text)) => {
             set_err(args, 1, code, &text);
@@ -432,7 +500,8 @@ fn stream_socket_accept(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// kept independent of the listening socket's own blocking mode.
 fn poll_readable(conn: &Conn, timeout: Duration) -> bool {
     use rustix::event::{poll, PollFd, PollFlags};
-    let mut fds = [PollFd::from_borrowed_fd(conn.as_fd(), PollFlags::IN)];
+    let Some(fd) = conn.fd() else { return false };
+    let mut fds = [PollFd::from_borrowed_fd(fd, PollFlags::IN)];
     let spec = rustix::fs::Timespec {
         tv_sec: timeout.as_secs() as i64,
         tv_nsec: timeout.subsec_nanos() as i64,
@@ -460,8 +529,9 @@ pub(crate) fn socket_eof(conn: &Conn) -> bool {
     if !poll_readable(conn, Duration::ZERO) {
         return false;
     }
+    let Some(fd) = conn.fd() else { return false };
     let mut buf = [0u8; 1];
-    match recv(conn.as_fd(), &mut buf[..], RecvFlags::PEEK) {
+    match recv(fd, &mut buf[..], RecvFlags::PEEK) {
         Ok((_, n)) => n == 0,
         Err(rustix::io::Errno::INTR) | Err(rustix::io::Errno::AGAIN) => false,
         Err(_) => true,
@@ -498,6 +568,8 @@ fn socket_name(conn: &Conn, remote: bool) -> Option<String> {
         (Conn::UnixListen(l), false) => l.local_addr().ok().and_then(|a| path_of(&a)),
         (Conn::UnixDgram(s), true) => s.peer_addr().ok().and_then(|a| path_of(&a)),
         (Conn::UnixDgram(s), false) => s.local_addr().ok().and_then(|a| path_of(&a)),
+        (Conn::Tls(t), true) => t.socket().peer_addr().ok().map(|a| a.to_string()),
+        (Conn::Tls(t), false) => t.socket().local_addr().ok().map(|a| a.to_string()),
         _ => None,
     }
 }
@@ -541,7 +613,10 @@ fn send_to(conn: &mut Conn, data: &[u8], to: Option<&str>) -> std::io::Result<us
         (Conn::Tcp(s), _) => s.write(data),
         (Conn::Unix(s), _) => s.write(data),
         (Conn::File(f), _) => f.write(data),
-        (Conn::TcpListen(_) | Conn::UnixListen(_), _) => {
+        // An encrypted stream has no datagram to address: the bytes go
+        // through the session like any other write.
+        (c @ Conn::Tls(_), _) => c.write_all(data).map(|()| data.len()),
+        (Conn::TcpListen(_) | Conn::UnixListen(_) | Conn::Taken, _) => {
             Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
         }
     }
@@ -593,7 +668,13 @@ fn recv_from(conn: &mut Conn, len: usize, peek: bool) -> std::io::Result<(Vec<u8
         }
         Conn::Unix(s) => (s.read(&mut buf)?, String::new()),
         Conn::File(f) => (f.read(&mut buf)?, String::new()),
-        Conn::TcpListen(_) | Conn::UnixListen(_) => {
+        // `MSG_PEEK` has no meaning through a TLS session — the bytes on
+        // the socket are ciphertext — so a peek reads for real.
+        Conn::Tls(t) => {
+            let peer = t.socket().peer_addr().map(|a| a.to_string()).unwrap_or_default();
+            (t.read_once(&mut buf)?, peer)
+        }
+        Conn::TcpListen(_) | Conn::UnixListen(_) | Conn::Taken => {
             return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
         }
     };
@@ -614,9 +695,96 @@ fn stream_socket_shutdown(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Conn::Tcp(s) => s.shutdown(how).is_ok(),
         Conn::Unix(s) => s.shutdown(how).is_ok(),
         Conn::UnixDgram(s) => s.shutdown(how).is_ok(),
-        Conn::Udp(_) | Conn::TcpListen(_) | Conn::UnixListen(_) | Conn::File(_) => false,
+        Conn::Tls(t) => t.socket().shutdown(how).is_ok(),
+        Conn::Udp(_) | Conn::TcpListen(_) | Conn::UnixListen(_) | Conn::File(_) | Conn::Taken => false,
     })?;
     Ok(Value::Bool(done.unwrap_or(false)))
+}
+
+/// `stream_socket_enable_crypto(resource $stream, bool $enable, ?int $method = null, ?resource $session = null): int|bool`
+///
+/// Turns a connected tcp stream into an encrypted one in place — what an
+/// SMTP `STARTTLS` and php's own `https` wrapper do. The handshake runs to
+/// completion here, so the answer is `true` or `false` and never php's `0`,
+/// which only a non-blocking stream mid-handshake returns.
+///
+/// **Known divergence.** Turning crypto *off* on a stream that has it is
+/// `false` here: a rustls session cannot be unwrapped back to the socket
+/// underneath. (On a stream that never had it, `false` is also php's
+/// answer.) `$method` is required, as php requires it, but its value is
+/// ignored beyond that: rustls negotiates the version.
+fn stream_socket_enable_crypto(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = args[0].clone();
+    let enable = args[1].to_bool();
+    let method = args.get(2).filter(|v| !matches!(v, Value::Null));
+    if enable && method.is_none() {
+        return Err(Unwind::value_error(
+            "stream_socket_enable_crypto(): Argument #3 ($crypto_method) must be specified when enabling encryption",
+        ));
+    }
+    // A stream with no socket under it — a file, a memory buffer, a pipe —
+    // and a socket that is not tcp are the same thing to php: it says so,
+    // and then answers `false` for an enable and `true` for a disable,
+    // since there was nothing to take off.
+    let upgradable = with_socket(ctx, &stream, "stream_socket_enable_crypto", |conn, _| {
+        matches!(conn, Conn::Tcp(_) | Conn::Tls(_))
+    })?;
+    if upgradable != Some(true) {
+        ctx.warn("stream_socket_enable_crypto(): This stream does not support SSL/crypto")?;
+        return Ok(Value::Bool(!enable));
+    }
+    if !enable {
+        return Ok(Value::Bool(false));
+    }
+    // The name to verify against: php takes the `peer_name` option when
+    // there is one, and the host the stream was opened to otherwise.
+    let host = with_socket(ctx, &stream, "stream_socket_enable_crypto", |_, sock| {
+        sock.ssl.peer_name.clone().or_else(|| {
+            sock.uri.as_deref().and_then(|u| match parse_address(u) {
+                Ok(Target::Tcp(h, _) | Target::Tls(h, _)) => Some(h),
+                _ => None,
+            })
+        })
+    })?;
+    let Some(host) = host.flatten() else {
+        ctx.warn("stream_socket_enable_crypto(): Unable to determine the peer name")?;
+        return Ok(Value::Bool(false));
+    };
+    let outcome = with_socket(ctx, &stream, "stream_socket_enable_crypto", |conn, sock| {
+        if matches!(conn, Conn::Tls(_)) {
+            // Already encrypted: php does not handshake a second time.
+            return Ok(());
+        }
+        // Taking the socket out and putting it back is the whole of the
+        // upgrade; anything that is not a plain tcp socket goes back
+        // untouched rather than leaving the stream without a descriptor.
+        let socket = match std::mem::replace(conn, Conn::Taken) {
+            Conn::Tcp(s) => s,
+            other => {
+                *conn = other;
+                return Err("the stream is not a tcp socket".to_string());
+            }
+        };
+        match crate::tls::handshake(socket, &host, &sock.ssl) {
+            Ok(t) => {
+                *conn = Conn::Tls(Box::new(t));
+                Ok(())
+            }
+            Err((socket, text)) => {
+                // php leaves the stream usable when the upgrade is refused.
+                *conn = Conn::Tcp(socket);
+                Err(text)
+            }
+        }
+    })?;
+    match outcome {
+        Some(Ok(())) => Ok(Value::Bool(true)),
+        Some(Err(text)) => {
+            ctx.warn(&format!("stream_socket_enable_crypto(): {text}"))?;
+            Ok(Value::Bool(false))
+        }
+        None => Ok(Value::Bool(false)),
+    }
 }
 
 /// `stream_socket_pair(int $domain, int $type, int $protocol): array|false`
@@ -683,7 +851,7 @@ fn fsockopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             return Ok(Value::Bool(false));
         }
     };
-    match connect(&target, timeout) {
+    match connect(&target, timeout, &crate::tls::SslOptions::default()) {
         Ok(conn) => {
             set_err(args, 2, 0, "");
             Ok(socket_resource(ctx, conn, target.kind(), Some(addr)))
@@ -736,7 +904,8 @@ fn set_read_timeout(conn: &Conn, d: Option<Duration>) -> bool {
         Conn::Udp(s) => s.set_read_timeout(d).is_ok(),
         Conn::Unix(s) => s.set_read_timeout(d).is_ok(),
         Conn::UnixDgram(s) => s.set_read_timeout(d).is_ok(),
-        Conn::TcpListen(_) | Conn::UnixListen(_) | Conn::File(_) => false,
+        Conn::Tls(t) => t.socket().set_read_timeout(d).is_ok(),
+        Conn::TcpListen(_) | Conn::UnixListen(_) | Conn::File(_) | Conn::Taken => false,
     }
 }
 

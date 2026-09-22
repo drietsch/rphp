@@ -40,6 +40,12 @@ jiff.workspace = true
 # `umask()` (ext/standard/filestat.c) — no std equivalent.
 rustix.workspace = true
 
+# The `ssl`/`tls` transports and `https://` (S12).
+rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls-pki-types.workspace = true
+rustls-pemfile.workspace = true
+
 # password / crypt (S9).
 pwhash.workspace = true
 argon2.workspace = true

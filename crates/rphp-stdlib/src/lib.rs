@@ -47,6 +47,7 @@ mod pcre;
 mod random;
 mod session;
 mod socket;
+mod tls;
 mod tokenizer;
 mod highlight;
 mod reflection;

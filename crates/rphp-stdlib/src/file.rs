@@ -146,13 +146,25 @@ pub(crate) enum Conn {
     Unix(std::os::unix::net::UnixStream),
     UnixListen(std::os::unix::net::UnixListener),
     UnixDgram(std::os::unix::net::UnixDatagram),
+    /// A tcp connection with a TLS session over it (`tls.rs`). Reads and
+    /// writes go through the session; everything else — the peer's name, a
+    /// half-close, `poll(2)` — goes to the socket underneath.
+    Tls(Box<crate::tls::TlsConn>),
+    /// A descriptor that has been moved out, which only exists for the
+    /// instant `stream_socket_enable_crypto()` takes the socket to wrap it.
+    Taken,
 }
 
 impl Conn {
     /// The descriptor, borrowed — what `poll(2)` and `fcntl(2)` want.
-    pub(crate) fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+    ///
+    /// `None` only for a descriptor that has been moved out, which lasts
+    /// the few lines an upgrade to TLS takes. Answering rather than
+    /// asserting keeps a panic inside the handshake from becoming a second,
+    /// less informative panic somewhere else later.
+    pub(crate) fn fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
         use std::os::fd::AsFd;
-        match self {
+        Some(match self {
             Conn::File(f) => f.as_fd(),
             Conn::Tcp(s) => s.as_fd(),
             Conn::TcpListen(s) => s.as_fd(),
@@ -160,20 +172,20 @@ impl Conn {
             Conn::Unix(s) => s.as_fd(),
             Conn::UnixListen(s) => s.as_fd(),
             Conn::UnixDgram(s) => s.as_fd(),
-        }
+            Conn::Tls(t) => t.as_fd(),
+            Conn::Taken => return None,
+        })
     }
 
-    /// A second handle on the same descriptor (`dup(2)`).
-    pub(crate) fn try_clone(&self) -> std::io::Result<Conn> {
-        Ok(match self {
-            Conn::File(f) => Conn::File(f.try_clone()?),
-            Conn::Tcp(s) => Conn::Tcp(s.try_clone()?),
-            Conn::TcpListen(s) => Conn::TcpListen(s.try_clone()?),
-            Conn::Udp(s) => Conn::Udp(s.try_clone()?),
-            Conn::Unix(s) => Conn::Unix(s.try_clone()?),
-            Conn::UnixListen(s) => Conn::UnixListen(s.try_clone()?),
-            Conn::UnixDgram(s) => Conn::UnixDgram(s.try_clone()?),
-        })
+    /// A duplicate of just the *descriptor*, which is all `poll(2)` needs.
+    ///
+    /// A TLS session cannot be duplicated and does not need to be: its
+    /// readiness is its socket's.
+    pub(crate) fn dup_fd(&self) -> std::io::Result<std::os::fd::OwnedFd> {
+        match self.fd() {
+            Some(fd) => fd.try_clone_to_owned(),
+            None => Err(std::io::Error::from(std::io::ErrorKind::NotConnected)),
+        }
     }
 
     /// One `read(2)`. A listening socket has nothing to read, which is what
@@ -186,7 +198,8 @@ impl Conn {
             Conn::Udp(s) => s.recv(buf),
             Conn::Unix(s) => s.read(buf),
             Conn::UnixDgram(s) => s.recv(buf),
-            Conn::TcpListen(_) | Conn::UnixListen(_) => Ok(0),
+            Conn::Tls(t) => t.read_once(buf),
+            Conn::TcpListen(_) | Conn::UnixListen(_) | Conn::Taken => Ok(0),
         }
     }
 
@@ -199,7 +212,8 @@ impl Conn {
             Conn::Udp(s) => s.send(data).map(|_| ()),
             Conn::Unix(s) => s.write_all(data),
             Conn::UnixDgram(s) => s.send(data).map(|_| ()),
-            Conn::TcpListen(_) | Conn::UnixListen(_) => {
+            Conn::Tls(t) => t.write_all(data),
+            Conn::TcpListen(_) | Conn::UnixListen(_) | Conn::Taken => {
                 Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
             }
         }
@@ -209,7 +223,7 @@ impl Conn {
 impl Pipe {
     /// Set or clear `O_NONBLOCK`.
     fn set_blocking(&mut self, blocking: bool) -> bool {
-        let fd = self.conn.as_fd();
+        let Some(fd) = self.conn.fd() else { return false };
         let Ok(mut flags) = rustix::fs::fcntl_getfl(fd) else { return false };
         flags.set(rustix::fs::OFlags::NONBLOCK, !blocking);
         if rustix::fs::fcntl_setfl(fd, flags).is_err() {
@@ -265,6 +279,10 @@ pub(crate) struct Sock {
     /// `wrapper_data`, which is where Symfony's `NativeHttpClient` reads a
     /// response's headers from.
     pub(crate) wrapper: Option<(Box<str>, Array)>,
+    /// The `ssl` context options the stream was opened with. php keeps the
+    /// context on the stream, which is what `stream_socket_enable_crypto()`
+    /// reads when it upgrades one later.
+    pub(crate) ssl: crate::tls::SslOptions,
 }
 
 /// php's `stream_type` for a socket, which names the transport rather than
@@ -1041,9 +1059,15 @@ pub(crate) fn socket_resource_with(
             timeout: None,
             timed_out: false,
             wrapper,
+            ssl: crate::tls::SslOptions::default(),
         }),
     };
     ctx.resources.add("stream", Box::new(stream))
+}
+
+/// Remember the `ssl` context options a socket was opened with.
+pub(crate) fn set_socket_ssl(ctx: &mut Ctx, v: &Value, o: crate::tls::SslOptions) {
+    let _ = with_socket(ctx, v, "stream_socket_client", |_, sock| sock.ssl = o);
 }
 
 /// Run `f` over the socket behind a resource; `Ok(None)` when the resource
@@ -1075,8 +1099,8 @@ pub(crate) fn pipe_dup(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<fs
 
 /// A duplicate of the descriptor behind *any* live stream — a pipe or a
 /// socket — for `stream_select` to poll.
-fn conn_dup(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<Conn>, Unwind> {
-    with_stream(ctx, v, func, |s| s.pipe.as_ref().and_then(|p| p.conn.try_clone().ok()))
+fn conn_dup(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<std::os::fd::OwnedFd>, Unwind> {
+    with_stream(ctx, v, func, |s| s.pipe.as_ref().and_then(|p| p.conn.dup_fd().ok()))
 }
 
 /// Whether a stream is one of the process's output handles (`php://stdout`,
@@ -1628,7 +1652,7 @@ fn stream_select(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // (array index, key, dup of the descriptor) for every pipe stream;
     // ready flags for the rest.
     let mut sets: [Vec<(ArrayKey, Value, bool)>; 2] = [Vec::new(), Vec::new()];
-    let mut fds: Vec<(usize, usize, Conn)> = Vec::new();
+    let mut fds: Vec<(usize, usize, std::os::fd::OwnedFd)> = Vec::new();
     for (which, arg) in args.iter().take(2).enumerate() {
         let Value::Array(a) = &*arg.deref() else { continue };
         for (k, v) in a.iter() {
@@ -1646,9 +1670,10 @@ fn stream_select(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     if !fds.is_empty() {
         let mut polls: Vec<PollFd<'_>> = fds
             .iter()
-            .map(|(which, _, c)| {
+            .map(|(which, _, fd)| {
+                use std::os::fd::AsFd;
                 let want = if *which == 0 { PollFlags::IN | PollFlags::HUP } else { PollFlags::OUT };
-                PollFd::from_borrowed_fd(c.as_fd(), want)
+                PollFd::from_borrowed_fd(fd.as_fd(), want)
             })
             .collect();
         // Everything else being ready already, a poll with descriptors only

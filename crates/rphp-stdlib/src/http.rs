@@ -27,8 +27,7 @@
 //! writing it — the shape that can only have come from this wrapper — gets
 //! the notice once, before the script runs. That is a compiler change for
 //! a diagnostic Symfony never triggers (it reads `wrapper_data`), so the
-//! variable is populated here and the notice is not emitted. `https://`
-//! needs the `ssl` transport, which does not exist yet.
+//! variable is populated here and the notice is not emitted.
 
 use std::time::Duration;
 
@@ -265,17 +264,15 @@ impl From<Unwind> for FetchError {
 }
 
 /// Send one request and read its head.
-fn fetch_once(url: &Url, o: &Options, timeout: Duration) -> Result<Response, FetchError> {
-    if url.secure {
-        // No `ssl` transport yet; say so the way php says a transport is
-        // missing rather than pretending the connection failed.
-        return Err(FetchError::Failed(
-            "Unable to find the socket transport \"ssl\" - did you forget to enable it when you configured PHP?"
-                .into(),
-        ));
-    }
-    let mut conn = crate::socket::connect_tcp(&url.host, url.port, timeout)
-        .map_err(|(_, text)| FetchError::Failed(text))?;
+fn fetch_once(
+    url: &Url,
+    o: &Options,
+    timeout: Duration,
+    ssl: &crate::tls::SslOptions,
+) -> Result<Response, FetchError> {
+    let mut conn =
+        crate::socket::connect_for_wrapper(&url.host, url.port, url.secure, timeout, ssl)
+            .map_err(|(_, text)| FetchError::Failed(text))?;
     // php's `timeout` option bounds the reads too, not just the connect, so
     // a server that accepts and then says nothing cannot hang the request.
     crate::socket::set_read_timeout_on(&conn, Some(timeout));
@@ -426,7 +423,13 @@ fn resolve_location(base: &Url, location: &str) -> Option<Url> {
 
 /// Fetch a url, following redirects, and hand back the final response with
 /// every hop's header lines in front of it.
-fn fetch(ctx: &mut Ctx, url: &str, o: &Options, func: &str) -> Result<Response, FetchError> {
+fn fetch(
+    ctx: &mut Ctx,
+    url: &str,
+    o: &Options,
+    func: &str,
+    ssl: &crate::tls::SslOptions,
+) -> Result<Response, FetchError> {
     let timeout = crate::socket::wrapper_timeout(ctx, o.timeout);
     let mut current = parse_url(url).ok_or_else(|| FetchError::Failed("Invalid url".into()))?;
     let mut o = o.clone();
@@ -437,7 +440,7 @@ fn fetch(ctx: &mut Ctx, url: &str, o: &Options, func: &str) -> Result<Response, 
         // the body says it again, while a 302 that dropped the body does
         // not.
         content_type_notice(ctx, &o, func)?;
-        let mut r = fetch_once(&current, &o, timeout)?;
+        let mut r = fetch_once(&current, &o, timeout, ssl)?;
         all_lines.extend(r.lines.iter().cloned());
         let redirect = matches!(r.status, 301 | 302 | 303 | 307 | 308);
         if !(redirect && o.follow_location && hops < o.max_redirects) {
@@ -484,7 +487,8 @@ pub(crate) fn open(
         return failed(ctx, func, url, "no suitable wrapper could be found");
     }
     let o = options_of(ctx, context)?;
-    let r = match fetch(ctx, url, &o, func) {
+    let ssl = crate::socket::ssl_options_of(ctx, context);
+    let r = match fetch(ctx, url, &o, func, &ssl) {
         Ok(r) => r,
         Err(FetchError::Failed(text)) => return failed(ctx, func, url, &text),
         Err(FetchError::Unwound(u)) => return Err(u),
@@ -558,7 +562,8 @@ fn get_headers(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // php asks for the head with the ordinary wrapper, ignoring the status.
     let mut o = options_of(ctx, args.get(2))?;
     o.ignore_errors = true;
-    let r = match fetch(ctx, &url, &o, "get_headers") {
+    let ssl = crate::socket::ssl_options_of(ctx, args.get(2));
+    let r = match fetch(ctx, &url, &o, "get_headers", &ssl) {
         Ok(r) => r,
         Err(FetchError::Failed(text)) => {
             ctx.warn(&format!("get_headers(): Request failed: {text}"))?;

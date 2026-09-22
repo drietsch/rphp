@@ -826,19 +826,29 @@ fn std_stream(sink: Sink, uri: &str, mode: &str) -> Stream {
 }
 
 /// Write a stream's buffer back to its file, if it has one.
-fn flush_stream(s: &Stream) {
-    if let (Some(p), true) = (&s.path, s.dirty) {
-        let _ = fs::write(p, &s.buf);
+fn flush_stream(s: &Stream) -> Option<std::path::PathBuf> {
+    match (&s.path, s.dirty) {
+        (Some(p), true) => {
+            let _ = fs::write(p, &s.buf);
+            // The file on disk just changed: whoever asked about this path
+            // before the write must not be answered from the stat cache.
+            Some(p.clone())
+        }
+        _ => None,
     }
 }
 
 /// `fclose(resource $stream): bool`
 fn fclose(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    with_stream(ctx, &args[0].clone(), "fclose", |s| {
-        flush_stream(s);
+    let written = with_stream(ctx, &args[0].clone(), "fclose", |s| {
+        let written = flush_stream(s);
         // The child sees EOF on its stdin the moment the pipe closes.
         s.pipe = None;
+        written
     })?;
+    if let Some(path) = written {
+        invalidate(ctx, &path);
+    }
     ctx.resources.close_value(&args[0]);
     Ok(Value::Bool(true))
 }
@@ -1099,10 +1109,11 @@ fn rewind(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `fflush(resource $stream): bool`
 fn fflush(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
-    with_stream(ctx, &stream, "fflush", |s| {
-        flush_stream(s);
-        Value::Bool(true)
-    })
+    let written = with_stream(ctx, &stream, "fflush", |s| flush_stream(s))?;
+    if let Some(path) = written {
+        invalidate(ctx, &path);
+    }
+    Ok(Value::Bool(true))
 }
 
 /// `stream_get_contents(resource $stream, ?int $maxLength = null, int $offset = -1): string|false`

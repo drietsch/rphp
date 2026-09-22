@@ -19,12 +19,14 @@ mod basic_functions;
 mod closure_class;
 mod ctype;
 mod date;
+mod dechunk;
 mod dir;
 mod errorfunc;
 mod exec;
 mod file;
 mod file2;
 mod filestat;
+mod filters;
 mod filter;
 mod formatted_print;
 mod funcs;
@@ -97,6 +99,7 @@ const MODULES: &[&[NativeFn]] = &[
     net::FUNCTIONS,
     socket::FUNCTIONS,
     http::FUNCTIONS,
+    filters::FUNCTIONS,
     session::FUNCTIONS,
     tokenizer::FUNCTIONS,
     highlight::FUNCTIONS,

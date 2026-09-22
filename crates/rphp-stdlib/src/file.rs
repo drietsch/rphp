@@ -116,6 +116,11 @@ pub(crate) struct Stream {
     /// What a socket stream knows about itself beyond its descriptor
     /// (`socket.rs`); `None` for everything that is not a socket.
     pub(crate) sock: Option<Sock>,
+    /// The filter chains (`filters.rs`): what a write passes through on
+    /// its way in, and what a descriptor's reads pass through on the way
+    /// out.
+    pub(crate) write_filters: Vec<crate::filters::Attached>,
+    pub(crate) read_filters: Vec<crate::filters::Attached>,
 }
 
 /// The descriptor behind a pipe or socket stream.
@@ -128,6 +133,9 @@ pub(crate) struct Pipe {
     /// looking for the end of the headers. php counts what is left of this
     /// as a stream's `unread_bytes`.
     pub(crate) prefix: Vec<u8>,
+    /// Set when the response said `Transfer-Encoding: chunked`: what comes
+    /// off the descriptor is the encoding, and what reads see is the body.
+    pub(crate) dechunk: Option<crate::dechunk::Dechunk>,
 }
 
 /// What a live descriptor actually is.
@@ -241,6 +249,45 @@ impl Pipe {
             let n = len.min(self.prefix.len());
             return Ok(Some(self.prefix.drain(..n).collect()));
         }
+        if self.dechunk.is_some() {
+            return self.read_dechunked(len);
+        }
+        self.read_raw(len)
+    }
+
+    /// A read through the chunked decoder: raw bytes come off the
+    /// descriptor and plaintext comes back, so one read may have to fetch
+    /// several times — a size line on its own decodes to nothing, and
+    /// answering nothing would look like end of stream.
+    fn read_dechunked(&mut self, len: usize) -> std::io::Result<Option<Vec<u8>>> {
+        loop {
+            if self.dechunk.as_ref().is_some_and(crate::dechunk::Dechunk::is_done) {
+                return Ok(Some(Vec::new()));
+            }
+            let raw = match self.read_raw(len.max(1))? {
+                // Nothing yet on a non-blocking descriptor, or a timeout.
+                None => return Ok(None),
+                // The peer closed: whatever the decoder still holds is all
+                // there will be.
+                Some(b) if b.is_empty() => return Ok(Some(Vec::new())),
+                Some(b) => b,
+            };
+            let mut out = Vec::with_capacity(raw.len());
+            if let Some(d) = self.dechunk.as_mut() {
+                d.push(&raw, &mut out);
+            }
+            if !out.is_empty() {
+                // Anything past what was asked for waits in the prefix.
+                if out.len() > len {
+                    self.prefix = out.split_off(len);
+                }
+                return Ok(Some(out));
+            }
+        }
+    }
+
+    /// One `read(2)`, with none of the decoding.
+    fn read_raw(&mut self, len: usize) -> std::io::Result<Option<Vec<u8>>> {
         let mut buf = vec![0u8; len.max(1)];
         loop {
             match self.conn.read_once(&mut buf) {
@@ -347,6 +394,19 @@ impl Stream {
 
     /// Write `data` at the cursor, extending the buffer as php does.
     fn write(&mut self, data: &[u8]) -> usize {
+        // A write filter transforms what goes in; php still answers the
+        // caller with the number of bytes it handed over.
+        if !self.write_filters.is_empty() {
+            let filtered = crate::filters::run(&mut self.write_filters, data);
+            let given = data.len();
+            self.write_unfiltered(&filtered);
+            return given;
+        }
+        self.write_unfiltered(data)
+    }
+
+    /// The write itself, with the chain already applied.
+    fn write_unfiltered(&mut self, data: &[u8]) -> usize {
         if let Some(f) = &mut self.file {
             use std::io::Write;
             if f.write_all(data).is_err() {
@@ -867,6 +927,8 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             chunk_size: 8192,
             pipe: None,
             sock: None,
+            write_filters: Vec::new(),
+            read_filters: Vec::new(),
         }
     } else {
         let p = arg_path(ctx, &args[0]);
@@ -917,6 +979,8 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             chunk_size: 8192,
             pipe: None,
             sock: None,
+            write_filters: Vec::new(),
+            read_filters: Vec::new(),
         }
     };
     Ok(ctx.resources.add("stream", Box::new(stream)))
@@ -953,6 +1017,8 @@ pub(crate) fn open_resource(ctx: &mut Ctx, path: &std::path::Path, mode: &str) -
         chunk_size: 8192,
         pipe: None,
         sock: None,
+        write_filters: Vec::new(),
+        read_filters: Vec::new(),
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -976,8 +1042,15 @@ pub(crate) fn pipe_resource(ctx: &mut Ctx, file: fs::File, readable: bool) -> Va
         uri: "php://stdio".into(),
         fill_end: 0,
         chunk_size: 8192,
-        pipe: Some(Pipe { conn: Conn::File(file), nonblocking: false, prefix: Vec::new() }),
+        pipe: Some(Pipe {
+            conn: Conn::File(file),
+            nonblocking: false,
+            prefix: Vec::new(),
+            dechunk: None,
+        }),
         sock: None,
+        write_filters: Vec::new(),
+        read_filters: Vec::new(),
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -989,6 +1062,57 @@ fn wrapper_url(v: &Value) -> Option<String> {
     let bytes = v.to_php_bytes();
     let url = String::from_utf8_lossy(&bytes);
     crate::http::is_http_url(&url).then(|| url.into_owned())
+}
+
+/// Attach a filter to a stream's chain (`filters.rs`).
+///
+/// A *read* filter on a buffer-backed stream transforms what the stream
+/// has not handed out yet — which, since the bytes are already there, is
+/// the rest of the buffer, done once here. On a descriptor the reads
+/// themselves go through the chain as they happen.
+pub(crate) fn attach_filter(
+    ctx: &mut Ctx,
+    v: &Value,
+    func: &str,
+    attached: crate::filters::Attached,
+    read: bool,
+    first: bool,
+) -> Result<bool, Unwind> {
+    with_stream(ctx, v, func, |s| {
+        let chain = if read { &mut s.read_filters } else { &mut s.write_filters };
+        if first {
+            chain.insert(0, attached);
+        } else {
+            chain.push(attached);
+        }
+        if read && s.pipe.is_none() && s.pos < s.buf.len() {
+            let pending = s.buf[s.pos..].to_vec();
+            let filtered = crate::filters::run(&mut s.read_filters, &pending);
+            s.buf.truncate(s.pos);
+            s.buf.extend_from_slice(&filtered);
+            s.fill_end = s.fill_end.min(s.buf.len());
+        }
+        true
+    })
+}
+
+/// Take a filter off a stream's chain by the id of its resource.
+pub(crate) fn remove_filter(
+    ctx: &mut Ctx,
+    v: &Value,
+    id: u32,
+    read: bool,
+) -> Result<bool, Unwind> {
+    with_stream(ctx, v, "stream_filter_remove", |s| {
+        let chain = if read { &mut s.read_filters } else { &mut s.write_filters };
+        match chain.iter().position(|a| a.id == id) {
+            Some(i) => {
+                chain.remove(i);
+                true
+            }
+            None => false,
+        }
+    })
 }
 
 /// A stream context's options, for a wrapper to read its own section out
@@ -1021,7 +1145,7 @@ pub(crate) fn socket_resource(
     kind: SockKind,
     uri: Option<String>,
 ) -> Value {
-    socket_resource_with(ctx, conn, kind, uri, Vec::new(), None)
+    socket_resource_with(ctx, conn, kind, uri, Vec::new(), None, None)
 }
 
 /// `socket_resource` for a socket a wrapper opened: `prefix` is what it
@@ -1034,6 +1158,7 @@ pub(crate) fn socket_resource_with(
     uri: Option<String>,
     prefix: Vec<u8>,
     wrapper: Option<(Box<str>, Array)>,
+    dechunk: Option<crate::dechunk::Dechunk>,
 ) -> Value {
     // A stream a wrapper opened is read-only; a bare socket is `r+`.
     let mode = if wrapper.is_some() { "r" } else { "r+" };
@@ -1052,7 +1177,9 @@ pub(crate) fn socket_resource_with(
         uri: uri.clone().unwrap_or_default().into(),
         fill_end: 0,
         chunk_size: 8192,
-        pipe: Some(Pipe { conn, nonblocking: false, prefix }),
+        pipe: Some(Pipe { conn, nonblocking: false, prefix, dechunk }),
+        write_filters: Vec::new(),
+        read_filters: Vec::new(),
         sock: Some(Sock {
             kind,
             uri: uri.map(Into::into),
@@ -1137,6 +1264,8 @@ fn std_stream(sink: Sink, uri: &str, mode: &str) -> Stream {
         chunk_size: 8192,
         pipe: None,
         sock: None,
+        write_filters: Vec::new(),
+        read_filters: Vec::new(),
     }
 }
 
@@ -1328,6 +1457,10 @@ fn pipe_read(ctx: &mut Ctx, v: &Value, func: &str, how: PipeRead) -> Result<Opti
         }
         if let Some(sock) = s.sock.as_mut() {
             sock.timed_out = starved && blocking && out.is_empty();
+        }
+        // A descriptor's reads go through the read chain as they happen.
+        if !s.read_filters.is_empty() && !out.is_empty() {
+            out = crate::filters::run(&mut s.read_filters, &out);
         }
         Some(out)
     })

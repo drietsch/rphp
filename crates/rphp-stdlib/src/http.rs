@@ -15,6 +15,9 @@
 //! `http_get_last_response_headers()`, and the `$http_response_header`
 //! variable php drops into the calling scope.
 //!
+//! **A chunked response** is decoded as it is read (`dechunk.rs`), which
+//! is what php's wrapper does once it speaks HTTP/1.1.
+//!
 //! **Redirects** are followed by default, up to `max_redirects` (20), and
 //! the headers of *every* hop accumulate in that order, as php's do.
 //!
@@ -505,6 +508,19 @@ pub(crate) fn open(
         cell.set(Value::Array(data.clone()));
     }
 
+    // A chunked response is decoded as it is read, and whatever came in
+    // with the headers goes through the decoder first.
+    let chunked = header_value(&r.lines, "transfer-encoding")
+        .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"));
+    let (prefix, dechunk) = if chunked {
+        let mut d = crate::dechunk::Dechunk::default();
+        let mut decoded = Vec::with_capacity(r.prefix.len());
+        d.push(&r.prefix, &mut decoded);
+        (decoded, Some(d))
+    } else {
+        (r.prefix, None)
+    };
+
     // php opens 2xx and 3xx; anything else needs `ignore_errors`, and the
     // warning quotes the status line with the newline php leaves on it.
     if !o.ignore_errors && !(200..400).contains(&r.status) {
@@ -519,8 +535,9 @@ pub(crate) fn open(
         r.conn,
         crate::file::SockKind::Tcp,
         Some(url.to_string()),
-        r.prefix,
+        prefix,
         Some(("http".into(), data)),
+        dechunk,
     )))
 }
 

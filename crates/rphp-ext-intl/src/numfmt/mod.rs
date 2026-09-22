@@ -24,7 +24,7 @@ use icu_provider::prelude::*;
 use rphp_runtime::{Ctx, Interp, NativeResult, Registry, Unwind};
 use rphp_value::{Object, Payload, Value};
 
-use crate::data::numfmt::{LANGUAGES, LOCALES, REGION_CURRENCIES, ROWS};
+use crate::data::numfmt::{LOCALES, REGION_CURRENCIES, ROWS};
 use crate::locale;
 use crate::shape::{register_class, register_functions, FnImpl, MethodImpl};
 use crate::state::{
@@ -144,7 +144,7 @@ pub struct NumState {
 /// ICU's bundle resolution over a sorted locale table: the id itself,
 /// its likely-subtags form, then the prefixes of that; `en` when nothing
 /// matches. Returns the bundle's name and its index.
-fn resolve_in(table: &'static [(&'static str, u16)], canonical: &str) -> (String, usize) {
+pub(crate) fn resolve_in(table: &'static [(&'static str, u16)], canonical: &str) -> (String, usize) {
     let head = canonical.split('@').next().unwrap_or("").to_string();
     let find = |name: &str| table.binary_search_by(|(l, _)| (*l).cmp(name)).ok().map(|i| table[i].1 as usize);
     if let Some(i) = find(&head) {
@@ -1130,22 +1130,10 @@ fn payload_clone(_: &mut Interp, src: &Object, dst: &Object) -> Result<(), Unwin
     Ok(())
 }
 
-/// The constructor's locale check (php 8.4+): the language must be one
-/// ICU knows.
-fn valid_language(ctx: &mut Ctx, requested: &str) -> Result<(), Unwind> {
-    let canonical = locale::canonical(requested);
-    let lang = canonical.split(['_', '@']).next().unwrap_or("");
-    if lang.is_empty() || LANGUAGES.binary_search(&lang).is_err() {
-        let who = ctx.active_function_name();
-        return Err(Unwind::value_error(format!("{who}(): Argument #1 ($locale) \"{requested}\" is invalid")));
-    }
-    Ok(())
-}
-
 fn build(ctx: &mut Ctx, args: &[Value], who: &str) -> Result<Option<NumState>, Unwind> {
     state::reset_global(ctx);
     let requested = locale_arg(ctx, args, 0);
-    valid_language(ctx, &requested)?;
+    crate::valid_language(ctx, &requested)?;
     let style = args.get(1).map_or(DECIMAL, Value::to_int);
     let pattern = opt_arg(args, 2).map(|v| String::from_utf8_lossy(&v.to_php_bytes()).into_owned());
     match NumState::new(&requested, style, pattern.as_deref()) {

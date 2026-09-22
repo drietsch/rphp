@@ -53,6 +53,10 @@ docroot = "public"
 # form's session-bound token. The fixture database has 30 posts, so the
 # new one is 31 on both sides.
 cookies = true
+# The comment the walk posts carries the moment it was posted, so the two
+# sides — which run one after the other — write different minutes into the
+# rendered page. Everything else in it still has to match byte for byte.
+mask = ['commented on\s*<strong>([^<]*)</strong>']
 requests = [
   "GET /en/login",
   "POST /en/login _username=jane_admin&_password=kitten&_csrf_token=csrf-token",

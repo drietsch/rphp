@@ -180,6 +180,12 @@ pub struct RungSpec {
     /// response's form fields as `${input:NAME}` (a CSRF token).
     #[serde(default)]
     pub cookies: bool,
+    /// Regular expressions over a response body whose first capture group
+    /// is replaced by `%MASK%` before the two sides are compared: text a
+    /// request's own wall clock produces, which the two sides write at
+    /// the moments they each ran. Everything else still has to match.
+    #[serde(default)]
+    pub mask: Vec<String>,
 }
 
 /// One entry of `commands`: a plain command line or a table with options.
@@ -1115,7 +1121,7 @@ fn wait_ready(port: u16, child: &mut std::process::Child, deadline: Duration) ->
 /// Send one request and read the whole response (the servers close the
 /// connection after it). The HTTP status is the `RunResult`'s exit code,
 /// the raw response its stdout.
-fn http_exchange(port: u16, req: &HttpRequest, timeout: Duration, flow: Option<&mut FlowState>) -> RunResult {
+fn http_exchange(port: u16, req: &HttpRequest, timeout: Duration, flow: Option<&mut FlowState>, masks: &[regex::Regex]) -> RunResult {
     let failed = |status: i32, msg: String| RunResult {
         stdout: Vec::new(),
         stderr: msg.into_bytes(),
@@ -1177,7 +1183,7 @@ fn http_exchange(port: u16, req: &HttpRequest, timeout: Duration, flow: Option<&
         flow.absorb(&response);
     }
     RunResult {
-        stdout: normalize_http(response, port),
+        stdout: normalize_http(response, port, masks),
         stderr: Vec::new(),
         status,
         timed_out,
@@ -1187,7 +1193,7 @@ fn http_exchange(port: u16, req: &HttpRequest, timeout: Duration, flow: Option<&
 /// What every response carries that no engine decides: the port each side
 /// happened to get (echoed in `Host:` and any absolute URL) and the `Date`
 /// header's clock reading. Both become placeholders before comparison.
-fn normalize_http(response: Vec<u8>, port: u16) -> Vec<u8> {
+fn normalize_http(response: Vec<u8>, port: u16, masks: &[regex::Regex]) -> Vec<u8> {
     let with_port = replace_bytes(&response, format!("127.0.0.1:{port}").as_bytes(), b"127.0.0.1:%PORT%");
     let with_port = replace_bytes(&with_port, format!("127.0.0.1%3A{port}").as_bytes(), b"127.0.0.1%3A%PORT%");
     // The head ends at the first blank line; only its `Date:` field is
@@ -1205,7 +1211,27 @@ fn normalize_http(response: Vec<u8>, port: u16) -> Vec<u8> {
             out.extend_from_slice(line);
         }
     }
-    out.extend_from_slice(body);
+    if masks.is_empty() {
+        out.extend_from_slice(body);
+        return out;
+    }
+    // the rung's masks apply to the body alone
+    let mut text = String::from_utf8_lossy(body).into_owned();
+    for re in masks {
+        let mut next = String::with_capacity(text.len());
+        let mut last = 0;
+        for caps in re.captures_iter(&text) {
+            let Some(whole) = caps.get(0) else { continue };
+            let Some(inner) = caps.get(1) else { continue };
+            next.push_str(&text[last..inner.start()]);
+            next.push_str("%MASK%");
+            last = inner.end();
+            let _ = whole;
+        }
+        next.push_str(&text[last..]);
+        text = next;
+    }
+    out.extend_from_slice(text.as_bytes());
     out
 }
 
@@ -1731,9 +1757,10 @@ impl Runner {
             Ok(()) => {
                 let mut runs = Vec::with_capacity(requests.len());
                 let mut flow = rung.cookies.then(FlowState::default);
+                let masks: Vec<regex::Regex> = rung.mask.iter().filter_map(|p| regex::Regex::new(p).ok()).collect();
                 for (i, req) in requests.iter().enumerate() {
                     let started = Instant::now();
-                    let result = http_exchange(port, req, self.opts.timeout, flow.as_mut());
+                    let result = http_exchange(port, req, self.opts.timeout, flow.as_mut(), &masks);
                     dump_result(&out_dir, i + 1, &result)
                         .map_err(|e| format!("cannot write {}: {e}", out_dir.display()))?;
                     runs.push(TimedRun { result, duration: started.elapsed() });

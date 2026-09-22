@@ -63,6 +63,11 @@ pub fn zone_offset_at(zone: &Zone, ts: i64) -> i32 {
     Tz::from(zone.clone()).offset_at(ts)
 }
 
+/// The wall clock, in whole seconds since the epoch.
+pub fn now_seconds() -> i64 {
+    super::classes::now().0
+}
+
 /// The request's default zone (`date_default_timezone_get()`).
 pub fn default_zone(ctx: &mut Ctx) -> Zone {
     default_tz(ctx).into()

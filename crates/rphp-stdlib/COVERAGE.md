@@ -1281,3 +1281,72 @@ the break iterators, `IntlListFormatter`, `Spoofchecker`, `UConverter`,
 `ResourceBundle` and `IntlDatePatternGenerator` are declared but not
 implemented yet (the date half is next; the dump for it is already in
 `data/datefmt.rs`).
+
+## ext/intl, wave two: the date half, and the ladder's last rungs (2026-09-22)
+
+`IntlDateFormatter`, `IntlTimeZone`, `IntlCalendar`/`IntlGregorianCalendar`
+and `IntlIterator` are implemented, and `extension_loaded('intl')` is now
+true. With them the ladder is green end to end for the first time: all 7
+rungs, 47/47 commands — the demo's pages (`L8http`) and its stateful admin
+walk (`L8http-flow`) included. The two rungs had been red since ICU came
+into the oracle, because Symfony renders every date through
+`IntlDateFormatter`.
+
+The date formatter is `SimpleDateFormat` rebuilt the same way the number
+formatter was: `datefmt/render.rs` walks a CLDR pattern field by field —
+every letter ICU accepts (`G y Y u U r Q q M L w W d D F g E e c a b B h H
+K k m s S A z Z O v V X x`), each with ICU's width rules (`yy` is the last
+two digits, `MMM`/`MMMM`/`MMMMM` the three name widths, `EEEEEE` the short
+weekday, `S` the truncated fraction, `V` the BCP-47 id / IANA id /
+exemplar city / location) — over the calendar fields of
+`datefmt/civil.rs` (proleptic Gregorian from 1582-10-15, Julian before,
+ICU's own `weekNumber` for `w`/`W`/`Y`). The names come from a new dump,
+`tools/intl-data/dump-datenames.php` → `data/datenames.rs`: months,
+weekdays, eras, AM/PM, midnight/noon, the flexible day periods at every
+half hour, quarters, the relative-day words and the date-time glue, for
+every ICU locale in every width. The zone names come from CLDR through
+ICU4X's zone field sets, the offsets and the zone database from php's own
+ext/date through a new public bridge (`rphp_stdlib::date_bridge`), so the
+two extensions always agree on what a zone does.
+
+`IntlTimeZone` carries ICU's zone metadata from another dump
+(`tools/intl-data/dump-tz.php` → `data/tz.rs`): every id with its
+canonical, region, IANA and Windows ids, the raw offset and DST saving ICU
+reports, the equivalence groups `getEquivalentID()` walks, the Windows →
+IANA map per region and the canonical id lists the enumerations return.
+The details php shows that only ICU explains are modelled: a name ICU does
+not know is a `SimpleTimeZone` (an hour of nominal saving, no rules, an
+`Etc/Unknown` id that `toDateTimeZone()` refuses) while the `Etc/Unknown`
+singleton saves nothing, a `GMT…` id converts to an offset
+`DateTimeZone`, `createDefault()` follows the environment rather than
+`date.timezone`, and `getCanonicalID()` leaves its by-reference
+`$isSystemID` alone when it fails.
+
+Corpus: `examples/tier-a/intl/{datefmt,datefmt-edge,timezone}.php` — the
+styles of eleven locales × nine style pairs, every pattern field, the
+setters, the relative styles, `formatObject`, parsing in both modes, and
+the timezone and calendar surface, all byte-identical to php 8.5.10.
+
+The ladder's `L8http-flow` needed one harness change: the walk posts a
+comment, so the page it then renders carries the minute each side ran in.
+A rung may now declare `mask` — regular expressions whose first capture
+group is replaced before the two sides are compared — and that rung masks
+the comment's timestamp alone; everything else in the page still has to
+match byte for byte.
+
+Known gaps in the date half: a locale that names a calendar
+(`th_TH@calendar=buddhist`, `de-DE-u-ca-buddhist`) takes its *patterns*
+from that calendar's bundle in ICU, which the dump does not carry, so
+rphp formats it with the Gregorian patterns; `IntlDateFormatter::
+TRADITIONAL` resolves to the Buddhist calendar where the locale has one
+and to the Gregorian one otherwise (Persian, Japanese, Islamic and the
+rest are not implemented); `IntlTimeZone::getDisplayName(true, …)` of a
+zone that has no daylight rules prints the standard name where ICU finds
+the metazone's daylight name (`EST` → `EST`, not `EDT`); and three zones'
+location names differ between ICU 78 and ICU4X's CLDR (`Europe/Kyiv` is
+"Kyiv Time" in one and "Ukraine Time" in the other). `IntlCalendar` is the
+common surface — the fields, the arithmetic, the ranges, the week rules —
+not its every method; `MessageFormatter`, `Transliterator`, the break
+iterators, `IntlListFormatter`, `Spoofchecker`, `UConverter`,
+`ResourceBundle` and `IntlDatePatternGenerator` are still declared but not
+implemented.

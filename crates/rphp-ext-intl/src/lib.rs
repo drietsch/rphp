@@ -18,17 +18,21 @@
 //! says so.
 #![forbid(unsafe_code)]
 
+mod cal;
 mod collator;
 mod data;
+mod datefmt;
 mod generated;
 mod grapheme;
 mod idn;
+mod iterator;
 mod locale;
 mod normalizer;
 mod numfmt;
 mod shape;
 mod state;
 mod tables;
+mod tz;
 mod uchar;
 
 pub use state::{error_name, is_failure};
@@ -43,9 +47,7 @@ pub fn register(r: &mut Registry) {
     if r.interp().class_by_name(b"IntlException").is_some() {
         return;
     }
-    // `extension_loaded('intl')` stays false until the formatters are in:
-    // Symfony's polyfills key on the classes (`class_exists`), which is
-    // what lets the implemented ones take over one at a time.
+    r.extension("intl");
     for ini in generated::ini::INI {
         r.interp().ini.register(ini.name, ini.default.unwrap_or(""));
     }
@@ -66,7 +68,26 @@ pub fn register(r: &mut Registry) {
     collator::register(r);
     uchar::register(r);
     numfmt::register(r);
+    iterator::register(r);
+    tz::register(r);
+    cal::register(r);
+    datefmt::register(r);
 }
+
+/// The constructor check php 8.4+ makes: the language must be one ICU
+/// knows, or the constructor throws a `ValueError`.
+pub(crate) fn valid_language(ctx: &mut Ctx, requested: &str) -> Result<(), rphp_runtime::Unwind> {
+    let canonical = locale::canonical(requested);
+    let lang = canonical.split(['_', '@']).next().unwrap_or("");
+    if lang.is_empty() || data::numfmt::LANGUAGES.binary_search(&lang).is_err() {
+        let who = ctx.active_function_name();
+        return Err(rphp_runtime::Unwind::value_error(format!("{who}(): Argument #1 ($locale) \"{requested}\" is invalid")));
+    }
+    Ok(())
+}
+
+/// The locale resolution the data tables share (ICU's bundle lookup).
+pub(crate) use numfmt::resolve_in as numfmt_resolve;
 
 /// The extension's own functions: the error accessors.
 static FUNCTIONS: &[shape::FnImpl] = &[

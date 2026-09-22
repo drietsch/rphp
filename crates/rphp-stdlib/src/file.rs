@@ -42,6 +42,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("stream_get_contents", 1, Some(3), stream_get_contents),
     nf!("stream_get_meta_data", 1, Some(1), stream_get_meta_data),
     nf!("stream_set_blocking", 2, Some(2), stream_set_blocking),
+    rphp_runtime::nf_ref!("stream_select", 4, Some(5), 0b111, stream_select),
     nf!("stream_set_chunk_size", 2, Some(2), stream_set_chunk_size),
     nf!("stream_set_write_buffer", 2, Some(2), stream_set_write_buffer),
     nf!("stream_set_read_buffer", 2, Some(2), stream_set_read_buffer),
@@ -100,6 +101,47 @@ pub(crate) struct Stream {
     /// `stream_set_chunk_size()`: what the function reports back; the
     /// buffer-backed reads here do not chunk.
     chunk_size: i64,
+    /// A live descriptor (a `proc_open` pipe): reads and writes go straight
+    /// to it, nothing is buffered, and the cursor means nothing.
+    pipe: Option<Pipe>,
+}
+
+/// The descriptor behind a pipe stream.
+pub(crate) struct Pipe {
+    pub(crate) file: fs::File,
+    /// `stream_set_blocking(false)`: `O_NONBLOCK` is set on the descriptor.
+    pub(crate) nonblocking: bool,
+}
+
+impl Pipe {
+    /// Set or clear `O_NONBLOCK`.
+    fn set_blocking(&mut self, blocking: bool) -> bool {
+        let Ok(mut flags) = rustix::fs::fcntl_getfl(&self.file) else { return false };
+        flags.set(rustix::fs::OFlags::NONBLOCK, !blocking);
+        if rustix::fs::fcntl_setfl(&self.file, flags).is_err() {
+            return false;
+        }
+        self.nonblocking = !blocking;
+        true
+    }
+
+    /// One `read(2)` of up to `len` bytes: `Ok(None)` when a non-blocking
+    /// pipe has nothing yet, `Ok(Some(empty))` at end of stream.
+    fn read(&mut self, len: usize) -> std::io::Result<Option<Vec<u8>>> {
+        use std::io::Read;
+        let mut buf = vec![0u8; len.max(1)];
+        loop {
+            match self.file.read(&mut buf) {
+                Ok(n) => {
+                    buf.truncate(n);
+                    return Ok(Some(buf));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+                Err(e) => return Err(e),
+            }
+        }
+    }
 }
 
 /// Where a stream's writes end up.
@@ -620,6 +662,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             uri: path_str.clone().into(),
             fill_end: 0,
             chunk_size: 8192,
+            pipe: None,
         }
     } else {
         let p = arg_path(ctx, &args[0]);
@@ -668,6 +711,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             uri: p.to_string_lossy().into_owned().into(),
             fill_end: pos,
             chunk_size: 8192,
+            pipe: None,
         }
     };
     Ok(ctx.resources.add("stream", Box::new(stream)))
@@ -701,9 +745,55 @@ pub(crate) fn open_resource(ctx: &mut Ctx, path: &std::path::Path, mode: &str) -
         mode: mode.into(),
         uri: path.to_string_lossy().into_owned().into(),
         fill_end: 0,
-            chunk_size: 8192,
+        chunk_size: 8192,
+        pipe: None,
     };
     ctx.resources.add("stream", Box::new(stream))
+}
+
+/// A stream over one end of a pipe (`proc_open`): `readable` for the
+/// child's stdout/stderr, writable for its stdin. Blocking to begin with,
+/// as php's are.
+pub(crate) fn pipe_resource(ctx: &mut Ctx, file: fs::File, readable: bool) -> Value {
+    let stream = Stream {
+        buf: Vec::new(),
+        pos: 0,
+        file: None,
+        path: None,
+        append: false,
+        sink: Sink::Buffer,
+        readable,
+        writable: !readable,
+        eof: false,
+        dirty: false,
+        mode: if readable { "r".into() } else { "w".into() },
+        uri: "php://stdio".into(),
+        fill_end: 0,
+        chunk_size: 8192,
+        pipe: Some(Pipe { file, nonblocking: false }),
+    };
+    ctx.resources.add("stream", Box::new(stream))
+}
+
+/// A duplicate of the descriptor behind a pipe stream, for `stream_select`
+/// and for handing a pipe on to a child: `None` for any other stream.
+pub(crate) fn pipe_dup(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<fs::File>, Unwind> {
+    with_stream(ctx, v, func, |s| s.pipe.as_ref().and_then(|p| p.file.try_clone().ok()))
+}
+
+/// Whether a stream is one of the process's output handles (`php://stdout`,
+/// `php://stderr`), which a child inherits rather than receives a copy of.
+pub(crate) fn std_sink(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<bool>, Unwind> {
+    with_stream(ctx, v, func, |s| match s.sink {
+        Sink::Stdout => Some(false),
+        Sink::Stderr => Some(true),
+        Sink::Buffer => None,
+    })
+}
+
+/// The path behind a real-file stream, for a child to reopen.
+pub(crate) fn stream_path(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<std::path::PathBuf>, Unwind> {
+    with_stream(ctx, v, func, |s| s.path.clone())
 }
 
 /// A `php://` handle for one of the process's standard streams.
@@ -722,7 +812,8 @@ fn std_stream(sink: Sink, uri: &str, mode: &str) -> Stream {
         mode: mode.into(),
         uri: uri.into(),
         fill_end: 0,
-            chunk_size: 8192,
+        chunk_size: 8192,
+        pipe: None,
     }
 }
 
@@ -735,7 +826,11 @@ fn flush_stream(s: &Stream) {
 
 /// `fclose(resource $stream): bool`
 fn fclose(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    with_stream(ctx, &args[0].clone(), "fclose", |s| flush_stream(s))?;
+    with_stream(ctx, &args[0].clone(), "fclose", |s| {
+        flush_stream(s);
+        // The child sees EOF on its stdin the moment the pipe closes.
+        s.pipe = None;
+    })?;
     ctx.resources.close_value(&args[0]);
     Ok(Value::Bool(true))
 }
@@ -747,6 +842,29 @@ fn fwrite(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         data.truncate(len.max(0) as usize);
     }
     let stream = args[0].clone();
+    // A pipe: the bytes go to the descriptor now; a closed reader (EPIPE)
+    // is php's `false` with a notice.
+    let piped = with_stream(ctx, &stream, "fwrite", |s| {
+        let p = s.pipe.as_mut()?;
+        if !s.writable {
+            return Some(Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
+        }
+        use std::io::Write;
+        Some(p.file.write_all(&data).map(|()| data.len()))
+    })?;
+    if let Some(r) = piped {
+        return match r {
+            Ok(n) => Ok(Value::Int(n as i64)),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                ctx.notice(&format!("fwrite(): Write of {} bytes failed with errno=9 Bad file descriptor", data.len()))?;
+                Ok(Value::Bool(false))
+            }
+            Err(_) => {
+                ctx.notice(&format!("fwrite(): Write of {} bytes failed with errno=32 Broken pipe", data.len()))?;
+                Ok(Value::Bool(false))
+            }
+        };
+    }
     let sink = with_stream(ctx, &stream, "fwrite", |s| {
         if !s.writable {
             return Err((s.path.is_some(), data.len()));
@@ -806,11 +924,77 @@ fn read_denied(ctx: &mut Ctx, v: &Value, func: &str) -> Result<bool, Unwind> {
     Ok(denied)
 }
 
+/// What a read function does with a pipe stream, when the stream is one.
+enum PipeRead {
+    /// Up to this many bytes, one `read(2)`.
+    Some(usize),
+    /// A line up to and including `\n`.
+    Line,
+    /// Everything up to end of stream (or, non-blocking, up to "nothing yet").
+    All(Option<usize>),
+}
+
+/// Read from a pipe stream; `Ok(None)` when the stream is not a pipe. A
+/// read that comes back empty at end of stream sets `eof`; a non-blocking
+/// read with nothing yet answers the empty string without setting it.
+fn pipe_read(ctx: &mut Ctx, v: &Value, func: &str, how: PipeRead) -> Result<Option<Vec<u8>>, Unwind> {
+    with_stream(ctx, v, func, |s| {
+        let p = s.pipe.as_mut()?;
+        let mut out = Vec::new();
+        match how {
+            PipeRead::Some(len) => match p.read(len) {
+                Ok(Some(b)) => {
+                    if b.is_empty() && len > 0 {
+                        s.eof = true;
+                    }
+                    out = b;
+                }
+                Ok(None) => {}
+                Err(_) => s.eof = true,
+            },
+            PipeRead::Line => loop {
+                match p.read(1) {
+                    Ok(Some(b)) if !b.is_empty() => {
+                        out.push(b[0]);
+                        if b[0] == b'\n' {
+                            break;
+                        }
+                    }
+                    Ok(Some(_)) | Err(_) => {
+                        s.eof = true;
+                        break;
+                    }
+                    Ok(None) => break,
+                }
+            },
+            PipeRead::All(max) => loop {
+                let want = match max {
+                    Some(m) if out.len() >= m => break,
+                    Some(m) => (m - out.len()).min(CHUNK),
+                    None => CHUNK,
+                };
+                match p.read(want) {
+                    Ok(Some(b)) if !b.is_empty() => out.extend_from_slice(&b),
+                    Ok(Some(_)) | Err(_) => {
+                        s.eof = true;
+                        break;
+                    }
+                    Ok(None) => break,
+                }
+            },
+        }
+        Some(out)
+    })
+}
+
 fn fread(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let len = args[1].to_int().max(0) as usize;
     let stream = args[0].clone();
     if read_denied(ctx, &stream, "fread")? {
         return Ok(Value::Bool(false));
+    }
+    if let Some(b) = pipe_read(ctx, &stream, "fread", PipeRead::Some(len.min(CHUNK)))? {
+        return Ok(Value::Str(Str::from_vec(b)));
     }
     with_stream(ctx, &stream, "fread", |s| {
         record_fill(s);
@@ -829,6 +1013,9 @@ fn fgets(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
     if read_denied(ctx, &stream, "fgets")? {
         return Ok(Value::Bool(false));
+    }
+    if let Some(b) = pipe_read(ctx, &stream, "fgets", PipeRead::Line)? {
+        return Ok(if b.is_empty() { Value::Bool(false) } else { Value::Str(Str::from_vec(b)) });
     }
     with_stream(ctx, &stream, "fgets", |s| {
         record_fill(s);
@@ -856,6 +1043,9 @@ fn fgetc(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
     if read_denied(ctx, &stream, "fgetc")? {
         return Ok(Value::Bool(false));
+    }
+    if let Some(b) = pipe_read(ctx, &stream, "fgetc", PipeRead::Some(1))? {
+        return Ok(if b.is_empty() { Value::Bool(false) } else { Value::Str(Str::from_vec(b)) });
     }
     with_stream(ctx, &stream, "fgetc", |s| {
         record_fill(s);
@@ -917,6 +1107,9 @@ fn stream_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     if read_denied(ctx, &stream, "stream_get_contents")? {
         return Ok(Value::Str(Str::new(b"")));
     }
+    if let Some(b) = pipe_read(ctx, &stream, "stream_get_contents", PipeRead::All(max.filter(|n| *n >= 0).map(|n| n as usize)))? {
+        return Ok(Value::Str(Str::from_vec(b)));
+    }
     with_stream(ctx, &stream, "stream_get_contents", |s| {
         record_fill(s);
         if offset >= 0 {
@@ -947,7 +1140,9 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
     with_stream(ctx, &stream, "stream_get_meta_data", |s| {
         let php_stream = s.path.is_none();
-        let (wrapper, kind, seekable) = if !php_stream {
+        let (wrapper, kind, seekable) = if s.pipe.is_some() {
+            ("PHP", "STDIO".to_string(), false)
+        } else if !php_stream {
             ("plainfile", "STDIO".to_string(), true)
         } else if s.sink != Sink::Buffer {
             ("PHP", "STDIO".to_string(), false)
@@ -959,7 +1154,7 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         let mut out = Array::new();
         let mut set = |k: &str, v: Value| out.set(ArrayKey::str(k.as_bytes()), v);
         set("timed_out", Value::Bool(false));
-        set("blocked", Value::Bool(true));
+        set("blocked", Value::Bool(s.pipe.as_ref().is_none_or(|p| !p.nonblocking)));
         set("eof", Value::Bool(s.eof));
         set("wrapper_type", Value::string(wrapper.as_bytes()));
         set("stream_type", Value::string(kind.as_bytes()));
@@ -979,7 +1174,90 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// call only has to report success.
 fn stream_set_blocking(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
-    with_stream(ctx, &stream, "stream_set_blocking", |_| Value::Bool(true))
+    let blocking = args[1].to_bool();
+    with_stream(ctx, &stream, "stream_set_blocking", |s| match s.pipe.as_mut() {
+        Some(p) => Value::Bool(p.set_blocking(blocking)),
+        None => Value::Bool(true),
+    })
+}
+
+/// `stream_select(?array &$read, ?array &$write, ?array &$except, ?int $seconds, ?int $microseconds = null): int|false`
+///
+/// `poll(2)` over the pipe streams named; each array is narrowed to the
+/// streams that are ready, keys kept. A buffer stream (a file, a memory
+/// stream) is always ready, as its descriptor would be. `except` is
+/// accepted and never fires.
+fn stream_select(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    use rustix::event::{poll, PollFd, PollFlags};
+    let timeout = match (&args[3], args.get(4)) {
+        (Value::Null, _) => None,
+        (secs, usecs) => {
+            let s = secs.to_int().max(0);
+            let us = usecs.filter(|v| !matches!(v, Value::Null)).map_or(0, Value::to_int).max(0);
+            Some(rustix::fs::Timespec { tv_sec: s + us / 1_000_000, tv_nsec: (us % 1_000_000) * 1000 })
+        }
+    };
+    // (array index, key, dup of the descriptor) for every pipe stream;
+    // ready flags for the rest.
+    let mut sets: [Vec<(ArrayKey, Value, bool)>; 2] = [Vec::new(), Vec::new()];
+    let mut fds: Vec<(usize, usize, fs::File)> = Vec::new();
+    for (which, arg) in args.iter().take(2).enumerate() {
+        let Value::Array(a) = &*arg.deref() else { continue };
+        for (k, v) in a.iter() {
+            let v = v.deref().into_owned();
+            match pipe_dup(ctx, &v, "stream_select")? {
+                Some(f) => {
+                    fds.push((which, sets[which].len(), f));
+                    sets[which].push((k.clone(), v, false));
+                }
+                None => sets[which].push((k.clone(), v, true)),
+            }
+        }
+    }
+    let mut ready = sets.iter().map(|s| s.iter().filter(|e| e.2).count()).sum::<usize>();
+    if !fds.is_empty() {
+        let mut polls: Vec<PollFd<'_>> = fds
+            .iter()
+            .map(|(which, _, f)| PollFd::new(f, if *which == 0 { PollFlags::IN | PollFlags::HUP } else { PollFlags::OUT }))
+            .collect();
+        // Everything else being ready already, a poll with descriptors only
+        // asks whether they are too.
+        let wait = if ready > 0 { Some(rustix::fs::Timespec { tv_sec: 0, tv_nsec: 0 }) } else { timeout };
+        loop {
+            match poll(&mut polls, wait.as_ref()) {
+                Ok(_) => break,
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(_) => {
+                    ctx.warn("stream_select(): Unable to select")?;
+                    return Ok(Value::Bool(false));
+                }
+            }
+        }
+        for (i, p) in polls.iter().enumerate() {
+            let (which, at, _) = &fds[i];
+            let hit = !(p.revents() & (PollFlags::IN | PollFlags::OUT | PollFlags::HUP | PollFlags::ERR | PollFlags::NVAL)).is_empty();
+            if hit {
+                sets[*which][*at].2 = true;
+                ready += 1;
+            }
+        }
+    }
+    for (which, set) in sets.iter().enumerate() {
+        if !matches!(args[which], Value::Array(_)) {
+            continue;
+        }
+        let mut out = Array::new();
+        for (k, v, r) in set {
+            if *r {
+                out.set(k.clone(), v.clone());
+            }
+        }
+        args[which] = Value::Array(out);
+    }
+    if matches!(args[2], Value::Array(_)) {
+        args[2] = Value::Array(Array::new());
+    }
+    Ok(Value::Int(ready as i64))
 }
 
 /// `stream_set_chunk_size(resource $stream, int $size): int` — the previous

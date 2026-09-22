@@ -12,7 +12,7 @@ use regex::bytes::Regex;
 
 use super::allowlist::Allowlist;
 use super::normalize::{Category, NormalizeContext};
-use super::oracle::{run_php, run_rphp, RunResult, DEFAULT_TIMEOUT};
+use super::oracle::{php_command, rphp_command, run_command, RunResult, DEFAULT_TIMEOUT};
 use super::sidecar;
 
 /// Which channel a mismatch was found on.
@@ -420,8 +420,22 @@ pub fn run_snippet_full(
     std::fs::create_dir_all(&php_cwd)?;
     std::fs::create_dir_all(&rphp_cwd)?;
 
-    let php_res = run_php(php, &script, &[], &php_cwd, timeout)?;
-    let rphp_res = run_rphp(rphp, &script, &[], &rphp_cwd, timeout)?;
+    // One temporary directory for the pair, so `sys_get_temp_dir()` reads
+    // the same on both sides — snippets do print paths built from it — but
+    // a *different* one per comparison, so nothing else running at the same
+    // time shares it. `session/basics.php` picks a fixed session id and so
+    // writes `sess_tierasession…`: with the inherited system temp
+    // directory that is one path shared by every process running the
+    // snippet, and the suite runs snippets in parallel *and* runs this
+    // comparison alongside the php-free smoke test. The two engines run one
+    // after the other here, which is the same order they have always had.
+    let shared_tmp = tmp.path().join("tmp");
+    std::fs::create_dir_all(&shared_tmp)?;
+
+    let php_res =
+        run_command(with_tmpdir(php_command(php, &script, &[], &php_cwd), &shared_tmp), timeout)?;
+    let rphp_res =
+        run_command(with_tmpdir(rphp_command(rphp, &script, &[], &rphp_cwd), &shared_tmp), timeout)?;
 
     let name = allowlist.relative_name(snippet);
     let template = match std::fs::read(sidecar(snippet, "expectf")) {
@@ -450,7 +464,16 @@ pub fn run_snippet_full(
 pub fn run_rphp_isolated(rphp: &Path, snippet: &Path, timeout: Duration) -> std::io::Result<RunResult> {
     let script = snippet.canonicalize()?;
     let tmp = tempfile::tempdir()?;
-    run_rphp(rphp, &script, &[], tmp.path(), timeout)
+    let scratch = tmp.path().join("tmp");
+    std::fs::create_dir_all(&scratch)?;
+    run_command(with_tmpdir(rphp_command(rphp, &script, &[], tmp.path()), &scratch), timeout)
+}
+
+/// Point a command's `TMPDIR` at `dir`, so what the snippet writes to the
+/// system temp directory lands somewhere only this run owns.
+fn with_tmpdir(mut cmd: std::process::Command, dir: &Path) -> std::process::Command {
+    cmd.env("TMPDIR", dir);
+    cmd
 }
 
 /// Convenience over [`run_snippet_full`] with the default timeout; a harness

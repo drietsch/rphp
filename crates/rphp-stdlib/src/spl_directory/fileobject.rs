@@ -78,7 +78,7 @@ use super::common::{
     as_path, debug_array, int_arg, set_file_name, str_arg, sync, this, with_fs, File, Fs, Kind,
 };
 use super::iterators::no_clone;
-use crate::filestat::{invalidate, io_text};
+use crate::filestat::{clear_stat_cache, io_text};
 
 /// `SplFileObject::DROP_NEW_LINE`
 const DROP_NEW_LINE: i64 = 1;
@@ -743,8 +743,7 @@ fn fo_fread(ctx: &mut Ctx, o: Option<&Object>, args: &mut [Value]) -> NativeResu
 fn flush_now(ctx: &mut Ctx, h: &Handle) -> Result<(), Unwind> {
     on_stream(ctx, h, b"fflush", &[])?;
     if !is_php_wrapper(&h.name) {
-        let p = as_path(ctx, &h.name);
-        invalidate(ctx, &p);
+        clear_stat_cache(ctx);
     }
     Ok(())
 }

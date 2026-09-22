@@ -52,7 +52,7 @@ use std::path::{Path, PathBuf};
 use rphp_runtime::{nf, nf_ref, Ctx, NativeFn, NativeResult, Unwind};
 use rphp_value::{Array, ArrayKey, Str, Value};
 
-use crate::filestat::{arg_path, errno_text, invalidate, io_text};
+use crate::filestat::{arg_path, clear_stat_cache, errno_text, io_text};
 
 /// This extension's registry contribution (see `lib.rs`).
 pub(crate) static FUNCTIONS: &[NativeFn] = &[
@@ -300,7 +300,7 @@ fn set_owner(ctx: &mut Ctx, args: &mut [Value], user: bool) -> NativeResult {
     };
     let path = arg_path(ctx, &args[0]);
     let r = apply_owner(&path, user, id);
-    invalidate(ctx, &path);
+    clear_stat_cache(ctx);
     match r {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
@@ -415,7 +415,7 @@ fn tempnam(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     for _ in 0..16 {
         let path = dir.join(format!("{pfx}{}", random_suffix()));
         if create_private(&path).is_ok() {
-            invalidate(ctx, &path);
+            clear_stat_cache(ctx);
             return Ok(Value::string(path.to_string_lossy().as_bytes()));
         }
     }
@@ -493,8 +493,7 @@ fn link(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let target = arg_path(ctx, &args[0]);
     let path = arg_path(ctx, &args[1]);
     let r = fs::hard_link(&target, &path);
-    invalidate(ctx, &target);
-    invalidate(ctx, &path);
+    clear_stat_cache(ctx);
     match r {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
@@ -513,7 +512,7 @@ fn symlink(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let target = PathBuf::from(String::from_utf8_lossy(&args[0].to_php_bytes()).into_owned());
     let path = arg_path(ctx, &args[1]);
     let r = make_symlink(&target, &path);
-    invalidate(ctx, &path);
+    clear_stat_cache(ctx);
     match r {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {

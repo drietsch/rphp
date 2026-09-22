@@ -6,7 +6,7 @@ use std::fs;
 use rphp_runtime::{nf, Ctx, NativeFn, NativeResult};
 use rphp_value::{Array, Value};
 
-use crate::filestat::{arg_path, invalidate};
+use crate::filestat::{arg_path, clear_stat_cache};
 
 /// This extension's registry contribution (see `lib.rs`).
 pub(crate) static FUNCTIONS: &[NativeFn] = &[
@@ -63,7 +63,7 @@ fn mkdir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     } else {
         fs::create_dir(&p)
     };
-    invalidate(ctx, &p);
+    clear_stat_cache(ctx);
     match r {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
@@ -80,7 +80,7 @@ fn mkdir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 fn rmdir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let p = arg_path(ctx, &args[0]);
     let r = fs::remove_dir(&p);
-    invalidate(ctx, &p);
+    clear_stat_cache(ctx);
     match r {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {

@@ -6,7 +6,8 @@
 //! exactly one path — the last one looked at — and this models that, because
 //! a cache that held more would be stale where php is not (an entry whose
 //! directory has since been moved away). Every function here that *changes*
-//! a path clears the entry too.
+//! a path empties the slot, whichever path it changed, as php's
+//! `php_clear_stat_cache()` does.
 //!
 //! A failing predicate returns `false` and, for the ones php warns about,
 //! emits through the ordinary warning channel so `@` suppresses it.
@@ -60,11 +61,15 @@ pub(crate) fn cached_stat(ctx: &mut Ctx, path: &Path) -> Option<fs::Metadata> {
     md
 }
 
-/// Drop `path` from the stat cache (after anything that changes it).
-pub(crate) fn invalidate(ctx: &mut Ctx, path: &Path) {
-    if ctx.ext.stat_cache.as_ref().is_some_and(|(cached, _)| cached == path) {
-        ctx.ext.stat_cache = None;
-    }
+/// Empty the stat cache, as php's `php_clear_stat_cache()` does, after
+/// anything changed a path.
+///
+/// It takes no path because the slot holds one: a change to *any* path is a
+/// change to what the cache knows, which is what makes `rename("a", "a2")`
+/// answer `is_dir("a/b")` afresh — the shape Symfony's cache-directory
+/// dance depends on.
+pub(crate) fn clear_stat_cache(ctx: &mut Ctx) {
+    ctx.ext.stat_cache = None;
 }
 
 /// The argument as a path, resolved against the interpreter's cwd so a
@@ -249,7 +254,7 @@ fn touch(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             .open(&p)
             .is_ok()
     };
-    invalidate(ctx, &p);
+    clear_stat_cache(ctx);
     if !ok {
         let shown = String::from_utf8_lossy(&args[0].to_php_bytes()).into_owned();
         ctx.warn(&format!("touch(): Unable to create file {shown}"))?;
@@ -260,13 +265,9 @@ fn touch(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `clearstatcache(bool $clear_realpath_cache = false, string $filename = ""): void`
 /// `clearstatcache(bool $clear_realpath_cache = false, string $filename = "")`.
 fn clearstatcache(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    match args.get(1) {
-        Some(v) if !v.to_php_bytes().is_empty() => {
-            let p = arg_path(ctx, v);
-            invalidate(ctx, &p);
-        }
-        _ => ctx.ext.stat_cache = None,
-    }
+    // `$filename` narrows php's multi-entry cache to one path; ours *is* one
+    // path, so either way the slot goes.
+    clear_stat_cache(ctx);
     if args.first().is_some_and(|v| v.to_bool()) {
         rphp_runtime::clear_realpath_cache();
     }
@@ -319,7 +320,7 @@ fn chmod(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let mode = args[1].to_int();
     match rustix::fs::chmod(&path, rustix::fs::Mode::from_bits_retain(mode as u16)) {
         Ok(()) => {
-            invalidate(ctx, &path);
+            clear_stat_cache(ctx);
             Ok(Value::Bool(true))
         }
         Err(e) => {

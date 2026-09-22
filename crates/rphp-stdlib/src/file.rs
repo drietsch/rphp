@@ -5,7 +5,7 @@
 //! arithmetic and never touch the filesystem.
 //!
 //! Reads and writes here go through the stat cache in `filestat.rs`, which
-//! they invalidate whenever they change a path.
+//! they empty whenever they change a path.
 
 use std::fs;
 use std::io::Write;
@@ -13,7 +13,7 @@ use std::io::Write;
 use rphp_runtime::{nf, Ctx, NativeFn, NativeResult, Unwind};
 use rphp_value::{Array, ArrayKey, Str, Value};
 
-use crate::filestat::{arg_path, invalidate};
+use crate::filestat::{arg_path, clear_stat_cache};
 
 /// This extension's registry contribution (see `lib.rs`).
 pub(crate) static FUNCTIONS: &[NativeFn] = &[
@@ -275,7 +275,7 @@ fn file_put_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     } else {
         fs::write(&p, &data)
     };
-    invalidate(ctx, &p);
+    clear_stat_cache(ctx);
     match r {
         Ok(()) => Ok(Value::Int(data.len() as i64)),
         Err(_) => {
@@ -362,7 +362,7 @@ fn readfile(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 fn unlink(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let p = arg_path(ctx, &args[0]);
     let r = fs::remove_file(&p);
-    invalidate(ctx, &p);
+    clear_stat_cache(ctx);
     match r {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
@@ -391,8 +391,7 @@ fn move_uploaded_file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let from = arg_path(ctx, &args[0]);
     let to = arg_path(ctx, &args[1]);
     let moved = fs::rename(&from, &to).or_else(|_| fs::copy(&from, &to).and_then(|_| fs::remove_file(&from)));
-    invalidate(ctx, &from);
-    invalidate(ctx, &to);
+    clear_stat_cache(ctx);
     match moved {
         Ok(()) => {
             ctx.uploaded_files.remove(i);
@@ -413,7 +412,7 @@ fn copy(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let from = arg_path(ctx, &args[0]);
     let to = arg_path(ctx, &args[1]);
     let r = fs::copy(&from, &to);
-    invalidate(ctx, &to);
+    clear_stat_cache(ctx);
     match r {
         Ok(_) => Ok(Value::Bool(true)),
         Err(e) => {
@@ -432,8 +431,7 @@ fn rename(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let from = arg_path(ctx, &args[0]);
     let to = arg_path(ctx, &args[1]);
     let r = fs::rename(&from, &to);
-    invalidate(ctx, &from);
-    invalidate(ctx, &to);
+    clear_stat_cache(ctx);
     match r {
         Ok(()) => Ok(Value::Bool(true)),
         Err(e) => {
@@ -846,8 +844,8 @@ fn fclose(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         s.pipe = None;
         written
     })?;
-    if let Some(path) = written {
-        invalidate(ctx, &path);
+    if written.is_some() {
+        clear_stat_cache(ctx);
     }
     ctx.resources.close_value(&args[0]);
     Ok(Value::Bool(true))
@@ -1110,8 +1108,8 @@ fn rewind(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 fn fflush(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
     let written = with_stream(ctx, &stream, "fflush", |s| flush_stream(s))?;
-    if let Some(path) = written {
-        invalidate(ctx, &path);
+    if written.is_some() {
+        clear_stat_cache(ctx);
     }
     Ok(Value::Bool(true))
 }

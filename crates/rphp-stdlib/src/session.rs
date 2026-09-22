@@ -459,7 +459,7 @@ fn handler_write(ctx: &mut Ctx, id: &[u8], data: &[u8]) -> Result<(), Unwind> {
     }
     let path = session_file(ctx, id);
     let _ = std::fs::write(&path, data);
-    crate::filestat::invalidate(ctx, &path);
+    crate::filestat::clear_stat_cache(ctx);
     Ok(())
 }
 
@@ -470,7 +470,7 @@ fn handler_destroy(ctx: &mut Ctx, id: &[u8]) -> Result<(), Unwind> {
     }
     let path = session_file(ctx, id);
     let _ = std::fs::remove_file(&path);
-    crate::filestat::invalidate(ctx, &path);
+    crate::filestat::clear_stat_cache(ctx);
     Ok(())
 }
 
@@ -482,7 +482,6 @@ fn files_gc(ctx: &mut Ctx, maxlifetime: i64) -> i64 {
     };
     let now = std::time::SystemTime::now();
     let mut removed = 0;
-    let mut stale_paths = Vec::new();
     for e in entries.flatten() {
         if !e.file_name().to_string_lossy().starts_with("sess_") {
             continue;
@@ -494,12 +493,11 @@ fn files_gc(ctx: &mut Ctx, maxlifetime: i64) -> i64 {
             .and_then(|t| now.duration_since(t).ok())
             .is_some_and(|d| d.as_secs() as i64 > maxlifetime);
         if stale && std::fs::remove_file(e.path()).is_ok() {
-            stale_paths.push(e.path());
             removed += 1;
         }
     }
-    for path in stale_paths {
-        crate::filestat::invalidate(ctx, &path);
+    if removed > 0 {
+        crate::filestat::clear_stat_cache(ctx);
     }
     removed
 }
@@ -1203,7 +1201,7 @@ fn handler_write_method(ctx: &mut Ctx, _: Option<&Object>, args: &mut [Value]) -
     let data = args[1].to_php_bytes().to_vec();
     let path = session_file(ctx, &id);
     let ok = std::fs::write(&path, data).is_ok();
-    crate::filestat::invalidate(ctx, &path);
+    crate::filestat::clear_stat_cache(ctx);
     Ok(Value::Bool(ok))
 }
 
@@ -1212,7 +1210,7 @@ fn handler_destroy_method(ctx: &mut Ctx, _: Option<&Object>, args: &mut [Value])
     let id = args[0].to_php_bytes().to_vec();
     let path = session_file(ctx, &id);
     let _ = std::fs::remove_file(&path);
-    crate::filestat::invalidate(ctx, &path);
+    crate::filestat::clear_stat_cache(ctx);
     Ok(Value::Bool(true))
 }
 

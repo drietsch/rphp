@@ -42,6 +42,14 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("stream_get_contents", 1, Some(3), stream_get_contents),
     nf!("stream_get_meta_data", 1, Some(1), stream_get_meta_data),
     nf!("stream_set_blocking", 2, Some(2), stream_set_blocking),
+    nf!("stream_context_create", 0, Some(2), stream_context_create),
+    nf!("stream_context_get_options", 1, Some(1), stream_context_get_options),
+    nf!("stream_context_set_option", 2, Some(4), stream_context_set_option),
+    nf!("stream_context_set_options", 2, Some(2), stream_context_set_options),
+    nf!("stream_context_get_params", 1, Some(1), stream_context_get_params),
+    nf!("stream_context_set_params", 2, Some(2), stream_context_set_params),
+    nf!("stream_context_get_default", 0, Some(1), stream_context_get_default),
+    nf!("stream_context_set_default", 1, Some(1), stream_context_set_default),
     rphp_runtime::nf_ref!("stream_select", 4, Some(5), 0b111, stream_select),
     nf!("stream_set_chunk_size", 2, Some(2), stream_set_chunk_size),
     nf!("stream_set_write_buffer", 2, Some(2), stream_set_write_buffer),
@@ -1380,4 +1388,213 @@ fn stream_copy_to_stream(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         Sink::Buffer => {}
     }
     Ok(Value::Int(data.len() as i64))
+}
+
+/// A stream context: per-wrapper options and the parameters (`notification`,
+/// `options`) `stream_context_get_params()` reports.
+///
+/// The local wrappers this engine serves take no options — a context is
+/// accepted everywhere php accepts one and changes nothing — but scripts
+/// build and inspect contexts constantly (Symfony's `Filesystem::copy` makes
+/// one for every copy), so they round-trip exactly.
+#[derive(Default, Clone)]
+pub(crate) struct StreamContext {
+    /// `wrapper => option => value`, in insertion order.
+    options: Array,
+    /// The parameters other than `options`; `notification` is the only one
+    /// php defines.
+    params: Array,
+}
+
+/// The `Interp::ext` slot the default context lives in.
+const DEFAULT_CONTEXT_SLOT: &str = "stream.default-context";
+
+#[derive(Default)]
+struct DefaultContext(Option<Value>);
+
+/// `$options` as php validates it: `wrapper => [option => value]`, every
+/// wrapper an array.
+fn context_options(ctx: &mut Ctx, func: &str, arg: Option<&Value>) -> Result<Array, Unwind> {
+    let Some(v) = arg.filter(|v| !matches!(**v, Value::Null)) else { return Ok(Array::new()) };
+    let _ = ctx;
+    let Value::Array(a) = &*v.deref() else {
+        return Err(Unwind::type_error(format!("{func}(): Argument #1 ($options) must be of type ?array, {} given", rphp_runtime::value_name(&v.deref()))));
+    };
+    for (_, wrapper) in a.iter() {
+        if !matches!(&*wrapper.deref(), Value::Array(_)) {
+            return Err(Unwind::type_error(format!("{func}(): Argument #1 ($options) must be an array with valid callbacks as values, no array or string given")));
+        }
+    }
+    Ok(a.clone())
+}
+
+/// `$params`: php validates `notification` as a callable and refuses the
+/// whole call — with the *options* message — when it is not one.
+fn context_params(ctx: &mut Ctx, func: &str, arg: Option<&Value>) -> Result<Array, Unwind> {
+    let Some(v) = arg.filter(|v| !matches!(**v, Value::Null)) else { return Ok(Array::new()) };
+    let Value::Array(a) = &*v.deref() else {
+        return Err(Unwind::type_error(format!("{func}(): Argument #2 ($params) must be of type ?array, {} given", rphp_runtime::value_name(&v.deref()))));
+    };
+    if let Some(notification) = a.get_deref(&ArrayKey::str(b"notification")) {
+        if !ctx.is_callable(&notification) {
+            let shown = String::from_utf8_lossy(&notification.to_php_bytes()).into_owned();
+            return Err(Unwind::type_error(format!(
+                "{func}(): Argument #1 ($options) must be an array with valid callbacks as values, function \"{shown}\" not found or invalid function name"
+            )));
+        }
+    }
+    Ok(a.clone())
+}
+
+/// Run `f` over the context behind a value — a context resource, or the
+/// context a stream was opened with (always the empty one here).
+fn with_context<R>(_ctx: &mut Ctx, v: &Value, func: &str, f: impl FnOnce(&mut StreamContext) -> R) -> Result<R, Unwind> {
+    let resource = match &*v.deref() {
+        Value::Resource(r) if r.kind() == "stream-context" => r.clone(),
+        Value::Resource(r) if r.kind() == "stream" => {
+            // A stream carries no context here: answer from a scratch one.
+            let _ = r;
+            return Ok(f(&mut StreamContext::default()));
+        }
+        other => {
+            return Err(Unwind::type_error(format!(
+                "{func}(): supplied resource is not a valid stream/context resource, {} given",
+                rphp_runtime::value_name(&other)
+            )))
+        }
+    };
+    let mut payload = resource.payload_mut();
+    let Some(c) = payload.as_mut().and_then(|a| a.downcast_mut::<StreamContext>()) else {
+        return Err(Unwind::type_error(format!("{func}(): supplied resource is not a valid stream/context resource")));
+    };
+    Ok(f(c))
+}
+
+/// `stream_context_create(?array $options = null, ?array $params = null): resource`
+fn stream_context_create(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let options = context_options(ctx, "stream_context_create", args.first())?;
+    let params = context_params(ctx, "stream_context_create", args.get(1))?;
+    Ok(ctx.resources.add("stream-context", Box::new(StreamContext { options, params })))
+}
+
+/// `stream_context_get_options(resource $stream_or_context): array`
+fn stream_context_get_options(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let v = args[0].clone();
+    with_context(ctx, &v, "stream_context_get_options", |c| Value::Array(c.options.clone()))
+}
+
+/// Set `wrapper[option] = value` on a context.
+fn set_option(c: &mut StreamContext, wrapper: &[u8], option: &[u8], value: Value) {
+    let key = ArrayKey::str(wrapper);
+    let mut inner = match c.options.get_deref(&key) {
+        Some(Value::Array(a)) => a,
+        _ => Array::new(),
+    };
+    inner.set(ArrayKey::str(option), value);
+    c.options.set(key, Value::Array(inner));
+}
+
+/// Merge a whole `wrapper => [option => value]` map into a context.
+fn set_options(c: &mut StreamContext, options: &Array) {
+    for (wrapper, entries) in options.iter() {
+        let ArrayKey::Str(name) = wrapper else { continue };
+        if let Value::Array(entries) = &*entries.deref() {
+            for (option, value) in entries.iter() {
+                let option = match option {
+                    ArrayKey::Str(s) => s.as_bytes().to_vec(),
+                    ArrayKey::Int(i) => i.to_string().into_bytes(),
+                };
+                set_option(c, name.as_bytes(), &option, value.deref().into_owned());
+            }
+        }
+    }
+}
+
+/// `stream_context_set_option(resource $context, array|string $wrapper_or_options, ?string $option_name = null, mixed $value = null): true`
+///
+/// The two-argument form (a whole options array) is deprecated in php 8.3 in
+/// favour of `stream_context_set_options()`, and says so.
+fn stream_context_set_option(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let target = args[0].clone();
+    match &*args[1].deref() {
+        Value::Array(options) => {
+            let options = options.clone();
+            ctx.deprecated("Calling stream_context_set_option() with 2 arguments is deprecated, use stream_context_set_options() instead")?;
+            with_context(ctx, &target, "stream_context_set_option", |c| set_options(c, &options))?;
+        }
+        other => {
+            let wrapper = other.to_php_bytes();
+            let Some(option) = args.get(2).filter(|v| !matches!(**v, Value::Null)) else {
+                return Err(Unwind::value_error("stream_context_set_option(): Argument #3 ($option_name) cannot be null when argument #2 ($wrapper_or_options) is a string"));
+            };
+            let option = option.to_php_bytes();
+            let value = args.get(3).map(|v| v.deref().into_owned()).unwrap_or(Value::Null);
+            with_context(ctx, &target, "stream_context_set_option", |c| set_option(c, &wrapper, &option, value))?;
+        }
+    }
+    Ok(Value::Bool(true))
+}
+
+/// `stream_context_set_options(resource $context, array $options): true`
+fn stream_context_set_options(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let target = args[0].clone();
+    let Value::Array(options) = &*args[1].deref() else {
+        return Err(Unwind::type_error("stream_context_set_options(): Argument #2 ($options) must be of type array"));
+    };
+    let options = options.clone();
+    with_context(ctx, &target, "stream_context_set_options", |c| set_options(c, &options))?;
+    Ok(Value::Bool(true))
+}
+
+/// `stream_context_get_params(resource $context): array` — the parameters
+/// plus the options under the `options` key, as php reports them.
+fn stream_context_get_params(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let v = args[0].clone();
+    with_context(ctx, &v, "stream_context_get_params", |c| {
+        let mut out = c.params.clone();
+        out.set(ArrayKey::str(b"options"), Value::Array(c.options.clone()));
+        Value::Array(out)
+    })
+}
+
+/// `stream_context_set_params(resource $context, array $params): true`
+fn stream_context_set_params(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let target = args[0].clone();
+    let params = context_params(ctx, "stream_context_set_params", args.get(1))?;
+    with_context(ctx, &target, "stream_context_set_params", |c| {
+        for (k, v) in params.iter() {
+            c.params.set(k.clone(), v.deref().into_owned());
+        }
+    })?;
+    Ok(Value::Bool(true))
+}
+
+/// `stream_context_get_default(?array $options = null): resource` — the
+/// request's default context, created on first use; `$options` is merged in.
+fn stream_context_get_default(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let options = context_options(ctx, "stream_context_get_default", args.first())?;
+    let existing = ctx.ext.slot::<DefaultContext>(DEFAULT_CONTEXT_SLOT).0.clone();
+    let context = match existing {
+        Some(v) => v,
+        None => {
+            let v = ctx.resources.add("stream-context", Box::new(StreamContext::default()));
+            ctx.ext.slot::<DefaultContext>(DEFAULT_CONTEXT_SLOT).0 = Some(v.clone());
+            v
+        }
+    };
+    if !options.is_empty() {
+        with_context(ctx, &context, "stream_context_get_default", |c| set_options(c, &options))?;
+    }
+    Ok(context)
+}
+
+/// `stream_context_set_default(array $options): resource`
+fn stream_context_set_default(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let options = context_options(ctx, "stream_context_set_default", args.first())?;
+    let context = stream_context_get_default(ctx, &mut [])?;
+    with_context(ctx, &context, "stream_context_set_default", |c| {
+        c.options = Array::new();
+        set_options(c, &options);
+    })?;
+    Ok(context)
 }

@@ -1064,10 +1064,10 @@ fn match_time(c: &Cur, need_sep: bool) -> Option<(usize, Tok)> {
         }
     }
 
-    // 24-hour clocks, with and without separators.
-    let mut t = *c;
-    let _ = t.eat(b'T') || t.eat(b't');
-    let after_t = t;
+    // 24-hour clocks, with and without separators. Both alternatives below
+    // restart from the cursor past an ISO `T`, so it is saved once.
+    let mut after_t = *c;
+    let _ = after_t.eat(b'T') || after_t.eat(b't');
 
     let mut t = after_t;
     if let Some(h) = hour24(&mut t) {

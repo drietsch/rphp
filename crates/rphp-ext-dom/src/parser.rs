@@ -875,6 +875,7 @@ impl<'a> Parser<'a> {
         }
         self.doc.link_last(parent, id);
         if self_closing {
+            self.doc.nodes[id].self_closing = true;
             self.ns_stack.pop();
             return;
         }

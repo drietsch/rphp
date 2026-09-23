@@ -21,6 +21,14 @@ mod xpath;
 
 pub use tree::{DocData, NodeKind};
 
+// For `ext/xmlreader` (`XMLReader::expand()`, its tree walk) and
+// `ext/xml` (name characters).
+pub use classes::{orphan_doc, wrap};
+pub use libxml::{state as libxml_state, LibxmlState};
+pub use parser::{parse, Options as ParseOptions, XmlError};
+pub use serialize::node as serialize_node;
+pub use tree::{is_name_char, is_name_start, Doc, NodeId, NsDecl, DOCUMENT};
+
 /// Register the extension: `libxml` first (its constants and error
 /// channel), then the DOM classes.
 pub fn register(r: &mut rphp_runtime::Registry) {

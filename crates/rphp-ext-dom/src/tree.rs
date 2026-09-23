@@ -128,6 +128,9 @@ pub struct Node {
     pub is_id: bool,
     /// An entity declaration node's own record.
     pub entity: Option<Box<EntityDecl>>,
+    /// An element the parser read as `<e/>` (libxml's `NODE_IS_EMPTY`,
+    /// what `XMLReader::$isEmptyElement` reports).
+    pub self_closing: bool,
 }
 
 impl Node {
@@ -150,6 +153,7 @@ impl Node {
             specified: true,
             is_id: false,
             entity: None,
+            self_closing: false,
         }
     }
 

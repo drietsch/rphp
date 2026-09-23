@@ -475,6 +475,9 @@ fn file_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         let body = ctx.request_body.as_deref().map(<[u8]>::to_vec).unwrap_or_default();
         return Ok(Value::Str(Str::from_vec(body)));
     }
+    if let Some(b) = read_stdin(ctx, &args[0]) {
+        return Ok(Value::Str(Str::from_vec(b)));
+    }
     if let Some(r) = read_filter_url(ctx, &args[0], "file_get_contents")? {
         return Ok(r.map_or(Value::Bool(false), |b| Value::Str(Str::from_vec(b))));
     }
@@ -626,7 +629,8 @@ fn split_lines(data: &[u8], flags: i64) -> Vec<Vec<u8>> {
 /// `file(string $filename, int $flags = 0, ...): array|false`
 fn file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let flags = args.get(1).map_or(0, Value::to_int);
-    if let Some(r) = read_filter_url(ctx, &args[0], "file")? {
+    let stdin = read_stdin(ctx, &args[0]).map(Some);
+    if let Some(r) = stdin.map_or_else(|| read_filter_url(ctx, &args[0], "file"), |r| Ok(Some(r)))? {
         return Ok(match r {
             Some(b) => {
                 let mut a = Array::new();
@@ -672,7 +676,8 @@ fn file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `readfile(string $filename, ...): int|false` — write the file to output.
 fn readfile(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    if let Some(r) = read_filter_url(ctx, &args[0], "readfile")? {
+    let stdin = read_stdin(ctx, &args[0]).map(Some);
+    if let Some(r) = stdin.map_or_else(|| read_filter_url(ctx, &args[0], "readfile"), |r| Ok(Some(r)))? {
         return Ok(match r {
             Some(b) => {
                 ctx.echo(&b);
@@ -928,10 +933,15 @@ pub(crate) fn register_constants(r: &mut rphp_runtime::Registry) {
         ("STDOUT", Sink::Stdout, "php://stdout", "w"),
         ("STDERR", Sink::Stderr, "php://stderr", "w"),
     ] {
-        let res = r
-            .interp()
-            .resources
-            .add("stream", Box::new(std_stream(sink, uri, mode)));
+        // The command line's STDIN reads the process's fd 0; a server's
+        // script has no terminal to read, and keeps the empty handle.
+        let stream = match (name, r.interp().sapi) {
+            ("STDIN", rphp_runtime::SapiKind::Cli) => {
+                stdin_stream("rb").unwrap_or_else(|| std_stream(sink, uri, mode))
+            }
+            _ => std_stream(sink, uri, mode),
+        };
+        let res = r.interp().resources.add("stream", Box::new(stream));
         r.constant(name, res);
     }
     // php's CLI holds a fourth resource of its own, so a script's first
@@ -995,7 +1005,13 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             .unwrap_or(Value::Bool(false)));
     }
     // php:// wrappers: memory and temp are buffers, the rest are output.
-    let stream = if let Some(rest) = path_str.strip_prefix("php://") {
+    let stdin = match path_str.as_str() {
+        "php://stdin" if ctx.sapi == rphp_runtime::SapiKind::Cli => stdin_stream(&m),
+        _ => None,
+    };
+    let stream = if let Some(s) = stdin {
+        s
+    } else if let Some(rest) = path_str.strip_prefix("php://") {
         let sink = match rest {
             "stdout" | "output" => Sink::Stdout,
             "stderr" => Sink::Stderr,
@@ -1467,6 +1483,36 @@ pub fn stream_fd(ctx: &mut Ctx, v: &Value, func: &str) -> Result<StreamFd, Unwin
             _ => StreamFd::Unusable("MEMORY"),
         }
     })
+}
+
+/// Everything left on fd 0, for the whole-file readers of `php://stdin`
+/// (`None` when `v` names something else, or the SAPI has no stdin).
+fn read_stdin(ctx: &Ctx, v: &Value) -> Option<Vec<u8>> {
+    use std::io::Read;
+    if v.to_php_bytes().as_slice() != b"php://stdin" || ctx.sapi != rphp_runtime::SapiKind::Cli {
+        return None;
+    }
+    let mut out = Vec::new();
+    if let Some(Pipe { conn: Conn::File(mut f), .. }) = stdin_stream("rb")?.pipe {
+        let _ = f.read_to_end(&mut out);
+    }
+    Some(out)
+}
+
+/// A stream over a duplicate of the process's fd 0 — `STDIN`, and every
+/// `fopen('php://stdin')`, which php opens as a fresh `dup(0)` sharing the
+/// file offset but not the first handle's read buffer.
+fn stdin_stream(mode: &str) -> Option<Stream> {
+    use std::os::fd::AsFd;
+    let fd = std::io::stdin().as_fd().try_clone_to_owned().ok()?;
+    let mut s = std_stream(Sink::Buffer, "php://stdin", mode);
+    s.pipe = Some(Pipe {
+        conn: Conn::File(fs::File::from(fd)),
+        nonblocking: false,
+        prefix: Vec::new(),
+        dechunk: None,
+    });
+    Some(s)
 }
 
 /// A `php://` handle for one of the process's standard streams.

@@ -271,6 +271,8 @@ pub(crate) fn ssl_options_of(ctx: &mut Ctx, context: Option<&Value>) -> crate::t
             b"cafile" => o.cafile = Some(text()),
             b"peer_name" => o.peer_name = Some(text()),
             b"SNI_enabled" => o.sni_enabled = v.to_bool(),
+            b"local_cert" => o.local_cert = Some(text()),
+            b"local_pk" => o.local_pk = Some(text()),
             _ => {}
         }
     }
@@ -362,10 +364,9 @@ fn bind(target: &Target, listen: bool) -> Result<Conn, (i64, String)> {
         Target::Udg(path) => UnixDatagram::bind(path)
             .map(Conn::UnixDgram)
             .map_err(|e| (os_errno(&e), os_text(&e))),
-        // A TLS *server* needs a certificate to present; `local_cert` is
-        // not implemented, so php's "transport not found" is the honest
-        // answer rather than a socket that cannot complete a handshake.
-        Target::Tls(..) => Err((0, AddrErr::Transport("tls".to_string()).text())),
+        // A TLS listener is a tcp one; the handshake is each accepted
+        // connection's, with the listener's `local_cert`.
+        Target::Tls(host, port) => bind(&Target::Tcp(host.clone(), *port), listen),
     }
 }
 
@@ -436,11 +437,17 @@ fn stream_socket_server(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             return Ok(Value::Bool(false));
         }
     };
-    let stream_transport = matches!(target, Target::Tcp(..) | Target::Unix(_));
+    let stream_transport = matches!(target, Target::Tcp(..) | Target::Tls(..) | Target::Unix(_));
+    let ssl = ssl_options_of(ctx, args.get(4));
     match bind(&target, stream_transport && flags & LISTEN != 0) {
         Ok(conn) => {
             set_err(args, 1, 0, "");
-            Ok(socket_resource(ctx, conn, target.kind(), Some(addr)))
+            let handle = socket_resource(ctx, conn, target.kind(), Some(addr));
+            // php keeps the context on the listener, and every connection
+            // it accepts inherits it: that is where an accepted stream's
+            // `local_cert` comes from.
+            crate::file::set_socket_ssl(ctx, &handle, ssl);
+            Ok(handle)
         }
         Err((code, text)) => {
             set_err(args, 1, code, &text);
@@ -459,23 +466,47 @@ fn stream_socket_accept(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     };
     // Wait for the listener to have something, so the timeout is php's and
     // not the kernel's; then take it.
-    let waited = with_socket(ctx, &sock, "stream_socket_accept", |conn, _| {
+    let waited = with_socket(ctx, &sock, "stream_socket_accept", |conn, sock| {
         if !poll_readable(conn, timeout) {
             return None;
         }
+        let tls = matches!(sock.uri.as_deref().map(parse_address), Some(Ok(Target::Tls(..))));
+        let ssl = sock.ssl.clone();
         Some(match conn {
-            Conn::TcpListen(l) => l.accept().map(|(s, peer)| (Conn::Tcp(s), peer.to_string())),
-            Conn::UnixListen(l) => l.accept().map(|(s, _)| (Conn::Unix(s), String::new())),
+            Conn::TcpListen(l) => {
+                l.accept().map(|(s, peer)| (Conn::Tcp(s), peer.to_string(), tls, ssl))
+            }
+            Conn::UnixListen(l) => {
+                l.accept().map(|(s, _)| (Conn::Unix(s), String::new(), false, ssl))
+            }
             // Readable, but not a listener: `accept(2)` says `EINVAL`.
             _ => Err(std::io::Error::from_raw_os_error(22)),
         })
     })?;
     match waited {
-        Some(Some(Ok((conn, peer)))) => {
+        Some(Some(Ok((mut conn, peer, tls, ssl)))) => {
+            if tls {
+                // A TLS listener's connections are handed out encrypted,
+                // so the handshake is the accept's — and so is its failure.
+                let Conn::Tcp(s) = conn else { unreachable!("a tcp listener accepts tcp") };
+                match crate::tls::server_handshake(s, &ssl) {
+                    Ok(t) => conn = Conn::Tls(Box::new(t)),
+                    Err(refused) => {
+                        for w in &refused.warnings {
+                            ctx.warn(&format!("stream_socket_accept(): {w}"))?;
+                        }
+                        ctx.warn("stream_socket_accept(): Failed to enable crypto")?;
+                        ctx.warn("stream_socket_accept(): Accept failed: Cannot enable crypto")?;
+                        return Ok(Value::Bool(false));
+                    }
+                }
+            }
             if args.len() > 2 {
                 args[2] = Value::string(peer.as_bytes());
             }
-            Ok(socket_resource(ctx, conn, SockKind::Tcp, None))
+            let handle = socket_resource(ctx, conn, SockKind::Tcp, None);
+            crate::file::set_socket_ssl(ctx, &handle, ssl);
+            Ok(handle)
         }
         Some(Some(Err(e))) => {
             ctx.warn(&format!("stream_socket_accept(): Accept failed: {}", os_text(&e)))?;
@@ -736,6 +767,10 @@ fn stream_socket_enable_crypto(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
     if !enable {
         return Ok(Value::Bool(false));
     }
+    // php's `*_SERVER` methods are the even ones: the client bit is 1.
+    if method.is_some_and(|m| m.to_int() & 1 == 0) {
+        return enable_server_crypto(ctx, &stream);
+    }
     // The name to verify against: php takes the `peer_name` option when
     // there is one, and the host the stream was opened to otherwise.
     let host = with_socket(ctx, &stream, "stream_socket_enable_crypto", |_, sock| {
@@ -781,6 +816,43 @@ fn stream_socket_enable_crypto(ctx: &mut Ctx, args: &mut [Value]) -> NativeResul
         Some(Ok(())) => Ok(Value::Bool(true)),
         Some(Err(text)) => {
             ctx.warn(&format!("stream_socket_enable_crypto(): {text}"))?;
+            Ok(Value::Bool(false))
+        }
+        None => Ok(Value::Bool(false)),
+    }
+}
+
+/// The server half of `stream_socket_enable_crypto()`: present the
+/// stream's `local_cert` to the client on the other end.
+fn enable_server_crypto(ctx: &mut Ctx, stream: &Value) -> NativeResult {
+    let outcome = with_socket(ctx, stream, "stream_socket_enable_crypto", |conn, sock| {
+        if matches!(conn, Conn::Tls(_)) {
+            return Ok(());
+        }
+        let socket = match std::mem::replace(conn, Conn::Taken) {
+            Conn::Tcp(s) => s,
+            other => {
+                *conn = other;
+                return Err(vec!["the stream is not a tcp socket".to_string()]);
+            }
+        };
+        match crate::tls::server_handshake(socket, &sock.ssl) {
+            Ok(t) => {
+                *conn = Conn::Tls(Box::new(t));
+                Ok(())
+            }
+            Err(refused) => {
+                *conn = Conn::Tcp(refused.sock);
+                Err(refused.warnings)
+            }
+        }
+    })?;
+    match outcome {
+        Some(Ok(())) => Ok(Value::Bool(true)),
+        Some(Err(warnings)) => {
+            for w in warnings {
+                ctx.warn(&format!("stream_socket_enable_crypto(): {w}"))?;
+            }
             Ok(Value::Bool(false))
         }
         None => Ok(Value::Bool(false)),

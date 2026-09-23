@@ -1706,6 +1706,17 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         if let Some(sock) = &s.sock {
             let mut out = Array::new();
             let mut set = |k: &str, v: Value| out.set(ArrayKey::str(k.as_bytes()), v);
+            // An encrypted stream leads with its session, as php's does.
+            if let Some(Conn::Tls(t)) = s.pipe.as_ref().map(|p| &p.conn) {
+                if let Some((protocol, cipher, bits)) = t.crypto_meta() {
+                    let mut c = Array::new();
+                    c.set(ArrayKey::str(b"protocol"), Value::string(protocol.as_bytes()));
+                    c.set(ArrayKey::str(b"cipher_name"), Value::string(cipher.as_bytes()));
+                    c.set(ArrayKey::str(b"cipher_bits"), Value::Int(bits));
+                    c.set(ArrayKey::str(b"cipher_version"), Value::string(protocol.as_bytes()));
+                    set("crypto", Value::Array(c));
+                }
+            }
             set("timed_out", Value::Bool(sock.timed_out));
             set("blocked", Value::Bool(s.pipe.as_ref().is_none_or(|p| !p.nonblocking)));
             set("eof", Value::Bool(s.eof));

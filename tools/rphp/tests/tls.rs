@@ -182,6 +182,126 @@ fn tls_transport_matches_stock_php() {
     }
 }
 
+/// Be the client of a TLS server the script under test stands up: wait for
+/// it to publish its port, then say `ping` and read one line back. A
+/// handshake the server refuses is part of what is being tested, so it is
+/// not an error here.
+fn ping(port_file: &std::path::Path) -> Option<String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let port = loop {
+        if let Ok(p) = std::fs::read_to_string(port_file) {
+            if let Ok(p) = p.trim().parse::<u16>() {
+                break p;
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let ca_pem = std::fs::read(fixture("ca.pem")).expect("ca.pem");
+    let mut roots = rustls::RootCertStore::empty();
+    for c in rustls_pemfile::certs(&mut &ca_pem[..]) {
+        roots.add(c.expect("a certificate")).expect("the CA is usable");
+    }
+    let cfg = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+    let name = rustls::pki_types::ServerName::try_from("localhost").expect("a name");
+    let conn = rustls::ClientConnection::new(Arc::new(cfg), name).expect("a client");
+    let sock = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
+    let mut tls = rustls::StreamOwned::new(conn, sock);
+    tls.write_all(b"ping\n").ok()?;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while !line.ends_with(b"\n") {
+        match tls.read(&mut byte) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => line.push(byte[0]),
+        }
+    }
+    Some(String::from_utf8_lossy(&line).into_owned())
+}
+
+/// Run the server script under one engine in `mode`, with a client pinging
+/// it, and collect what the server printed (and what the client heard).
+fn run_server(engine: &std::path::Path, script: &std::path::Path, mode: &str, dir: &std::path::Path) -> String {
+    let port_file = dir.join(format!("port-{mode}"));
+    let _ = std::fs::remove_file(&port_file);
+    let fixtures = fixture("cert.pem").parent().expect("the fixture dir").to_path_buf();
+    let mut cmd = Command::new(engine);
+    cmd.arg("-n");
+    for (k, v) in INI {
+        cmd.arg("-d").arg(format!("{k}={v}"));
+    }
+    cmd.arg(script).arg(mode).arg(&fixtures).arg(&port_file);
+    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let child = cmd.spawn().unwrap_or_else(|e| panic!("{} should run: {e}", engine.display()));
+    let heard = ping(&port_file);
+    let out = child.wait_with_output().expect("the server exits");
+    let _ = std::fs::remove_file(&port_file);
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    text.push_str(&format!("client heard: {heard:?}\n"));
+    text.replace(&script.display().to_string(), "<script>").replace(&fixtures.display().to_string(), "<fixtures>")
+}
+
+#[test]
+fn tls_server_matches_stock_php() {
+    let Some(php) = find_php() else {
+        eprintln!("no php found — skipping the tls server differential");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("rphp-tls-server-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let script = dir.join("tls-server.php");
+    std::fs::write(&script, SERVER).expect("the script is written");
+    for mode in ["tls", "upgrade", "nocert", "badcert", "badkey"] {
+        let from_php = run_server(&php, &script, mode, &dir);
+        let from_rphp = run_server(std::path::Path::new(RPHP), &script, mode, &dir);
+        assert_eq!(
+            from_php, from_rphp,
+            "\n=== {mode} ===\n--- php ---\n{from_php}\n--- rphp ---\n{from_rphp}\n"
+        );
+        if mode == "tls" || mode == "upgrade" {
+            assert!(from_php.contains("Some(\"pong\\n\")"), "php's {mode} server should answer:\n{from_php}");
+        }
+    }
+    let _ = std::fs::remove_file(&script);
+    let _ = std::fs::remove_dir(&dir);
+}
+
+/// A one-connection TLS server: `$argv[1]` is the mode, `$argv[2]` the
+/// fixture directory, `$argv[3]` where to publish the port.
+const SERVER: &str = r#"<?php
+[$mode, $dir, $portFile] = [$argv[1], $argv[2], $argv[3]];
+$ssl = [
+    'local_cert' => $mode === 'badcert' ? '/nonexistent/cert.pem' : "$dir/cert.pem",
+    'local_pk' => $mode === 'badkey' ? '/nonexistent/key.pem' : "$dir/key.pem",
+];
+if ($mode === 'nocert') $ssl = [];
+$ctx = stream_context_create(['ssl' => $ssl]);
+$proto = $mode === 'upgrade' ? 'tcp' : 'tls';
+$srv = stream_socket_server("$proto://127.0.0.1:0", $errno, $errstr,
+    STREAM_SERVER_BIND | STREAM_SERVER_LISTEN, $ctx);
+var_dump($srv !== false, $errno, $errstr);
+$name = stream_socket_get_name($srv, false);
+file_put_contents($portFile, substr($name, strrpos($name, ':') + 1));
+$c = stream_socket_accept($srv, 10);
+var_dump(is_resource($c));
+if (!$c) exit;
+if ($mode === 'upgrade') {
+    var_dump(stream_socket_enable_crypto($c, true, STREAM_CRYPTO_METHOD_TLS_SERVER));
+}
+$m = stream_get_meta_data($c);
+echo $m['stream_type'], "
+";
+var_dump($m['crypto']['protocol'] ?? null, array_keys($m['crypto'] ?? []));
+echo 'server heard: ', fgets($c);
+fwrite($c, "pong
+");
+fclose($c);
+"#;
+
 /// The cases, as a php script taking `$argv[1]` = port and `$argv[2]` = the
 /// CA to trust.
 const CASES: &str = r#"<?php
@@ -199,6 +319,7 @@ echo "--- the stream it opened ---\n";
 $s = fopen("https://localhost:$port/", 'r', false, $trusted());
 $m = stream_get_meta_data($s);
 var_dump($m['wrapper_type'], $m['stream_type'], $m['mode'], $m['seekable']);
+var_dump($m['crypto']);
 var_dump(stream_get_contents($s));
 fclose($s);
 

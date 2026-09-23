@@ -14,24 +14,52 @@
 //! corresponding check — which is what php does, and why the snippet that
 //! talks to its own self-signed server can do so.
 //!
+//! **The server side.** A `tls://` (or `ssl://`) listener hands out
+//! connections whose handshake has already run, and a plain tcp connection
+//! can be upgraded with `stream_socket_enable_crypto()` and a `*_SERVER`
+//! method — both present the certificate named by `local_cert`, with the
+//! key from `local_pk` or, when that is unset, from the same file, as
+//! php's openssl does. A listener without `local_cert` still accepts, and
+//! then refuses the handshake with the alert and the warning php gives.
+//!
 //! **Known divergence.** `capture_peer_cert`, `capture_peer_cert_chain`,
-//! `local_cert` (server side), `ciphers`, `security_level` and the
+//! `ciphers`, `security_level`, `passphrase` (an encrypted key) and the
 //! `crypto_method` narrowing to a single protocol version are accepted and
 //! ignored: rustls picks TLS 1.2/1.3 and its own cipher list, and there is
 //! no `OpenSSLCertificate` for a captured chain to be. `peer_fingerprint`
 //! is not checked, and `SNI_enabled => false` does not suppress the name
-//! in the hello.
+//! in the hello. A failed handshake's warning carries rustls's reason, not
+//! openssl's `error:0A000…` queue.
 
 use std::io::{Read, Write};
 use std::sync::{Arc, OnceLock};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{ClientConfig, ClientConnection, DigitallySignedStruct, SignatureScheme, StreamOwned};
+use rustls::{
+    ClientConfig, ClientConnection, ConnectionCommon, DigitallySignedStruct, ServerConfig,
+    ServerConnection, SideData, SignatureScheme, StreamOwned,
+};
 
-/// A tcp connection with a TLS session over it.
+/// A tcp connection with a TLS session over it, from either end.
 pub(crate) struct TlsConn {
-    pub(crate) stream: StreamOwned<ClientConnection, std::net::TcpStream>,
+    stream: Side,
+}
+
+/// Which end of the session this is: rustls types the two apart.
+enum Side {
+    Client(StreamOwned<ClientConnection, std::net::TcpStream>),
+    Server(StreamOwned<ServerConnection, std::net::TcpStream>),
+}
+
+/// Run `$body` over whichever session `$side` holds, bound as `$s`.
+macro_rules! either {
+    ($side:expr, $s:ident => $body:expr) => {
+        match $side {
+            Side::Client($s) => $body,
+            Side::Server($s) => $body,
+        }
+    };
 }
 
 impl TlsConn {
@@ -41,17 +69,17 @@ impl TlsConn {
     /// its socket's, give or take plaintext rustls has already buffered.
     pub(crate) fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         use std::os::fd::AsFd;
-        self.stream.sock.as_fd()
+        self.socket().as_fd()
     }
 
     /// The socket, for the name and shutdown calls that are the transport's
     /// rather than the session's.
     pub(crate) fn socket(&self) -> &std::net::TcpStream {
-        &self.stream.sock
+        either!(&self.stream, s => &s.sock)
     }
 
     pub(crate) fn read_once(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self.stream.read(buf) {
+        match either!(&mut self.stream, s => s.read(buf)) {
             // rustls reports a peer that closed without `close_notify` as
             // this; php's openssl transport treats it as end of stream, and
             // so must this or every `file_get_contents()` of a server that
@@ -62,12 +90,44 @@ impl TlsConn {
     }
 
     pub(crate) fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
-        self.stream.write_all(data)?;
-        self.stream.flush()
+        either!(&mut self.stream, s => {
+            s.write_all(data)?;
+            s.flush()
+        })
+    }
+
+    /// What php's `stream_get_meta_data()` reports under `crypto`: the
+    /// protocol, and the cipher by openssl's name for it.
+    pub(crate) fn crypto_meta(&self) -> Option<(&'static str, &'static str, i64)> {
+        let (version, suite) = either!(&self.stream, s => {
+            (s.conn.protocol_version()?, s.conn.negotiated_cipher_suite()?)
+        });
+        let protocol = match version {
+            rustls::ProtocolVersion::TLSv1_3 => "TLSv1.3",
+            rustls::ProtocolVersion::TLSv1_2 => "TLSv1.2",
+            _ => return None,
+        };
+        use rustls::CipherSuite as C;
+        let (name, bits) = match suite.suite() {
+            C::TLS13_AES_256_GCM_SHA384 => ("TLS_AES_256_GCM_SHA384", 256),
+            C::TLS13_AES_128_GCM_SHA256 => ("TLS_AES_128_GCM_SHA256", 128),
+            C::TLS13_CHACHA20_POLY1305_SHA256 => ("TLS_CHACHA20_POLY1305_SHA256", 256),
+            C::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 => ("ECDHE-RSA-AES256-GCM-SHA384", 256),
+            C::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 => ("ECDHE-RSA-AES128-GCM-SHA256", 128),
+            C::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256 => ("ECDHE-RSA-CHACHA20-POLY1305", 256),
+            C::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 => ("ECDHE-ECDSA-AES256-GCM-SHA384", 256),
+            C::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 => ("ECDHE-ECDSA-AES128-GCM-SHA256", 128),
+            C::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 => {
+                ("ECDHE-ECDSA-CHACHA20-POLY1305", 256)
+            }
+            _ => return None,
+        };
+        Some((protocol, name, bits))
     }
 }
 
 /// php's `ssl` stream-context options, as far as they are honoured.
+#[derive(Clone)]
 pub(crate) struct SslOptions {
     pub(crate) verify_peer: bool,
     pub(crate) verify_peer_name: bool,
@@ -78,6 +138,10 @@ pub(crate) struct SslOptions {
     /// host from the address.
     pub(crate) peer_name: Option<String>,
     pub(crate) sni_enabled: bool,
+    /// The server's certificate chain (PEM), which may carry the key too.
+    pub(crate) local_cert: Option<String>,
+    /// The server's private key (PEM), when it is not in `local_cert`.
+    pub(crate) local_pk: Option<String>,
 }
 
 impl Default for SslOptions {
@@ -89,6 +153,8 @@ impl Default for SslOptions {
             cafile: None,
             peer_name: None,
             sni_enabled: true,
+            local_cert: None,
+            local_pk: None,
         }
     }
 }
@@ -296,31 +362,126 @@ pub(crate) fn handshake(
     // Drive the handshake to completion now, so a failure is reported by
     // the call that asked for encryption rather than by the first read.
     let mut stream = StreamOwned::new(client, sock);
-    if let Err(e) = complete(&mut stream) {
+    if let Err(e) = complete(&mut stream.conn, &mut stream.sock) {
         let sock = stream.sock;
         return Err((sock, e));
     }
-    Ok(TlsConn { stream })
+    Ok(TlsConn { stream: Side::Client(stream) })
+}
+
+/// Why a server-side handshake did not happen: the warnings php prints
+/// before its own `Failed to enable crypto`, one per line.
+pub(crate) struct ServerRefusal {
+    pub(crate) sock: std::net::TcpStream,
+    pub(crate) warnings: Vec<String>,
+}
+
+/// Be the server end of a TLS session over an accepted socket, presenting
+/// `local_cert`, and finish the handshake.
+pub(crate) fn server_handshake(sock: std::net::TcpStream, o: &SslOptions) -> Result<TlsConn, ServerRefusal> {
+    let cfg = match server_config_for(o) {
+        Ok(c) => c,
+        Err(w) => return Err(ServerRefusal { sock, warnings: vec![w] }),
+    };
+    let server = match ServerConnection::new(cfg) {
+        Ok(c) => c,
+        Err(e) => return Err(ServerRefusal { sock, warnings: vec![tls_text(&e)] }),
+    };
+    let mut stream = StreamOwned::new(server, sock);
+    if let Err(e) = complete(&mut stream.conn, &mut stream.sock) {
+        // With no certificate to present rustls has sent the client its
+        // `handshake_failure` alert, and php's words for it are openssl's.
+        let text = if o.local_cert.is_none() {
+            "SSL_R_NO_SHARED_CIPHER: no suitable shared cipher could be used.  This could be \
+             because the server is missing an SSL certificate (local_cert context option)"
+                .to_string()
+        } else {
+            format!("SSL operation failed: {e}")
+        };
+        return Err(ServerRefusal { sock: stream.sock, warnings: vec![text] });
+    }
+    Ok(TlsConn { stream: Side::Server(stream) })
+}
+
+/// The server configuration `local_cert`/`local_pk` describe, or php's
+/// warning for the file that would not load. Without `local_cert` the
+/// configuration has no certificate at all, so the handshake fails the way
+/// php's does — at the client's hello, with an alert — rather than here.
+fn server_config_for(o: &SslOptions) -> Result<Arc<ServerConfig>, String> {
+    let builder = ServerConfig::builder().with_no_client_auth();
+    let Some(cert_path) = &o.local_cert else {
+        return Ok(Arc::new(builder.with_cert_resolver(Arc::new(NoCertificate))));
+    };
+    let chain_err = || {
+        format!(
+            "Unable to set local cert chain file `{cert_path}'; Check that your cafile/capath \
+             settings include details of your certificate and its issuer"
+        )
+    };
+    let pem = std::fs::read(cert_path).map_err(|_| chain_err())?;
+    let certs: Vec<CertificateDer<'static>> =
+        rustls_pemfile::certs(&mut &pem[..]).filter_map(Result::ok).collect();
+    if certs.is_empty() {
+        return Err(chain_err());
+    }
+    let key_path = o.local_pk.as_deref().unwrap_or(cert_path);
+    let key_err = || format!("Unable to set private key file `{key_path}'");
+    let key_pem = if key_path == cert_path { pem.clone() } else { std::fs::read(key_path).map_err(|_| key_err())? };
+    let key = rustls_pemfile::private_key(&mut &key_pem[..])
+        .ok()
+        .flatten()
+        .ok_or_else(key_err)?;
+    // A key that does not belong to the certificate is openssl's
+    // `SSL_CTX_check_private_key` failure, which php words this way.
+    builder
+        .with_single_cert(certs, key)
+        .map(Arc::new)
+        .map_err(|_| "Private key does not match certificate!".to_string())
+}
+
+/// The resolver of a server with no `local_cert`: never a certificate.
+#[derive(Debug)]
+struct NoCertificate;
+
+impl rustls::server::ResolvesServerCert for NoCertificate {
+    fn resolve(&self, _hello: rustls::server::ClientHello<'_>) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        None
+    }
 }
 
 /// Run the handshake until rustls is done or reports why it cannot be.
-fn complete(stream: &mut StreamOwned<ClientConnection, std::net::TcpStream>) -> Result<(), String> {
-    while stream.conn.is_handshaking() {
-        if stream.conn.wants_write() {
-            stream.conn.write_tls(&mut stream.sock).map_err(|e| strip_os(&e.to_string()))?;
+fn complete<C, S>(conn: &mut C, sock: &mut std::net::TcpStream) -> Result<(), String>
+where
+    C: std::ops::DerefMut<Target = ConnectionCommon<S>>,
+    S: SideData,
+{
+    while conn.is_handshaking() {
+        if conn.wants_write() {
+            conn.write_tls(sock).map_err(|e| strip_os(&e.to_string()))?;
             continue;
         }
-        if stream.conn.wants_read() {
-            match stream.conn.read_tls(&mut stream.sock) {
+        if conn.wants_read() {
+            match conn.read_tls(sock) {
                 Ok(0) => return Err("the peer closed the connection during the handshake".into()),
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(strip_os(&e.to_string())),
             }
-            stream.conn.process_new_packets().map_err(|e| tls_text(&e))?;
+            if let Err(e) = conn.process_new_packets() {
+                // The alert that says why is still queued: send it, as
+                // openssl does, so the peer hears the reason and not a
+                // reset.
+                let _ = conn.write_tls(sock);
+                return Err(tls_text(&e));
+            }
             continue;
         }
         break;
+    }
+    // The server's last flight (its `Finished`, session tickets) may still
+    // be queued when the handshake is done from its side.
+    while conn.wants_write() {
+        conn.write_tls(sock).map_err(|e| strip_os(&e.to_string()))?;
     }
     Ok(())
 }

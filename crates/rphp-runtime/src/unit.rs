@@ -641,6 +641,7 @@ impl Interp {
             payload_clone: None,
             native_props: None,
             native_compare: None,
+            native_ops: None,
             dim_ref: None,
             native_iter: None,
             uncloneable: false,

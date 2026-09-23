@@ -92,10 +92,20 @@ pub struct Layout {
     /// `SplObjectStorage` its entries): `Some(verdict)` settles the
     /// comparison, `None` hands over to the property-by-property one.
     compare: Option<NativeCompare>,
+    /// php's `compare` object handler for a class that orders its
+    /// instances against *other values* too (`BcMath\Number <=> "1.5"`):
+    /// consulted before the value-level rules whenever an instance is
+    /// compared with anything but `null` or a bool.
+    operand_compare: Option<OperandCompare>,
 }
 
 /// A [`Layout::compare`] hook: the two objects are of the same class.
 pub type NativeCompare = fn(&Object, &Object) -> Option<i64>;
+
+/// A [`Layout::operand_compare`] hook: the two operands as written (at
+/// least one an instance of the class), answering php's three-way verdict
+/// — `1` for uncomparable, as php's `ZEND_UNCOMPARABLE`.
+pub type OperandCompare = fn(&Value, &Value) -> i64;
 
 impl Layout {
     /// Build a layout; `props` are in slot order (parent-first). Panics if more
@@ -118,7 +128,7 @@ impl Layout {
             }
             index.insert(p.name.clone(), i as u16);
         }
-        Layout { class_name, props, index, compare: None }
+        Layout { class_name, props, index, compare: None, operand_compare: None }
     }
 
     /// The layout with a native comparison hook (see [`Layout::compare`]).
@@ -130,6 +140,18 @@ impl Layout {
     /// The native comparison hook, if the class has one.
     pub fn compare(&self) -> Option<NativeCompare> {
         self.compare
+    }
+
+    /// The layout with an operand comparison hook (see
+    /// [`Layout::operand_compare`]).
+    pub fn with_operand_compare(mut self, f: OperandCompare) -> Layout {
+        self.operand_compare = Some(f);
+        self
+    }
+
+    /// The operand comparison hook, if the class has one.
+    pub fn operand_compare(&self) -> Option<OperandCompare> {
+        self.operand_compare
     }
 
     /// A layout with no declared properties (e.g. `stdClass`).

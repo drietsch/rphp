@@ -33,8 +33,8 @@ pub use closure::{Closure, WeakClosure};
 pub use object::{display_class_name, mangled_key};
 pub use object::{
     has_pending_destructors, take_pending_destructors, CastHandler, CastTarget, DynProps, Layout,
-    LazyKind, LazyState, NativeCompare, ObjFlags, Object, ObjectData, ObjectIdAllocator, Payload,
-    PropEntry, PropMeta, Vis, WeakObject,
+    LazyKind, LazyState, NativeCompare, ObjFlags, Object, ObjectData, ObjectIdAllocator,
+    OperandCompare, Payload, PropEntry, PropMeta, Vis, WeakObject,
 };
 pub use refs::PhpRef;
 pub use resource::{Resource, ResourceCell, CLOSED_KIND};
@@ -165,6 +165,17 @@ fn object_spaceship(a: &Object, b: &Object) -> i64 {
         c.borrow_mut().pop();
     });
     result
+}
+
+/// The operand comparison that decides `lhs` against `rhs` (php's
+/// `zend_compare` hands a pair with an object to the *left* object's
+/// `compare` handler, else the right one's), when that class has one.
+fn operand_compare_of(lhs: &Value, rhs: &Value) -> Option<OperandCompare> {
+    match (lhs, rhs) {
+        (Value::Object(o), _) => o.layout().operand_compare(),
+        (_, Value::Object(o)) => o.layout().operand_compare(),
+        _ => None,
+    }
 }
 
 impl Value {
@@ -575,7 +586,13 @@ impl Value {
         match (lhs, rhs) {
             (Null | Uninit, Null | Uninit) => true,
             (Bool(_), _) | (_, Bool(_)) => lhs.to_bool() == rhs.to_bool(),
+            // php's `zend_compare`: an object is never equal to `null`, a
+            // falsy-casting one included.
+            (Object(_), Null | Uninit) | (Null | Uninit, Object(_)) => false,
             (Null | Uninit, _) | (_, Null | Uninit) => lhs.to_bool() == rhs.to_bool(),
+            (Object(_), _) | (_, Object(_)) if operand_compare_of(lhs, rhs).is_some() => {
+                operand_compare_of(lhs, rhs).is_some_and(|f| f(lhs, rhs) == 0)
+            }
             (Array(a), Array(b)) => a.loose_eq(b),
             // An array is never loosely equal to a non-array (bool/null already
             // handled above).
@@ -636,8 +653,15 @@ impl Value {
         let (a, b) = (self.deref(), rhs.deref());
         let (lhs, rhs) = (&*a, &*b);
         match (lhs, rhs) {
+            // php's `zend_compare`: an object is greater than `null`, a
+            // falsy-casting one included.
+            (Object(_), Null | Uninit) => 1,
+            (Null | Uninit, Object(_)) => -1,
             (Bool(_), _) | (_, Bool(_)) | (Null | Uninit, _) | (_, Null | Uninit) => {
                 bool_cmp(lhs.to_bool(), rhs.to_bool())
+            }
+            (Object(_), _) | (_, Object(_)) if operand_compare_of(lhs, rhs).is_some() => {
+                operand_compare_of(lhs, rhs).map_or(1, |f| f(lhs, rhs))
             }
             (Array(a), Array(b)) => a.spaceship(b),
             // An array is greater than any non-array (bool/null handled above).
@@ -694,11 +718,14 @@ impl Value {
     pub fn le(&self, rhs: &Value) -> bool {
         self.spaceship(rhs) <= 0
     }
+    /// `a > b` is php's `b < a` (`ZEND_IS_SMALLER` with the operands
+    /// swapped), which differs from `a <=> b > 0` for an uncomparable pair
+    /// (both orders answer `1`).
     pub fn gt(&self, rhs: &Value) -> bool {
-        self.spaceship(rhs) > 0
+        rhs.spaceship(self) < 0
     }
     pub fn ge(&self, rhs: &Value) -> bool {
-        self.spaceship(rhs) >= 0
+        rhs.spaceship(self) <= 0
     }
 }
 

@@ -629,7 +629,12 @@ pub(crate) fn property_exists(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult
     }
     let class = class_arg(ctx, "property_exists", 1, &args[0], true)?;
     Ok(Value::Bool(
-        class.is_some_and(|c| ctx.resolve_prop(c, &name).is_some()),
+        class.is_some_and(|c| {
+            ctx.resolve_prop(c, &name).is_some()
+                // A native class's computed properties (`DOMNode::$nodeName`,
+                // `BcMath\Number::$value`) exist too.
+                || ctx.class(c).native_props.is_some_and(|np| np.names.iter().any(|n| n.as_bytes() == name))
+        }),
     ))
 }
 

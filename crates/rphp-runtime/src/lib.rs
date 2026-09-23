@@ -53,7 +53,8 @@ pub use api::parse_error_reporting;
 pub use call::Callable;
 pub use class::{
     ClassConst, ClassDef, ClassSpec, ConstSpec, ConstState, EnumBacking, EnumCaseInfo, MagicFlags,
-    IterRole, MethodBody, MethodDef, MethodSpec, NativeInit, NativeIter, NativeMethod, NativeMethodHandler, NativeProps,
+    IterRole, MethodBody, MethodDef, MethodSpec, NativeBinaryOp, NativeInit, NativeIter, NativeMethod,
+    NativeMethodHandler, NativeOperators, NativeProps,
     PayloadClone, PropDefault, PropHooks, PropInfo, PropSpec, StaticPropInfo, WellKnown,
 };
 pub use exec::{clear_realpath_cache, realpath_cached};
@@ -88,7 +89,7 @@ pub use registry::{
     NativeResult, PendingThrow, Registry, Unwind,
 };
 pub use resources::ResourceTable;
-pub use rphp_bytecode::{CastKind, ClassFlags, ClassKind, Visibility};
+pub use rphp_bytecode::{AssignOpKind, CastKind, ClassFlags, ClassKind, Visibility};
 pub use symtab::{Symtab, SymtabData};
 pub use types::Coerced;
 pub use unit::{FuncRt, IcSlot, UnitRt};

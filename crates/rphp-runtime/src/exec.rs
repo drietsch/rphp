@@ -1169,6 +1169,17 @@ impl Interp {
                     let o = self.rd(base, obj);
                     let name = self.member_name(&func, base, name)?;
                     let holder = self.prop_holder(&o, &name)?;
+                    // A native computed property has no storage to refer
+                    // to (php's `get_property_ptr_ptr` is NULL): the
+                    // reference is to a copy of its value.
+                    if let Some(np) = self.class_of(&holder).native_props {
+                        if let Some(v) = (np.get)(self, &holder, &name) {
+                            let cell = rphp_value::PhpRef::new(v?);
+                            self.rebind(base, dst, cell);
+                            pc += 1;
+                            continue;
+                        }
+                    }
                     let name = self.prop_storage_key(&holder, &name);
                     self.check_prop_access(holder.class_id(), &name)?;
                     self.check_indirect_modify(&holder, &name)?;

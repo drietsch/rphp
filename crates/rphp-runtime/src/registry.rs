@@ -371,6 +371,7 @@ impl Registry<'_> {
             payload_clone: None,
             native_props: None,
             native_compare: None,
+            native_ops: None,
             dim_ref: None,
             native_iter: None,
             uncloneable: false,
@@ -403,6 +404,7 @@ pub struct ClassBuilder<'a> {
     payload_clone: Option<crate::class::PayloadClone>,
     native_props: Option<crate::class::NativeProps>,
     native_compare: Option<rphp_value::NativeCompare>,
+    native_ops: Option<crate::class::NativeOperators>,
     dim_ref: Option<crate::class::NativeDimRef>,
     native_iter: Option<crate::class::NativeIter>,
     uncloneable: bool,
@@ -528,6 +530,15 @@ impl ClassBuilder<'_> {
         self
     }
 
+    /// php's `do_operation` and `compare` handlers: how instances take part
+    /// in arithmetic and comparisons with other values (`BcMath\Number`).
+    /// Inherited by user subclasses. See
+    /// [`NativeOperators`](crate::class::NativeOperators).
+    pub fn operators(mut self, ops: crate::class::NativeOperators) -> Self {
+        self.native_ops = Some(ops);
+        self
+    }
+
     /// The cell behind `$o[$key]` for a class whose elements are real
     /// storage (`&$ao[$k]`, `sort($ao[$k])`); see
     /// [`NativeDimRef`](crate::class::NativeDimRef).
@@ -574,6 +585,7 @@ impl ClassBuilder<'_> {
             payload_clone,
             native_props,
             native_compare,
+            native_ops,
             dim_ref,
             native_iter,
             uncloneable,
@@ -600,6 +612,7 @@ impl ClassBuilder<'_> {
             payload_clone,
             native_props,
             native_compare,
+            native_ops,
             dim_ref,
             native_iter,
             uncloneable,

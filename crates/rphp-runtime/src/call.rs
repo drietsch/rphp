@@ -596,7 +596,19 @@ impl Interp {
         // `InvalidArgumentException` for the wrong kind).
         if matches!(
             lower.as_str(),
-            "recursiveiteratoriterator::__construct" | "recursivetreeiterator::__construct"
+            "recursiveiteratoriterator::__construct"
+                | "recursivetreeiterator::__construct"
+                // `BcMath\Number`'s `Number|string|int` operands: php's
+                // own message ("must be of type int, string, or …").
+                | "bcmath\\number::add"
+                | "bcmath\\number::sub"
+                | "bcmath\\number::mul"
+                | "bcmath\\number::div"
+                | "bcmath\\number::mod"
+                | "bcmath\\number::divmod"
+                | "bcmath\\number::powmod"
+                | "bcmath\\number::pow"
+                | "bcmath\\number::compare"
         ) {
             return Ok(());
         }

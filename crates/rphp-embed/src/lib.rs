@@ -181,6 +181,16 @@ namespace Random {
 }
 namespace {
 enum PropertyHookType: string { case Get = 'get'; case Set = 'set'; }
+enum RoundingMode {
+    case HalfAwayFromZero;
+    case HalfTowardsZero;
+    case HalfEven;
+    case HalfOdd;
+    case TowardsZero;
+    case AwayFromZero;
+    case NegativeInfinity;
+    case PositiveInfinity;
+}
 #[Attribute(Attribute::TARGET_CLASS)]
 final class Attribute {
     const TARGET_CLASS = 1;

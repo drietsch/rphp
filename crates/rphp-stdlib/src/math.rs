@@ -295,6 +295,11 @@ pub(crate) fn pow(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // exponent whose result fits i64 stays Int (pow(2,3) => 8); anything else
     // (negative/float exponent, float operand, overflow) is Float. `to_number`
     // guarantees numeric operands, so `pow` cannot raise a TypeError here.
+    // An object operand is `**` itself: a class with its own operators
+    // (`BcMath\Number`) computes it, any other is php's `TypeError`.
+    if matches!(&*args[0].deref(), Value::Object(_)) || matches!(&*args[1].deref(), Value::Object(_)) {
+        return ctx.binary_op(rphp_runtime::AssignOpKind::Pow, &args[0], &args[1]);
+    }
     let (base, exp) = (args[0].to_number(), args[1].to_number());
     if base.to_float() == 0.0 && exp.to_float() < 0.0 {
         ctx.deprecated("Power of base 0 and negative exponent is deprecated")?;

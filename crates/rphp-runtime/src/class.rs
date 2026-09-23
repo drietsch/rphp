@@ -43,6 +43,37 @@ pub type NativeInit = fn(&mut Interp, &Object) -> Result<(), Unwind>;
 /// silently.
 pub type PayloadClone = fn(&mut Interp, &Object, &Object) -> Result<(), Unwind>;
 
+/// php's `do_operation` + `compare` object handlers, for a native class
+/// whose instances take part in operators (`BcMath\Number`, GMP):
+///
+/// * `binary` runs for `+ - * / % ** & | ^ << >>` (compound assignments,
+///   `++`/`--` and unary `-`/`+` included) when either operand is an
+///   instance; `Ok(None)` declines, and the operator goes on to php's own
+///   rules (`Unsupported operand types: C + array`). It is consulted only
+///   after the both-numbers fast path has failed, so plain arithmetic
+///   never pays for it.
+/// * `compare` orders an instance against any other value; it lives on
+///   the class's [`Layout`] (the value-level comparison has no
+///   interpreter), see [`rphp_value::Layout::operand_compare`].
+/// * `compare_notices`, when set, runs first on the comparison operators
+///   (`==`, `<`, `<=>`, `in_array` …) for the diagnostics php's handler
+///   raises while it reads the operands, which a value-level comparison
+///   cannot.
+#[derive(Clone, Copy)]
+pub struct NativeOperators {
+    pub binary: NativeBinaryOp,
+    pub compare: rphp_value::OperandCompare,
+    pub compare_notices: Option<NativeCompareNotices>,
+}
+
+/// A [`NativeOperators::compare_notices`] hook: both operands as written.
+pub type NativeCompareNotices = fn(&mut Interp, &Value, &Value) -> Result<(), Unwind>;
+
+/// A [`NativeOperators::binary`] handler: the operator and both operands
+/// (dereferenced), at least one an instance of the class.
+pub type NativeBinaryOp =
+    fn(&mut Interp, rphp_bytecode::AssignOpKind, &Value, &Value) -> Result<Option<Value>, Unwind>;
+
 /// One of the five `Iterator` methods, for [`Interp::iter_call`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IterRole {
@@ -557,6 +588,9 @@ pub struct ClassDef {
     /// The native `==`/`<=>` ordering (own or inherited); also on the
     /// layout, where the value-level comparison finds it.
     pub native_compare: Option<rphp_value::NativeCompare>,
+    /// The native operator handlers (own or inherited); `compare` is also
+    /// on the layout.
+    pub native_ops: Option<NativeOperators>,
     /// The native element-reference hook (own or inherited).
     pub dim_ref: Option<NativeDimRef>,
     /// The native iteration hook and the class that registered it (own or
@@ -633,6 +667,7 @@ impl ClassDef {
             payload_clone: None,
             native_props: None,
             native_compare: None,
+            native_ops: None,
             dim_ref: None,
             native_iter: None,
             uncloneable: false,
@@ -728,6 +763,8 @@ pub struct ClassSpec {
     pub native_props: Option<NativeProps>,
     /// The native `==`/`<=>` ordering (own).
     pub native_compare: Option<rphp_value::NativeCompare>,
+    /// The native operator handlers (own).
+    pub native_ops: Option<NativeOperators>,
     /// The native element-reference hook (own).
     pub dim_ref: Option<NativeDimRef>,
     /// The native iteration hook (own).
@@ -810,6 +847,7 @@ impl Interp {
             payload_clone,
             native_props,
             native_compare,
+            native_ops,
             dim_ref,
             native_iter,
             uncloneable,
@@ -864,6 +902,7 @@ impl Interp {
             def.payload_clone = p.payload_clone;
             def.native_props = p.native_props;
             def.native_compare = p.native_compare;
+            def.native_ops = p.native_ops;
             def.dim_ref = p.dim_ref;
             def.native_iter = p.native_iter;
             def.uncloneable = p.uncloneable;
@@ -1069,6 +1108,9 @@ impl Interp {
         if let Some(f) = native_compare {
             def.native_compare = Some(f);
         }
+        if let Some(ops) = native_ops {
+            def.native_ops = Some(ops);
+        }
         if let Some(f) = dim_ref {
             def.dim_ref = Some(f);
         }
@@ -1125,6 +1167,9 @@ impl Interp {
         let mut layout = Layout::new(Rc::from(&name[..]), metas);
         if let Some(f) = def.native_compare {
             layout = layout.with_compare(f);
+        }
+        if let Some(ops) = def.native_ops {
+            layout = layout.with_operand_compare(ops.compare);
         }
         def.layout = Rc::new(layout);
         Ok(def)

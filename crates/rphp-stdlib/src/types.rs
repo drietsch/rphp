@@ -181,7 +181,11 @@ pub(crate) fn floatval(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Float(args[0].to_float()))
 }
 
-pub(crate) fn strval(_: &mut Ctx, args: &mut [Value]) -> NativeResult {
+pub(crate) fn strval(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // An object converts through `__toString()` (or php's Error).
+    if matches!(&*args[0].deref(), Value::Object(_) | Value::Closure(_)) {
+        return Ok(Value::Str(ctx.to_string(&args[0])?));
+    }
     Ok(Value::Str(rphp_value::Str::from_vec(args[0].to_php_bytes())))
 }
 

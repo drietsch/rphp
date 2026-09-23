@@ -108,10 +108,27 @@ impl Interp {
     /// is true and `$obj <=> 5` is `-1`. Every other pairing (bool, null,
     /// string, array, another object) compares as `Value` already does.
     pub fn cmp_operands(&mut self, l: Value, r: Value) -> Result<(Value, Value), Unwind> {
+        // A class with its own operand comparison takes the operands as
+        // they are (the value-level comparison consults it).
+        if Self::has_operand_compare(&l) || Self::has_operand_compare(&r) {
+            let (l, r) = (l.deref().into_owned(), r.deref().into_owned());
+            let class = [&l, &r].into_iter().find_map(|v| match v {
+                Value::Object(o) => Some(self.class_of(o).clone()),
+                _ => None,
+            });
+            if let Some(f) = class.and_then(|c| c.native_ops).and_then(|ops| ops.compare_notices) {
+                f(self, &l, &r)?;
+            }
+            return Ok((l, r));
+        }
         let (l, r) = self.lazy_beside_object(l, r)?;
         let l = self.object_beside_number(&l, &r)?;
         let r = self.object_beside_number(&r, &l)?;
         Ok((l, r))
+    }
+
+    fn has_operand_compare(v: &Value) -> bool {
+        matches!(&*v.deref(), Value::Object(o) if o.layout().operand_compare().is_some())
     }
 
     /// Two distinct objects compare property by property, which initializes
@@ -192,6 +209,33 @@ impl Interp {
     pub fn binary_op(&mut self, op: AssignOpKind, a: &Value, b: &Value) -> Result<Value, Unwind> {
         let a = a.deref().into_owned();
         let b = b.deref().into_owned();
+        if (matches!(a, Value::Object(_)) || matches!(b, Value::Object(_)))
+            && !matches!(op, AssignOpKind::Concat | AssignOpKind::Coalesce)
+        {
+            let int_op = matches!(
+                op,
+                AssignOpKind::Mod
+                    | AssignOpKind::BitAnd
+                    | AssignOpKind::BitOr
+                    | AssignOpKind::BitXor
+                    | AssignOpKind::Shl
+                    | AssignOpKind::Shr
+            );
+            if int_op && !matches!(a, Value::Object(_)) {
+                // php's `convert_op1_op2_long`: the left operand is read as
+                // an int first (its diagnostics, or the `TypeError`), and
+                // only then may the right operand's class take over.
+                let x = self.int_operand(&a, &a, &b, op)?;
+                if let Some(r) = self.object_operator(op, &a, &b)? {
+                    return Ok(r);
+                }
+                let y = self.int_operand(&b, &a, &b, op)?;
+                return Self::int_op(op, x, y);
+            }
+            if let Some(r) = self.object_operator(op, &a, &b)? {
+                return Ok(r);
+            }
+        }
         match op {
             AssignOpKind::Concat => {
                 if matches!(a, Value::Object(_) | Value::Array(_))
@@ -203,11 +247,16 @@ impl Interp {
                 }
                 Ok(a.concat(&b))
             }
+            AssignOpKind::Mod => {
+                // `mod_function`: both operands as ints (`zendi_try_get_long`).
+                let x = self.int_operand(&a, &a, &b, op)?;
+                let y = self.int_operand(&b, &a, &b, op)?;
+                Self::int_op(op, x, y)
+            }
             AssignOpKind::Add
             | AssignOpKind::Sub
             | AssignOpKind::Mul
             | AssignOpKind::Div
-            | AssignOpKind::Mod
             | AssignOpKind::Pow => {
                 // `[] + []` is the array union; every other array operand is a TypeError.
                 if op == AssignOpKind::Add {
@@ -217,26 +266,11 @@ impl Interp {
                 }
                 self.warn_non_numeric(&a)?;
                 self.warn_non_numeric(&b)?;
-                if op == AssignOpKind::Mod {
-                    // `%` converts its operands to int; a fractional float
-                    // loses precision (php 8.1 deprecation).
-                    for v in [&a, &b] {
-                        if let Value::Float(f) = v {
-                            if f.fract() != 0.0 && f.is_finite() {
-                                self.deprecated(&format!(
-                                    "Implicit conversion from float {} to int loses precision",
-                                    v.to_php_string()
-                                ))?;
-                            }
-                        }
-                    }
-                }
                 let r = match op {
                     AssignOpKind::Add => a.add(&b),
                     AssignOpKind::Sub => a.sub(&b),
                     AssignOpKind::Mul => a.mul(&b),
                     AssignOpKind::Div => a.div(&b),
-                    AssignOpKind::Mod => a.rem(&b),
                     _ => a.pow(&b),
                 };
                 r.map_err(|e| Self::arith_fault(op, &a, &b, e))
@@ -257,17 +291,33 @@ impl Interp {
                     };
                     return Ok(Value::Str(Str::from_vec(bytes)));
                 }
-                let x = self.int_operand(&a, &b, op)?;
-                let y = self.int_operand(&b, &a, op)?;
-                Ok(Value::Int(match op {
-                    AssignOpKind::BitAnd => x & y,
-                    AssignOpKind::BitOr => x | y,
-                    _ => x ^ y,
-                }))
+                let x = self.int_operand(&a, &a, &b, op)?;
+                let y = self.int_operand(&b, &a, &b, op)?;
+                Self::int_op(op, x, y)
             }
             AssignOpKind::Shl | AssignOpKind::Shr => {
-                let x = self.int_operand(&a, &b, op)?;
-                let y = self.int_operand(&b, &a, op)?;
+                let x = self.int_operand(&a, &a, &b, op)?;
+                let y = self.int_operand(&b, &a, &b, op)?;
+                Self::int_op(op, x, y)
+            }
+            AssignOpKind::Coalesce => Ok(if matches!(a, Value::Null | Value::Uninit) { b } else { a }),
+        }
+    }
+
+    /// `x OP y` for the operators that work on ints (`%`, the bitwise
+    /// and shift operators).
+    fn int_op(op: AssignOpKind, x: i64, y: i64) -> Result<Value, Unwind> {
+        match op {
+            AssignOpKind::Mod => {
+                if y == 0 {
+                    return Err(Unwind::division_by_zero("Modulo by zero"));
+                }
+                Ok(Value::Int(if y == -1 { 0 } else { x % y }))
+            }
+            AssignOpKind::BitAnd => Ok(Value::Int(x & y)),
+            AssignOpKind::BitOr => Ok(Value::Int(x | y)),
+            AssignOpKind::BitXor => Ok(Value::Int(x ^ y)),
+            _ => {
                 if y < 0 {
                     return Err(Unwind::arithmetic_error("Bit shift by negative number"));
                 }
@@ -287,46 +337,109 @@ impl Interp {
                     x >> y
                 }))
             }
-            AssignOpKind::Coalesce => Ok(if matches!(a, Value::Null | Value::Uninit) { b } else { a }),
         }
     }
 
-    /// An integer operand of a bitwise/shift operator (`other` is the
-    /// partner, for the message).
-    fn int_operand(&mut self, v: &Value, other: &Value, op: AssignOpKind) -> Result<i64, Unwind> {
-        match v {
-            Value::Int(i) => Ok(*i),
-            Value::Float(f) => {
-                if f.fract() != 0.0 && f.is_finite() {
+    /// php's `ZEND_TRY_BINARY_OBJECT_OPERATION`: an operand whose class
+    /// has its own operators (see [`crate::NativeOperators`]) computes the
+    /// result — the left one's class first, then the right one's. `None`
+    /// when neither has them or both declined.
+    fn object_operator(&mut self, op: AssignOpKind, a: &Value, b: &Value) -> Result<Option<Value>, Unwind> {
+        let mut tried: Option<u32> = None;
+        for v in [a, b] {
+            let Value::Object(o) = v else { continue };
+            let class = o.class_id();
+            if tried == Some(class) {
+                continue;
+            }
+            tried = Some(class);
+            if let Some(ops) = self.class_of(o).native_ops {
+                if let Some(r) = (ops.binary)(self, op, a, b)? {
+                    return Ok(Some(r));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// An operand of `%` or of a bitwise/shift operator as an int — php's
+    /// `zendi_try_get_long` with its diagnostics — or the `Unsupported
+    /// operand types: A op B` for one that cannot be (an array, an object
+    /// without an int cast, a non-numeric string).
+    fn int_operand(&mut self, v: &Value, a: &Value, b: &Value, op: AssignOpKind) -> Result<i64, Unwind> {
+        match self.try_get_long(v)? {
+            Some(i) => Ok(i),
+            None => Err(Self::arith_fault(op, a, b, ValueError::TypeError(""))),
+        }
+    }
+
+    /// php's `zendi_try_get_long`: `None` when the value cannot be an int.
+    fn try_get_long(&mut self, v: &Value) -> Result<Option<i64>, Unwind> {
+        Ok(Some(match v {
+            Value::Null | Value::Uninit | Value::Bool(_) => v.to_int(),
+            Value::Int(i) => *i,
+            Value::Float(d) => {
+                let d = *d;
+                // ZEND_DOUBLE_FITS_LONG (true for NaN); `i64::MAX as f64` is 2⁶³.
+                let fits = !(d >= i64::MAX as f64 || d < -(i64::MAX as f64));
+                let l = if !d.is_finite() || !fits {
+                    self.warn(&format!(
+                        "The float {} is not representable as an int, cast occurred",
+                        v.to_php_string()
+                    ))?;
+                    v.to_int()
+                } else {
+                    d as i64
+                };
+                if l as f64 != d && fits {
                     self.deprecated(&format!(
                         "Implicit conversion from float {} to int loses precision",
                         v.to_php_string()
                     ))?;
                 }
-                Ok(v.to_int())
+                l
             }
-            Value::Null | Value::Uninit | Value::Bool(_) => Ok(v.to_int()),
-            Value::Str(_) => {
-                if !v.is_numeric() {
-                    if !leading_numeric_but_not_numeric(v.to_php_bytes().as_slice()) {
-                        return Err(Unwind::type_error(format!(
-                            "Unsupported operand types: {} {} {}",
-                            operand_type_name(v),
-                            arith_symbol(op),
-                            operand_type_name(other)
-                        )));
-                    }
+            Value::Str(s) => {
+                let bytes = s.as_bytes();
+                let (num, trailing) = match rphp_value::numeric_string(bytes) {
+                    Some(n) => (n, false),
+                    None if leading_numeric_but_not_numeric(bytes) => (v.to_number(), true),
+                    None => return Ok(None),
+                };
+                if trailing {
                     self.warn("A non-numeric value encountered")?;
                 }
-                Ok(v.to_number().to_int())
+                match num {
+                    Value::Float(d) => {
+                        // zend_dval_to_lval_cap: saturating.
+                        let l = if !d.is_finite() {
+                            0
+                        } else if d >= i64::MAX as f64 || d < -(i64::MAX as f64) {
+                            if d > 0.0 {
+                                i64::MAX
+                            } else {
+                                i64::MIN
+                            }
+                        } else {
+                            d as i64
+                        };
+                        if l as f64 != d {
+                            self.deprecated(&format!(
+                                "Implicit conversion from float-string \"{}\" to int loses precision",
+                                String::from_utf8_lossy(bytes)
+                            ))?;
+                        }
+                        l
+                    }
+                    n => n.to_int(),
+                }
             }
-            _ => Err(Unwind::type_error(format!(
-                "Unsupported operand types: {} {} {}",
-                operand_type_name(v),
-                arith_symbol(op),
-                operand_type_name(other)
-            ))),
-        }
+            Value::Object(o) => match o.cast_via_handler(rphp_value::CastTarget::Int) {
+                Some(Value::Int(i)) => i,
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        }))
     }
 
     /// `~$x`.
@@ -429,6 +542,19 @@ impl Interp {
                     self.deprecated("Decrement on non-numeric string has no effect and is deprecated")?;
                     Value::Str(s)
                 }
+            }
+            Value::Object(ref o) if self.class_of(o).native_ops.is_some() => {
+                // php's `increment_function`: an object with its own
+                // operators is `$x + 1` / `$x - 1`.
+                let op = if inc { AssignOpKind::Add } else { AssignOpKind::Sub };
+                if let Some(r) = self.object_operator(op, &v, &Value::Int(1))? {
+                    return Ok(r);
+                }
+                return Err(Unwind::type_error(format!(
+                    "Cannot {} {}",
+                    if inc { "increment" } else { "decrement" },
+                    operand_type_name(&v)
+                )));
             }
             other => {
                 return Err(Unwind::type_error(format!(

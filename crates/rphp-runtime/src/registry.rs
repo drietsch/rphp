@@ -396,7 +396,7 @@ pub struct ClassBuilder<'a> {
     parent: Option<String>,
     interfaces: Vec<String>,
     flags: ClassFlags,
-    props: Vec<(String, Visibility, Value)>,
+    props: Vec<crate::class::PropSpec>,
     consts: Vec<(String, Value, Option<&'static str>)>,
     methods: Vec<MethodSpec>,
     native_init: Option<NativeInit>,
@@ -435,7 +435,19 @@ impl ClassBuilder<'_> {
 
     /// Declare an instance property with a constant default.
     pub fn prop(mut self, name: &str, vis: Visibility, default: Value) -> Self {
-        self.props.push((name.to_string(), vis, default));
+        self.props.push(crate::class::PropSpec::new(Box::from(name.as_bytes()), vis, PropDefault::Value(default)));
+        self
+    }
+
+    /// Declare a public `readonly` property typed as the class `ty`,
+    /// uninitialized until the class's own natives store it
+    /// (`Random\Randomizer::$engine`): a script's write is php's "Cannot
+    /// modify readonly property" error.
+    pub fn readonly_prop(mut self, name: &str, ty: &str) -> Self {
+        let mut p = crate::class::PropSpec::new(Box::from(name.as_bytes()), Visibility::Public, PropDefault::Value(Value::Uninit));
+        p.ty = Some(rphp_bytecode::TypeDecl::named(ty.as_bytes()));
+        p.readonly = true;
+        self.props.push(p);
         self
     }
 
@@ -582,12 +594,7 @@ impl ClassBuilder<'_> {
             flags,
             parent,
             interfaces,
-            props: props
-                .into_iter()
-                .map(|(n, vis, v)| {
-                    crate::class::PropSpec::new(Box::from(n.as_bytes()), vis, PropDefault::Value(v))
-                })
-                .collect(),
+            props,
             methods,
             native_init,
             payload_clone,

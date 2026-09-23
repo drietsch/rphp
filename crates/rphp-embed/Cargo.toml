@@ -22,4 +22,7 @@ rphp-stdlib.workspace = true
 rphp-ext-pdo.workspace = true
 rphp-ext-dom.workspace = true
 rphp-ext-intl.workspace = true
+rphp-ext-bcmath.workspace = true
+rphp-ext-xml.workspace = true
+rphp-ext-posix.workspace = true
 rphp-value.workspace = true

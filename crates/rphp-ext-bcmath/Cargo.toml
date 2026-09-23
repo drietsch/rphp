@@ -1,0 +1,12 @@
+[package]
+name = "rphp-ext-bcmath"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rphp-runtime.workspace = true
+rphp-value.workspace = true
+rphp-stdlib.workspace = true
+

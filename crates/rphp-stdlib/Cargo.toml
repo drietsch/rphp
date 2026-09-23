@@ -46,6 +46,9 @@ rustls-native-certs.workspace = true
 rustls-pki-types.workspace = true
 rustls-pemfile.workspace = true
 
+# ext/zlib.
+flate2.workspace = true
+
 # password / crypt (S9).
 pwhash.workspace = true
 argon2.workspace = true

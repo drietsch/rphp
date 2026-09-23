@@ -47,6 +47,7 @@ mod pack;
 mod password;
 mod pcre;
 mod random;
+mod randomizer;
 mod session;
 mod socket;
 mod tls;
@@ -69,10 +70,12 @@ mod types;
 mod syslog;
 mod uniqid;
 mod url;
+mod user_filters;
 mod var;
 mod versioning;
 mod weak;
 mod zend_exceptions;
+mod zlib;
 
 /// Every module's `FUNCTIONS` slice, in registration order.
 const MODULES: &[&[NativeFn]] = &[
@@ -100,6 +103,9 @@ const MODULES: &[&[NativeFn]] = &[
     socket::FUNCTIONS,
     http::FUNCTIONS,
     filters::FUNCTIONS,
+    user_filters::FUNCTIONS,
+    zlib::FUNCTIONS,
+    randomizer::FUNCTIONS,
     session::FUNCTIONS,
     tokenizer::FUNCTIONS,
     highlight::FUNCTIONS,
@@ -157,6 +163,9 @@ pub fn register(r: &mut Registry) {
     tokenizer::register_classes(r);
     date::register_classes(r);
     reflection::register_classes(r);
+    randomizer::register_classes(r);
+    user_filters::register_classes(r);
+    zlib::register_classes(r);
     math::register_constants(r);
     net::register_constants(r);
     session::register_constants(r);
@@ -192,6 +201,8 @@ pub fn register(r: &mut Registry) {
     filestat::register_constants(r);
     dir::register_constants(r);
     syslog::register_constants(r);
+    user_filters::register_constants(r);
+    zlib::register_constants(r);
 }
 
 /// php's per-request module shutdown (`RSHUTDOWN`) for the state this

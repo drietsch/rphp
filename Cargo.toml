@@ -20,6 +20,9 @@ members = [
     "crates/rphp-ext-dom",
     "crates/rphp-ext-intl",
     "crates/rphp-ext-api",
+    "crates/rphp-ext-bcmath",
+    "crates/rphp-ext-xml",
+    "crates/rphp-ext-posix",
     "crates/rphp-test",
     "crates/rphp-tokenizer",
     "crates/rphp-embed",
@@ -59,6 +62,9 @@ rphp-ext-pdo = { path = "crates/rphp-ext-pdo" }
 rphp-ext-dom = { path = "crates/rphp-ext-dom" }
 rphp-ext-intl = { path = "crates/rphp-ext-intl" }
 rphp-ext-api = { path = "crates/rphp-ext-api" }
+rphp-ext-bcmath = { path = "crates/rphp-ext-bcmath" }
+rphp-ext-xml = { path = "crates/rphp-ext-xml" }
+rphp-ext-posix = { path = "crates/rphp-ext-posix" }
 rphp-test = { path = "crates/rphp-test" }
 rphp-tokenizer = { path = "crates/rphp-tokenizer" }
 rphp-embed = { path = "crates/rphp-embed" }
@@ -117,6 +123,9 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 rustls-native-certs = "0.8"
 rustls-pki-types = "1"
 rustls-pemfile = "2"
+# ext/zlib — flate2 over the system libz, the one php links, so compressed
+# bytes match php's.
+flate2 = { version = "1", default-features = false, features = ["zlib"] }
 pwhash = "1"
 # PDO (S14, ADR-035): SQLite compiled in (`bundled`), with user-defined
 # functions, collations and declared column types for `pdo_sqlite`.

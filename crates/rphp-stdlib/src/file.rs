@@ -126,6 +126,15 @@ pub(crate) struct Stream {
     pub(crate) fstate: crate::filters::FilterState,
     /// A `gzopen()` / `compress.zlib://` handle (`zlib/gzfile.rs`).
     pub(crate) gz: Option<Box<crate::zlib::GzStream>>,
+    /// The file a real file opened for writing (other than append-only)
+    /// writes through to: `buf` is the read cache of it, and every write
+    /// lands on disk at its offset at once, as php's unbuffered plain-file
+    /// writes do — another handle, or the next `file_get_contents()`, sees
+    /// it without an `fclose()`.
+    wfile: Option<fs::File>,
+    /// A `tmpfile()`: the file is removed when the stream closes (php's
+    /// `php_stream_fopen_temporary_file` with delete-on-close).
+    temporary: bool,
 }
 
 /// The descriptor behind a pipe or socket stream.
@@ -379,7 +388,12 @@ impl Stream {
     /// The cursor stays where it was, as php leaves it.
     pub(crate) fn truncate_to(&mut self, size: usize) {
         self.buf.resize(size, 0);
-        self.dirty = true;
+        match &self.wfile {
+            Some(f) => {
+                let _ = f.set_len(size as u64);
+            }
+            None => self.dirty = true,
+        }
         self.fill_end = self.fill_end.min(self.buf.len());
     }
 
@@ -471,12 +485,21 @@ impl Stream {
             self.pos = self.buf.len();
         }
         let end = self.pos + data.len();
+        if let Some(f) = &self.wfile {
+            use std::os::unix::fs::FileExt;
+            // A gap past the end reads back as NUL bytes from the file too.
+            if f.write_all_at(data, self.pos as u64).is_err() {
+                return 0;
+            }
+        }
         if self.buf.len() < end {
             self.buf.resize(end, 0);
         }
         self.buf[self.pos..end].copy_from_slice(data);
         self.pos = end;
-        self.dirty = true;
+        if self.wfile.is_none() {
+            self.dirty = true;
+        }
         data.len()
     }
 }
@@ -1093,6 +1116,8 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             read_filters: Vec::new(),
             fstate: Default::default(),
             gz: None,
+            wfile: None,
+        temporary: false,
         }
     } else {
         let p = arg_path(ctx, &args[0]);
@@ -1124,7 +1149,19 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         // php starts an `a+` handle's read position at the beginning; a
         // write moves it to the end.
         let pos = 0;
-        let dirty = writable && (truncate || append) && file.is_none();
+        // Everything but an append-only handle writes through a handle of
+        // its own, opened now: `w` truncates and `w`/`a+`/`x`/`c` create
+        // at the open, as php's `open(2)` does.
+        let wfile = if writable && file.is_none() {
+            let opened = fs::OpenOptions::new().write(true).create(true).truncate(truncate).open(&p);
+            if opened.is_ok() {
+                clear_stat_cache(ctx);
+            }
+            opened.ok()
+        } else {
+            None
+        };
+        let dirty = writable && (truncate || append) && file.is_none() && wfile.is_none();
         Stream {
             buf,
             pos,
@@ -1147,6 +1184,8 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             read_filters: Vec::new(),
             fstate: Default::default(),
             gz: None,
+            wfile,
+            temporary: false,
         }
     };
     Ok(ctx.resources.add("stream", Box::new(stream)))
@@ -1166,6 +1205,7 @@ pub(crate) fn with_stream_mut<R>(
 /// Open `path` the way `fopen` would and hand back the resource — what
 /// `tmpfile()` and the CLI's standard handles are built from.
 pub(crate) fn open_resource(ctx: &mut Ctx, path: &std::path::Path, mode: &str) -> Value {
+    let wfile = fs::OpenOptions::new().write(true).create(true).open(path).ok();
     let stream = Stream {
         buf: Vec::new(),
         pos: 0,
@@ -1176,7 +1216,7 @@ pub(crate) fn open_resource(ctx: &mut Ctx, path: &std::path::Path, mode: &str) -
         readable: true,
         writable: true,
         eof: false,
-        dirty: true,
+        dirty: wfile.is_none(),
         mode: mode.into(),
         uri: path.to_string_lossy().into_owned().into(),
         fill_end: 0,
@@ -1187,8 +1227,24 @@ pub(crate) fn open_resource(ctx: &mut Ctx, path: &std::path::Path, mode: &str) -
         read_filters: Vec::new(),
         fstate: Default::default(),
         gz: None,
+        wfile,
+        temporary: false,
     };
     ctx.resources.add("stream", Box::new(stream))
+}
+
+/// Make a stream `tmpfile()`'s: its file goes away when it closes.
+pub(crate) fn mark_temporary(ctx: &mut Ctx, v: &Value) {
+    let _ = with_stream(ctx, v, "tmpfile", |s| s.temporary = true);
+}
+
+/// Remove a temporary stream's file, once, when the stream closes.
+fn remove_if_temporary(s: &mut Stream) -> bool {
+    if !std::mem::take(&mut s.temporary) {
+        return false;
+    }
+    s.wfile = None;
+    s.path.as_ref().is_some_and(|p| fs::remove_file(p).is_ok())
 }
 
 /// A stream over one end of a pipe (`proc_open`): `readable` for the
@@ -1221,6 +1277,8 @@ pub(crate) fn pipe_resource(ctx: &mut Ctx, file: fs::File, readable: bool) -> Va
         read_filters: Vec::new(),
         fstate: Default::default(),
         gz: None,
+        wfile: None,
+        temporary: false,
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -1278,6 +1336,8 @@ pub(crate) fn gz_resource(
         read_filters: Vec::new(),
         fstate: Default::default(),
         gz: Some(Box::new(gz)),
+        wfile: None,
+        temporary: false,
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -1406,6 +1466,12 @@ pub(crate) fn request_shutdown(it: &mut rphp_runtime::Interp) {
         .filter(|(_, r)| r.kind() == "stream")
         .map(|(_, r)| Value::Resource(r.clone()))
         .collect();
+    // A `tmpfile()` nobody closed is removed now, as php's shutdown closes it.
+    for v in &open {
+        if matches!(with_stream(&mut ctx, v, "Unknown", remove_if_temporary), Ok(true)) {
+            clear_stat_cache(&mut ctx);
+        }
+    }
     let mut ran = false;
     for v in open.into_iter().rev() {
         let filtered = with_stream(&mut ctx, &v, "Unknown", |s| !s.read_filters.is_empty() || !s.write_filters.is_empty());
@@ -1501,6 +1567,8 @@ pub(crate) fn socket_resource_with(
             ssl: crate::tls::SslOptions::default(),
         }),
         gz: None,
+        wfile: None,
+        temporary: false,
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -1649,11 +1717,18 @@ fn std_stream(sink: Sink, uri: &str, mode: &str) -> Stream {
         read_filters: Vec::new(),
         fstate: Default::default(),
         gz: None,
+        wfile: None,
+        temporary: false,
     }
 }
 
 /// Write a stream's buffer back to its file, if it has one.
 fn flush_stream(s: &Stream) -> Option<std::path::PathBuf> {
+    // A write-through handle has nothing to write back, but a flush or a
+    // close of it still empties php's stat cache.
+    if s.wfile.is_some() {
+        return s.path.clone();
+    }
     match (&s.path, s.dirty) {
         (Some(p), true) => {
             let _ = fs::write(p, &s.buf);
@@ -1683,6 +1758,9 @@ fn fclose(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         let written = flush_stream(s);
         // The child sees EOF on its stdin the moment the pipe closes.
         s.pipe = None;
+        if remove_if_temporary(s) {
+            return s.path.clone();
+        }
         written
     })?;
     if written.is_some() {

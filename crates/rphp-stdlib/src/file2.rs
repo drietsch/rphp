@@ -1462,10 +1462,10 @@ fn tmpfile(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
         if fs::write(&path, b"").is_err() {
             break;
         }
-        let res = crate::file::open_resource(ctx, &path, "r+");
-        // php unlinks it immediately: the handle keeps it alive and the name
-        // is gone, so nothing outlives the process.
-        let _ = fs::remove_file(&path);
+        let res = crate::file::open_resource(ctx, &path, "r+b");
+        // php keeps the name while the handle is open (its `uri` can be
+        // read by path) and removes the file when the handle closes.
+        crate::file::mark_temporary(ctx, &res);
         return Ok(res);
     }
     Ok(Value::Bool(false))

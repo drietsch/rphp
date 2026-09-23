@@ -518,6 +518,10 @@ impl Engine {
         };
         interp.finish_output();
         request_shutdown(interp);
+        // A `pcntl_fork()` child has no host thread to hand its code to.
+        if rphp_ext_posix::is_forked_child() {
+            std::process::exit(code);
+        }
         code
     }
 
@@ -581,18 +585,26 @@ pub fn request_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
 }
 
 pub fn on_request_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
-    std::thread::scope(|scope| {
+    // This thread only waits: with signals blocked here, a process-directed
+    // signal reaches the script's thread, as it reaches php's only one.
+    let mask = rphp_ext_posix::block_signals();
+    let r = std::thread::scope(|scope| {
         match std::thread::Builder::new()
             .name("rphp-request".into())
             .stack_size(REQUEST_STACK_SIZE)
-            .spawn_scoped(scope, f)
+            .spawn_scoped(scope, move || {
+                rphp_ext_posix::restore_signals(&mask);
+                f()
+            })
         {
             Ok(handle) => handle
                 .join()
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
             Err(_) => unreachable!("spawn failure is handled by the caller"),
         }
-    })
+    });
+    rphp_ext_posix::restore_signals(&mask);
+    r
 }
 
 /// Parse and compile `src` (named `name` in diagnostics; the file path for
@@ -731,6 +743,7 @@ fn is_php_compile_fatal(code: &str, message: &str) -> bool {
 /// so every one ends here.
 pub fn request_shutdown(interp: &mut Interp) {
     rphp_stdlib::request_shutdown(interp);
+    rphp_ext_posix::request_shutdown(interp);
     interp.dump_profile();
 }
 

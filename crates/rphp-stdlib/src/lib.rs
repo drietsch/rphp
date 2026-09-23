@@ -140,6 +140,7 @@ const MODULES: &[&[NativeFn]] = &[
 /// Register every module's functions and constants into an interpreter.
 pub use date::bridge as date_bridge;
 pub use exec::{SpawnPolicy, SpawnRequest, POLICY_SLOT as SPAWN_POLICY_SLOT};
+pub use file::{stream_fd, StreamFd};
 pub use url::{parse_query, register_variable};
 pub use weak::new_internal_iterator;
 

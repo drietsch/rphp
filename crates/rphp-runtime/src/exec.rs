@@ -1564,7 +1564,7 @@ impl Interp {
                         // A loop condition's exit is forward; the safepoint
                         // is on a backward target.
                         if (target as usize) <= pc && self.interrupt.is_raised() {
-                            return Err(self.interrupted());
+                            self.safepoint()?;
                         }
                         pc = target as usize;
                         continue;
@@ -1579,7 +1579,7 @@ impl Interp {
                 Op::Jmp { target } => {
                     // A backward jump is a loop's back edge: the safepoint.
                     if (target as usize) <= pc && self.interrupt.is_raised() {
-                        return Err(self.interrupted());
+                        self.safepoint()?;
                     }
                     pc = target as usize;
                     continue;
@@ -1587,7 +1587,7 @@ impl Interp {
                 Op::JmpIfTrue { cond, target } => {
                     if self.raw(base, cond).to_bool() {
                         if (target as usize) <= pc && self.interrupt.is_raised() {
-                            return Err(self.interrupted());
+                            self.safepoint()?;
                         }
                         pc = target as usize;
                         continue;
@@ -1596,7 +1596,7 @@ impl Interp {
                 Op::JmpIfFalse { cond, target } => {
                     if !self.raw(base, cond).to_bool() {
                         if (target as usize) <= pc && self.interrupt.is_raised() {
-                            return Err(self.interrupted());
+                            self.safepoint()?;
                         }
                         pc = target as usize;
                         continue;

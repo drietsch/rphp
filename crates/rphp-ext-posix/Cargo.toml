@@ -10,3 +10,5 @@ rphp-runtime.workspace = true
 rphp-value.workspace = true
 rphp-stdlib.workspace = true
 rustix.workspace = true
+nix = { version = "=0.31.3", features = ["signal", "process", "user", "fs", "resource", "term", "feature"] }
+libc = "=0.2.186"

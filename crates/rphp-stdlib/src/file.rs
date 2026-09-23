@@ -1245,6 +1245,44 @@ pub(crate) fn stream_path(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option
     with_stream(ctx, v, func, |s| s.path.clone())
 }
 
+/// What php's `php_stream_cast(…, PHP_STREAM_AS_FD)` finds behind a stream,
+/// for the functions that want a descriptor number (`posix_isatty()`,
+/// `posix_ttyname()`, `posix_fpathconf()`).
+pub enum StreamFd {
+    /// A live descriptor: a pipe, a socket, or one of the standard handles.
+    Fd(i32),
+    /// A plain file, which this stream layer keeps buffered: the path its
+    /// descriptor would name.
+    Path(std::path::PathBuf),
+    /// A stream with no descriptor, by the `stream_type` php names in its
+    /// "Could not use stream of type '…'" warning.
+    Unusable(&'static str),
+}
+
+/// The descriptor behind a stream resource (see [`StreamFd`]).
+pub fn stream_fd(ctx: &mut Ctx, v: &Value, func: &str) -> Result<StreamFd, Unwind> {
+    use std::os::fd::AsRawFd;
+    with_stream(ctx, v, func, |s| {
+        if let Some(fd) = s.pipe.as_ref().and_then(|p| p.conn.fd()) {
+            return StreamFd::Fd(fd.as_raw_fd());
+        }
+        if let Some(f) = &s.file {
+            return StreamFd::Fd(f.as_raw_fd());
+        }
+        if let Some(p) = &s.path {
+            return StreamFd::Path(p.clone());
+        }
+        match &*s.uri {
+            "php://stdin" => StreamFd::Fd(0),
+            "php://stdout" => StreamFd::Fd(1),
+            "php://stderr" => StreamFd::Fd(2),
+            "php://output" => StreamFd::Unusable("Output"),
+            u if u.ends_with("temp") || u.starts_with("php://temp/") => StreamFd::Unusable("TEMP"),
+            _ => StreamFd::Unusable("MEMORY"),
+        }
+    })
+}
+
 /// A `php://` handle for one of the process's standard streams.
 fn std_stream(sink: Sink, uri: &str, mode: &str) -> Stream {
     Stream {

@@ -11,6 +11,11 @@
 //!
 //! Natives are not interrupted mid-call (a `sleep()`, a long `preg_match`):
 //! cooperative, like php's own timer, which fires between opcodes.
+//!
+//! A *poke* ([`Interrupt::poke`]) raises the same flag without a reason:
+//! what a signal handler does when `pcntl_async_signals(true)` is on. The
+//! safepoint that finds a poke runs the interpreter's `poke_hook` (the
+//! queued php signal handlers) and carries on, instead of raising a fatal.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +29,8 @@ pub struct Interrupt(Arc<Inner>);
 #[derive(Debug, Default)]
 struct Inner {
     raised: AtomicBool,
+    /// Raised by [`Interrupt::poke`]: work for the poke hook, not a fatal.
+    poked: AtomicBool,
     reason: Mutex<Option<String>>,
 }
 
@@ -60,8 +67,41 @@ impl Interrupt {
         )
     }
 
+    /// Raise the flag *without* a reason: two atomic stores, no lock and no
+    /// allocation, so a signal handler may call it (async-signal-safe). The
+    /// safepoint that notices it consumes it with [`Interrupt::take_poke`].
+    pub fn poke(&self) {
+        self.0.poked.store(true, Ordering::Release);
+        self.0.raised.store(true, Ordering::Release);
+    }
+
+    /// Whether a poke is pending (and no more than that is known).
+    #[inline]
+    #[must_use]
+    pub fn is_poked(&self) -> bool {
+        self.0.poked.load(Ordering::Relaxed)
+    }
+
+    /// Consume a pending poke: `true` if there was one. The flag is lowered
+    /// unless a real interrupt (one with a reason) is pending as well, or a
+    /// new poke raced in meanwhile.
+    pub fn take_poke(&self) -> bool {
+        if !self.0.poked.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        let reason = self.0.reason.lock().unwrap_or_else(|p| p.into_inner());
+        if reason.is_none() {
+            self.0.raised.store(false, Ordering::Release);
+            if self.0.poked.load(Ordering::Acquire) {
+                self.0.raised.store(true, Ordering::Release);
+            }
+        }
+        true
+    }
+
     /// Lower the flag without consuming a reason.
     pub fn clear(&self) {
+        self.0.poked.store(false, Ordering::Release);
         self.0.raised.store(false, Ordering::Release);
         self.0.reason.lock().unwrap_or_else(|p| p.into_inner()).take();
     }

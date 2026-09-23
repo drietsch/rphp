@@ -653,6 +653,18 @@ impl Value {
         let (a, b) = (self.deref(), rhs.deref());
         let (lhs, rhs) = (&*a, &*b);
         match (lhs, rhs) {
+            // The pairs `sort()` and loops compare most, first: none of the
+            // object and bool rules below can apply to them.
+            (Str(a), Str(b)) => {
+                return match (numeric_string(a.as_bytes()), numeric_string(b.as_bytes())) {
+                    (Some(x), Some(y)) => x.spaceship(&y),
+                    _ => byte_cmp(a.as_bytes(), b.as_bytes()),
+                };
+            }
+            (Int(x), Int(y)) => return int_cmp(*x, *y),
+            _ => {}
+        }
+        match (lhs, rhs) {
             // php's `zend_compare`: an object is greater than `null`, a
             // falsy-casting one included.
             (Object(_), Null | Uninit) => 1,

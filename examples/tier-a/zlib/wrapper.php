@@ -1,6 +1,7 @@
 <?php
 // The compress.zlib:// wrapper behind fopen and the whole-file functions.
-$dir = getcwd();
+// Relative to the working directory, which is per engine.
+$dir = ".";
 $f = "$dir/zlib-wrap-a.gz";
 var_dump(file_put_contents("compress.zlib://$f", "put data\nsecond line\n"));
 echo bin2hex(file_get_contents($f)), "\n";

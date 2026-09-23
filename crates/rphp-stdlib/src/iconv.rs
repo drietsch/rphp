@@ -1032,3 +1032,88 @@ fn ob_iconv_handler(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     }
     convert_or_warn(ctx, who, &from, &to, &s)
 }
+
+// ---- the stream filter ---------------------------------------------------------------
+
+/// The converter behind the `convert.iconv.<from>.<to>` stream filter
+/// (`filters.rs`): one charset pair, fed a chunk at a time. A character
+/// whose bytes are split across two chunks waits in `pending` for the
+/// rest, as php's filter keeps libiconv's unconverted tail.
+pub(crate) struct StreamConv {
+    from: Spec,
+    to: Spec,
+    pending: Vec<u8>,
+}
+
+impl StreamConv {
+    /// Open the pair, or `None` when either charset is unknown.
+    pub(crate) fn open(from: &[u8], to: &[u8]) -> Option<StreamConv> {
+        Some(StreamConv { from: parse_spec(from)?, to: parse_spec(to)?, pending: Vec::new() })
+    }
+
+    /// Convert what `input` completes. `last` is the end of the stream,
+    /// where a character still waiting for its bytes is a fault. On a fault
+    /// nothing is appended and the waiting bytes are dropped with the chunk,
+    /// as php's filter drops the bucket it failed on.
+    ///
+    /// php's filter completes a waiting character byte by byte from the next
+    /// chunk, and when that chunk runs out first the waiting bytes are lost
+    /// (its stub is reset to the empty tail) — kept here, since a character
+    /// cut in three shows it.
+    pub(crate) fn push(&mut self, input: &[u8], out: &mut Vec<u8>, last: bool) -> Result<(), ()> {
+        let mut rest = input;
+        if !self.pending.is_empty() {
+            let mut stub = std::mem::take(&mut self.pending);
+            while incomplete_len(self.from.enc, &stub) > 0 {
+                match rest.split_first() {
+                    Some((b, tail)) => {
+                        stub.push(*b);
+                        rest = tail;
+                    }
+                    None if last => return Err(()),
+                    None => return Ok(()),
+                }
+            }
+            out.extend_from_slice(&self.convert(&stub)?);
+        }
+        let keep = if last { 0 } else { incomplete_len(self.from.enc, rest) };
+        let split = rest.len() - keep;
+        let bytes = self.convert(&rest[..split])?;
+        out.extend_from_slice(&bytes);
+        self.pending = rest[split..].to_vec();
+        Ok(())
+    }
+
+    fn convert(&self, bytes: &[u8]) -> Result<Vec<u8>, ()> {
+        let w = to_wchars(self.from.enc, bytes, self.to.ignore).map_err(|_| ())?;
+        from_wchars(&self.to, &w).map_err(|_| ())
+    }
+}
+
+/// How many bytes at the end of `data` start a character that has not
+/// finished yet: the encoding's `mblen_table` walk, or the unit width for
+/// the fixed-width Unicode forms that have no table.
+fn incomplete_len(enc: &Encoding, data: &[u8]) -> usize {
+    if let Some(tbl) = enc.mblen_table {
+        let mut i = 0;
+        while i < data.len() {
+            let n = tbl[data[i] as usize] as usize;
+            if n == 0 {
+                return 0;
+            }
+            if i + n > data.len() {
+                return data.len() - i;
+            }
+            i += n;
+        }
+        return 0;
+    }
+    let name = enc.name.to_ascii_uppercase();
+    if name.contains("32") || name.contains("UCS-4") {
+        data.len() % 4
+    } else if name.contains("16") || name.contains("UCS-2") {
+        data.len() % 2
+    } else {
+        0
+    }
+}

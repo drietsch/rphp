@@ -623,12 +623,12 @@ pub(crate) fn extension_of_class(name: &[u8]) -> &'static str {
 /// each one contributes. `Core` and `standard` share `basic_functions.rs` /
 /// `errorfunc.rs` / `info.rs`; [`CORE_FUNCTIONS`] tells them apart.
 const EXTENSIONS: &[(&str, &[&[NativeFn]])] = &[
-    ("Core", &[crate::basic_functions::FUNCTIONS, crate::errorfunc::FUNCTIONS, FUNCTIONS]),
+    ("Core", &[crate::basic_functions::FUNCTIONS, crate::errorfunc::FUNCTIONS, FUNCTIONS, crate::core_tail::FUNCTIONS]),
     ("date", &[crate::date::FUNCTIONS, crate::date::CLASS_FUNCTIONS]),
     ("pcre", &[crate::pcre::FUNCTIONS]),
     ("ctype", &[crate::ctype::FUNCTIONS]),
     ("json", &[crate::json::FUNCTIONS]),
-    ("mbstring", &[crate::mbstring::FUNCTIONS]),
+    ("mbstring", &[crate::mbstring::FUNCTIONS, crate::mbregex::FUNCTIONS]),
     (
         "SPL",
         &[
@@ -676,6 +676,10 @@ const EXTENSIONS: &[(&str, &[&[NativeFn]])] = &[
             crate::exec::FUNCTIONS,
             crate::head::FUNCTIONS,
             crate::password::FUNCTIONS,
+            crate::standard_tail::FUNCTIONS,
+            crate::ini_parse::FUNCTIONS,
+            crate::image::FUNCTIONS,
+            crate::stream_wrappers::FUNCTIONS,
         ],
     ),
     ("random", &[crate::random::FUNCTIONS, crate::randomizer::FUNCTIONS]),

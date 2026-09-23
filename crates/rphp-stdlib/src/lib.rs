@@ -13,6 +13,12 @@
 use rphp_runtime::{NativeFn, Registry};
 
 mod array2;
+mod standard_tail;
+mod ini_parse;
+mod image;
+mod stream_wrappers;
+mod mbregex;
+mod core_tail;
 mod arrays;
 mod base64;
 mod basic_functions;
@@ -103,6 +109,12 @@ const MODULES: &[&[NativeFn]] = &[
     socket::FUNCTIONS,
     http::FUNCTIONS,
     filters::FUNCTIONS,
+    standard_tail::FUNCTIONS,
+    ini_parse::FUNCTIONS,
+    image::FUNCTIONS,
+    stream_wrappers::FUNCTIONS,
+    mbregex::FUNCTIONS,
+    core_tail::FUNCTIONS,
     user_filters::FUNCTIONS,
     zlib::FUNCTIONS,
     randomizer::FUNCTIONS,
@@ -168,6 +180,12 @@ pub fn register(r: &mut Registry) {
     user_filters::register_classes(r);
     zlib::register_classes(r);
     dir::register_classes(r);
+    standard_tail::register_classes(r);
+    ini_parse::register_classes(r);
+    image::register_classes(r);
+    stream_wrappers::register_classes(r);
+    mbregex::register_classes(r);
+    core_tail::register_classes(r);
     math::register_constants(r);
     net::register_constants(r);
     session::register_constants(r);
@@ -205,6 +223,12 @@ pub fn register(r: &mut Registry) {
     syslog::register_constants(r);
     user_filters::register_constants(r);
     zlib::register_constants(r);
+    standard_tail::register_constants(r);
+    ini_parse::register_constants(r);
+    image::register_constants(r);
+    stream_wrappers::register_constants(r);
+    mbregex::register_constants(r);
+    core_tail::register_constants(r);
 }
 
 /// php's per-request module shutdown (`RSHUTDOWN`) for the state this

@@ -121,6 +121,9 @@ pub(crate) struct Stream {
     /// out.
     pub(crate) write_filters: Vec<crate::filters::Attached>,
     pub(crate) read_filters: Vec<crate::filters::Attached>,
+    /// What the read chain has produced and not handed out, and the rest of
+    /// the filters' bookkeeping (`filters.rs`).
+    pub(crate) fstate: crate::filters::FilterState,
 }
 
 /// The descriptor behind a pipe or socket stream.
@@ -392,16 +395,47 @@ impl Stream {
         0
     }
 
-    /// Write `data` at the cursor, extending the buffer as php does.
-    fn write(&mut self, data: &[u8]) -> usize {
-        // A write filter transforms what goes in; php still answers the
-        // caller with the number of bytes it handed over.
-        if !self.write_filters.is_empty() {
-            let filtered = crate::filters::run(&mut self.write_filters, data);
-            let given = data.len();
-            self.write_unfiltered(&filtered);
-            return given;
+    /// What the filter code needs to know of a stream (`filters.rs`).
+    pub(crate) fn is_pipe(&self) -> bool {
+        self.pipe.is_some()
+    }
+
+    pub(crate) fn is_writable(&self) -> bool {
+        self.writable
+    }
+
+    pub(crate) fn mode_str(&self) -> &str {
+        &self.mode
+    }
+
+    /// The raw read position.
+    pub(crate) fn logical_pos(&self) -> usize {
+        self.pos
+    }
+
+    /// Up to `n` raw bytes off the buffer, for the read chain.
+    pub(crate) fn take_raw(&mut self, n: usize) -> Vec<u8> {
+        let start = self.pos.min(self.buf.len());
+        let end = (start + n).min(self.buf.len());
+        self.pos = end;
+        self.buf[start..end].to_vec()
+    }
+
+    /// What php's read buffer holds past the cursor — the rest of the last
+    /// chunk a read of a real file pulled in — taken for a read filter
+    /// appended now.
+    pub(crate) fn take_prebuffered(&mut self) -> Vec<u8> {
+        if self.fill_end <= self.pos || self.path.is_none() {
+            return Vec::new();
         }
+        let end = self.fill_end.min(self.buf.len());
+        let n = end.saturating_sub(self.pos);
+        self.take_raw(n)
+    }
+
+    /// Write `data` at the cursor, extending the buffer as php does. The
+    /// write chain has already run (`filters::write_through`).
+    fn write(&mut self, data: &[u8]) -> usize {
         self.write_unfiltered(data)
     }
 
@@ -441,6 +475,9 @@ fn file_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         let body = ctx.request_body.as_deref().map(<[u8]>::to_vec).unwrap_or_default();
         return Ok(Value::Str(Str::from_vec(body)));
     }
+    if let Some(r) = read_filter_url(ctx, &args[0], "file_get_contents")? {
+        return Ok(r.map_or(Value::Bool(false), |b| Value::Str(Str::from_vec(b))));
+    }
     if let Some(url) = wrapper_url(&args[0]) {
         // `file_get_contents($f, $use_include_path, $context, $offset, $length)`
         let context = args.get(2).cloned();
@@ -477,6 +514,15 @@ fn file_put_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         }
         other => other.to_php_bytes().to_vec(),
     };
+    let flags = args.get(2).map_or(0, Value::to_int);
+    let mode = if flags & FILE_APPEND != 0 { "ab" } else { "wb" };
+    let name = args[0].to_php_bytes().to_vec();
+    if let Some(h) = open_filter_url(ctx, &name, mode, "file_put_contents")? {
+        if !matches!(h, Value::Resource(_)) {
+            return Ok(h);
+        }
+        return put_filtered(ctx, h, &args[1].deref(), &name);
+    }
     // The output wrappers: `php://stdout`/`output` is the engine's output
     // channel, `php://stderr` the process's.
     match args[0].to_php_bytes().as_slice() {
@@ -492,7 +538,6 @@ fn file_put_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         _ => {}
     }
     let p = arg_path(ctx, &args[0]);
-    let flags = args.get(2).map_or(0, Value::to_int);
     let r = if flags & FILE_APPEND != 0 {
         fs::OpenOptions::new()
             .create(true)
@@ -513,6 +558,40 @@ fn file_put_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             Ok(Value::Bool(false))
         }
     }
+}
+
+/// `file_put_contents()` through a `php://filter` stream: one write per
+/// array element, each of which must be consumed whole, as php checks.
+fn put_filtered(ctx: &mut Ctx, h: Value, data: &Value, name: &[u8]) -> NativeResult {
+    let pieces: Vec<Vec<u8>> = match data {
+        Value::Array(a) => a.iter().map(|(_, v)| v.deref().to_php_bytes().to_vec()).collect(),
+        other => vec![other.to_php_bytes().to_vec()],
+    };
+    let mut total = 0i64;
+    let mut failed = false;
+    for piece in &pieces {
+        let n = ctx.call_function(b"fwrite", &[h.clone(), Value::string(piece)])?;
+        let Value::Int(n) = n else {
+            failed = true;
+            break;
+        };
+        if n != piece.len() as i64 {
+            if matches!(data, Value::Array(_)) {
+                let shown = String::from_utf8_lossy(name);
+                ctx.warn(&format!("file_put_contents(): Failed to write {} bytes to {shown}", piece.len()))?;
+            } else {
+                ctx.warn(&format!(
+                    "file_put_contents(): Only {n} of {} bytes written, possibly out of free disk space",
+                    piece.len()
+                ))?;
+            }
+            failed = true;
+            break;
+        }
+        total += n;
+    }
+    ctx.call_function(b"fclose", &[h])?;
+    Ok(if failed { Value::Bool(false) } else { Value::Int(total) })
 }
 
 /// Split file contents into php's `file()` lines: the newline stays on the
@@ -547,6 +626,18 @@ fn split_lines(data: &[u8], flags: i64) -> Vec<Vec<u8>> {
 /// `file(string $filename, int $flags = 0, ...): array|false`
 fn file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let flags = args.get(1).map_or(0, Value::to_int);
+    if let Some(r) = read_filter_url(ctx, &args[0], "file")? {
+        return Ok(match r {
+            Some(b) => {
+                let mut a = Array::new();
+                for line in split_lines(&b, flags) {
+                    a.push(Value::Str(Str::from_vec(line)));
+                }
+                Value::Array(a)
+            }
+            None => Value::Bool(false),
+        });
+    }
     if let Some(url) = wrapper_url(&args[0]) {
         let context = args.get(2).cloned();
         return Ok(match crate::http::read_all(ctx, &url, context.as_ref(), "file")? {
@@ -581,6 +672,15 @@ fn file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `readfile(string $filename, ...): int|false` — write the file to output.
 fn readfile(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    if let Some(r) = read_filter_url(ctx, &args[0], "readfile")? {
+        return Ok(match r {
+            Some(b) => {
+                ctx.echo(&b);
+                Value::Int(b.len() as i64)
+            }
+            None => Value::Bool(false),
+        });
+    }
     if let Some(url) = wrapper_url(&args[0]) {
         let context = args.get(2).cloned();
         return Ok(match crate::http::read_all(ctx, &url, context.as_ref(), "readfile")? {
@@ -885,6 +985,9 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let truncate = m.starts_with('w');
 
     let path_str = String::from_utf8_lossy(&name).into_owned();
+    if let Some(h) = open_filter_url(ctx, &name, &m, "fopen")? {
+        return Ok(h);
+    }
     // The network wrappers open a connection rather than a path.
     if crate::http::is_http_url(&path_str) {
         let context = args.get(3).cloned();
@@ -929,6 +1032,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             sock: None,
             write_filters: Vec::new(),
             read_filters: Vec::new(),
+            fstate: Default::default(),
         }
     } else {
         let p = arg_path(ctx, &args[0]);
@@ -981,6 +1085,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             sock: None,
             write_filters: Vec::new(),
             read_filters: Vec::new(),
+            fstate: Default::default(),
         }
     };
     Ok(ctx.resources.add("stream", Box::new(stream)))
@@ -1019,6 +1124,7 @@ pub(crate) fn open_resource(ctx: &mut Ctx, path: &std::path::Path, mode: &str) -
         sock: None,
         write_filters: Vec::new(),
         read_filters: Vec::new(),
+        fstate: Default::default(),
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -1051,6 +1157,7 @@ pub(crate) fn pipe_resource(ctx: &mut Ctx, file: fs::File, readable: bool) -> Va
         sock: None,
         write_filters: Vec::new(),
         read_filters: Vec::new(),
+        fstate: Default::default(),
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -1064,55 +1171,133 @@ fn wrapper_url(v: &Value) -> Option<String> {
     crate::http::is_http_url(&url).then(|| url.into_owned())
 }
 
-/// Attach a filter to a stream's chain (`filters.rs`).
-///
-/// A *read* filter on a buffer-backed stream transforms what the stream
-/// has not handed out yet — which, since the bytes are already there, is
-/// the rest of the buffer, done once here. On a descriptor the reads
-/// themselves go through the chain as they happen.
-pub(crate) fn attach_filter(
-    ctx: &mut Ctx,
-    v: &Value,
-    func: &str,
-    attached: crate::filters::Attached,
-    read: bool,
-    first: bool,
-) -> Result<bool, Unwind> {
+/// Write bytes the write chain produced to where the stream's writes go
+/// (`filters.rs`): the buffer, the descriptor, or the output channel.
+pub(crate) fn write_raw(ctx: &mut Ctx, v: &Value, data: &[u8]) -> Result<(), Unwind> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let sink = with_stream(ctx, v, "fwrite", |s| {
+        if let Some(p) = s.pipe.as_mut() {
+            let _ = p.conn.write_all(data);
+            return None;
+        }
+        if s.sink == Sink::Buffer {
+            s.write_unfiltered(data);
+        }
+        Some(s.sink)
+    })?;
+    match sink {
+        Some(Sink::Stdout) => ctx.echo(data),
+        Some(Sink::Stderr) => {
+            let _ = std::io::stderr().write_all(data);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Run a read function's body over the stream — over what the read chain
+/// produced, while one is attached, instead of the raw buffer: the view is
+/// swapped in for the length of the call (`filters::FilterState`).
+fn with_view<R>(ctx: &mut Ctx, v: &Value, func: &str, f: impl FnOnce(&mut Stream) -> R) -> Result<R, Unwind> {
     with_stream(ctx, v, func, |s| {
-        let chain = if read { &mut s.read_filters } else { &mut s.write_filters };
-        if first {
-            chain.insert(0, attached);
-        } else {
-            chain.push(attached);
+        if s.pipe.is_some() || !s.fstate.view_active(!s.read_filters.is_empty()) {
+            return f(s);
         }
-        if read && s.pipe.is_none() && s.pos < s.buf.len() {
-            let pending = s.buf[s.pos..].to_vec();
-            let filtered = crate::filters::run(&mut s.read_filters, &pending);
-            s.buf.truncate(s.pos);
-            s.buf.extend_from_slice(&filtered);
-            s.fill_end = s.fill_end.min(s.buf.len());
-        }
-        true
+        let fill_end = s.fill_end;
+        swap_view(s);
+        let r = f(s);
+        swap_view(s);
+        s.fill_end = fill_end;
+        r
     })
 }
 
-/// Take a filter off a stream's chain by the id of its resource.
-pub(crate) fn remove_filter(
-    ctx: &mut Ctx,
-    v: &Value,
-    id: u32,
-    read: bool,
-) -> Result<bool, Unwind> {
-    with_stream(ctx, v, "stream_filter_remove", |s| {
-        let chain = if read { &mut s.read_filters } else { &mut s.write_filters };
-        match chain.iter().position(|a| a.id == id) {
-            Some(i) => {
-                chain.remove(i);
-                true
-            }
-            None => false,
+fn swap_view(s: &mut Stream) {
+    std::mem::swap(&mut s.buf, &mut s.fstate.view);
+    std::mem::swap(&mut s.pos, &mut s.fstate.vpos);
+    std::mem::swap(&mut s.eof, &mut s.fstate.veof);
+}
+
+/// `php://filter/<filters>/resource=<url>`: the resource opened with
+/// `mode`, the url's filters on it (`filters::apply_url_filters`). `None`
+/// when `name` is not such a url; `false` (after php's warning) when the
+/// resource does not open.
+fn open_filter_url(ctx: &mut Ctx, name: &[u8], mode: &str, func: &str) -> Result<Option<Value>, Unwind> {
+    let Some(rest) = name.get(6..).filter(|_| name[..6].eq_ignore_ascii_case(b"php://")) else {
+        return Ok(None);
+    };
+    if !rest.get(..7).is_some_and(|p| p.eq_ignore_ascii_case(b"filter/")) {
+        return Ok(None);
+    }
+    let mut spec = rest[6..].to_vec();
+    let Some(at) = spec.windows(10).position(|w| w == b"/resource=") else {
+        return Err(Unwind::error("No URL resource specified"));
+    };
+    let resource = Value::string(&spec[at + 10..]);
+    // php opens the resource without reporting its own errors.
+    ctx.silence += 1;
+    let opened = ctx.call_function(b"fopen", &[resource, Value::string(mode.as_bytes())]);
+    ctx.silence -= 1;
+    let stream = opened?;
+    if !matches!(stream, Value::Resource(_)) {
+        let shown = String::from_utf8_lossy(name);
+        ctx.warn(&format!("{func}({shown}): Failed to open stream: operation failed"))?;
+        return Ok(Some(Value::Bool(false)));
+    }
+    spec[at] = 0;
+    let scan = &spec[1..];
+    let scan = &scan[..scan.iter().position(|b| *b == 0).unwrap_or(scan.len())];
+    crate::filters::apply_url_filters(ctx, &stream, scan, mode, func)?;
+    with_stream(ctx, &stream, func, |s| s.fstate.url = Some(String::from_utf8_lossy(name).into()))?;
+    Ok(Some(stream))
+}
+
+/// Read a whole `php://filter` url, for the functions that take a path.
+fn read_filter_url(ctx: &mut Ctx, name: &Value, func: &str) -> Result<Option<Option<Vec<u8>>>, Unwind> {
+    let Some(h) = open_filter_url(ctx, &name.to_php_bytes(), "rb", func)? else {
+        return Ok(None);
+    };
+    if !matches!(h, Value::Resource(_)) {
+        return Ok(Some(None));
+    }
+    let data = ctx.call_function(b"stream_get_contents", std::slice::from_ref(&h))?;
+    ctx.call_function(b"fclose", &[h])?;
+    Ok(Some(Some(data.to_php_bytes().to_vec())))
+}
+
+/// The end of the request, for streams still open with filters on them:
+/// php closes every stream then, so a write chain gets its closing flush
+/// and every filter its `onClose()` — with `$this->stream` already null.
+/// Runs after the output is flushed, so what the filters print is flushed
+/// again after them.
+pub(crate) fn request_shutdown(it: &mut rphp_runtime::Interp) {
+    let mut ctx = Ctx(it);
+    let open: Vec<Value> = ctx
+        .resources
+        .iter()
+        .filter(|(_, r)| r.kind() == "stream")
+        .map(|(_, r)| Value::Resource(r.clone()))
+        .collect();
+    let mut ran = false;
+    for v in open.into_iter().rev() {
+        let filtered = with_stream(&mut ctx, &v, "Unknown", |s| !s.read_filters.is_empty() || !s.write_filters.is_empty());
+        if !matches!(filtered, Ok(true)) {
+            continue;
         }
-    })
+        ran = true;
+        let closed = crate::filters::close_stream(&mut ctx, &v, "Unknown", Value::Null);
+        if let Err(u) = closed.and_then(|()| crate::filters::rethrow(&mut ctx)) {
+            ctx.handle_top_level_unwind(u);
+        }
+        if matches!(with_stream(&mut ctx, &v, "Unknown", |s| flush_stream(s)), Ok(Some(_))) {
+            clear_stat_cache(&mut ctx);
+        }
+    }
+    if ran {
+        ctx.finish_output();
+    }
 }
 
 /// A stream context's options, for a wrapper to read its own section out
@@ -1180,6 +1365,7 @@ pub(crate) fn socket_resource_with(
         pipe: Some(Pipe { conn, nonblocking: false, prefix, dechunk }),
         write_filters: Vec::new(),
         read_filters: Vec::new(),
+        fstate: Default::default(),
         sock: Some(Sock {
             kind,
             uri: uri.map(Into::into),
@@ -1304,6 +1490,7 @@ fn std_stream(sink: Sink, uri: &str, mode: &str) -> Stream {
         sock: None,
         write_filters: Vec::new(),
         read_filters: Vec::new(),
+        fstate: Default::default(),
     }
 }
 
@@ -1322,6 +1509,14 @@ fn flush_stream(s: &Stream) -> Option<std::path::PathBuf> {
 
 /// `fclose(resource $stream): bool`
 fn fclose(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A filter callback's own stream stays open until the callback is done.
+    if with_stream(ctx, &args[0].clone(), "fclose", |s| s.fstate.busy)? {
+        ctx.warn("fclose(): cannot close the provided stream, as it must not be manually closed")?;
+        return Ok(Value::Bool(false));
+    }
+    let stream = args[0].clone();
+    // The filters' last word first; the stream closes whatever they said.
+    let filtered = crate::filters::close_stream(ctx, &stream, "fclose", stream.clone());
     let written = with_stream(ctx, &args[0].clone(), "fclose", |s| {
         let written = flush_stream(s);
         // The child sees EOF on its stdin the moment the pipe closes.
@@ -1332,6 +1527,8 @@ fn fclose(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         clear_stat_cache(ctx);
     }
     ctx.resources.close_value(&args[0]);
+    filtered?;
+    crate::filters::rethrow(ctx)?;
     Ok(Value::Bool(true))
 }
 
@@ -1342,6 +1539,10 @@ fn fwrite(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         data.truncate(len.max(0) as usize);
     }
     let stream = args[0].clone();
+    // A write chain answers for itself: what its first filter consumed.
+    if let Some(r) = crate::filters::write_through(ctx, &stream, "fwrite", &data)? {
+        return Ok(r);
+    }
     // A pipe: the bytes go to the descriptor now; a closed reader (EPIPE)
     // is php's `false` with a notice.
     let piped = with_stream(ctx, &stream, "fwrite", |s| {
@@ -1437,7 +1638,7 @@ enum PipeRead {
 /// read that comes back empty at end of stream sets `eof`; a non-blocking
 /// read with nothing yet answers the empty string without setting it.
 fn pipe_read(ctx: &mut Ctx, v: &Value, func: &str, how: PipeRead) -> Result<Option<Vec<u8>>, Unwind> {
-    with_stream(ctx, v, func, |s| {
+    let read = with_stream(ctx, v, func, |s| {
         let p = s.pipe.as_mut()?;
         // A *blocking* descriptor that comes back with nothing did not find
         // the stream empty — it ran its receive timeout out. That is all
@@ -1496,12 +1697,13 @@ fn pipe_read(ctx: &mut Ctx, v: &Value, func: &str, how: PipeRead) -> Result<Opti
         if let Some(sock) = s.sock.as_mut() {
             sock.timed_out = starved && blocking && out.is_empty();
         }
-        // A descriptor's reads go through the read chain as they happen.
-        if !s.read_filters.is_empty() && !out.is_empty() {
-            out = crate::filters::run(&mut s.read_filters, &out);
-        }
-        Some(out)
-    })
+        Some((out, s.eof, !s.read_filters.is_empty()))
+    })?;
+    // A descriptor's reads go through the read chain as they happen.
+    match read {
+        Some((out, eof, true)) => crate::filters::filter_pipe_read(ctx, v, func, out, eof).map(Some),
+        other => Ok(other.map(|(out, _, _)| out)),
+    }
 }
 
 fn fread(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
@@ -1513,13 +1715,18 @@ fn fread(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     if let Some(b) = pipe_read(ctx, &stream, "fread", PipeRead::Some(len.min(CHUNK)))? {
         return Ok(Value::Str(Str::from_vec(b)));
     }
-    with_stream(ctx, &stream, "fread", |s| {
+    let failed = crate::filters::fill(ctx, &stream, "fread", crate::filters::Want::Bytes(len))?;
+    with_view(ctx, &stream, "fread", |s| {
         record_fill(s);
         let end = (s.pos + len).min(s.buf.len());
         let out = s.buf[s.pos.min(s.buf.len())..end].to_vec();
         s.pos = end;
         // Short of the length asked for means the read hit the end.
         s.eof = out.len() < len;
+        // A read chain that failed with nothing to show is php's `false`.
+        if failed && out.is_empty() {
+            return Value::Bool(false);
+        }
         Value::Str(Str::from_vec(out))
     })
 }
@@ -1534,7 +1741,8 @@ fn fgets(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     if let Some(b) = pipe_read(ctx, &stream, "fgets", PipeRead::Line)? {
         return Ok(if b.is_empty() { Value::Bool(false) } else { Value::Str(Str::from_vec(b)) });
     }
-    with_stream(ctx, &stream, "fgets", |s| {
+    crate::filters::fill(ctx, &stream, "fgets", crate::filters::Want::Line(b"\n".to_vec(), usize::MAX))?;
+    with_view(ctx, &stream, "fgets", |s| {
         record_fill(s);
         if s.pos >= s.buf.len() {
             s.eof = true;
@@ -1598,7 +1806,8 @@ fn stream_get_line(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             Value::Str(Str::from_vec(out))
         });
     }
-    with_stream(ctx, &stream, "stream_get_line", |s| {
+    crate::filters::fill(ctx, &stream, "stream_get_line", crate::filters::Want::Line(ending.clone(), cap))?;
+    with_view(ctx, &stream, "stream_get_line", |s| {
         record_fill(s);
         if s.pos >= s.buf.len() {
             s.eof = true;
@@ -1633,7 +1842,8 @@ fn fgetc(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     if let Some(b) = pipe_read(ctx, &stream, "fgetc", PipeRead::Some(1))? {
         return Ok(if b.is_empty() { Value::Bool(false) } else { Value::Str(Str::from_vec(b)) });
     }
-    with_stream(ctx, &stream, "fgetc", |s| {
+    crate::filters::fill(ctx, &stream, "fgetc", crate::filters::Want::Bytes(1))?;
+    with_view(ctx, &stream, "fgetc", |s| {
         record_fill(s);
         if s.pos >= s.buf.len() {
             s.eof = true;
@@ -1649,6 +1859,11 @@ fn fgetc(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 fn feof(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
     with_stream(ctx, &stream, "feof", |s| {
+        // Behind a read chain it is the end once the chain has had its last
+        // call and nothing it produced is left.
+        if s.pipe.is_none() && s.fstate.view_active(!s.read_filters.is_empty()) {
+            return Value::Bool(s.fstate.done && s.fstate.vpos >= s.fstate.view.len());
+        }
         // A socket is asked, not remembered: php checks the peer is still
         // there (`socket::socket_eof`) rather than waiting for a read to
         // come back short, so `feof()` is true as soon as the other end
@@ -1665,7 +1880,32 @@ fn feof(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `ftell(resource $stream): int|false`
 fn ftell(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
-    with_stream(ctx, &stream, "ftell", |s| Value::Int(s.pos as i64))
+    with_stream(ctx, &stream, "ftell", |s| {
+        if s.pipe.is_none() && s.fstate.view_active(!s.read_filters.is_empty()) {
+            return Value::Int((s.fstate.vbase + s.fstate.vpos) as i64);
+        }
+        Value::Int(s.pos as i64)
+    })
+}
+
+/// A seek flushes the write chain first, and throws away what the read
+/// chain produced: reading resumes from the new position (php's
+/// `_php_stream_seek`).
+fn seek_filtered(ctx: &mut Ctx, stream: &Value, func: &str, offset: i64, whence: i64) -> Result<i64, Unwind> {
+    crate::filters::flush_writes(ctx, stream, func, crate::filters::Flush::Inc, stream.clone())?;
+    crate::filters::rethrow(ctx)?;
+    with_stream(ctx, stream, func, |s| {
+        let filtered = s.pipe.is_none() && s.fstate.view_active(!s.read_filters.is_empty());
+        let (offset, whence) = match whence {
+            1 if filtered => ((s.fstate.vbase + s.fstate.vpos) as i64 + offset, 0),
+            w => (offset, w),
+        };
+        let r = s.seek(offset, whence);
+        if filtered {
+            s.fstate.reset_view(s.pos);
+        }
+        r
+    })
 }
 
 /// `fseek(resource $stream, int $offset, int $whence = SEEK_SET): int`
@@ -1673,21 +1913,21 @@ fn fseek(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let offset = args[1].to_int();
     let whence = args.get(2).map_or(0, Value::to_int);
     let stream = args[0].clone();
-    with_stream(ctx, &stream, "fseek", |s| Value::Int(s.seek(offset, whence)))
+    Ok(Value::Int(seek_filtered(ctx, &stream, "fseek", offset, whence)?))
 }
 
 /// `rewind(resource $stream): bool`
 fn rewind(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
-    with_stream(ctx, &stream, "rewind", |s| {
-        s.seek(0, 0);
-        Value::Bool(true)
-    })
+    seek_filtered(ctx, &stream, "rewind", 0, 0)?;
+    Ok(Value::Bool(true))
 }
 
 /// `fflush(resource $stream): bool`
 fn fflush(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
+    crate::filters::flush_writes(ctx, &stream, "fflush", crate::filters::Flush::Inc, stream.clone())?;
+    crate::filters::rethrow(ctx)?;
     let written = with_stream(ctx, &stream, "fflush", |s| flush_stream(s))?;
     if written.is_some() {
         clear_stat_cache(ctx);
@@ -1708,7 +1948,12 @@ fn stream_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     if let Some(b) = pipe_read(ctx, &stream, "stream_get_contents", PipeRead::All(max.filter(|n| *n >= 0).map(|n| n as usize)))? {
         return Ok(Value::Str(Str::from_vec(b)));
     }
-    with_stream(ctx, &stream, "stream_get_contents", |s| {
+    let want = match max {
+        Some(n) if n >= 0 => crate::filters::Want::Bytes(n as usize),
+        _ => crate::filters::Want::All,
+    };
+    crate::filters::fill(ctx, &stream, "stream_get_contents", want)?;
+    with_view(ctx, &stream, "stream_get_contents", |s| {
         record_fill(s);
         if offset >= 0 {
             s.pos = (offset as usize).min(s.buf.len());
@@ -1790,6 +2035,8 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         set("timed_out", Value::Bool(false));
         set("blocked", Value::Bool(s.pipe.as_ref().is_none_or(|p| !p.nonblocking)));
         set("eof", Value::Bool(s.eof));
+        // A `php://filter` stream is the php wrapper's, under its own url.
+        let wrapper = if s.fstate.url.is_some() { "PHP" } else { wrapper };
         set("wrapper_type", Value::string(wrapper.as_bytes()));
         set("stream_type", Value::string(kind.as_bytes()));
         set("mode", Value::string(s.mode.as_bytes()));
@@ -1798,7 +2045,7 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             Value::Int(s.fill_end.saturating_sub(s.pos) as i64),
         );
         set("seekable", Value::Bool(seekable));
-        set("uri", Value::string(s.uri.as_bytes()));
+        set("uri", Value::string(s.fstate.url.as_deref().unwrap_or(&s.uri).as_bytes()));
         Value::Array(out)
     })
 }
@@ -1992,7 +2239,12 @@ fn stream_copy_to_stream(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         .map(|v| v.to_int());
     let offset = args.get(3).map_or(0, Value::to_int);
     let from = args[0].clone();
-    let data = with_stream(ctx, &from, "stream_copy_to_stream", |s| {
+    let want = match length {
+        Some(n) if n >= 0 => crate::filters::Want::Bytes(n as usize),
+        _ => crate::filters::Want::All,
+    };
+    crate::filters::fill(ctx, &from, "stream_copy_to_stream", want)?;
+    let data = with_view(ctx, &from, "stream_copy_to_stream", |s| {
         if offset > 0 {
             s.seek(offset, 0);
         }
@@ -2006,6 +2258,9 @@ fn stream_copy_to_stream(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         s.buf[start..end].to_vec()
     })?;
     let to = args[1].clone();
+    if crate::filters::write_through(ctx, &to, "stream_copy_to_stream", &data)?.is_some() {
+        return Ok(Value::Int(data.len() as i64));
+    }
     let sink = with_stream(ctx, &to, "stream_copy_to_stream", |s| {
         if s.sink == Sink::Buffer {
             s.write(&data);

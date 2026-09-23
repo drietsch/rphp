@@ -96,6 +96,15 @@ pub const CORE_DEFAULTS: &[(&str, &str)] = &[
     ("pcre.jit", "1"),
 ];
 
+/// Push a directive the value layer reads without an interpreter to hand
+/// (`precision`, which every float-to-string conversion uses) to where it
+/// reads it.
+fn sync(name: &str, value: &str) {
+    if name == "precision" {
+        rphp_value::set_float_precision(value.trim().parse().unwrap_or(0));
+    }
+}
+
 impl IniTable {
     /// An empty table.
     pub fn new() -> IniTable {
@@ -114,6 +123,10 @@ impl IniTable {
     /// Register a directive with its default (an extension's `INI` block).
     /// Re-registering keeps the current value.
     pub fn register(&mut self, name: &str, default: &str) {
+        let fresh = !self.entries.contains_key(name);
+        if fresh {
+            sync(name, default);
+        }
         self.entries
             .entry(name.to_string())
             .and_modify(|e| e.default = default.to_string())
@@ -137,6 +150,7 @@ impl IniTable {
     /// (and no change) for an unknown directive.
     pub fn set(&mut self, name: &str, value: &str) -> Option<String> {
         let e = self.entries.get_mut(name)?;
+        sync(name, value);
         Some(std::mem::replace(&mut e.value, value.to_string()))
     }
 
@@ -144,6 +158,7 @@ impl IniTable {
     pub fn restore(&mut self, name: &str) {
         if let Some(e) = self.entries.get_mut(name) {
             e.value = e.default.clone();
+            sync(name, &e.value);
         }
     }
 

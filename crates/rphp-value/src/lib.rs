@@ -899,13 +899,37 @@ fn leading_number(bytes: &[u8]) -> Option<Value> {
     parse_number(bytes, false)
 }
 
-/// PHP's default float-to-string: a `%.14G`-style format matching the default
-/// `precision=14` ini setting that `echo`/string-cast use. Fixed notation for
-/// exponents in `-4 ..= 13`, otherwise scientific with an uppercase `E`, a
-/// signed exponent, and a forced `.0` mantissa. (`serialize_precision=-1`
-/// shortest-round-trip, used by `var_export`/`json_encode`, is a separate path
-/// added later.) Verified against stock PHP 8.5 by the differential suite.
+thread_local! {
+    /// The `precision` ini setting `echo` and string casts format floats
+    /// with — set by the runtime's ini table whenever the directive changes
+    /// (a new interpreter resets it to its default).
+    static PRECISION: std::cell::Cell<i64> = const { std::cell::Cell::new(14) };
+}
+
+/// Set the `precision` float strings are made with (`ini_set('precision')`).
+pub fn set_float_precision(precision: i64) {
+    PRECISION.with(|p| p.set(precision));
+}
+
+/// The `precision` in force for float strings.
+pub fn float_precision() -> i64 {
+    PRECISION.with(std::cell::Cell::get)
+}
+
+/// PHP's float-to-string under the current `precision`: see
+/// [`format_float_prec`].
 fn format_php_float(f: f64) -> String {
+    format_float_prec(f, float_precision())
+}
+
+/// PHP's float-to-string with `precision` significant digits
+/// (`smart_str_append_double` / `%.*G` with php's layout): fixed notation for
+/// exponents in `-4 ..< precision`, otherwise scientific with an uppercase
+/// `E`, a signed exponent and a forced `.0` mantissa. `-1` is the shortest
+/// string that round-trips, laid out as for 17 digits; `0` is taken as 1.
+/// Digits are the exact decimal expansion rounded half-to-even, which is
+/// what php's `zend_gcvt` produces. Verified against stock PHP 8.5.
+pub fn format_float_prec(f: f64, precision: i64) -> String {
     if f.is_nan() {
         return "NAN".to_string();
     }
@@ -920,27 +944,31 @@ fn format_php_float(f: f64) -> String {
         return if f.is_sign_negative() { "-0" } else { "0" }.to_string();
     }
 
-    const PREC: i32 = 14;
     let neg = f < 0.0;
-
-    // Canonical 14-significant-digit scientific form: "d.ddddddddddddde{E}".
-    // Rust's LowerExp yields one leading digit, lowercase `e`, no `+`, and no
-    // leading zeros in the exponent — exactly what we need to re-lay-out.
-    let sci = format!("{:.*e}", (PREC - 1) as usize, f.abs());
+    // "d.ddd…e{E}": Rust's LowerExp yields one leading digit, lowercase `e`,
+    // no `+`, and no leading zeros in the exponent — re-laid-out below.
+    let (sci, prec) = if precision == -1 {
+        (format!("{:e}", f.abs()), 17)
+    } else {
+        let p = precision.clamp(1, 500);
+        (format!("{:.*e}", (p - 1) as usize, f.abs()), p as i32)
+    };
     let (mant, exp) = sci.split_once('e').expect("LowerExp always has 'e'");
     let e: i32 = exp.parse().expect("valid exponent");
-    let digits: String = mant.chars().filter(|&c| c != '.').collect(); // PREC digits
+    let digits: String = mant.chars().filter(|&c| c != '.').collect();
+    let digits = digits.trim_end_matches('0');
+    let digits = if digits.is_empty() { "0" } else { digits };
 
     let mut out = String::new();
     if neg {
         out.push('-');
     }
 
-    if !(-4..PREC).contains(&e) {
+    if !(-4..prec).contains(&e) {
         // Scientific.
         out.push_str(&digits[0..1]);
         out.push('.');
-        let frac = digits[1..].trim_end_matches('0');
+        let frac = &digits[1..];
         out.push_str(if frac.is_empty() { "0" } else { frac });
         out.push('E');
         out.push(if e >= 0 { '+' } else { '-' });
@@ -949,23 +977,19 @@ fn format_php_float(f: f64) -> String {
         // Fixed, magnitude >= 1.
         let intlen = (e + 1) as usize;
         if intlen >= digits.len() {
-            out.push_str(&digits);
+            out.push_str(digits);
             out.push_str(&"0".repeat(intlen - digits.len()));
         } else {
             out.push_str(&digits[..intlen]);
-            let frac = digits[intlen..].trim_end_matches('0');
-            if !frac.is_empty() {
-                out.push('.');
-                out.push_str(frac);
-            }
+            out.push('.');
+            out.push_str(&digits[intlen..]);
         }
     } else {
         // Fixed, magnitude < 1: "0.00…digits".
         let lead_zeros = (-e - 1) as usize;
-        let frac_full = format!("{}{}", "0".repeat(lead_zeros), digits);
-        let frac = frac_full.trim_end_matches('0');
         out.push_str("0.");
-        out.push_str(if frac.is_empty() { "0" } else { frac });
+        out.push_str(&"0".repeat(lead_zeros));
+        out.push_str(digits);
     }
     out
 }

@@ -891,6 +891,8 @@ impl Interp {
                 )));
             }
             def.parent = Some(pid);
+            // Put in order below, once it is known whether this class
+            // declares interfaces of its own.
             def.interfaces = p.interfaces.clone();
             def.props = p.props.clone();
             def.prop_index = p.prop_index.clone();
@@ -918,6 +920,53 @@ impl Interp {
                 def.flags |= ClassFlags::ALLOW_DYNAMIC;
             }
         }
+        // The interface list in php's order, which `class_implements()` and
+        // Reflection show. A class declaring `__toString()` implements
+        // `Stringable` too: last among the declared ones for a user class
+        // (the compiler appends it), first for an internal one (registered
+        // with its methods, before the stub's `implements`). Each interface
+        // brings its own list, back to front: right after it for an internal
+        // class, after all the declared ones for a user class.
+        {
+            let mut declared = interfaces.clone();
+            let to_string = methods.iter().any(|m| m.name.eq_ignore_ascii_case(b"__tostring"));
+            if let Some(sid) = self.well_known.stringable.filter(|&sid| to_string && sid != id) {
+                if !declared.contains(&sid) {
+                    if internal {
+                        declared.insert(0, sid);
+                    } else {
+                        declared.push(sid);
+                    }
+                }
+            }
+            // php copies a parent's list back to front
+            // (`zend_do_inherit_interfaces`) — for an internal class always,
+            // for a user class only when it declares no interface itself;
+            // with some, `zend_do_implement_interfaces` keeps it in order.
+            if internal || declared.is_empty() {
+                def.interfaces.reverse();
+            }
+            let push = |list: &mut Vec<u32>, iid: u32| {
+                if !list.contains(&iid) {
+                    list.push(iid);
+                }
+            };
+            for &iid in &declared {
+                push(&mut def.interfaces, iid);
+                if internal {
+                    for &sub in self.classes[iid as usize].interfaces.iter().rev() {
+                        push(&mut def.interfaces, sub);
+                    }
+                }
+            }
+            if !internal {
+                for &iid in &declared {
+                    for &sub in self.classes[iid as usize].interfaces.iter().rev() {
+                        push(&mut def.interfaces, sub);
+                    }
+                }
+            }
+        }
         for iid in interfaces {
             let i = self.classes[iid as usize].clone();
             if i.kind != ClassKind::Interface {
@@ -925,14 +974,6 @@ impl Interp {
                     "{name_str} cannot implement {} - it is not an interface",
                     i.name_str()
                 )));
-            }
-            for &sub in &i.interfaces {
-                if !def.interfaces.contains(&sub) {
-                    def.interfaces.push(sub);
-                }
-            }
-            if !def.interfaces.contains(&iid) {
-                def.interfaces.push(iid);
             }
             // Interface methods are abstract signatures: inherit them so
             // `method_exists` and Reflection see them; a class body's own

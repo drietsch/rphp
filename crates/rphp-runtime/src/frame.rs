@@ -614,28 +614,5 @@ pub struct TraceOpts {
 /// php's `%.*G`-style float rendering with `precision` significant digits
 /// (`smart_str_append_double` without the `.0` suffix).
 pub fn format_float_precision(f: f64, precision: i64) -> String {
-    if f.is_nan() {
-        return "NAN".to_string();
-    }
-    if f.is_infinite() {
-        return if f > 0.0 { "INF".to_string() } else { "-INF".to_string() };
-    }
-    let p = precision.clamp(1, 40) as usize;
-    let s = format!("{:.*e}", p - 1, f);
-    // Split mantissa / exponent and re-render like %G.
-    let (mant, exp) = s.split_once('e').unwrap_or((&s, "0"));
-    let exp: i32 = exp.parse().unwrap_or(0);
-    if exp < -4 || exp >= p as i32 {
-        let mant = mant.trim_end_matches('0').trim_end_matches('.');
-        let mant = if mant.contains('.') { mant.to_string() } else { format!("{mant}.0") };
-        format!("{mant}E{}{}", if exp < 0 { "-" } else { "+" }, exp.abs())
-    } else {
-        let decimals = (p as i32 - 1 - exp).max(0) as usize;
-        let s = format!("{:.*}", decimals, f);
-        if s.contains('.') {
-            s.trim_end_matches('0').trim_end_matches('.').to_string()
-        } else {
-            s
-        }
-    }
+    rphp_value::format_float_prec(f, precision)
 }

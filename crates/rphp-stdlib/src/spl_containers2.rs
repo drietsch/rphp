@@ -613,7 +613,7 @@ pub(crate) fn register_classes(r: &mut Registry) {
     if r.0.class_by_name(b"SplDoublyLinkedList").is_some() {
         return;
     }
-    let ifaces: &[&str] = &["Iterator", "Countable", "ArrayAccess"];
+    let ifaces: &[&str] = &["Iterator", "Countable", "ArrayAccess", "Serializable"];
     r.class("SplDoublyLinkedList")
         .implements(ifaces)
         .class_const("IT_MODE_LIFO", Value::Int(IT_MODE_LIFO))

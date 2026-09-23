@@ -24,6 +24,9 @@ use crate::class::{ClassDef, WellKnown};
 use crate::unit::{FuncRt, UnitRt};
 use crate::LastError;
 
+/// What a safepoint runs for a poke ([`Interp::poke_hook`]).
+pub type PokeHook = fn(&mut Interp) -> Result<(), Unwind>;
+
 /// Which SAPI created this interpreter (`PHP_SAPI`, `php_sapi_name()`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SapiKind {
@@ -290,6 +293,9 @@ pub struct Interp {
     pub interrupt: crate::interrupt::Interrupt,
     /// The armed `max_execution_time` / `set_time_limit()` deadline.
     pub deadline: Option<crate::interrupt::Deadline>,
+    /// What a safepoint runs when it finds a [`Interrupt::poke`](crate::Interrupt::poke)
+    /// rather than a real interrupt: `ext/pcntl`'s async signal dispatch.
+    pub poke_hook: Option<PokeHook>,
     /// `declare(strict_types=1)` default for units that do not declare it.
     pub strict_default: bool,
     pub(crate) in_error_handler: bool,
@@ -470,6 +476,7 @@ impl Interp {
             sapi: SapiKind::Embed,
             interrupt: crate::interrupt::Interrupt::new(),
             deadline: None,
+            poke_hook: None,
             strict_default: false,
             in_error_handler: false,
             test_buf: None,
@@ -723,6 +730,21 @@ impl Interp {
     pub fn interrupted(&mut self) -> Unwind {
         let reason = self.interrupt.take().unwrap_or_else(|| "Execution interrupted by the host".to_string());
         self.fatal(&reason)
+    }
+
+    /// A safepoint found the interrupt raised: run the poke hook for a poke
+    /// (a signal under `pcntl_async_signals(true)`) and carry on, or raise
+    /// the fatal for a real interrupt.
+    pub fn safepoint(&mut self) -> Result<(), Unwind> {
+        if self.interrupt.take_poke() {
+            // A real interrupt raised meanwhile keeps the flag up: the next
+            // safepoint, a back edge or a call away, raises its fatal.
+            if let Some(hook) = self.poke_hook {
+                hook(self)?;
+            }
+            return Ok(());
+        }
+        Err(self.interrupted())
     }
 
     /// `max_execution_time` / `set_time_limit(int $seconds)`: (re)arm a

@@ -151,7 +151,7 @@ impl Interp {
         }
         // Frame activation is the other safepoint: recursion without a loop.
         if self.interrupt.is_raised() {
-            return Err(self.interrupted());
+            self.safepoint()?;
         }
         if self.frames.len() >= MAX_FRAMES {
             return Err(Unwind::error(format!(
@@ -503,6 +503,12 @@ impl Interp {
         self.pop_native_frame();
         self.silence = silence;
         self.out.flush_pending();
+        // php checks the VM interrupt after every internal call as well: a
+        // signal a native raised (`posix_kill(posix_getpid(), …)` under
+        // `pcntl_async_signals(true)`) is handled before the next statement.
+        if r.is_ok() && self.interrupt.is_poked() {
+            self.safepoint()?;
+        }
         r
     }
 
@@ -824,6 +830,12 @@ impl Interp {
         self.pop_native_frame();
         self.silence = silence;
         self.out.flush_pending();
+        // php checks the VM interrupt after every internal call as well: a
+        // signal a native raised (`posix_kill(posix_getpid(), …)` under
+        // `pcntl_async_signals(true)`) is handled before the next statement.
+        if r.is_ok() && self.interrupt.is_poked() {
+            self.safepoint()?;
+        }
         r
     }
 

@@ -15,6 +15,8 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("printf", 1, None, printf),
     nf!("vsprintf", 2, Some(2), vsprintf),
     nf!("vprintf", 2, Some(2), vprintf),
+    nf!("fprintf", 2, None, fprintf),
+    nf!("vfprintf", 3, Some(3), vfprintf),
 ];
 
 /// php's `INT_MAX`: the bound on argument numbers, widths and precisions.
@@ -567,6 +569,51 @@ pub(crate) fn vprintf(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let len = rendered.len() as i64;
     ctx.out().extend_from_slice(&rendered);
     Ok(Value::Int(len))
+}
+
+/// The stream argument of `fprintf()`/`vfprintf()`, or php's TypeError.
+fn stream_arg(func: &str, v: &Value) -> Result<Value, Unwind> {
+    match &*v.deref() {
+        Value::Resource(_) => Ok(v.clone()),
+        other => Err(Unwind::type_error(format!(
+            "{func}(): Argument #1 ($stream) must be of type resource, {} given",
+            rphp_runtime::value_name(&other)
+        ))),
+    }
+}
+
+/// Write what `fprintf()`/`vfprintf()` rendered through `fwrite()` — so a
+/// stream's filters see it — and answer the rendered length, which php
+/// returns whatever the write did.
+fn write_rendered(ctx: &mut Ctx, stream: Value, rendered: Vec<u8>) -> NativeResult {
+    let len = rendered.len() as i64;
+    ctx.call_function(b"fwrite", &[stream, Value::Str(Str::from_vec(rendered))])?;
+    Ok(Value::Int(len))
+}
+
+/// `fprintf(resource $stream, string $format, mixed ...$values): int`.
+pub(crate) fn fprintf(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = stream_arg("fprintf", &args[0])?;
+    let format = args[1].to_php_bytes();
+    let rendered = do_sprintf(ctx, "fprintf", &format, &args[2..], ArgStyle::Positional { extra: 2 })?;
+    write_rendered(ctx, stream, rendered)
+}
+
+/// `vfprintf(resource $stream, string $format, array $values): int`.
+pub(crate) fn vfprintf(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let stream = stream_arg("vfprintf", &args[0])?;
+    let format = args[1].to_php_bytes();
+    let vals = match &*args[2].deref() {
+        Value::Array(a) => a.iter().map(|(_, v)| v.deref().into_owned()).collect::<Vec<_>>(),
+        other => {
+            return Err(Unwind::type_error(format!(
+                "vfprintf(): Argument #3 ($values) must be of type array, {} given",
+                rphp_runtime::value_name(&other)
+            )))
+        }
+    };
+    let rendered = do_sprintf(ctx, "vfprintf", &format, &vals, ArgStyle::Array)?;
+    write_rendered(ctx, stream, rendered)
 }
 
 #[cfg(test)]

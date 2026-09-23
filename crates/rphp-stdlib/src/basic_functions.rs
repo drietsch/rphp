@@ -3,11 +3,12 @@
 //! functions, SAPI/version queries.
 
 use rphp_runtime::{nf, Ctx, NativeFn, NativeResult, Unwind};
-use rphp_value::Value;
+use rphp_value::{Array, ArrayKey, Value};
 
 /// This extension's registry contribution (see `lib.rs`).
 pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("ini_get", 1, Some(1), ini_get),
+    nf!("get_resources", 0, Some(1), get_resources),
     nf!("ini_set", 2, Some(2), ini_set),
     nf!("ini_alter", 2, Some(2), ini_set),
     nf!("ini_restore", 1, Some(1), ini_restore),
@@ -875,4 +876,39 @@ mod tests {
         .unwrap();
         assert_eq!(it.shutdown.len(), 1);
     }
+}
+
+/// The resource types this build creates, for `get_resources()`'s check.
+const RESOURCE_TYPES: &[&str] = &[
+    "stream", "stream-context", "stream filter", "userfilter.bucket brigade",
+    "userfilter.bucket", "process", "Unknown",
+];
+
+/// `get_resources(?string $type = null): array` — the live resources by id,
+/// of one type when `$type` names it.
+fn get_resources(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let wanted = match args.first().map(|v| v.deref().into_owned()) {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let t = v.to_php_string();
+            if !RESOURCE_TYPES.contains(&t.as_str()) {
+                return Err(Unwind::value_error(
+                    "get_resources(): Argument #1 ($type) must be a valid resource type",
+                ));
+            }
+            Some(t)
+        }
+    };
+    let mut out = Array::new();
+    let mut live: Vec<_> = ctx
+        .resources
+        .iter()
+        .filter(|(_, r)| wanted.as_deref().is_none_or(|t| r.kind() == t))
+        .map(|(id, r)| (id, r.clone()))
+        .collect();
+    live.sort_by_key(|(id, _)| *id);
+    for (id, r) in live {
+        out.set(ArrayKey::Int(i64::from(id)), Value::Resource(r));
+    }
+    Ok(Value::Array(out))
 }

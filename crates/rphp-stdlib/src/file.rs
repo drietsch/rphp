@@ -1007,10 +1007,11 @@ pub(crate) fn register_constants(r: &mut rphp_runtime::Registry) {
         let res = r.interp().resources.add("stream", Box::new(stream));
         r.constant(name, res);
     }
-    // php's CLI holds a fourth resource of its own, so a script's first
-    // `fopen()` is id 5 and every dumped handle counts from there. Reserving
-    // one keeps `var_dump($handle)` identical.
-    r.interp().resources.reserve_id();
+    // The fourth resource is php's default stream context, made at startup
+    // — which is why a script's first `fopen()` is id 5, and why
+    // `stream_context_get_default()` and `get_resources()` show resource 4.
+    let default = r.interp().resources.add("stream-context", Box::new(StreamContext::default()));
+    r.interp().ext.slot::<DefaultContext>(DEFAULT_CONTEXT_SLOT).0 = Some(default);
 }
 
 // ---- streams ---------------------------------------------------------------

@@ -167,6 +167,7 @@ pub fn register(r: &mut Registry) {
     randomizer::register_classes(r);
     user_filters::register_classes(r);
     zlib::register_classes(r);
+    dir::register_classes(r);
     math::register_constants(r);
     net::register_constants(r);
     session::register_constants(r);

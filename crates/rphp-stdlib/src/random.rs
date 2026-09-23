@@ -40,27 +40,33 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("array_rand", 1, Some(2), array_rand),
 ];
 
-/// `MT_RAND_MT19937` / `MT_RAND_PHP`.
+/// `MT_RAND_MT19937` / `MT_RAND_PHP` (deprecated since 8.3).
 pub(crate) fn register_constants(r: &mut Registry) {
     r.constant("MT_RAND_MT19937", Value::Int(MT_RAND_MT19937));
-    r.constant("MT_RAND_PHP", Value::Int(MT_RAND_PHP));
+    r.deprecated_constant(
+        "MT_RAND_PHP",
+        Value::Int(MT_RAND_PHP),
+        " since 8.3, as it uses a biased non-standard variant of Mt19937",
+    );
 }
 
-const MT_RAND_MT19937: i64 = 0;
-const MT_RAND_PHP: i64 = 1;
+pub(crate) const MT_RAND_MT19937: i64 = 0;
+pub(crate) const MT_RAND_PHP: i64 = 1;
 /// `mt_getrandmax()`: the 31-bit output range.
-const MT_RAND_MAX: i64 = 0x7FFF_FFFF;
+pub(crate) const MT_RAND_MAX: i64 = 0x7FFF_FFFF;
 
-const N: usize = 624;
+pub(crate) const N: usize = 624;
 const M: usize = 397;
 
-/// The Mt19937 engine state, `php_random_status_state_mt19937`.
-struct Mt {
-    state: [u32; N],
+/// The Mt19937 engine state, `php_random_status_state_mt19937` — also the
+/// state of a `Random\Engine\Mt19937` object (`randomizer.rs`).
+#[derive(Clone)]
+pub(crate) struct Mt {
+    pub(crate) state: [u32; N],
     /// Index of the next word to output (`N` = reload first).
-    next: usize,
-    mode: i64,
-    seeded: bool,
+    pub(crate) next: usize,
+    pub(crate) mode: i64,
+    pub(crate) seeded: bool,
 }
 
 thread_local! {
@@ -74,8 +80,14 @@ pub(crate) fn request_shutdown() {
 }
 
 impl Mt {
+    /// A zeroed engine (php's `ecalloc`'d state) in `mode`, counted as
+    /// seeded so it never reseeds itself from the OS.
+    pub(crate) fn zeroed(mode: i64) -> Mt {
+        Mt { state: [0; N], next: 0, mode, seeded: true }
+    }
+
     /// `php_mt_initialize` + `php_mt_reload`.
-    fn seed(&mut self, seed: u32) {
+    pub(crate) fn seed(&mut self, seed: u32) {
         self.state[0] = seed;
         for i in 1..N {
             let prev = self.state[i - 1];
@@ -108,7 +120,7 @@ impl Mt {
     }
 
     /// `php_mt_rand`: the next tempered 32-bit word.
-    fn next_u32(&mut self) -> u32 {
+    pub(crate) fn next_u32(&mut self) -> u32 {
         if !self.seeded {
             self.seed(os_seed());
         }
@@ -202,7 +214,7 @@ fn os_seed() -> u32 {
 }
 
 /// Fill `buf` from the OS CSPRNG (`/dev/urandom`).
-fn csprng_fill(buf: &mut [u8]) -> std::io::Result<()> {
+pub(crate) fn csprng_fill(buf: &mut [u8]) -> std::io::Result<()> {
     std::fs::File::open("/dev/urandom")?.read_exact(buf)
 }
 

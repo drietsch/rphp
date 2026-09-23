@@ -441,8 +441,9 @@ fn ser(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, st: &mut SerState) -> Result
             let o = &if skip { o.clone() } else { ctx.lazy_resolve(&o.clone())? };
             let class = o.layout().class_name().to_vec();
             // An anonymous class cannot be named again on the way back in, so
-            // php refuses it the way it refuses a closure.
-            if class.contains(&0) {
+            // php refuses it the way it refuses a closure; so does a class
+            // php declares `@not-serializable`.
+            if class.contains(&0) || NOT_SERIALIZABLE.contains(&&class[..]) {
                 return Err(Unwind::exception(
                     "Exception",
                     format!(
@@ -541,6 +542,10 @@ fn ser(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, st: &mut SerState) -> Result
     }
     Ok(())
 }
+
+/// Internal classes php flags `ZEND_ACC_NOT_SERIALIZABLE` (beyond `Closure`
+/// and anonymous classes, handled on their own).
+const NOT_SERIALIZABLE: &[&[u8]] = &[b"Random\\Engine\\Secure"];
 
 // ---- unserialize ------------------------------------------------------------
 
@@ -1014,6 +1019,12 @@ impl<'a> Unserializer<'a> {
                 // Build the instance the way the engine's `new` does: the
                 // class's parent-first property set with its defaults, under
                 // the next object id. The constructor never runs.
+                if NOT_SERIALIZABLE.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
+                    return Err(UErr::Unwind(Unwind::exception(
+                        "Exception",
+                        format!("Unserialization of '{}' is not allowed", ctx.class(class_id).name_str()),
+                    )));
+                }
                 let obj = ctx.instantiate(class_id);
                 if incomplete {
                     obj.set(b"__PHP_Incomplete_Class_Name", Value::string(&class));

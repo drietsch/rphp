@@ -171,6 +171,14 @@ namespace Dom {
         case AfterEnd = 'afterend';
     }
 }
+namespace Random {
+    enum IntervalBoundary {
+        case ClosedOpen;
+        case ClosedClosed;
+        case OpenClosed;
+        case OpenOpen;
+    }
+}
 namespace {
 enum PropertyHookType: string { case Get = 'get'; case Set = 'set'; }
 #[Attribute(Attribute::TARGET_CLASS)]

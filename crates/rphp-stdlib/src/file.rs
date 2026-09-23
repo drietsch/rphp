@@ -124,6 +124,8 @@ pub(crate) struct Stream {
     /// What the read chain has produced and not handed out, and the rest of
     /// the filters' bookkeeping (`filters.rs`).
     pub(crate) fstate: crate::filters::FilterState,
+    /// A `gzopen()` / `compress.zlib://` handle (`zlib/gzfile.rs`).
+    pub(crate) gz: Option<Box<crate::zlib::GzStream>>,
 }
 
 /// The descriptor behind a pipe or socket stream.
@@ -383,6 +385,17 @@ impl Stream {
 
     /// php's `SEEK_*` applied to the cursor.
     fn seek(&mut self, offset: i64, whence: i64) -> i64 {
+        // A gz write handle seeks forward only, as zeros (`zlib.rs`).
+        if let Some(g) = self.gz.as_mut() {
+            if let Some(w) = g.writer() {
+                let r = w.seek(offset, whence);
+                if r >= 0 {
+                    self.pos = r as usize;
+                }
+                return if r < 0 { -1 } else { 0 };
+            }
+            g.clear_past();
+        }
         let base = match whence {
             1 => self.pos as i64,          // SEEK_CUR
             2 => self.buf.len() as i64,    // SEEK_END
@@ -441,6 +454,11 @@ impl Stream {
 
     /// The write itself, with the chain already applied.
     fn write_unfiltered(&mut self, data: &[u8]) -> usize {
+        if let Some(w) = self.gz.as_mut().and_then(|g| g.writer()) {
+            let n = w.write(data);
+            self.pos = w.tell() as usize;
+            return n;
+        }
         if let Some(f) = &mut self.file {
             use std::io::Write;
             if f.write_all(data).is_err() {
@@ -480,6 +498,9 @@ fn file_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     }
     if let Some(r) = read_filter_url(ctx, &args[0], "file_get_contents")? {
         return Ok(r.map_or(Value::Bool(false), |b| Value::Str(Str::from_vec(b))));
+    }
+    if let Some(b) = compress_zlib_read(ctx, &args[0], "file_get_contents")? {
+        return Ok(b.map_or(Value::Bool(false), |b| Value::Str(Str::from_vec(b))));
     }
     if let Some(url) = wrapper_url(&args[0]) {
         // `file_get_contents($f, $use_include_path, $context, $offset, $length)`
@@ -525,6 +546,12 @@ fn file_put_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             return Ok(h);
         }
         return put_filtered(ctx, h, &args[1].deref(), &name);
+    }
+    if crate::zlib::compress_zlib_path(&args[0].to_php_bytes()).is_some() {
+        let url = args[0].to_php_bytes().to_vec();
+        let append = args.get(2).map_or(0, Value::to_int) & FILE_APPEND != 0;
+        let n = crate::zlib::write_compress_zlib(ctx, "file_put_contents", &url, &data, append)?;
+        return Ok(n.map_or(Value::Bool(false), |n| Value::Int(n as i64)));
     }
     // The output wrappers: `php://stdout`/`output` is the engine's output
     // channel, `php://stderr` the process's.
@@ -642,6 +669,14 @@ fn file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             None => Value::Bool(false),
         });
     }
+    if let Some(b) = compress_zlib_read(ctx, &args[0], "file")? {
+        let Some(b) = b else { return Ok(Value::Bool(false)) };
+        let mut a = Array::new();
+        for line in split_lines(&b, flags) {
+            a.push(Value::Str(Str::from_vec(line)));
+        }
+        return Ok(Value::Array(a));
+    }
     if let Some(url) = wrapper_url(&args[0]) {
         let context = args.get(2).cloned();
         return Ok(match crate::http::read_all(ctx, &url, context.as_ref(), "file")? {
@@ -685,6 +720,11 @@ fn readfile(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             }
             None => Value::Bool(false),
         });
+    }
+    if let Some(b) = compress_zlib_read(ctx, &args[0], "readfile")? {
+        let Some(b) = b else { return Ok(Value::Bool(false)) };
+        ctx.echo(&b);
+        return Ok(Value::Int(b.len() as i64));
     }
     if let Some(url) = wrapper_url(&args[0]) {
         let context = args.get(2).cloned();
@@ -1004,6 +1044,9 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         return Ok(crate::http::open(ctx, &path_str, context.as_ref(), "fopen")?
             .unwrap_or(Value::Bool(false)));
     }
+    if crate::zlib::compress_zlib_path(&name).is_some() {
+        return crate::zlib::open_compress_zlib(ctx, "fopen", &name, &m);
+    }
     // php:// wrappers: memory and temp are buffers, the rest are output.
     let stdin = match path_str.as_str() {
         "php://stdin" if ctx.sapi == rphp_runtime::SapiKind::Cli => stdin_stream(&m),
@@ -1049,6 +1092,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             write_filters: Vec::new(),
             read_filters: Vec::new(),
             fstate: Default::default(),
+            gz: None,
         }
     } else {
         let p = arg_path(ctx, &args[0]);
@@ -1102,6 +1146,7 @@ fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             write_filters: Vec::new(),
             read_filters: Vec::new(),
             fstate: Default::default(),
+            gz: None,
         }
     };
     Ok(ctx.resources.add("stream", Box::new(stream)))
@@ -1141,6 +1186,7 @@ pub(crate) fn open_resource(ctx: &mut Ctx, path: &std::path::Path, mode: &str) -
         write_filters: Vec::new(),
         read_filters: Vec::new(),
         fstate: Default::default(),
+        gz: None,
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -1174,6 +1220,7 @@ pub(crate) fn pipe_resource(ctx: &mut Ctx, file: fs::File, readable: bool) -> Va
         write_filters: Vec::new(),
         read_filters: Vec::new(),
         fstate: Default::default(),
+        gz: None,
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -1185,6 +1232,69 @@ fn wrapper_url(v: &Value) -> Option<String> {
     let bytes = v.to_php_bytes();
     let url = String::from_utf8_lossy(&bytes);
     crate::http::is_http_url(&url).then(|| url.into_owned())
+}
+
+/// The decompressed contents behind a `compress.zlib://` url: `None` when
+/// the argument is not one, `Some(None)` after the open failed.
+fn compress_zlib_read(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<Option<Vec<u8>>>, Unwind> {
+    let url = v.to_php_bytes();
+    if crate::zlib::compress_zlib_path(&url).is_none() {
+        return Ok(None);
+    }
+    let url = url.to_vec();
+    Ok(Some(crate::zlib::read_compress_zlib(ctx, func, &url)?))
+}
+
+/// A gz handle (`zlib/gzfile.rs`): a read handle over the decompressed
+/// bytes (`path` its file), or a write handle whose writes the
+/// [`GzStream`](crate::zlib::GzStream) compresses.
+pub(crate) fn gz_resource(
+    ctx: &mut Ctx,
+    gz: crate::zlib::GzStream,
+    buf: Vec<u8>,
+    path: Option<std::path::PathBuf>,
+    mode: &str,
+    uri: &str,
+) -> Value {
+    let writing = matches!(gz, crate::zlib::GzStream::Write(_));
+    let stream = Stream {
+        buf,
+        pos: 0,
+        file: None,
+        path,
+        append: false,
+        sink: Sink::Buffer,
+        readable: !writing,
+        writable: writing,
+        eof: false,
+        dirty: false,
+        mode: mode.into(),
+        uri: uri.into(),
+        fill_end: 0,
+        chunk_size: 8192,
+        pipe: None,
+        sock: None,
+        write_filters: Vec::new(),
+        read_filters: Vec::new(),
+        fstate: Default::default(),
+        gz: Some(Box::new(gz)),
+    };
+    ctx.resources.add("stream", Box::new(stream))
+}
+
+/// Whether `v` is a gz handle open for writing (`Some(true)`) or reading
+/// (`Some(false)`); `None` for any other stream or a non-stream.
+pub(crate) fn gz_mode_of(ctx: &mut Ctx, v: &Value) -> Option<bool> {
+    let is_stream = matches!(&*v.deref(), Value::Resource(r) if r.kind() == "stream");
+    if !is_stream {
+        return None;
+    }
+    with_stream(ctx, v, "gzopen", |s| s.gz.as_mut().map(|g| g.writer().is_some())).ok().flatten()
+}
+
+/// `gzseek()` on a gz handle: `SEEK_SET`/`SEEK_CUR`, the new position or -1.
+pub(crate) fn gz_seek(ctx: &mut Ctx, v: &Value, offset: i64, whence: i64) -> i64 {
+    with_stream(ctx, v, "gzseek", |s| s.seek(offset, whence)).unwrap_or(-1)
 }
 
 /// Write bytes the write chain produced to where the stream's writes go
@@ -1278,7 +1388,7 @@ fn read_filter_url(ctx: &mut Ctx, name: &Value, func: &str) -> Result<Option<Opt
     if !matches!(h, Value::Resource(_)) {
         return Ok(Some(None));
     }
-    let data = ctx.call_function(b"stream_get_contents", std::slice::from_ref(&h))?;
+    let data = get_contents_as(ctx, &mut [h.clone()], func)?;
     ctx.call_function(b"fclose", &[h])?;
     Ok(Some(Some(data.to_php_bytes().to_vec())))
 }
@@ -1390,6 +1500,7 @@ pub(crate) fn socket_resource_with(
             wrapper,
             ssl: crate::tls::SslOptions::default(),
         }),
+        gz: None,
     };
     ctx.resources.add("stream", Box::new(stream))
 }
@@ -1537,6 +1648,7 @@ fn std_stream(sink: Sink, uri: &str, mode: &str) -> Stream {
         write_filters: Vec::new(),
         read_filters: Vec::new(),
         fstate: Default::default(),
+        gz: None,
     }
 }
 
@@ -1564,6 +1676,10 @@ fn fclose(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // The filters' last word first; the stream closes whatever they said.
     let filtered = crate::filters::close_stream(ctx, &stream, "fclose", stream.clone());
     let written = with_stream(ctx, &args[0].clone(), "fclose", |s| {
+        if let Some(w) = s.gz.as_mut().and_then(|g| g.writer()) {
+            w.close();
+            return Some(std::path::PathBuf::new());
+        }
         let written = flush_stream(s);
         // The child sees EOF on its stdin the moment the pipe closes.
         s.pipe = None;
@@ -1612,6 +1728,10 @@ fn fwrite(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         };
     }
     let sink = with_stream(ctx, &stream, "fwrite", |s| {
+        // zlib's gzwrite() on a read handle takes nothing, quietly.
+        if !s.writable && s.gz.is_some() {
+            return Err((false, 0));
+        }
         if !s.writable {
             return Err((s.path.is_some(), data.len()));
         }
@@ -1651,6 +1771,9 @@ fn fwrite(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 const CHUNK: usize = 8192;
 
 fn record_fill(s: &mut Stream) {
+    if let Some(g) = s.gz.as_mut() {
+        g.note_fill(s.pos, s.buf.len());
+    }
     if s.path.is_some() {
         s.fill_end = (s.pos + CHUNK).min(s.buf.len());
     }
@@ -1919,6 +2042,10 @@ fn feof(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
                 s.eof = crate::socket::socket_eof(&p.conn);
             }
         }
+        // A gz handle knows its end once a read has reached it.
+        if !s.eof && s.gz.as_ref().is_some_and(|g| g.past()) && s.pos >= s.buf.len() {
+            s.eof = true;
+        }
         Value::Bool(s.eof)
     })
 }
@@ -1959,6 +2086,10 @@ fn fseek(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let offset = args[1].to_int();
     let whence = args.get(2).map_or(0, Value::to_int);
     let stream = args[0].clone();
+    if whence == 2 && with_stream(ctx, &stream, "fseek", |s| s.gz.is_some())? {
+        ctx.warn("fseek(): SEEK_END is not supported")?;
+        return Ok(Value::Int(-1));
+    }
     Ok(Value::Int(seek_filtered(ctx, &stream, "fseek", offset, whence)?))
 }
 
@@ -1974,6 +2105,14 @@ fn fflush(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let stream = args[0].clone();
     crate::filters::flush_writes(ctx, &stream, "fflush", crate::filters::Flush::Inc, stream.clone())?;
     crate::filters::rethrow(ctx)?;
+    // A gz handle: zlib's `gzflush(Z_SYNC_FLUSH)`, which fails on a read one.
+    let gz = with_stream(ctx, &stream, "fflush", |s| {
+        let g = s.gz.as_mut()?;
+        Some(g.writer().map(|w| w.flush()).is_some())
+    })?;
+    if let Some(ok) = gz {
+        return Ok(Value::Bool(ok));
+    }
     let written = with_stream(ctx, &stream, "fflush", |s| flush_stream(s))?;
     if written.is_some() {
         clear_stat_cache(ctx);
@@ -1985,21 +2124,28 @@ fn fflush(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 ///
 /// Reads from the **current position** unless `$offset` is given.
 fn stream_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    get_contents_as(ctx, args, "stream_get_contents")
+}
+
+/// `stream_get_contents()` under another function's name — the one its
+/// warnings and filter notices carry (`file_get_contents()` of a
+/// `php://filter` url reads this way).
+fn get_contents_as(ctx: &mut Ctx, args: &mut [Value], func: &str) -> NativeResult {
     let max = args.get(1).filter(|v| !matches!(v, Value::Null)).map(Value::to_int);
     let offset = args.get(2).map_or(-1, Value::to_int);
     let stream = args[0].clone();
-    if read_denied(ctx, &stream, "stream_get_contents")? {
+    if read_denied(ctx, &stream, func)? {
         return Ok(Value::Str(Str::new(b"")));
     }
-    if let Some(b) = pipe_read(ctx, &stream, "stream_get_contents", PipeRead::All(max.filter(|n| *n >= 0).map(|n| n as usize)))? {
+    if let Some(b) = pipe_read(ctx, &stream, func, PipeRead::All(max.filter(|n| *n >= 0).map(|n| n as usize)))? {
         return Ok(Value::Str(Str::from_vec(b)));
     }
     let want = match max {
         Some(n) if n >= 0 => crate::filters::Want::Bytes(n as usize),
         _ => crate::filters::Want::All,
     };
-    crate::filters::fill(ctx, &stream, "stream_get_contents", want)?;
-    with_view(ctx, &stream, "stream_get_contents", |s| {
+    crate::filters::fill(ctx, &stream, func, want)?;
+    with_view(ctx, &stream, func, |s| {
         record_fill(s);
         if offset >= 0 {
             s.pos = (offset as usize).min(s.buf.len());
@@ -2061,6 +2207,26 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             set("seekable", Value::Bool(false));
             if let Some(uri) = &sock.uri {
                 set("uri", Value::string(uri.as_bytes()));
+            }
+            return Value::Array(out);
+        }
+        // A gz handle: php's zlib stream, with a wrapper and a uri only when
+        // `compress.zlib://` opened it.
+        if let Some(g) = &s.gz {
+            let mut out = Array::new();
+            let mut set = |k: &str, v: Value| out.set(ArrayKey::str(k.as_bytes()), v);
+            set("timed_out", Value::Bool(false));
+            set("blocked", Value::Bool(true));
+            set("eof", Value::Bool(s.eof || g.past()));
+            if g.via_wrapper() {
+                set("wrapper_type", Value::string(b"ZLIB"));
+            }
+            set("stream_type", Value::string(b"ZLIB"));
+            set("mode", Value::string(s.mode.as_bytes()));
+            set("unread_bytes", Value::Int(s.fill_end.saturating_sub(s.pos) as i64));
+            set("seekable", Value::Bool(true));
+            if g.via_wrapper() {
+                set("uri", Value::string(s.uri.as_bytes()));
             }
             return Value::Array(out);
         }
@@ -2253,7 +2419,7 @@ fn stream_isatty(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// there is no remote wrapper to open one with.
 fn stream_is_local(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     if matches!(&*args[0].deref(), Value::Resource(_)) {
-        return with_stream(ctx, &args[0].clone(), "stream_is_local", |_| Value::Bool(true));
+        return with_stream(ctx, &args[0].clone(), "stream_is_local", |s| Value::Bool(s.gz.is_none()));
     }
     // The parameter is `resource|string`, and php's coercion — not a type
     // error — is what an array meets here.

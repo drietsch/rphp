@@ -63,6 +63,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
 /// The factories this build registers, in the order `stream_get_filters()`
 /// lists them (php's hash order; user filters follow).
 const FACTORIES: &[&str] = &[
+    "zlib.*",
     "convert.iconv.*",
     "string.rot13",
     "string.toupper",
@@ -101,7 +102,7 @@ pub(crate) trait NativeFilter {
 /// How a native filter's failure is reported: the message goes out with
 /// the calling function's prefix (`fwrite(): Stream filter (…): …`).
 #[derive(Debug)]
-// `Silent` and `Notice` are for the filters still to plug in (`zlib.*`).
+// `Silent` is for a filter that fails without a word.
 #[allow(dead_code)]
 pub(crate) enum Fault {
     Silent,
@@ -360,10 +361,48 @@ fn builtin_create(
         "string.toupper" => Some(Filter::ToUpper),
         "string.tolower" => Some(Filter::ToLower),
         "consumed" => Some(Filter::Consumed(0)),
+        "zlib.*" => zlib_create(ctx, name, params, func)?,
         "convert.iconv.*" => convert::Iconv::named(name).map(|f| Filter::Native(Box::new(f))),
         "convert.*" => convert_create(ctx, name, params, func)?,
         _ => None,
     })
+}
+
+/// php's zlib filter factory: `zlib.deflate` and `zlib.inflate`
+/// (`zlib/filter.rs`), with the warnings about parameters it ignored. The
+/// last line of a refusal is `create()`'s own, so it is not repeated.
+fn zlib_create(ctx: &mut Ctx, name: &str, params: Option<&Value>, func: &str) -> Result<Option<Filter>, Unwind> {
+    match crate::zlib::ZlibFilter::new(name, params.unwrap_or(&Value::Uninit)) {
+        None => Ok(None),
+        Some(Err(lines)) => {
+            for l in lines.lines().filter(|l| !l.starts_with("Unable to create or locate filter")) {
+                ctx.warn(&format!("{func}(): {l}"))?;
+            }
+            Ok(None)
+        }
+        Some(Ok(mut f)) => {
+            for w in f.take_warnings() {
+                ctx.warn(&format!("{func}(): {w}"))?;
+            }
+            Ok(Some(Filter::Native(Box::new(f))))
+        }
+    }
+}
+
+impl NativeFilter for crate::zlib::ZlibFilter {
+    fn filter(&mut self, input: &[u8], out: &mut Vec<u8>, flush: Flush) -> Result<(), Fault> {
+        self.push(input, out);
+        match flush {
+            Flush::Normal => {}
+            Flush::Inc => self.flush(out),
+            Flush::Close => self.finish(out),
+        }
+        // zlib's data error fails the call, as a notice.
+        match self.take_notices().into_iter().next() {
+            Some(n) => Err(Fault::Notice(n)),
+            None => Ok(()),
+        }
+    }
 }
 
 /// php's `strfilter_convert_create`: the mode after the first `.`, in any

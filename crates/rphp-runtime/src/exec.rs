@@ -3342,6 +3342,32 @@ impl Interp {
         let once = matches!(kind, IncludeKind::IncludeOnce | IncludeKind::RequireOnce);
         let path_str = String::from_utf8_lossy(path).into_owned();
         let include_path = self.ini_get("include_path").unwrap_or(".").to_string();
+        // A path a stream wrapper owns is read through the wrapper.
+        if let Some(hook) = self.include_stream_hook {
+            if let Some(opened) = hook(self, path, keyword, once) {
+                return match opened? {
+                    crate::interp::IncludeOpen::Failed => {
+                        if is_require {
+                            return Err(Unwind::error(format!(
+                                "Failed opening required '{path_str}' (include_path='{include_path}')"
+                            )));
+                        }
+                        self.warn(&format!(
+                            "{keyword}(): Failed opening '{path_str}' for inclusion (include_path='{include_path}')"
+                        ))?;
+                        self.stack[dst_abs] = Value::Bool(false);
+                        Ok(false)
+                    }
+                    crate::interp::IncludeOpen::Included => {
+                        self.stack[dst_abs] = Value::Bool(true);
+                        Ok(false)
+                    }
+                    crate::interp::IncludeOpen::Source { name, bytes } => {
+                        self.compile_included(&bytes, name, dst_abs, kind)
+                    }
+                };
+            }
+        }
         let resolved = self.resolve_include_path(path);
         let Some(resolved) = resolved else {
             self.warn(&format!(
@@ -3395,10 +3421,24 @@ impl Interp {
             }
         };
         let name = canonical.to_string_lossy().into_owned();
+        self.compile_included(&bytes, name, dst_abs, kind)
+    }
+
+    /// Whether a unit of this name has been included this request — what
+    /// an `_once` include through a stream wrapper asks
+    /// ([`IncludeStreamHook`](crate::interp::IncludeStreamHook)).
+    pub fn is_included(&self, name: &str) -> bool {
+        self.included.contains(std::path::Path::new(name))
+    }
+
+    /// Compile an included unit's source under `name`, record it as
+    /// included, and enter it.
+    fn compile_included(&mut self, bytes: &[u8], name: String, dst_abs: usize, kind: IncludeKind) -> Result<bool, Unwind> {
+        let canonical = std::path::PathBuf::from(&name);
         let Some(hook) = self.compile_hook.take() else {
             return Err(Unwind::error("include is not available: no compile hook installed"));
         };
-        let compiled = hook(self, &bytes, &name);
+        let compiled = hook(self, bytes, &name);
         self.compile_hook = Some(hook);
         let module = match compiled {
             Ok(m) => m,

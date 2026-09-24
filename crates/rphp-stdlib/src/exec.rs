@@ -68,7 +68,7 @@ pub(crate) fn permitted(ctx: &mut Ctx, req: &SpawnRequest<'_>) -> Result<bool, U
 }
 
 /// `/bin/sh -c command`, as php runs a string.
-fn shell_argv(command: &[u8]) -> Vec<Vec<u8>> {
+pub(crate) fn shell_argv(command: &[u8]) -> Vec<Vec<u8>> {
     vec![b"/bin/sh".to_vec(), b"-c".to_vec(), command.to_vec()]
 }
 
@@ -77,7 +77,7 @@ fn os(bytes: &[u8]) -> std::ffi::OsString {
     std::ffi::OsString::from_vec(bytes.to_vec())
 }
 
-fn command_for(argv: &[Vec<u8>]) -> Command {
+pub(crate) fn command_for(argv: &[Vec<u8>]) -> Command {
     let mut c = Command::new(os(&argv[0]));
     c.args(argv[1..].iter().map(|a| os(a)));
     c

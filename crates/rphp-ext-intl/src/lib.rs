@@ -26,9 +26,14 @@ mod generated;
 mod grapheme;
 mod idn;
 mod iterator;
+mod listfmt;
 mod locale;
+mod msgfmt;
 mod normalizer;
 mod numfmt;
+mod patgen;
+mod rbnf;
+mod resbundle;
 mod shape;
 mod state;
 mod tables;
@@ -72,6 +77,10 @@ pub fn register(r: &mut Registry) {
     tz::register(r);
     cal::register(r);
     datefmt::register(r);
+    msgfmt::register(r);
+    listfmt::register(r);
+    patgen::register(r);
+    resbundle::register(r);
 }
 
 /// The constructor check php 8.4+ makes: the language must be one ICU

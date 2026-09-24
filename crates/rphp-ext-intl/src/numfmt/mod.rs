@@ -138,6 +138,10 @@ pub struct NumState {
     rounding_mode: i64,
     parse_int_only: bool,
     lenient: bool,
+    /// The digits the integer part needs beyond the first group before
+    /// grouping shows (a number skeleton's `group-auto`: CLDR's
+    /// `minimumGroupingDigits`; the DecimalFormat API always uses 1).
+    min_grouping: i32,
     pub err: IntlError,
 }
 
@@ -385,6 +389,7 @@ impl NumState {
             rounding_mode: ROUND_HALFEVEN,
             parse_int_only: false,
             lenient: false,
+            min_grouping: 1,
             // the locale fallback leaves ICU's warning in the object
             err: IntlError { code: U_USING_DEFAULT_WARNING_CODE, msg: None },
         })
@@ -681,7 +686,7 @@ impl NumState {
         let g2 = if p.secondary_grouping_size > 0 { p.secondary_grouping_size } else { g1 };
         for (i, d) in int_digits.iter().enumerate() {
             let from_right = (n - i) as i32;
-            if p.grouping_used && g1 > 0 && i > 0 {
+            if p.grouping_used && g1 > 0 && i > 0 && n as i32 >= g1 + self.min_grouping {
                 let boundary = from_right == g1 || (from_right > g1 && (from_right - g1) % g2 == 0);
                 if boundary {
                     out.push_str(grp_sep);
@@ -741,7 +746,13 @@ impl NumState {
     }
 
     /// Format a finite decimal quantity.
-    fn format_decimal(&self, r: &Resolved, mut q: Decimal) -> Option<String> {
+    fn format_decimal(&self, r: &Resolved, q: Decimal) -> Option<String> {
+        self.format_decimal_ops(r, q).map(|(s, _)| s)
+    }
+
+    /// Format a finite decimal quantity; the plural operands of the
+    /// digits as displayed along with the text.
+    fn format_decimal_ops(&self, r: &Resolved, mut q: Decimal) -> Option<(String, String)> {
         let p = &self.props;
         // the multiplier
         if p.multiplier != 1 {
@@ -817,10 +828,11 @@ impl NumState {
             }
         }
         // the plural form of `¤¤¤` follows the digits as displayed
-        let operands = plural_operands(&q, min_frac_shown);
+        let shown = plural_text(&q, min_frac_shown);
+        let operands = operands_of_text(&shown);
         let ((prefix, prefix_cur), (suffix, suffix_cur)) = self.affixes(r, negative, Some(operands));
         let (prefix, suffix) = self.currency_spacing(r, prefix, prefix_cur, suffix, suffix_cur, &body);
-        Some(self.pad(prefix, body, suffix))
+        Some((self.pad(prefix, body, suffix), shown))
     }
 
     /// CLDR's currency spacing: a currency symbol that ends in a letter
@@ -1062,7 +1074,16 @@ impl NumState {
 }
 
 /// The plural operands of a quantity as it displays: `1.00` is not `1`.
-fn plural_operands(q: &Decimal, min_frac: i32) -> icu::plurals::PluralOperands {
+fn operands_of_text(text: &str) -> icu::plurals::PluralOperands {
+    match fixed_decimal::Decimal::try_from_str(text) {
+        Ok(d) => icu::plurals::PluralOperands::from(&d),
+        Err(_) => icu::plurals::PluralOperands::from(2u64),
+    }
+}
+
+/// A quantity as it displays, unsigned: the digits and the visible
+/// fraction digits.
+fn plural_text(q: &Decimal, min_frac: i32) -> String {
     let mut text = String::new();
     let int: String = q.integer_digits().iter().map(|d| (b'0' + d) as char).collect();
     text.push_str(if int.is_empty() { "0" } else { &int });
@@ -1074,10 +1095,7 @@ fn plural_operands(q: &Decimal, min_frac: i32) -> icu::plurals::PluralOperands {
         text.push('.');
         text.extend(frac.iter().map(|d| (b'0' + d) as char));
     }
-    match fixed_decimal::Decimal::try_from_str(&text) {
-        Ok(d) => icu::plurals::PluralOperands::from(&d),
-        Err(_) => icu::plurals::PluralOperands::from(2u64),
-    }
+    text
 }
 
 // ---- object plumbing -------------------------------------------------------------------------
@@ -1123,6 +1141,7 @@ fn payload_clone(_: &mut Interp, src: &Object, dst: &Object) -> Result<(), Unwin
         rounding_mode: s.rounding_mode,
         parse_int_only: s.parse_int_only,
         lenient: s.lenient,
+        min_grouping: s.min_grouping,
         err: IntlError::default(),
     }) {
         dst.set_payload(Payload::Native(Box::new(copy)));
@@ -1758,4 +1777,339 @@ static FUNCTIONS: &[FnImpl] = &[
 pub fn register(r: &mut Registry) {
     register_class(r, &generated::classes::NUMBERFORMATTER, METHODS, |b| b.payload_clone(payload_clone));
     register_functions(r, generated::arginfo::FUNCTIONS, FUNCTIONS);
+}
+
+// ---- the subformats of a MessageFormat --------------------------------------------------------
+
+/// CLDR's `minimumGroupingDigits` of a locale, read off ICU4X's decimal
+/// formatter: 2 when `1000` shows no separator, 3 when `10000` shows none.
+fn min_grouping_digits(bcp47: &str) -> i32 {
+    use icu::decimal::DecimalFormatter;
+    let Ok(loc) = bcp47.parse::<icu::locale::Locale>() else {
+        return 1;
+    };
+    let Ok(f) = DecimalFormatter::try_new((&loc).into(), Default::default()) else {
+        return 1;
+    };
+    let grouped = |n: u32| f.format_to_string(&fixed_decimal::Decimal::from(n)).chars().count() > n.to_string().len();
+    if grouped(1000) {
+        1
+    } else if grouped(10000) {
+        2
+    } else {
+        3
+    }
+}
+
+/// A skeleton's fraction (`.00`, `.0#`, `.##`, `.00+`, `.`) or significant
+/// (`@@@`, `@@#`, `@@+`) precision stem: min/max fraction and min/max
+/// significant digits (-1 for unset).
+fn parse_precision_stem(s: &str) -> Option<(i32, i32, i32, i32)> {
+    let count = |s: &str, c: char| s.chars().take_while(|&x| x == c).count() as i32;
+    if let Some(rest) = s.strip_prefix('.') {
+        let zeros = count(rest, '0');
+        let after = &rest[zeros as usize..];
+        if after == "+" || after == "*" {
+            return Some((zeros, 999, -1, -1));
+        }
+        let hashes = count(after, '#');
+        if hashes as usize != after.len() {
+            return None;
+        }
+        return Some((zeros, zeros + hashes, -1, -1));
+    }
+    let ats = count(s, '@');
+    let after = &s[ats as usize..];
+    if ats == 0 {
+        return None;
+    }
+    if after == "+" || after == "*" {
+        return Some((-1, -1, ats, 999));
+    }
+    let hashes = count(after, '#');
+    if hashes as usize != after.len() {
+        return None;
+    }
+    Some((-1, -1, ats, ats + hashes))
+}
+
+/// The number styles a `MessageFormat` argument names.
+pub(crate) enum MsgStyle<'a> {
+    Decimal,
+    Currency,
+    Percent,
+    /// `createIntegerFormat`: no fraction digits, integer-only parsing.
+    Integer,
+    /// A `DecimalFormat` pattern applied over the locale's decimal format.
+    Pattern(&'a str),
+}
+
+/// A number subformat of a `MessageFormat` (`{n, number, …}`, the
+/// default format of `#` and of a plain numeric argument).
+pub(crate) struct MsgNumber(NumState);
+
+impl MsgNumber {
+    /// The format for `locale` in `style`; the ICU error of a pattern
+    /// that does not parse.
+    pub(crate) fn new(locale: &str, style: MsgStyle<'_>) -> Result<MsgNumber, i64> {
+        let base = match style {
+            MsgStyle::Currency => CURRENCY,
+            MsgStyle::Percent => PERCENT,
+            _ => DECIMAL,
+        };
+        let mut st = NumState::new(locale, base, None)?;
+        match style {
+            MsgStyle::Integer => {
+                st.props.max_frac = 0;
+                st.props.min_frac = st.props.min_frac.min(0);
+                st.parse_int_only = true;
+            }
+            MsgStyle::Pattern(p) => {
+                let mut props = st.props.clone();
+                pattern::apply(&mut props, p, IgnoreRounding::Never)?;
+                st.props = props;
+            }
+            _ => {}
+        }
+        Ok(MsgNumber(st))
+    }
+
+    /// A number skeleton (`{n, number, ::…}`, ICU's `NumberFormatter::
+    /// forSkeleton`) over the locale's formats: the stems and options
+    /// rphp maps onto its property bag; `U_NUMBER_SKELETON_SYNTAX_ERROR`
+    /// for a malformed skeleton, `U_UNSUPPORTED_ERROR` for a valid stem
+    /// with no mapping here (units, permille, compact, grouping strategies
+    /// other than on/off, the accounting and except-zero signs).
+    pub(crate) fn from_skeleton(locale: &str, skeleton: &str) -> Result<MsgNumber, i64> {
+        const SYNTAX: i64 = 65811;
+        let tokens: Vec<&str> = skeleton.split(|c: char| c.is_whitespace()).filter(|t| !t.is_empty()).collect();
+        let mut percent = false;
+        let mut currency: Option<String> = None;
+        let mut precision: Option<(i32, i32, i32, i32)> = None; // min/max frac, min/max sig
+        let mut grouping_off = false;
+        let mut sign: Option<&str> = None;
+        let mut int_width: Option<(i32, i32)> = None;
+        let mut scale: Option<(i32, i64)> = None;
+        let mut rounding: Option<i64> = None;
+        let mut seen: Vec<&str> = Vec::new();
+        let mut once = |kind: &'static str| -> Result<(), i64> {
+            if seen.contains(&kind) {
+                return Err(SYNTAX);
+            }
+            seen.push(kind);
+            Ok(())
+        };
+        for t in tokens {
+            let (stem, opt) = match t.split_once('/') {
+                Some((s, o)) => (s, Some(o)),
+                None => (t, None),
+            };
+            match (stem, opt) {
+                ("percent" | "%", None) => {
+                    once("unit")?;
+                    percent = true;
+                }
+                ("currency", Some(code)) => {
+                    once("unit")?;
+                    if code.len() != 3 || !code.chars().all(|c| c.is_ascii_alphabetic()) {
+                        return Err(SYNTAX);
+                    }
+                    currency = Some(code.to_ascii_uppercase());
+                }
+                ("scale", Some(v)) => {
+                    once("scale")?;
+                    // a power of ten, or an integer multiplier
+                    let digits = v.trim_start_matches('1');
+                    if !v.is_empty() && v.starts_with('1') && digits.chars().all(|c| c == '0') {
+                        scale = Some((digits.len() as i32, 1));
+                    } else if let Ok(n) = v.parse::<i64>() {
+                        scale = Some((0, n));
+                    } else {
+                        return Err(U_UNSUPPORTED_ERROR);
+                    }
+                }
+                ("precision-integer", None) => {
+                    once("precision")?;
+                    precision = Some((0, 0, -1, -1));
+                }
+                ("precision-unlimited", None) => {
+                    once("precision")?;
+                    precision = Some((0, 999, -1, -1));
+                }
+                ("precision-currency-standard", None) => {
+                    once("precision")?;
+                }
+                ("group-off" | ",_", None) => {
+                    once("group")?;
+                    grouping_off = true;
+                }
+                ("group-auto" | "group-on-aligned" | ",!", None) => once("group")?,
+                ("group-min2" | ",?" | "group-thousands" | ",=", None) => return Err(U_UNSUPPORTED_ERROR),
+                ("sign-always" | "+!", None) => {
+                    once("sign")?;
+                    sign = Some("always");
+                }
+                ("sign-never" | "+_", None) => {
+                    once("sign")?;
+                    sign = Some("never");
+                }
+                ("sign-auto", None) => once("sign")?,
+                ("sign-except-zero" | "+?" | "sign-accounting" | "()" | "sign-accounting-always" | "()!" | "sign-accounting-except-zero" | "()?" | "sign-negative" | "+-" | "sign-accounting-negative" | "()-", None) => {
+                    return Err(U_UNSUPPORTED_ERROR)
+                }
+                ("integer-width", Some(w)) => {
+                    once("integer-width")?;
+                    let (unbounded, body) = match w.strip_prefix('+').or_else(|| w.strip_prefix('*')) {
+                        Some(b) => (true, b),
+                        None => (false, w),
+                    };
+                    let hashes = body.chars().take_while(|&c| c == '#').count();
+                    let zeros = body[hashes..].chars().take_while(|&c| c == '0').count();
+                    if hashes + zeros != body.len() || (unbounded && hashes > 0) {
+                        return Err(SYNTAX);
+                    }
+                    int_width = Some((zeros as i32, if unbounded { -1 } else { (hashes + zeros) as i32 }));
+                }
+                ("notation-simple", None) => once("notation")?,
+                ("rounding-mode-ceiling" | "rounding-mode-floor" | "rounding-mode-down" | "rounding-mode-up" | "rounding-mode-half-even" | "rounding-mode-half-down" | "rounding-mode-half-up" | "rounding-mode-unnecessary", None) => {
+                    once("rounding")?;
+                    rounding = Some(match stem {
+                        "rounding-mode-ceiling" => decimal::ROUND_CEILING,
+                        "rounding-mode-floor" => decimal::ROUND_FLOOR,
+                        "rounding-mode-down" => decimal::ROUND_DOWN,
+                        "rounding-mode-up" => decimal::ROUND_UP,
+                        "rounding-mode-half-down" => decimal::ROUND_HALFDOWN,
+                        "rounding-mode-half-up" => decimal::ROUND_HALFUP,
+                        "rounding-mode-unnecessary" => ROUND_UNNECESSARY,
+                        _ => ROUND_HALFEVEN,
+                    });
+                }
+                ("permille" | "compact-short" | "K" | "compact-long" | "KK" | "scientific" | "engineering" | "measure-unit" | "unit" | "per-measure-unit" | "unit-width-narrow" | "unit-width-short" | "unit-width-full-name" | "unit-width-iso-code" | "unit-width-formal" | "unit-width-variant" | "unit-width-hidden" | "latin" | "numbering-system" | "decimal-auto" | "decimal-always" | "base-unit" | "usage" | "precision-increment", _) => {
+                    return Err(U_UNSUPPORTED_ERROR)
+                }
+                (s, None) if s.starts_with('.') || s.starts_with('@') => {
+                    once("precision")?;
+                    precision = Some(parse_precision_stem(s).ok_or(SYNTAX)?);
+                }
+                (s, Some(_)) if s.starts_with('.') || s.starts_with('@') => return Err(U_UNSUPPORTED_ERROR),
+                _ => return Err(SYNTAX),
+            }
+        }
+        let base = if percent {
+            PERCENT
+        } else if currency.is_some() {
+            CURRENCY
+        } else {
+            DECIMAL
+        };
+        let mut st = NumState::new(locale, base, None)?;
+        if let Some(code) = &currency {
+            st.set_currency(code)?;
+        }
+        let p = &mut st.props;
+        if percent {
+            // a skeleton's percent does not scale
+            p.magnitude_multiplier = 0;
+        }
+        if currency.is_none() {
+            p.min_frac = 0;
+            p.max_frac = 6;
+        }
+        if let Some((min_f, max_f, min_s, max_s)) = precision {
+            if min_s != -1 {
+                p.min_sig = min_s;
+                p.max_sig = max_s;
+                p.min_frac = -1;
+                p.max_frac = -1;
+            } else {
+                p.min_frac = min_f;
+                p.max_frac = max_f;
+            }
+        }
+        if grouping_off {
+            p.grouping_used = false;
+        }
+        if let Some((min, max)) = int_width {
+            p.min_int = min;
+            if max >= 0 {
+                p.max_int = max;
+            }
+        }
+        if let Some((mag, mult)) = scale {
+            p.magnitude_multiplier += mag;
+            p.multiplier = mult;
+        }
+        match sign {
+            Some("always") => {
+                let pre = p.pos_prefix_pattern.clone();
+                if p.neg_prefix_pattern.is_none() {
+                    p.neg_prefix_pattern = Some(format!("-{pre}"));
+                    p.neg_suffix_pattern = Some(p.pos_suffix_pattern.clone());
+                }
+                p.pos_prefix_pattern = format!("+{pre}");
+            }
+            Some("never") => {
+                p.neg_prefix_pattern = Some(p.pos_prefix_pattern.clone());
+                p.neg_suffix_pattern = Some(p.pos_suffix_pattern.clone());
+            }
+            _ => {}
+        }
+        if let Some(r) = rounding {
+            st.rounding_mode = r;
+        }
+        if !grouping_off {
+            st.min_grouping = min_grouping_digits(&st.bcp47());
+        }
+        Ok(MsgNumber(st))
+    }
+
+    /// The decimal separator symbol.
+    pub(crate) fn decimal_symbol(&self) -> &str {
+        &self.0.symbols[SYM_DECIMAL]
+    }
+
+    /// `getMaximumFractionDigits()`.
+    pub(crate) fn max_frac(&self) -> i32 {
+        self.0.props.max_frac
+    }
+
+    /// Format an int or a float.
+    pub(crate) fn format(&self, v: &Value) -> Option<String> {
+        self.0.format_value(v)
+    }
+
+    /// Format a float along with the digits shown, unsigned (`12.50`;
+    /// `None` for NaN and the infinities) — what plural rules select on.
+    pub(crate) fn format_operands(&self, f: f64) -> Option<(String, Option<String>)> {
+        if !f.is_finite() {
+            return self.0.format_value(&Value::Float(f)).map(|s| (s, None));
+        }
+        let r = self.0.resolve();
+        let q = Decimal::from_f64(f)?;
+        self.0.format_decimal_ops(&r, q).map(|(s, o)| (s, Some(o)))
+    }
+
+    /// `NumberFormat::parse` at character `start` of `text`: the value
+    /// (an int when it is integral and fits) and the character index past
+    /// it, or `None`.
+    pub(crate) fn parse_at(&self, text: &str, start: usize) -> Option<(Value, usize)> {
+        let p = self.0.parse_text(text, start, false);
+        if !p.ok {
+            return None;
+        }
+        let v = match &p.value {
+            parse::Number::Nan => Value::Float(f64::NAN),
+            parse::Number::Infinity => Value::Float(if p.negative { f64::NEG_INFINITY } else { f64::INFINITY }),
+            parse::Number::Decimal(q) => {
+                let mut n = q.clone();
+                n.normalize();
+                match n.to_i64() {
+                    Some(i) if n.fraction_digits().is_empty() && !(i == 0 && p.negative) => Value::Int(i),
+                    _ => Value::Float(q.to_f64()),
+                }
+            }
+            parse::Number::None => return None,
+        };
+        Some((v, p.char_end))
+    }
 }

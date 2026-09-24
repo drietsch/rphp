@@ -929,3 +929,35 @@ pub fn register(r: &mut Registry) {
     register_functions(r, generated::arginfo::FUNCTIONS, FUNCTIONS);
     let _ = U_UNSUPPORTED_ERROR;
 }
+
+// ---- the subformats of a MessageFormat --------------------------------------------------------
+
+/// A date subformat of a `MessageFormat` (`{d, date, …}`, `{d, time,
+/// …}`): `DateFormat::createDateInstance` / `createTimeInstance` in the
+/// locale's own calendar, or a pattern over it.
+pub(crate) struct MsgDate(DateState);
+
+impl MsgDate {
+    /// `date_style` / `time_style` are the `IntlDateFormatter` style
+    /// constants (`NONE` for the half left out).
+    pub(crate) fn new(locale: &str, date_style: i64, time_style: i64, pattern: Option<&str>, zone: ZoneRef) -> Result<MsgDate, i64> {
+        let calendar = Calendar::traditional(&locale::canonical(locale));
+        DateState::new(locale, date_style, time_style, zone, calendar, TRADITIONAL, pattern).map(MsgDate)
+    }
+
+    /// Format an instant in milliseconds; `None` when the pattern has no
+    /// valid form.
+    pub(crate) fn format_millis(&self, ms: f64) -> Option<String> {
+        if !ms.is_finite() {
+            return None;
+        }
+        let ms = ms.floor() as i64;
+        self.0.format(ms.div_euclid(1000), (ms.rem_euclid(1000) * 1000) as u32)
+    }
+
+    /// Parse at character `start`: the instant in seconds and the
+    /// character index past the text.
+    pub(crate) fn parse_at(&self, text: &str, start: usize) -> Option<(i64, usize)> {
+        self.0.parse(text, start).map(|(_, ts, end)| (ts, end))
+    }
+}

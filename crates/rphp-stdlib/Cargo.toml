@@ -39,6 +39,9 @@ jiff.workspace = true
 
 # `umask()` (ext/standard/filestat.c) — no std equivalent.
 rustix.workspace = true
+# `getrusage()` and `net_get_interfaces()` — safe wrappers rustix lacks
+# (the version rphp-ext-posix already pins).
+nix = { version = "=0.31.3", features = ["resource", "net"] }
 
 # The `ssl`/`tls` transports and `https://` (S12).
 rustls.workspace = true

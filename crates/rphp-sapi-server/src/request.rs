@@ -46,6 +46,20 @@ pub fn bind(it: &mut Interp, b: &Binding<'_>) {
             request_time: b.request_time,
         },
     );
+    // php's built-in server registers only the query string and the
+    // request headers through the input filter (`INPUT_SERVER`); every
+    // other `$_SERVER` key is added directly.
+    if let Some(server) = it.filter_inputs.server.take() {
+        let mut filtered = Array::new();
+        for (k, v) in server.iter() {
+            if let ArrayKey::Str(name) = k {
+                if &name[..] == b"QUERY_STRING" || name.starts_with(b"HTTP_") {
+                    filtered.set(k.clone(), v.clone());
+                }
+            }
+        }
+        it.filter_inputs.server = (filtered.len() > 0).then_some(filtered);
+    }
 }
 
 /// `$_SERVER` in php's order: the environment, then the SAPI's keys, then

@@ -1,14 +1,18 @@
 (program file=0
   (expr-stmt
-    (exit
-      (int 1)))
+    (call
+      (name exit kind=fq)
+      (arg
+        (int 1))))
   (expr-stmt
     (exit))
   (expr-stmt
     (exit))
   (expr-stmt
-    (exit
-      (str "x")))
+    (call
+      (name exit kind=fq)
+      (arg
+        (str "x"))))
   (expr-stmt
     (print
       (int 1)))

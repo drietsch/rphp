@@ -15,6 +15,8 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("filter_var", 1, Some(3), filter_var),
     nf!("filter_var_array", 1, Some(3), filter_var_array),
     nf!("filter_has_var", 2, Some(2), filter_has_var),
+    nf!("filter_input", 2, Some(4), filter_input),
+    nf!("filter_input_array", 1, Some(3), filter_input_array),
     nf!("filter_list", 0, Some(0), filter_list),
     nf!("filter_id", 1, Some(1), filter_id),
 ];
@@ -438,10 +440,69 @@ fn filter_var_array(_ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     Ok(Value::Array(out))
 }
 
-/// `filter_has_var(int $input_type, string $var_name): bool` — the superglobal
-/// families are not populated per input type yet, so this reports `false`.
-fn filter_has_var(_ctx: &mut Ctx, _args: &mut [Value]) -> NativeResult {
-    Ok(Value::Bool(false))
+/// The array an `INPUT_*` constant names, as the SAPI registered it
+/// (`None`: never initialized), or php's `ValueError`.
+fn input_array(ctx: &Ctx, func: &str, v: &Value) -> Result<Option<Array>, Unwind> {
+    let inputs = &ctx.filter_inputs;
+    Ok(match v.deref().to_int() {
+        0 => inputs.post.clone(),
+        1 => inputs.get.clone(),
+        2 => inputs.cookie.clone(),
+        4 => inputs.env.clone(),
+        5 => inputs.server.clone(),
+        _ => {
+            return Err(Unwind::value_error(format!(
+                "{func}(): Argument #1 ($type) must be an INPUT_* constant"
+            )))
+        }
+    })
+}
+
+/// `filter_has_var(int $input_type, string $var_name): bool` — whether the
+/// request's original input carried the name (the superglobals may have
+/// been changed since; php does not look at them).
+fn filter_has_var(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let input = input_array(ctx, "filter_has_var", &args[0]).map_err(|_| {
+        Unwind::value_error("filter_has_var(): Argument #1 ($input_type) must be an INPUT_* constant")
+    })?;
+    let name = args[1].to_php_bytes();
+    Ok(Value::Bool(input.is_some_and(|a| {
+        rphp_value::array_key(&Value::string(&name)).is_some_and(|k| a.get(&k).is_some())
+    })))
+}
+
+/// `filter_input(int $type, string $var_name, int $filter = FILTER_DEFAULT, array|int $options = 0): mixed`
+/// — `filter_var()` over one variable of the request's original input. A
+/// missing one is `null`, or `false` under `FILTER_NULL_ON_FAILURE` (the
+/// flag inverts both answers), or the `default` option.
+fn filter_input(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let input = input_array(ctx, "filter_input", &args[0])?;
+    let name = args[1].to_php_bytes();
+    let found = input.and_then(|a| {
+        rphp_value::array_key(&Value::string(&name)).and_then(|k| a.get_deref(&k))
+    });
+    let Some(value) = found else {
+        let o = Opts::parse(args.get(3));
+        if let Some(d) = o.default {
+            return Ok(d);
+        }
+        return Ok(if o.flags & NULL_ON_FAILURE != 0 { Value::Bool(false) } else { Value::Null });
+    };
+    let mut rest: Vec<Value> = vec![value];
+    rest.extend(args.iter().skip(2).cloned());
+    filter_var(ctx, &mut rest)
+}
+
+/// `filter_input_array(int $type, array|int $options = FILTER_DEFAULT, bool $add_empty = true): array|false|null`
+/// — `filter_var_array()` over the request's original input; `null` when
+/// that input was never initialized.
+fn filter_input_array(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let Some(input) = input_array(ctx, "filter_input_array", &args[0])? else {
+        return Ok(Value::Null);
+    };
+    let mut rest: Vec<Value> = vec![Value::Array(input)];
+    rest.extend(args.iter().skip(1).cloned());
+    filter_var_array(ctx, &mut rest)
 }
 
 /// `filter_list(): array`

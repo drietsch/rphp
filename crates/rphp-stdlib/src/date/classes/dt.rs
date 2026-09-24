@@ -706,11 +706,10 @@ pub(crate) fn create_from_format(
     if !scan.errors.is_empty() {
         return Ok(Value::Bool(false));
     }
-    let tz = scan
-        .zone
-        .clone()
-        .or(arg_tz)
-        .unwrap_or_else(|| default_tz(ctx));
+    // php fills the unnamed fields from `now` in the argument's (or the
+    // default) zone — its wall clock, even when the string names another
+    // zone, which then only labels the result (`apply_parse`).
+    let tz = arg_tz.unwrap_or_else(|| default_tz(ctx));
     let (base_ts, base_us) = now();
     let base = DtState {
         ts: base_ts,

@@ -505,9 +505,10 @@ fn constants_and_magic_constants() {
 
 #[test]
 fn misc_expressions_lower() {
-    let m = compile_ok("<?php print 1; exit(3); @f(); throw $e; clone $o; include 'x.php'; require_once $p; $a = [$b, [$c, $d]] = $e; list('k' => $z) = $e; (void) g();");
+    let m = compile_ok("<?php print 1; exit; @f(); throw $e; clone $o; include 'x.php'; require_once $p; $a = [$b, [$c, $d]] = $e; list('k' => $z) = $e; (void) g();");
     let code = &m.func(0).code;
-    assert!(code.iter().any(|op| matches!(op, Op::Exit { src: Some(_) })));
+    // `exit(3)` is a call to `\exit` (php 8.4); only the bare keyword is the op.
+    assert!(code.iter().any(|op| matches!(op, Op::Exit { src: None })));
     assert_eq!(count(code, |op| matches!(op, Op::Silence { .. })), 2);
     assert!(code.iter().any(|op| matches!(op, Op::Throw { .. })));
     assert!(code.iter().any(|op| matches!(op, Op::Clone { .. })));

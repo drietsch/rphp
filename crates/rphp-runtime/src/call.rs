@@ -1032,6 +1032,73 @@ impl Interp {
         r
     }
 
+    /// `include_once` driven from a native (`spl_autoload()`): compile and
+    /// run the file at `path` unless it was already included, with the
+    /// global symbol table. Answers whether the file ran. A file that does
+    /// not exist is `Ok(false)` with no diagnostic — the caller probes.
+    pub fn include_once_from_native(&mut self, path: &std::path::Path) -> Result<bool, Unwind> {
+        if !path.is_file() {
+            return Ok(false);
+        }
+        let canonical = crate::exec::realpath_cached(path).unwrap_or_else(|| path.to_path_buf());
+        if self.included.contains(&canonical) {
+            return Ok(false);
+        }
+        let Ok(bytes) = std::fs::read(&canonical) else {
+            return Ok(false);
+        };
+        let name = canonical.to_string_lossy().into_owned();
+        let Some(hook) = self.compile_hook.take() else {
+            return Err(Unwind::error("include is not available: no compile hook installed"));
+        };
+        let compiled = hook(self, &bytes, &name);
+        self.compile_hook = Some(hook);
+        let module = match compiled {
+            Ok(m) => m,
+            Err(crate::interp::CompileFailure::Parse { message, line }) => {
+                return Err(self.parse_error(&message, &name, line));
+            }
+            Err(crate::interp::CompileFailure::Rejected(lines)) => {
+                return Err(Unwind::error(format!(
+                    "{name}: the engine cannot lower this file yet:\n{}",
+                    lines.join("\n")
+                )));
+            }
+        };
+        if self.included.insert(canonical.clone()) {
+            self.included_order.push(canonical);
+        }
+        let main = self.load_unit(module)?;
+        let func = self.funcs[main as usize].clone();
+        if self.reentry_depth >= MAX_REENTRY_DEPTH {
+            return Err(Unwind::error(format!(
+                "Maximum function nesting level of '{MAX_REENTRY_DEPTH}' reached, aborting!"
+            )));
+        }
+        let depth = self.frames.len();
+        let args_base = self.stack.len();
+        self.push_args(&func, &[]);
+        let pending = PendingCall {
+            target: CallTarget::User { func, closure: None },
+            this: None,
+            scope: None,
+            static_class: None,
+            args_base,
+            argc: 0,
+            named: Vec::new(),
+            new_obj: None,
+        };
+        let symtab = Some(self.globals.clone());
+        if let Err(u) = self.activate(pending, FrameKind::ReentryBoundary, RetTarget::Discard, symtab, None) {
+            return Err(self.locate_fault(Err::<(), _>(u)).unwrap_err());
+        }
+        self.reentry_depth += 1;
+        let r = self.run_until(depth);
+        self.reentry_depth -= 1;
+        self.out.flush_pending();
+        r.map(|_| true)
+    }
+
     /// Call a function by name (user or native).
     pub fn call_function(&mut self, name: &[u8], args: &[Value]) -> NativeResult {
         self.call_value(&Value::string(name), args)

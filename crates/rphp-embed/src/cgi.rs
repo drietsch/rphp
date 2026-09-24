@@ -138,6 +138,39 @@ pub fn bind(it: &mut Interp, req: CgiRequest<'_>) {
         }
     }
 
+    // `filter_input()` reads the arrays as registered, not the (writable)
+    // superglobals; one nothing was registered into stays uninitialized.
+    let registered = |a: &Array| (a.len() > 0).then(|| a.clone());
+    it.filter_inputs.get = registered(&get);
+    it.filter_inputs.post = registered(&post);
+    it.filter_inputs.cookie = registered(&cookie);
+    let mut server = req.server.clone();
+    for k in [&b"REQUEST_TIME"[..], b"REQUEST_TIME_FLOAT", b"argv", b"argc"] {
+        server.unset(&ArrayKey::str(k));
+    }
+    it.filter_inputs.server = registered(&server);
+    it.filter_inputs.env = if order.to_ascii_uppercase().contains('E') {
+        let mut env = Array::new();
+        match &it.request_env {
+            Some(vars) => {
+                for (k, v) in vars {
+                    env.set(ArrayKey::str(k.as_bytes()), Value::string(v.as_bytes()));
+                }
+            }
+            None => {
+                for (k, v) in std::env::vars_os() {
+                    env.set(
+                        ArrayKey::str(k.to_string_lossy().as_bytes()),
+                        Value::string(v.to_string_lossy().as_bytes()),
+                    );
+                }
+            }
+        }
+        registered(&env)
+    } else {
+        None
+    };
+
     it.globals.insert(b"_GET", PhpRef::new(Value::Array(get)));
     it.globals.insert(b"_POST", PhpRef::new(Value::Array(post)));
     it.globals.insert(b"_COOKIE", PhpRef::new(Value::Array(cookie)));

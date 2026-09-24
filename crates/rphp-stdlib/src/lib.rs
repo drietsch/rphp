@@ -241,6 +241,7 @@ pub fn request_shutdown(it: &mut rphp_runtime::Interp) {
     mbstring::request_shutdown();
     string2::request_shutdown();
     date::funcs::request_shutdown();
+    spl_autoload::request_shutdown();
     random::request_shutdown();
     http::request_shutdown();
     file::request_shutdown(it);

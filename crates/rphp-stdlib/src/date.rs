@@ -26,6 +26,7 @@ mod classes;
 mod format;
 pub(crate) mod funcs;
 mod parse;
+mod sun;
 mod tz;
 
 /// Functions this module provides.

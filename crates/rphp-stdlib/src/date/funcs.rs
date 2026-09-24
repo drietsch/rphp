@@ -46,6 +46,11 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("getdate", 0, Some(1), getdate),
     nf!("localtime", 0, Some(2), localtime),
     nf!("date_parse", 1, Some(1), date_parse),
+    nf!("date_parse_from_format", 2, Some(2), date_parse_from_format),
+    nf!("date_sun_info", 3, Some(3), super::sun::date_sun_info),
+    nf!("date_sunrise", 1, Some(6), super::sun::date_sunrise),
+    nf!("date_sunset", 1, Some(6), super::sun::date_sunset),
+    nf!("timezone_version_get", 0, Some(0), timezone_version_get),
     nf!("timezone_identifiers_list", 0, Some(2), timezone_identifiers_list),
     nf!("timezone_abbreviations_list", 0, Some(0), timezone_abbreviations_list),
     nf!("strftime", 1, Some(2), strftime),
@@ -72,9 +77,13 @@ pub(crate) fn register_constants(r: &mut Registry) {
     ] {
         r.constant(name, Value::string(value.as_bytes()));
     }
-    r.constant("SUNFUNCS_RET_TIMESTAMP", Value::Int(0));
-    r.constant("SUNFUNCS_RET_STRING", Value::Int(1));
-    r.constant("SUNFUNCS_RET_DOUBLE", Value::Int(2));
+    for (name, v) in [("SUNFUNCS_RET_TIMESTAMP", 0), ("SUNFUNCS_RET_STRING", 1), ("SUNFUNCS_RET_DOUBLE", 2)] {
+        r.deprecated_constant(
+            name,
+            Value::Int(v),
+            " since 8.4, as date_sunrise() and date_sunset() were deprecated in 8.1",
+        );
+    }
 }
 
 // ---- the default timezone ------------------------------------------------------
@@ -102,7 +111,7 @@ fn default_tz_name(ctx: &Ctx) -> String {
 }
 
 /// The timezone every function without an explicit one works in.
-fn default_tz(ctx: &Ctx) -> Tz {
+pub(crate) fn default_tz(ctx: &Ctx) -> Tz {
     Tz::Id(default_tz_name(ctx))
 }
 
@@ -445,10 +454,10 @@ fn opt_field(v: Option<i64>) -> Value {
 /// The `warnings` / `errors` sub-arrays: keyed by the byte offset the
 /// message was raised at, so two messages at the same offset collapse into
 /// one entry while the count still shows both.
-fn diagnostics(items: &[(usize, &'static str)]) -> Value {
+fn diagnostics<S: AsRef<str>>(items: &[(usize, S)]) -> Value {
     let mut a = Array::new();
     for (pos, text) in items {
-        a.set(ArrayKey::Int(*pos as i64), Value::string(text.as_bytes()));
+        a.set(ArrayKey::Int(*pos as i64), Value::string(text.as_ref().as_bytes()));
     }
     Value::Array(a)
 }
@@ -487,6 +496,12 @@ fn relative_array(p: &parse::Parsed) -> Value {
 
 /// The array shape `date_parse()` and `date_parse_from_format()` share.
 fn parse_result(p: &parse::Parsed) -> Value {
+    parse_result_with(p, &p.warnings, &p.errors)
+}
+
+/// [`parse_result`] with the diagnostics given apart from the fields
+/// (`date_parse_from_format()`'s scanner owns its message strings).
+fn parse_result_with<S: AsRef<str>>(p: &parse::Parsed, warnings: &[(usize, S)], errors: &[(usize, S)]) -> Value {
     let mut a = Array::new();
     a.set(ArrayKey::str(b"year"), opt_field(p.y));
     a.set(ArrayKey::str(b"month"), opt_field(p.m));
@@ -503,14 +518,14 @@ fn parse_result(p: &parse::Parsed) -> Value {
     );
     a.set(
         ArrayKey::str(b"warning_count"),
-        Value::Int(p.warnings.len() as i64),
+        Value::Int(warnings.len() as i64),
     );
-    a.set(ArrayKey::str(b"warnings"), diagnostics(&p.warnings));
+    a.set(ArrayKey::str(b"warnings"), diagnostics(warnings));
     a.set(
         ArrayKey::str(b"error_count"),
-        Value::Int(p.errors.len() as i64),
+        Value::Int(errors.len() as i64),
     );
-    a.set(ArrayKey::str(b"errors"), diagnostics(&p.errors));
+    a.set(ArrayKey::str(b"errors"), diagnostics(errors));
     a.set(ArrayKey::str(b"is_localtime"), Value::Bool(p.have_zone));
     if p.have_zone {
         // A name the scanner could not resolve leaves the type at 0 with no
@@ -529,7 +544,10 @@ fn parse_result(p: &parse::Parsed) -> Value {
                 a.set(ArrayKey::str(b"is_dst"), Value::Bool(false));
             }
             Tz::Abbr { name, offset, dst } => {
-                a.set(ArrayKey::str(b"zone"), Value::Int(*offset as i64));
+                // timelib keeps an abbreviation's DST hour apart from its
+                // `zone` (`CEST` is 3600 with `is_dst`).
+                let base = *offset as i64 - if *dst { 3600 } else { 0 };
+                a.set(ArrayKey::str(b"zone"), Value::Int(base));
                 a.set(ArrayKey::str(b"is_dst"), Value::Bool(*dst));
                 a.set(ArrayKey::str(b"tz_abbr"), Value::string(name.as_bytes()));
             }
@@ -573,6 +591,65 @@ pub(crate) fn date_parse(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         p.warnings.push((text.len() + 1, "The parsed time was invalid"));
     }
     Ok(parse_result(&p))
+}
+
+/// `date_parse_from_format(string $format, string $datetime): array` —
+/// `DateTime::createFromFormat()`'s scanner, reported without resolving:
+/// what the format never named stays `false`.
+pub(crate) fn date_parse_from_format(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let fmt = str_arg(ctx, "date_parse_from_format", 1, "format", &args[0])?;
+    let text = str_arg(ctx, "date_parse_from_format", 2, "datetime", &args[1])?;
+    let scan = super::classes::fromformat::scan(&fmt, &text);
+    let mut p = scan.parsed;
+    if !scan.us_given {
+        p.us = None;
+    }
+    // `U` is written as epoch fields plus a relative second count; php
+    // reports the broken-down UTC time it names.
+    if scan.from_unix {
+        let ts = p.rel.s;
+        p.rel.s = 0;
+        p.have_relative = false;
+        let (y, m, d) = civil::civil_from_days(ts.div_euclid(86_400));
+        let rem = ts.rem_euclid(86_400);
+        p.y = Some(y);
+        p.m = Some(m as i64);
+        p.d = Some(d as i64);
+        p.h = Some(rem / 3600);
+        p.i = Some(rem / 60 % 60);
+        p.s = Some(rem % 60);
+    }
+    Ok(parse_result_with(&p, &scan.warnings, &scan.errors))
+}
+
+/// `timezone_version_get(): string` — the version of the timezone data in
+/// use, in php's `YYYY.N` spelling (`2026c` is `2026.3`). rphp reads the
+/// system database (what `jiff` loads); with no version file php's own
+/// answer for system tzdata, `0.system`, is the honest one.
+pub(crate) fn timezone_version_get(_: &mut Ctx, _: &mut [Value]) -> NativeResult {
+    Ok(Value::string(tzdb_version().as_bytes()))
+}
+
+fn tzdb_version() -> String {
+    let dir = std::env::var("TZDIR").unwrap_or_else(|_| "/usr/share/zoneinfo".to_string());
+    let dir = std::path::Path::new(&dir);
+    // macOS ships `+VERSION`; the tzdata packages keep the release in the
+    // first line of `tzdata.zi` (`# version 2026c`).
+    let raw = std::fs::read_to_string(dir.join("+VERSION"))
+        .ok()
+        .or_else(|| {
+            let zi = std::fs::read_to_string(dir.join("tzdata.zi")).ok()?;
+            zi.lines().next()?.strip_prefix("# version ").map(str::to_string)
+        })
+        .unwrap_or_default();
+    let raw = raw.trim();
+    let digits = raw.bytes().take_while(u8::is_ascii_digit).count();
+    match (raw.get(..digits), raw.as_bytes().get(digits)) {
+        (Some(year), Some(&letter)) if digits == 4 && letter.is_ascii_lowercase() && raw.len() == 5 => {
+            format!("{year}.{}", letter - b'a' + 1)
+        }
+        _ => "0.system".to_string(),
+    }
 }
 
 // ---- timezone listings ----------------------------------------------------------------

@@ -876,20 +876,17 @@ fn clone_call(ctx: &mut Ctx<'_, '_>, list: &ArgumentList<'_>, span: Span) -> Opt
             _ => None,
         }
     }
-    let (object, with) = match items.as_slice() {
-        [a] => (positional(a).or_else(|| named(a, "object"))?, None),
-        [a, b] => {
-            let object = positional(a).or_else(|| named(a, "object"))?;
-            let with = positional(b).or_else(|| named(b, "withProperties"))?;
-            (object, Some(with))
-        }
+    let object = match items.as_slice() {
+        [a] => positional(a).or_else(|| named(a, "object"))?,
+        // With `$withProperties` php makes a real call to `clone()` (its
+        // frame shows in stack traces and the writes are judged from the
+        // caller's scope), so that form stays a plain call to the native.
         _ => return None,
     };
     let object = expr(ctx, object);
-    let with = with.map(|w| Box::new(expr(ctx, w)));
     Some(Expr::Clone {
         expr: Box::new(object),
-        with,
+        with: None,
         span,
     })
 }
@@ -1131,21 +1128,21 @@ fn include(ctx: &mut Ctx<'_, '_>, kind: IncludeKind, path: &Expression<'_>, span
     }
 }
 
-/// `exit` / `die`: PHP 8.4 made them functions, so an argument list is an
-/// ordinary one; the tree keeps the (first) status/message argument.
+/// `exit` / `die`: PHP 8.4 made them functions. The bare keyword stays the
+/// construct; with an argument list it is an ordinary call to `\exit` (php
+/// compiles both spellings to `exit`, which is how its stack traces and
+/// messages name them), so named arguments, the arity check and the
+/// `string|int` coercion under the file's `strict_types` are the native's.
 fn exit(ctx: &mut Ctx<'_, '_>, list: Option<&ArgumentList<'_>>, span: Span) -> Expr {
-    let arg = match list {
+    match list {
         Some(l) => {
-            let mut converted = args(ctx, l);
-            if converted.is_empty() {
-                None
-            } else {
-                Some(Box::new(converted.remove(0).value))
-            }
+            let args = args(ctx, l);
+            let text = ctx.intern(b"exit");
+            let name = Name::new(text, NameKind::FullyQualified, span);
+            Expr::Call { callee: Callee::Name(name), args, span }
         }
-        None => None,
-    };
-    Expr::Exit { arg, span }
+        None => Expr::Exit { arg: None, span },
+    }
 }
 
 fn pipe(ctx: &mut Ctx<'_, '_>, p: &Pipe<'_>, span: Span) -> Expr {

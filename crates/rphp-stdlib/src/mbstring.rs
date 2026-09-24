@@ -167,7 +167,7 @@ fn ini_str(ctx: &Ctx, name: &str) -> String {
 
 /// `php_get_internal_encoding()` → `mbfl_name2encoding`, falling back to
 /// UTF-8 for an empty or unknown name.
-fn internal_encoding(ctx: &Ctx) -> &'static Encoding {
+pub(crate) fn internal_encoding(ctx: &Ctx) -> &'static Encoding {
     if let Some(id) = with_state(|s| s.internal) {
         return mbfl::by_id(id);
     }
@@ -226,7 +226,7 @@ fn http_input_list(ctx: &Ctx) -> Vec<&'static Encoding> {
 
 /// `OnUpdate_mbstring_substitute_character`: the mode and character from
 /// the ini value, unless `mb_substitute_character()` overrode them.
-fn substitute(ctx: &Ctx) -> (ErrorMode, u32) {
+pub(crate) fn substitute(ctx: &Ctx) -> (ErrorMode, u32) {
     if let Some(s) = with_state(|s| s.subst) {
         return s;
     }
@@ -261,7 +261,7 @@ fn strtol0(s: &str) -> Option<i64> {
     Some(if neg { -v } else { v })
 }
 
-fn language(ctx: &Ctx) -> &'static Language {
+pub(crate) fn language(ctx: &Ctx) -> &'static Language {
     let name = ini_str(ctx, "mbstring.language");
     mbfl::name2language(name.as_bytes()).unwrap_or_else(|| mbfl::name2language(b"neutral").unwrap())
 }
@@ -274,7 +274,7 @@ fn default_detect_order(ctx: &Ctx) -> Vec<&'static Encoding> {
 /// `MBSTRG(current_detect_order_list)`: `mb_detect_order()`'s list, else
 /// the snapshot of `mbstring.detect_order` / the language default taken
 /// the first time it is needed (php populates it at request start).
-fn current_detect_order(ctx: &Ctx) -> Vec<&'static Encoding> {
+pub(crate) fn current_detect_order(ctx: &Ctx) -> Vec<&'static Encoding> {
     if let Some(ids) = with_state(|s| s.detect_order.clone()) {
         return ids.into_iter().map(mbfl::by_id).collect();
     }
@@ -333,7 +333,7 @@ fn invalid_encoding(func: &str, n: usize, param: &str, name: &[u8]) -> Unwind {
 
 /// `php_mb_get_encoding`: the named encoding (with php's deprecation for
 /// the byte codecs), or the internal encoding for `null`.
-fn get_encoding(ctx: &mut Ctx, name: Option<&[u8]>, func: &str, n: usize, param: &str) -> Result<&'static Encoding, Unwind> {
+pub(crate) fn get_encoding(ctx: &mut Ctx, name: Option<&[u8]>, func: &str, n: usize, param: &str) -> Result<&'static Encoding, Unwind> {
     let Some(name) = name else {
         return Ok(internal_encoding(ctx));
     };
@@ -1877,7 +1877,7 @@ fn transfer_encode(bytes: &[u8], base64: bool, out: &mut Vec<u8>) {
 }
 
 /// `mb_mime_header_encode`: RFC 2047 encoded words, folded at 76 columns.
-fn mime_header_encode(input: &[u8], incode: &Encoding, outcode: &Encoding, base64: bool, linefeed: &[u8], mut indent: i64) -> Vec<u8> {
+pub(crate) fn mime_header_encode(input: &[u8], incode: &Encoding, outcode: &Encoding, base64: bool, linefeed: &[u8], mut indent: i64) -> Vec<u8> {
     if input.is_empty() {
         return Vec::new();
     }

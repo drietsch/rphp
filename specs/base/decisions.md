@@ -450,6 +450,8 @@ ADR-014 … ADR-035 were appended as one batch from the approved Symfony-8 roadm
 
 **Status.** Accepted (2026-09-24 — the user chose RustCrypto for the whole extension; proposed 2026-09-22 for guardian-runner roadmap M1). Places the `openssl` of ADR-032. **Affected:** `08-stdlib-ext.md` (the extension roster).
 
+**Revision (2026-09-24, the user's decision): rust-openssl, not RustCrypto.** Accepted the same day for the whole extension, then revised: ext/openssl in php is a thin layer over libcrypto, and nearly everything it prints — the `X509_print` text, extension renderings, purposes, the error queue's codes, the cipher and digest lists, encrypted PEM, PKCS#7/CMS/PKCS#12 — is OpenSSL's own output. Re-implementing each format byte for byte on RustCrypto is the expensive, never-quite-finished path; linking **the same libcrypto php links** (Homebrew `openssl@3`, 3.6 on the reference machine) makes parity a property of the library. So `rphp-ext-openssl` uses `openssl` (rust-openssl 0.10)'s safe API; the calls it does not wrap go through `openssl-sys` in one module, `src/sys/`, the crate's only `unsafe` (`#![deny(unsafe_code)]` elsewhere, the ext-posix pattern). A `vendored` feature builds OpenSSL from source where no system library exists. **Cost accepted:** a C dependency beside PCRE2, libz and SQLite, and a version-dependent observable surface — outputs match php when both link the same OpenSSL. The TLS transports stay on rustls + ring (S12); the wave-one RustCrypto verifier is ported onto OpenSSL.
+
 ---
 
 ## Affirmed baseline decisions (re-confirmed, unchanged)

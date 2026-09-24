@@ -125,6 +125,11 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 rustls-native-certs = "0.8"
 rustls-pki-types = "1"
 rustls-pemfile = "2"
+# ext/openssl (ADR-038, revised 2026-09-24): the same libcrypto php links,
+# through rust-openssl's safe API; `vendored` builds it from source where no
+# system OpenSSL is installed.
+openssl = "0.10"
+openssl-sys = "0.9"
 # ext/zlib — flate2 over the system libz, the one php links, so compressed
 # bytes match php's.
 flate2 = { version = "1", default-features = false, features = ["zlib"] }

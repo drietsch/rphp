@@ -13,7 +13,10 @@
 //! family and the certificate functions are not here: `register_functions`
 //! only registers a signature this crate implements, so `function_exists()`
 //! answers honestly for the rest.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+// OpenSSL is reached through rust-openssl's safe API; the few calls it does
+// not wrap go through `openssl-sys` in `sys/`, the one module allowed
+// `unsafe` (each call with its own SAFETY note), as ext-posix does.
 
 mod cipher;
 mod digest;
@@ -22,6 +25,7 @@ mod generated;
 mod keys;
 mod pkey;
 mod shape;
+mod sys;
 mod verify;
 mod x509;
 

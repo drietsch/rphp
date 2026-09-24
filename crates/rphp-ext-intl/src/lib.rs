@@ -18,6 +18,7 @@
 //! says so.
 #![forbid(unsafe_code)]
 
+mod breakiter;
 mod cal;
 mod collator;
 mod data;
@@ -30,10 +31,13 @@ mod locale;
 mod normalizer;
 mod numfmt;
 mod shape;
+mod spoof;
 mod state;
 mod tables;
+mod translit;
 mod tz;
 mod uchar;
+mod uconverter;
 
 pub use state::{error_name, is_failure};
 
@@ -72,6 +76,10 @@ pub fn register(r: &mut Registry) {
     tz::register(r);
     cal::register(r);
     datefmt::register(r);
+    translit::register(r);
+    breakiter::register(r);
+    spoof::register(r);
+    uconverter::register(r);
 }
 
 /// The constructor check php 8.4+ makes: the language must be one ICU

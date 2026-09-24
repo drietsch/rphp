@@ -545,7 +545,17 @@ fn ser(ctx: &mut Ctx, out: &mut Vec<u8>, v: &Value, st: &mut SerState) -> Result
 
 /// Internal classes php flags `ZEND_ACC_NOT_SERIALIZABLE` (beyond `Closure`
 /// and anonymous classes, handled on their own).
-const NOT_SERIALIZABLE: &[&[u8]] = &[b"Random\\Engine\\Secure"];
+const NOT_SERIALIZABLE: &[&[u8]] = &[
+    b"Random\\Engine\\Secure",
+    // ext/intl
+    b"Transliterator",
+    b"IntlBreakIterator",
+    b"IntlRuleBasedBreakIterator",
+    b"IntlCodePointBreakIterator",
+    b"IntlPartsIterator",
+    b"Spoofchecker",
+    b"UConverter",
+];
 
 // ---- unserialize ------------------------------------------------------------
 

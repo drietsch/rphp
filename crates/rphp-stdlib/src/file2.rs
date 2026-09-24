@@ -313,7 +313,7 @@ fn set_owner(ctx: &mut Ctx, args: &mut [Value], user: bool) -> NativeResult {
 /// A user or group name in `/etc/passwd` / `/etc/group` (see the module
 /// header for what this misses next to `getpwnam(3)`). Both files put the id
 /// in the third colon-separated field.
-fn lookup_id(name: &[u8], user: bool) -> Option<u32> {
+pub(crate) fn lookup_id(name: &[u8], user: bool) -> Option<u32> {
     let file = if user { "/etc/passwd" } else { "/etc/group" };
     let data = fs::read(file).ok()?;
     for line in data.split(|&b| b == b'\n') {

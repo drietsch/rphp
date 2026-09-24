@@ -15,12 +15,15 @@
 //! answers honestly for the rest.
 #![forbid(unsafe_code)]
 
+mod cipher;
 mod digest;
 mod errors;
 mod generated;
+mod keys;
 mod pkey;
 mod shape;
 mod verify;
+mod x509;
 
 use rphp_runtime::{Ctx, NativeResult, Registry};
 use rphp_value::Value;
@@ -48,8 +51,14 @@ pub fn register(r: &mut Registry) {
     for class in generated::classes::CLASSES {
         shape::register_handle(r, class);
     }
-    register_functions(r, generated::arginfo::FUNCTIONS, FUNCTIONS);
+    for table in TABLES {
+        register_functions(r, generated::arginfo::FUNCTIONS, table);
+    }
 }
+
+/// Every module's functions: the verifying half here, and one table per
+/// module of the later waves.
+static TABLES: &[&[FnImpl]] = &[FUNCTIONS, cipher::FUNCTIONS, keys::FUNCTIONS, x509::FUNCTIONS];
 
 static FUNCTIONS: &[FnImpl] = &[
     ("openssl_verify", openssl_verify),
@@ -130,7 +139,7 @@ mod tests {
     /// and silently skips what it cannot find.
     #[test]
     fn every_handler_names_a_function_php_declares() {
-        for (name, _) in FUNCTIONS {
+        for (name, _) in TABLES.iter().flat_map(|t| t.iter()) {
             assert!(
                 generated::arginfo::FUNCTIONS.iter().any(|s| s.name.eq_ignore_ascii_case(name)),
                 "{name} is not in ext/openssl's arginfo"
@@ -138,11 +147,13 @@ mod tests {
         }
     }
 
-    /// Wave one is the verifying half; the count is here so that adding a
-    /// wave is a deliberate edit rather than a drift.
+    /// No function is answered for by two modules.
     #[test]
-    fn wave_one_answers_for_five_of_the_sixty_four() {
-        assert_eq!(FUNCTIONS.len(), 5);
+    fn every_function_has_one_handler() {
+        let mut seen = std::collections::HashSet::new();
+        for (name, _) in TABLES.iter().flat_map(|t| t.iter()) {
+            assert!(seen.insert(name.to_ascii_lowercase()), "{name} is bound twice");
+        }
         assert_eq!(generated::arginfo::FUNCTIONS.len(), 64);
     }
 

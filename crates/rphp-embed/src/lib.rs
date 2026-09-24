@@ -669,11 +669,12 @@ fn compile_unit(interp: &Interp, src: &[u8], name: &str) -> Result<Module, Compi
         });
     }
     let line_of = |offset: u32| file.line_col(offset).0;
-    // A real file path gives `__FILE__`/`__DIR__`; the `-r` unit name does not.
+    // A real file path gives `__FILE__`/`__DIR__`, and so does a stream url
+    // a user wrapper served an include from; the `-r` unit name does not.
     let path = Path::new(name);
     let opts = CompileOptions {
         line_of: Some(&line_of),
-        file: path.is_absolute().then(|| path.to_path_buf()),
+        file: (path.is_absolute() || name.contains("://")).then(|| path.to_path_buf()),
         // php reads `zend.assertions` when it *compiles* a unit, which is why
         // changing it at run time does nothing.
         assertions: interp

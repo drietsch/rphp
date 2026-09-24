@@ -120,6 +120,26 @@ pub type CompileHook = Box<dyn Fn(&Interp, &[u8], &str) -> Result<Module, Compil
 /// file as it is on disk now.
 pub type CachedUnitHook = Box<dyn Fn(&Interp, &str) -> Option<Module>>;
 
+/// What a stream wrapper made of an `include` of a path it owns
+/// ([`IncludeStreamHook`]).
+pub enum IncludeOpen {
+    /// The open failed; the wrapper has said why (php's `Failed to open
+    /// stream` warning), and `include` reports the failed inclusion.
+    Failed,
+    /// An `_once` include of a unit already included: the wrapper opened
+    /// and closed it, and `include` answers `true`.
+    Included,
+    /// The unit's source, and the name it is compiled under (`__FILE__`).
+    Source { name: String, bytes: Vec<u8> },
+}
+
+/// Asked by `include`/`require` before the file system is: `None` when no
+/// stream wrapper takes the path (a user wrapper registered with
+/// `stream_wrapper_register()` in `rphp-stdlib`), else the wrapper's
+/// answer. The arguments are the path, the keyword (`include_once`, …) for
+/// the diagnostics, and whether this is an `_once` include.
+pub type IncludeStreamHook = fn(&mut Interp, &[u8], &str, bool) -> Option<Result<IncludeOpen, Unwind>>;
+
 /// The maximum nesting of native→PHP re-entries (`run_until` on the Rust
 /// stack) before the engine gives up, so the host stack cannot overflow.
 pub const MAX_REENTRY_DEPTH: usize = 512;
@@ -206,6 +226,8 @@ pub struct Interp {
     pub compile_hook: Option<CompileHook>,
     /// See [`CachedUnitHook`].
     pub cached_unit_hook: Option<CachedUnitHook>,
+    /// See [`IncludeStreamHook`].
+    pub include_stream_hook: Option<IncludeStreamHook>,
     /// The output stack (`echo`, `ob_*`) over the SAPI's sink.
     pub out: OutputStack,
     /// The ini table.
@@ -448,6 +470,7 @@ impl Interp {
             autoloading: Vec::new(),
             compile_hook: None,
             cached_unit_hook: None,
+            include_stream_hook: None,
             out: OutputStack::new(sink),
             ini: IniTable::with_core_defaults(),
             error_reporting: E_ALL,

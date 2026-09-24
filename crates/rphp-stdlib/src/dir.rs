@@ -69,6 +69,13 @@ fn open_dir(ctx: &mut Ctx, func: &str, raw: &Value) -> Result<Option<Value>, Unw
 
 /// `opendir(string $directory, ?resource $context = null): resource|false`
 fn opendir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(h) = crate::stream_wrappers::open_dir(ctx, "opendir", &args[0], args.get(1))? {
+        if let Some(h) = &h {
+            ctx.ext.slot::<LastDir>(LAST_DIR_SLOT).0 = Some(h.clone());
+        }
+        return Ok(h.unwrap_or(Value::Bool(false)));
+    }
     Ok(open_dir(ctx, "opendir", &args[0])?.unwrap_or(Value::Bool(false)))
 }
 
@@ -96,7 +103,8 @@ fn dir_handle(ctx: &mut Ctx, func: &str, arg: Option<&Value>) -> Result<rphp_val
             "{func}(): Argument #1 ($dir_handle) must be an open stream resource"
         ))),
         Value::Resource(r) => {
-            let is_dir = r.payload_mut().as_mut().is_some_and(|p| p.downcast_mut::<DirStream>().is_some());
+            let is_dir = r.payload_mut().as_mut().is_some_and(|p| p.downcast_mut::<DirStream>().is_some())
+                || crate::stream_wrappers::is_user_dir(r);
             if !is_dir {
                 return Err(Unwind::type_error(format!(
                     "{func}(): Argument #1 ($dir_handle) must be a valid Directory resource"
@@ -132,12 +140,20 @@ fn read_entry(r: &rphp_value::Resource) -> Value {
 /// `readdir(?resource $dir_handle = null): string|false`
 fn readdir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let r = dir_handle(ctx, "readdir", args.first())?;
+    // A user wrapper's directory answers for itself.
+    if let Some(v) = crate::stream_wrappers::dir_op(ctx, "readdir", &r)? {
+        return Ok(v);
+    }
     Ok(read_entry(&r))
 }
 
 /// `rewinddir(?resource $dir_handle = null): void`
 fn rewinddir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let r = dir_handle(ctx, "rewinddir", args.first())?;
+    // A user wrapper's directory answers for itself.
+    if let Some(v) = crate::stream_wrappers::dir_op(ctx, "rewinddir", &r)? {
+        return Ok(v);
+    }
     with_dir(&r, |d| d.pos = 0);
     Ok(Value::Null)
 }
@@ -145,6 +161,10 @@ fn rewinddir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `closedir(?resource $dir_handle = null): void`
 fn closedir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let r = dir_handle(ctx, "closedir", args.first())?;
+    // A user wrapper's directory answers for itself.
+    if let Some(v) = crate::stream_wrappers::dir_op(ctx, "closedir", &r)? {
+        return Ok(v);
+    }
     ctx.resources.close(r.id());
     Ok(Value::Null)
 }
@@ -153,7 +173,13 @@ fn closedir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `dir(string $directory, ?resource $context = null): Directory|false`
 fn dir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
-    let Some(h) = open_dir(ctx, "dir", &args[0])? else {
+    // A registered user wrapper takes the url.
+    let user = crate::stream_wrappers::open_dir(ctx, "dir", &args[0], args.get(1))?;
+    let opened = match user {
+        Some(h) => h,
+        None => open_dir(ctx, "dir", &args[0])?,
+    };
+    let Some(h) = opened else {
         return Ok(Value::Bool(false));
     };
     let cid = ctx.class_by_name(b"Directory").ok_or_else(|| Unwind::error("Class \"Directory\" not found"))?;
@@ -191,17 +217,28 @@ fn directory_handle(this: Option<&Object>, method: &str) -> Result<rphp_value::R
     }
 }
 
-fn directory_read(_ctx: &mut Ctx, this: Option<&Object>, _args: &mut [Value]) -> NativeResult {
-    Ok(read_entry(&directory_handle(this, "read")?))
+fn directory_read(ctx: &mut Ctx, this: Option<&Object>, _args: &mut [Value]) -> NativeResult {
+    let r = directory_handle(this, "read")?;
+    if let Some(v) = crate::stream_wrappers::dir_op(ctx, "readdir", &r)? {
+        return Ok(v);
+    }
+    Ok(read_entry(&r))
 }
 
-fn directory_rewind(_ctx: &mut Ctx, this: Option<&Object>, _args: &mut [Value]) -> NativeResult {
-    with_dir(&directory_handle(this, "rewind")?, |d| d.pos = 0);
+fn directory_rewind(ctx: &mut Ctx, this: Option<&Object>, _args: &mut [Value]) -> NativeResult {
+    let r = directory_handle(this, "rewind")?;
+    if let Some(v) = crate::stream_wrappers::dir_op(ctx, "rewinddir", &r)? {
+        return Ok(v);
+    }
+    with_dir(&r, |d| d.pos = 0);
     Ok(Value::Null)
 }
 
 fn directory_close(ctx: &mut Ctx, this: Option<&Object>, _args: &mut [Value]) -> NativeResult {
     let r = directory_handle(this, "close")?;
+    if let Some(v) = crate::stream_wrappers::dir_op(ctx, "closedir", &r)? {
+        return Ok(v);
+    }
     ctx.resources.close(r.id());
     Ok(Value::Null)
 }
@@ -217,6 +254,10 @@ const SORT_NONE: i64 = 2;
 ///
 /// Includes `.` and `..`, as php does.
 fn scandir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::scandir(ctx, args)? {
+        return Ok(v);
+    }
     let p = arg_path(ctx, &args[0]);
     let order = args.get(1).map_or(0, Value::to_int);
     let Ok(rd) = fs::read_dir(&p) else {
@@ -245,6 +286,10 @@ fn scandir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `mkdir(string $directory, int $permissions = 0777, bool $recursive = false, ...): bool`
 fn mkdir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "mkdir", args)? {
+        return Ok(v);
+    }
     let p = arg_path(ctx, &args[0]);
     let recursive = args.get(2).is_some_and(Value::to_bool);
     let r = if recursive {
@@ -267,6 +312,10 @@ fn mkdir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `rmdir(string $directory, ...): bool` — only removes an *empty* directory.
 fn rmdir(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "rmdir", args)? {
+        return Ok(v);
+    }
     let p = arg_path(ctx, &args[0]);
     let r = fs::remove_dir(&p);
     clear_stat_cache(ctx);

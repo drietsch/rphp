@@ -53,7 +53,7 @@ pub type SpawnPolicy = Box<dyn Fn(&SpawnRequest<'_>) -> Result<(), String>>;
 pub const POLICY_SLOT: &str = "exec.spawn-policy";
 
 /// Ask the host; `Ok(false)` after php's warning when it refused.
-fn permitted(ctx: &mut Ctx, req: &SpawnRequest<'_>) -> Result<bool, Unwind> {
+pub(crate) fn permitted(ctx: &mut Ctx, req: &SpawnRequest<'_>) -> Result<bool, Unwind> {
     let verdict = match ctx.ext.slots.get(POLICY_SLOT).and_then(|p| p.downcast_ref::<SpawnPolicy>()) {
         Some(policy) => policy(req),
         None => Ok(()),
@@ -68,7 +68,7 @@ fn permitted(ctx: &mut Ctx, req: &SpawnRequest<'_>) -> Result<bool, Unwind> {
 }
 
 /// `/bin/sh -c command`, as php runs a string.
-fn shell_argv(command: &[u8]) -> Vec<Vec<u8>> {
+pub(crate) fn shell_argv(command: &[u8]) -> Vec<Vec<u8>> {
     vec![b"/bin/sh".to_vec(), b"-c".to_vec(), command.to_vec()]
 }
 
@@ -77,7 +77,7 @@ fn os(bytes: &[u8]) -> std::ffi::OsString {
     std::ffi::OsString::from_vec(bytes.to_vec())
 }
 
-fn command_for(argv: &[Vec<u8>]) -> Command {
+pub(crate) fn command_for(argv: &[Vec<u8>]) -> Command {
     let mut c = Command::new(os(&argv[0]));
     c.args(argv[1..].iter().map(|a| os(a)));
     c

@@ -141,7 +141,7 @@ const STAT_KEYS: [&str; 13] = [
 
 /// php's 26-entry stat array: the thirteen values first under their numeric
 /// keys, then again under their names.
-fn stat_array(vals: &[i64; 13]) -> Array {
+pub(crate) fn stat_array(vals: &[i64; 13]) -> Array {
     let mut a = Array::new();
     for v in vals {
         a.push(Value::Int(*v));
@@ -184,6 +184,10 @@ fn stat_values(md: &fs::Metadata) -> [i64; 13] {
 
 /// `stat(string $filename): array|false`
 fn stat(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "stat", args)? {
+        return Ok(v);
+    }
     let p = arg_path(ctx, &args[0]);
     match cached_stat(ctx, &p) {
         Some(md) => Ok(Value::Array(stat_array(&stat_values(&md)))),
@@ -198,6 +202,10 @@ fn stat(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// bypasses the cache the way `is_link()` does; php capitalises this one
 /// message and no other.
 fn lstat(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "lstat", args)? {
+        return Ok(v);
+    }
     let p = arg_path(ctx, &args[0]);
     match fs::symlink_metadata(&p) {
         Ok(md) => Ok(Value::Array(stat_array(&stat_values(&md)))),
@@ -214,6 +222,10 @@ fn lstat(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `rdev`/`blksize`/`blocks` are `-1` and whose mode is `0100666`, or
 /// `0100444` when the handle cannot be written.
 fn fstat(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "fstat", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     let meta = stream_meta(ctx, &stream, "fstat")?;
     if meta.plainfile {
@@ -245,11 +257,19 @@ fn buffer_len(ctx: &mut Ctx, stream: &Value, eof: bool) -> Result<i64, Unwind> {
 
 /// `fileowner(string $filename): int|false`
 fn fileowner(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "fileowner", args)? {
+        return Ok(v);
+    }
     stat_field(ctx, args, "fileowner", 4)
 }
 
 /// `filegroup(string $filename): int|false`
 fn filegroup(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "filegroup", args)? {
+        return Ok(v);
+    }
     stat_field(ctx, args, "filegroup", 5)
 }
 
@@ -270,11 +290,19 @@ fn stat_field(ctx: &mut Ctx, args: &[Value], func: &str, field: usize) -> Native
 
 /// `chown(string $filename, string|int $user): bool`
 fn chown(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "chown", args)? {
+        return Ok(v);
+    }
     set_owner(ctx, args, true)
 }
 
 /// `chgrp(string $filename, string|int $group): bool`
 fn chgrp(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "chgrp", args)? {
+        return Ok(v);
+    }
     set_owner(ctx, args, false)
 }
 
@@ -957,6 +985,11 @@ fn stream_meta(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Meta, Unwind> {
     if let Some(e) = wrong {
         return Err(e);
     }
+    // A user wrapper's stream is described without asking it (php's
+    // functions that read through one never look at its metadata).
+    if crate::stream_wrappers::is_user_stream(v) {
+        return Ok(Meta { uri: String::new(), mode: "r+".into(), plainfile: false, buffered: true, eof: false });
+    }
     let meta = ctx.call_function(b"stream_get_meta_data", &[v.clone()])?;
     let Value::Array(a) = meta else {
         return Err(Unwind::error(format!(
@@ -1011,6 +1044,10 @@ fn flock(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         return Err(Unwind::value_error(
             "flock(): Argument #2 ($operation) must be one of LOCK_SH, LOCK_EX, or LOCK_UN",
         ));
+    }
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "flock", args)? {
+        return Ok(v);
     }
     // php clears `$would_block` before it tries, so a success leaves 0 behind
     // even when the variable held something else.
@@ -1073,6 +1110,10 @@ fn flock(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `fpassthru(resource $stream): int` — write what is left of the handle to
 /// output. The failure answer is `-1`, php's C return, not `false`.
 fn fpassthru(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "fpassthru", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     let meta = stream_meta(ctx, &stream, "fpassthru")?;
     if !meta.readable() {
@@ -1102,6 +1143,10 @@ fn fdatasync(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// kernel to put it on the disk. A handle with no file cannot be synced and
 /// php says so.
 fn sync_handle(ctx: &mut Ctx, args: &mut [Value], func: &str, metadata: bool) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, func, args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     let meta = stream_meta(ctx, &stream, func)?;
     if !meta.plainfile {
@@ -1440,6 +1485,10 @@ fn ftruncate(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         return Err(Unwind::value_error(
             "ftruncate(): Argument #2 ($size) must be greater than or equal to 0",
         ));
+    }
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "ftruncate", args)? {
+        return Ok(v);
     }
     let stream = args[0].clone();
     crate::file::with_stream_mut(ctx, &stream, "ftruncate", |s| {

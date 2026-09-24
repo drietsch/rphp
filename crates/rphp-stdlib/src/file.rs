@@ -511,6 +511,10 @@ const FILE_APPEND: i64 = 8;
 
 /// `file_get_contents(string $filename, ...): string|false`
 fn file_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "file_get_contents", args)? {
+        return Ok(v);
+    }
     // `php://input` is the request body, readable any number of times.
     if args[0].to_php_bytes().as_slice() == b"php://input" {
         let body = ctx.request_body.as_deref().map(<[u8]>::to_vec).unwrap_or_default();
@@ -550,6 +554,10 @@ fn file_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 ///
 /// Returns the **byte count**, not a bool.
 fn file_put_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "file_put_contents", args)? {
+        return Ok(v);
+    }
     // An array argument is concatenated, as php does for `file()` output.
     let data: Vec<u8> = match &*args[1].deref() {
         Value::Array(a) => {
@@ -649,7 +657,7 @@ fn put_filtered(ctx: &mut Ctx, h: Value, data: &Value, name: &[u8]) -> NativeRes
 
 /// Split file contents into php's `file()` lines: the newline stays on the
 /// line unless `FILE_IGNORE_NEW_LINES`.
-fn split_lines(data: &[u8], flags: i64) -> Vec<Vec<u8>> {
+pub(crate) fn split_lines(data: &[u8], flags: i64) -> Vec<Vec<u8>> {
     let keep_nl = flags & FILE_IGNORE_NEW_LINES == 0;
     let skip_empty = flags & FILE_SKIP_EMPTY_LINES != 0;
     let mut out = Vec::new();
@@ -678,6 +686,10 @@ fn split_lines(data: &[u8], flags: i64) -> Vec<Vec<u8>> {
 
 /// `file(string $filename, int $flags = 0, ...): array|false`
 fn file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "file", args)? {
+        return Ok(v);
+    }
     let flags = args.get(1).map_or(0, Value::to_int);
     let stdin = read_stdin(ctx, &args[0]).map(Some);
     if let Some(r) = stdin.map_or_else(|| read_filter_url(ctx, &args[0], "file"), |r| Ok(Some(r)))? {
@@ -734,6 +746,10 @@ fn file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `readfile(string $filename, ...): int|false` — write the file to output.
 fn readfile(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "readfile", args)? {
+        return Ok(v);
+    }
     let stdin = read_stdin(ctx, &args[0]).map(Some);
     if let Some(r) = stdin.map_or_else(|| read_filter_url(ctx, &args[0], "readfile"), |r| Ok(Some(r)))? {
         return Ok(match r {
@@ -779,6 +795,10 @@ fn readfile(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `unlink(string $filename, ...): bool`
 fn unlink(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "unlink", args)? {
+        return Ok(v);
+    }
     let p = arg_path(ctx, &args[0]);
     let r = fs::remove_file(&p);
     clear_stat_cache(ctx);
@@ -828,6 +848,10 @@ fn move_uploaded_file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `copy(string $from, string $to, ...): bool`
 fn copy(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::copy(ctx, args)? {
+        return Ok(v);
+    }
     let from = arg_path(ctx, &args[0]);
     let to = arg_path(ctx, &args[1]);
     let r = fs::copy(&from, &to);
@@ -847,6 +871,10 @@ fn copy(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `rename(string $from, string $to, ...): bool`
 fn rename(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::rename(ctx, args)? {
+        return Ok(v);
+    }
     let from = arg_path(ctx, &args[0]);
     let to = arg_path(ctx, &args[1]);
     let r = fs::rename(&from, &to);
@@ -1020,6 +1048,9 @@ pub(crate) fn register_constants(r: &mut rphp_runtime::Registry) {
 fn stream_arg(ctx: &mut Ctx, v: &Value, func: &str) -> Result<rphp_value::Resource, Unwind> {
     match &*v.deref() {
         Value::Resource(r) if r.kind() == "stream" => Ok(r.clone()),
+        Value::Resource(r) if r.is_closed() => Err(Unwind::type_error(format!(
+            "{func}(): Argument #1 ($stream) must be an open stream resource"
+        ))),
         other => {
             let _ = ctx;
             Err(Unwind::type_error(format!(
@@ -1050,6 +1081,10 @@ fn with_stream<R>(
 
 /// `fopen(string $filename, string $mode, ...): resource|false`
 fn fopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::path_op(ctx, "fopen", args)? {
+        return Ok(v);
+    }
     let name = args[0].to_php_bytes().to_vec();
     let mode = args[1].to_php_bytes().to_vec();
     let m = String::from_utf8_lossy(&mode).into_owned();
@@ -1284,6 +1319,18 @@ pub(crate) fn pipe_resource(ctx: &mut Ctx, file: fs::File, readable: bool) -> Va
     ctx.resources.add("stream", Box::new(stream))
 }
 
+/// A `popen()` stream (`stream_wrappers.rs`): a pipe under the mode the
+/// script gave, which php reports with no wrapper and no uri — the empty
+/// `uri` marks it for `stream_get_meta_data()`.
+pub(crate) fn popen_resource(ctx: &mut Ctx, file: fs::File, readable: bool, mode: &str) -> Value {
+    let v = pipe_resource(ctx, file, readable);
+    let _ = with_stream(ctx, &v, "popen", |s| {
+        s.mode = mode.into();
+        s.uri = "".into();
+    });
+    v
+}
+
 /// Whether the first argument names a url the http wrapper handles, and
 /// the url if so. The wrappers that read from the network are the only
 /// place a path is not a path.
@@ -1461,6 +1508,8 @@ fn read_filter_url(ctx: &mut Ctx, name: &Value, func: &str) -> Result<Option<Opt
 /// again after them.
 pub(crate) fn request_shutdown(it: &mut rphp_runtime::Interp) {
     let mut ctx = Ctx(it);
+    // User wrappers' streams and `popen()` children first.
+    crate::stream_wrappers::request_shutdown(&mut ctx);
     let open: Vec<Value> = ctx
         .resources
         .iter()
@@ -1743,6 +1792,10 @@ fn flush_stream(s: &Stream) -> Option<std::path::PathBuf> {
 
 /// `fclose(resource $stream): bool`
 fn fclose(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "fclose", args)? {
+        return Ok(v);
+    }
     // A filter callback's own stream stays open until the callback is done.
     if with_stream(ctx, &args[0].clone(), "fclose", |s| s.fstate.busy)? {
         ctx.warn("fclose(): cannot close the provided stream, as it must not be manually closed")?;
@@ -1775,6 +1828,10 @@ fn fclose(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `fwrite(resource $stream, string $data, ?int $length = null): int|false`
 fn fwrite(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "fwrite", args)? {
+        return Ok(v);
+    }
     let mut data = args[1].to_php_bytes().to_vec();
     if let Some(len) = args.get(2).filter(|v| !matches!(v, Value::Null)).map(Value::to_int) {
         data.truncate(len.max(0) as usize);
@@ -1955,6 +2012,10 @@ fn pipe_read(ctx: &mut Ctx, v: &Value, func: &str, how: PipeRead) -> Result<Opti
 }
 
 fn fread(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "fread", args)? {
+        return Ok(v);
+    }
     let len = args[1].to_int().max(0) as usize;
     let stream = args[0].clone();
     if read_denied(ctx, &stream, "fread")? {
@@ -1982,6 +2043,10 @@ fn fread(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `fgets(resource $stream, ?int $length = null): string|false` — a line
 /// *including* its newline, `false` at end of stream.
 fn fgets(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "fgets", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     if read_denied(ctx, &stream, "fgets")? {
         return Ok(Value::Bool(false));
@@ -2017,6 +2082,10 @@ fn fgets(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// newline — is *not* part of what comes back. A length of `0` means php's
 /// default chunk. `false` only when there was nothing left at all.
 fn stream_get_line(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "stream_get_line", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     let max = args[1].to_int();
     if max < 0 {
@@ -2083,6 +2152,10 @@ fn stream_get_line(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `fgetc(resource $stream): string|false`
 fn fgetc(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "fgetc", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     if read_denied(ctx, &stream, "fgetc")? {
         return Ok(Value::Bool(false));
@@ -2105,6 +2178,10 @@ fn fgetc(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `feof(resource $stream): bool`
 fn feof(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "feof", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     with_stream(ctx, &stream, "feof", |s| {
         // Behind a read chain it is the end once the chain has had its last
@@ -2131,6 +2208,10 @@ fn feof(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `ftell(resource $stream): int|false`
 fn ftell(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "ftell", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     with_stream(ctx, &stream, "ftell", |s| {
         if s.pipe.is_none() && s.fstate.view_active(!s.read_filters.is_empty()) {
@@ -2162,6 +2243,10 @@ fn seek_filtered(ctx: &mut Ctx, stream: &Value, func: &str, offset: i64, whence:
 
 /// `fseek(resource $stream, int $offset, int $whence = SEEK_SET): int`
 fn fseek(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "fseek", args)? {
+        return Ok(v);
+    }
     let offset = args[1].to_int();
     let whence = args.get(2).map_or(0, Value::to_int);
     let stream = args[0].clone();
@@ -2174,6 +2259,10 @@ fn fseek(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `rewind(resource $stream): bool`
 fn rewind(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "rewind", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     seek_filtered(ctx, &stream, "rewind", 0, 0)?;
     Ok(Value::Bool(true))
@@ -2181,6 +2270,10 @@ fn rewind(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `fflush(resource $stream): bool`
 fn fflush(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "fflush", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     crate::filters::flush_writes(ctx, &stream, "fflush", crate::filters::Flush::Inc, stream.clone())?;
     crate::filters::rethrow(ctx)?;
@@ -2203,6 +2296,10 @@ fn fflush(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 ///
 /// Reads from the **current position** unless `$offset` is given.
 fn stream_get_contents(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "stream_get_contents", args)? {
+        return Ok(v);
+    }
     get_contents_as(ctx, args, "stream_get_contents")
 }
 
@@ -2251,6 +2348,10 @@ fn get_contents_as(ctx: &mut Ctx, args: &mut [Value], func: &str) -> NativeResul
 /// `PHP`/`MEMORY`, `php://temp` `PHP`/`TEMP`, and the three output handles
 /// `PHP`/`STDIO` (and are not seekable).
 fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "stream_get_meta_data", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     with_stream(ctx, &stream, "stream_get_meta_data", |s| {
         // A socket's metadata is php's *without* a `wrapper_type`: a
@@ -2328,7 +2429,11 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
         set("eof", Value::Bool(s.eof));
         // A `php://filter` stream is the php wrapper's, under its own url.
         let wrapper = if s.fstate.url.is_some() { "PHP" } else { wrapper };
-        set("wrapper_type", Value::string(wrapper.as_bytes()));
+        // A `popen()` pipe (the empty uri) has no wrapper and no uri.
+        let popen = s.pipe.is_some() && s.uri.is_empty();
+        if !popen {
+            set("wrapper_type", Value::string(wrapper.as_bytes()));
+        }
         set("stream_type", Value::string(kind.as_bytes()));
         set("mode", Value::string(s.mode.as_bytes()));
         set(
@@ -2336,7 +2441,9 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             Value::Int(s.fill_end.saturating_sub(s.pos) as i64),
         );
         set("seekable", Value::Bool(seekable));
-        set("uri", Value::string(s.fstate.url.as_deref().unwrap_or(&s.uri).as_bytes()));
+        if !popen {
+            set("uri", Value::string(s.fstate.url.as_deref().unwrap_or(&s.uri).as_bytes()));
+        }
         Value::Array(out)
     })
 }
@@ -2345,6 +2452,10 @@ fn stream_get_meta_data(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// rphp has is a buffer or an ordinary file, so it is always blocking and the
 /// call only has to report success.
 fn stream_set_blocking(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "stream_set_blocking", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     let blocking = args[1].to_bool();
     with_stream(ctx, &stream, "stream_set_blocking", |s| match s.pipe.as_mut() {
@@ -2373,11 +2484,21 @@ fn stream_select(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     // ready flags for the rest.
     let mut sets: [Vec<(ArrayKey, Value, bool)>; 2] = [Vec::new(), Vec::new()];
     let mut fds: Vec<(usize, usize, std::os::fd::OwnedFd)> = Vec::new();
+    let mut uncastable = 0;
     for (which, arg) in args.iter().take(2).enumerate() {
         let Value::Array(a) = &*arg.deref() else { continue };
         for (k, v) in a.iter() {
             let v = v.deref().into_owned();
-            match conn_dup(ctx, &v, "stream_select")? {
+            // A user stream is selected through what its `stream_cast()` names.
+            let polled = match crate::stream_wrappers::select_target(ctx, &v, "stream_select")? {
+                None => v.clone(),
+                Some(Some(t)) => t,
+                Some(None) => {
+                    uncastable += 1;
+                    continue;
+                }
+            };
+            match conn_dup(ctx, &polled, "stream_select")? {
                 Some(f) => {
                     fds.push((which, sets[which].len(), f));
                     sets[which].push((k.clone(), v, false));
@@ -2385,6 +2506,9 @@ fn stream_select(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
                 None => sets[which].push((k.clone(), v, true)),
             }
         }
+    }
+    if uncastable > 0 && sets.iter().all(Vec::is_empty) {
+        return Err(Unwind::value_error("No stream arrays were passed"));
     }
     let mut ready = sets.iter().map(|s| s.iter().filter(|e| e.2).count()).sum::<usize>();
     if !fds.is_empty() {
@@ -2452,6 +2576,10 @@ fn stream_set_chunk_size(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
             "stream_set_chunk_size(): Argument #2 ($size) is too large",
         ));
     }
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "stream_set_chunk_size", args)? {
+        return Ok(v);
+    }
     with_stream(ctx, &stream, "stream_set_chunk_size", |s| {
         Value::Int(std::mem::replace(&mut s.chunk_size, size))
     })
@@ -2463,6 +2591,10 @@ fn stream_set_chunk_size(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// which only the process's standard handles do; memory streams answer
 /// `-1` too.
 fn stream_set_write_buffer(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "stream_set_write_buffer", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     let sink = with_stream(ctx, &stream, "stream_set_write_buffer", |s| s.sink)?;
     Ok(Value::Int(match sink {
@@ -2474,6 +2606,10 @@ fn stream_set_write_buffer(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `stream_set_read_buffer(resource $stream, int $size): int` — the read
 /// buffer is the stream layer's own, so every stream answers `0`.
 fn stream_set_read_buffer(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "stream_set_read_buffer", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     with_stream(ctx, &stream, "stream_set_read_buffer", |_| Value::Int(0))
 }
@@ -2481,6 +2617,10 @@ fn stream_set_read_buffer(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// `stream_isatty(resource $stream): bool` — true only for the process's own
 /// standard handles, and only when they really are a terminal.
 fn stream_isatty(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "stream_isatty", args)? {
+        return Ok(v);
+    }
     let stream = args[0].clone();
     let sink = with_stream(ctx, &stream, "stream_isatty", |s| s.sink)?;
     Ok(Value::Bool(match sink {
@@ -2497,6 +2637,15 @@ fn stream_isatty(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// actually there. An open handle is local in the engine by construction —
 /// there is no remote wrapper to open one with.
 fn stream_is_local(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "stream_is_local", args)? {
+        return Ok(v);
+    }
+    if !matches!(&*args[0].deref(), Value::Resource(_)) {
+        if let Some(v) = crate::stream_wrappers::path_op(ctx, "stream_is_local", args)? {
+            return Ok(v);
+        }
+    }
     if matches!(&*args[0].deref(), Value::Resource(_)) {
         return with_stream(ctx, &args[0].clone(), "stream_is_local", |s| Value::Bool(s.gz.is_none()));
     }
@@ -2523,6 +2672,10 @@ fn stream_is_local(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 
 /// `stream_copy_to_stream(resource $from, resource $to, ?int $length = null, int $offset = 0): int|false`
 fn stream_copy_to_stream(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A registered user wrapper takes the url.
+    if let Some(v) = crate::stream_wrappers::copy_streams(ctx, args)? {
+        return Ok(v);
+    }
     let length = args
         .get(2)
         .map(|v| v.deref().into_owned())

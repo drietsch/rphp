@@ -76,7 +76,7 @@ const TRANSPORTS: &[&str] = &[
 /// lists them. php's own list is longer (`https`, `ftp`, `phar`, `zip`,
 /// `compress.*`); naming one here that `fopen()` cannot open would be worse
 /// than leaving it out, since the whole point of the call is a feature test.
-const WRAPPERS: &[&str] = &["php", "file", "glob", "data", "http", "https"];
+pub(crate) const WRAPPERS: &[&str] = &["php", "file", "glob", "data", "http", "https"];
 
 /// Which transport an address named, and what it addresses.
 enum Target {
@@ -942,6 +942,10 @@ fn fsockopen(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 /// zero means "do not wait", which is a very short timeout rather than no
 /// timeout at all — `SO_RCVTIMEO` of zero would mean "block forever".
 fn stream_set_timeout(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    // A user wrapper's stream answers for itself.
+    if let Some(v) = crate::stream_wrappers::handle_op(ctx, "stream_set_timeout", args)? {
+        return Ok(v);
+    }
     let sock = args[0].clone();
     let secs = args[1].to_int();
     let usecs = args.get(2).map_or(0, Value::to_int);
@@ -991,12 +995,9 @@ fn stream_get_transports(_ctx: &mut Ctx, _args: &mut [Value]) -> NativeResult {
 }
 
 /// `stream_get_wrappers(): array`
-fn stream_get_wrappers(_ctx: &mut Ctx, _args: &mut [Value]) -> NativeResult {
-    let mut out = Array::new();
-    for (i, w) in WRAPPERS.iter().enumerate() {
-        out.set(ArrayKey::Int(i as i64), Value::string(w.as_bytes()));
-    }
-    Ok(Value::Array(out))
+fn stream_get_wrappers(ctx: &mut Ctx, _args: &mut [Value]) -> NativeResult {
+    // The table `stream_wrapper_register()` and friends change.
+    Ok(Value::Array(crate::stream_wrappers::wrapper_names(ctx)))
 }
 
 // ---- host lookups ------------------------------------------------------------------

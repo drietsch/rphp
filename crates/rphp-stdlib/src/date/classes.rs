@@ -74,7 +74,7 @@ use super::format;
 use super::tz::Tz;
 
 mod dt;
-mod fromformat;
+pub(super) mod fromformat;
 mod interval;
 mod period;
 mod procedural;
@@ -219,9 +219,11 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-/// Record a parse's diagnostics for `getLastErrors()`.
+/// Record a parse's diagnostics for `getLastErrors()`. A parse without any
+/// is recorded as none at all: php 8.2+ answers `false` after it.
 pub(crate) fn set_last_errors(warnings: Vec<(usize, String)>, errors: Vec<(usize, String)>) {
-    LAST_ERRORS.with(|s| *s.borrow_mut() = Some((warnings, errors)));
+    let v = (!warnings.is_empty() || !errors.is_empty()).then_some((warnings, errors));
+    LAST_ERRORS.with(|s| *s.borrow_mut() = v);
 }
 
 /// `DateTime::getLastErrors(): array|false`

@@ -107,18 +107,22 @@
     (clone
       (var $a)))
   (expr-stmt
-    (clone
-      (var $a)
-      (with
+    (call
+      (name clone kind=u)
+      (arg
+        (var $a))
+      (arg
         (array syntax=short
           (item
             (key
               (str "x"))
             (int 1))))))
   (expr-stmt
-    (clone
-      (var $a)
-      (with
+    (call
+      (name clone kind=u)
+      (arg name=object
+        (var $a))
+      (arg name=withProperties
         (array syntax=short))))
   (expr-stmt
     (binary pipe

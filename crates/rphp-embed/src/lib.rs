@@ -422,19 +422,30 @@ impl Engine {
                 Value::string(v.to_string_lossy().as_bytes()),
             );
         }
-        let script = cfg.argv.first().cloned().unwrap_or_default();
-        for key in [
-            "PHP_SELF",
-            "SCRIPT_NAME",
-            "SCRIPT_FILENAME",
-            "PATH_TRANSLATED",
-        ] {
-            server.set(
-                ArrayKey::str(key.as_bytes()),
-                Value::string(script.as_bytes()),
-            );
+        // `filter_input(INPUT_ENV, …)` sees the environment as the request
+        // started (when `variables_order` imports it), whatever `putenv()`
+        // does later.
+        let order = it.ini.get("variables_order").unwrap_or("EGPCS").to_ascii_uppercase();
+        if order.contains('E') && server.len() > 0 {
+            it.filter_inputs.env = Some(server.clone());
         }
-        server.set(ArrayKey::str(b"DOCUMENT_ROOT"), Value::string(b""));
+        let script = cfg.argv.first().cloned().unwrap_or_default();
+        // `-r` code has a name but no file.
+        let file = if script == "Standard input code" { "" } else { script.as_str() };
+        let mut registered = Array::new();
+        for (key, v) in [
+            ("PHP_SELF", script.as_str()),
+            ("SCRIPT_NAME", script.as_str()),
+            ("SCRIPT_FILENAME", file),
+            ("PATH_TRANSLATED", file),
+            ("DOCUMENT_ROOT", ""),
+        ] {
+            server.set(ArrayKey::str(key.as_bytes()), Value::string(v.as_bytes()));
+            // These five are what the CLI SAPI registers (and `INPUT_SERVER`
+            // holds); the environment and the rest are added unfiltered.
+            registered.set(ArrayKey::str(key.as_bytes()), Value::string(v.as_bytes()));
+        }
+        it.filter_inputs.server = Some(registered);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs_f64())

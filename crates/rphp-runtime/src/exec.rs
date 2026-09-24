@@ -3385,7 +3385,7 @@ impl Interp {
             return Ok(false);
         };
         let canonical = canonical_path(&resolved);
-        if once && self.included.contains(&canonical) {
+        if once && (self.included.contains(&canonical) || self.main_script().as_ref() == Some(&canonical)) {
             self.stack[dst_abs] = Value::Bool(true);
             return Ok(false);
         }
@@ -3396,7 +3396,7 @@ impl Interp {
             let cached = hook(self, &name);
             self.cached_unit_hook = Some(hook);
             if let Some(module) = cached {
-                self.included.insert(canonical);
+                self.note_included(canonical);
                 return self.enter_included_unit(module, dst_abs, kind);
             }
         }
@@ -3452,7 +3452,7 @@ impl Interp {
                 )));
             }
         };
-        self.included.insert(canonical);
+        self.note_included(canonical);
         self.enter_included_unit(module, dst_abs, kind)
     }
 
@@ -3488,7 +3488,7 @@ impl Interp {
     /// An absolute path is not `stat`ed here: the unit cache answers for a
     /// file it holds without a syscall (opcache's `revalidate_freq`), and
     /// the read reports a missing file the same way.
-    fn resolve_include_path(&self, path: &[u8]) -> Option<std::path::PathBuf> {
+    pub fn resolve_include_path(&self, path: &[u8]) -> Option<std::path::PathBuf> {
         let p = std::path::PathBuf::from(String::from_utf8_lossy(path).into_owned());
         if p.is_absolute() || path.starts_with(b"./") || path.starts_with(b"../") {
             return Some(if p.is_absolute() { p } else { self.cwd.join(p) });
@@ -3582,6 +3582,36 @@ thread_local! {
     /// system calls.
     static REALPATHS: std::cell::RefCell<hashbrown::HashMap<std::path::PathBuf, (std::path::PathBuf, std::time::Instant)>> =
         std::cell::RefCell::new(hashbrown::HashMap::new());
+}
+
+impl Interp {
+    /// Record a file `include`/`require` loaded (first time only).
+    fn note_included(&mut self, canonical: std::path::PathBuf) {
+        if self.included.insert(canonical.clone()) {
+            self.included_order.push(canonical);
+        }
+    }
+
+    /// The entry script's canonical path — `None` for `-r` code, a prelude
+    /// or a unit that was not compiled from a file.
+    fn main_script(&self) -> Option<std::path::PathBuf> {
+        let file = &self.main_func()?.unit.file;
+        let p = std::path::Path::new(&**file);
+        (p.is_absolute() && p.is_file()).then(|| canonical_path(p))
+    }
+
+    /// `get_included_files()`: the entry script first, then every included
+    /// file in the order it was first loaded.
+    pub fn included_files(&self) -> Vec<String> {
+        let main = self.main_script();
+        let mut out: Vec<String> = main.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        for p in &self.included_order {
+            if main.as_ref() != Some(p) {
+                out.push(p.to_string_lossy().into_owned());
+            }
+        }
+        out
+    }
 }
 
 /// The canonical form of `path` through the thread's realpath cache (the

@@ -147,6 +147,18 @@ pub const MAX_REENTRY_DEPTH: usize = 512;
 /// such limit — it runs out of memory instead; cataloged divergence).
 pub const MAX_FRAMES: usize = 1_000_000;
 
+/// The request's original input arrays, one per `INPUT_*` source. `None`
+/// is an array php never initialized (nothing was registered into it),
+/// which `filter_input_array()` reports as `null`.
+#[derive(Clone, Debug, Default)]
+pub struct FilterInputs {
+    pub get: Option<rphp_value::Array>,
+    pub post: Option<rphp_value::Array>,
+    pub cookie: Option<rphp_value::Array>,
+    pub server: Option<rphp_value::Array>,
+    pub env: Option<rphp_value::Array>,
+}
+
 /// The interpreter: registry, tables, output, diagnostics, the frame and
 /// register stacks, and the per-request bookkeeping the engine needs. Fields
 /// the stdlib reads and writes directly are public; the registry, the
@@ -198,8 +210,11 @@ pub struct Interp {
     pub(crate) stack: Vec<Value>,
     /// Native→PHP re-entries in progress.
     pub(crate) reentry_depth: usize,
-    /// Canonical paths of files included with `_once`.
+    /// Canonical paths of every file included so far (what `_once` checks).
     pub(crate) included: HashSet<PathBuf>,
+    /// The same paths in the order they were first included, for
+    /// `get_included_files()`.
+    pub(crate) included_order: Vec<PathBuf>,
     /// Parked generator bodies, indexed by the id in a `Generator` object's
     /// payload (E8).
     pub(crate) generators: Vec<crate::generator::GeneratorState>,
@@ -255,6 +270,9 @@ pub struct Interp {
     /// the FastCGI parameters, `FCGI_ROLE`), which `getenv()`, `putenv()`
     /// and `$_ENV` see in place of the process's; `None` = the process's.
     pub request_env: Option<Vec<(String, String)>>,
+    /// The input arrays as the SAPI registered them, before any script
+    /// could change them (`filter_input()`'s `INPUT_*`).
+    pub filter_inputs: FilterInputs,
     /// The raw request body (`php://input`); `None` outside a web SAPI.
     pub request_body: Option<std::sync::Arc<[u8]>>,
     /// Where `log_errors` entries go (`PHP Warning:  …`): stderr when
@@ -460,6 +478,7 @@ impl Interp {
             profile_nested: std::time::Duration::ZERO,
             reentry_depth: 0,
             included: HashSet::new(),
+            included_order: Vec::new(),
             generators: Vec::new(),
             fibers: Vec::new(),
             fiber_stack: Vec::new(),
@@ -480,6 +499,7 @@ impl Interp {
             head: crate::output::SharedHead::default(),
             request_headers: Vec::new(),
             request_env: None,
+            filter_inputs: FilterInputs::default(),
             request_body: None,
             error_log: None,
             request_time: None,

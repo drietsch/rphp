@@ -45,6 +45,7 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("date_timestamp_get", 1, Some(1), date_timestamp_get),
     nf!("timezone_open", 1, Some(1), timezone_open),
     nf!("timezone_name_get", 1, Some(1), timezone_name_get),
+    nf!("timezone_location_get", 1, Some(1), timezone_location_get),
     nf!(
         "timezone_name_from_abbr",
         1,
@@ -255,6 +256,12 @@ fn timezone_open(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
 fn timezone_name_get(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
     let o = recv(ctx, "timezone_name_get", "DateTimeZone", &args[0])?;
     zone::get_name(ctx, Some(&o), &mut [])
+}
+
+/// `timezone_location_get(DateTimeZone $object): array|false`
+fn timezone_location_get(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let o = recv(ctx, "timezone_location_get", "DateTimeZone", &args[0])?;
+    zone::get_location(ctx, Some(&o), &mut [])
 }
 
 /// `timezone_name_from_abbr(string $abbr, int $utcOffset = -1, int $isDST = -1): string|false`

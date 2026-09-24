@@ -72,8 +72,8 @@ pub use generator::register_generator_class;
 pub use ini::{parse_bool, IniEntry, IniTable, CORE_DEFAULTS, SERVER_DEFAULTS};
 pub use interrupt::{Deadline, Interrupt};
 pub use interp::{
-    CompileFailure, CompileHook, ExtState, IncludeOpen, IncludeStreamHook, Interp, SapiKind, MAX_FRAMES,
-    MAX_REENTRY_DEPTH,
+    CompileFailure, CompileHook, ExtState, FilterInputs, IncludeOpen, IncludeStreamHook, Interp,
+    SapiKind, MAX_FRAMES, MAX_REENTRY_DEPTH,
 };
 pub use native_args::{native_arginfo, native_default_is_constant, native_return_type, ParamRow};
 pub use ops::{str_increment, value_name};

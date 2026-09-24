@@ -60,6 +60,13 @@ pub(crate) static FUNCTIONS: &[NativeFn] = &[
     nf!("hash_hmac_file", 3, Some(4), hash_hmac_file),
     nf!("hash_pbkdf2", 4, Some(6), hash_pbkdf2),
     nf!("hash_hkdf", 2, Some(5), hash_hkdf),
+    nf!("hash_update_file", 2, Some(3), hash_update_file),
+    nf!("hash_update_stream", 2, Some(3), hash_update_stream),
+    nf!("mhash", 2, Some(3), mhash),
+    nf!("mhash_count", 0, Some(0), mhash_count),
+    nf!("mhash_get_block_size", 1, Some(1), mhash_get_block_size),
+    nf!("mhash_get_hash_name", 1, Some(1), mhash_get_hash_name),
+    nf!("mhash_keygen_s2k", 4, Some(4), mhash_keygen_s2k),
 ];
 
 /// The byte string an argument coerces to (the `(string)` cast), so any scalar
@@ -382,6 +389,13 @@ pub(crate) fn register_classes(r: &mut Registry) {
 /// php's `HASH_*` flags.
 pub(crate) fn register_constants(r: &mut Registry) {
     r.constant("HASH_HMAC", Value::Int(HASH_HMAC));
+    for (id, name, _, _) in MHASH_ALGOS {
+        r.deprecated_constant(
+            &format!("MHASH_{name}"),
+            Value::Int(*id),
+            " since 8.5, as the mhash*() functions were deprecated",
+        );
+    }
 }
 
 /// `HASH_HMAC`.
@@ -509,6 +523,195 @@ fn read_file(ctx: &mut Ctx, v: &Value, func: &str) -> Result<Option<Vec<u8>>, Un
             Ok(None)
         }
     }
+}
+
+// ---- incremental input from files and streams --------------------------------
+
+/// `hash_update_file(HashContext $context, string $filename, ?resource $stream_context = null): bool`
+pub(crate) fn hash_update_file(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let o = context_arg(ctx, &args[0], "hash_update_file")?;
+    with_context(&o, "hash_update_file", |_| ())?;
+    let Some(data) = read_file(ctx, &args[1], "hash_update_file")? else {
+        return Ok(Value::Bool(false));
+    };
+    with_context(&o, "hash_update_file", |c| {
+        c.state.as_mut().expect("live").update(&data);
+        Value::Bool(true)
+    })
+}
+
+/// `hash_update_stream(HashContext $context, resource $stream, int $length = -1): int`
+/// — how many bytes it fed in; a negative length reads to the end.
+pub(crate) fn hash_update_stream(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    let o = context_arg(ctx, &args[0], "hash_update_stream")?;
+    with_context(&o, "hash_update_stream", |_| ())?;
+    let stream = args[1].deref().into_owned();
+    if !matches!(stream, Value::Resource(_)) {
+        return Err(Unwind::type_error(format!(
+            "hash_update_stream(): Argument #2 ($stream) must be of type resource, {} given",
+            rphp_runtime::value_name(&stream)
+        )));
+    }
+    let length = args.get(2).map_or(-1, |v| v.deref().to_int());
+    if length == 0 {
+        return Ok(Value::Int(0));
+    }
+    let max = if length < 0 { Value::Null } else { Value::Int(length) };
+    let data = ctx.call_function(b"stream_get_contents", &[stream, max])?;
+    let data = match data {
+        Value::Str(s) => s.as_bytes().to_vec(),
+        _ => Vec::new(),
+    };
+    with_context(&o, "hash_update_stream", |c| {
+        c.state.as_mut().expect("live").update(&data);
+        Value::Int(data.len() as i64)
+    })
+}
+
+// ---- mhash (deprecated since 8.1) ----------------------------------------------
+
+/// php's `mhash_to_hash` table: the `MHASH_*` number, the name
+/// `mhash_get_hash_name()` answers, the `hash()` algorithm behind it and
+/// its digest size (what `mhash_get_block_size()` really reports). The
+/// holes (4, 6, 26) are ids libmhash had and php never mapped.
+const MHASH_ALGOS: &[(i64, &str, &str, usize)] = &[
+    (0, "CRC32", "crc32", 4),
+    (1, "MD5", "md5", 16),
+    (2, "SHA1", "sha1", 20),
+    (3, "HAVAL256", "haval256,3", 32),
+    (5, "RIPEMD160", "ripemd160", 20),
+    (7, "TIGER", "tiger192,3", 24),
+    (8, "GOST", "gost", 32),
+    (9, "CRC32B", "crc32b", 4),
+    (10, "HAVAL224", "haval224,3", 28),
+    (11, "HAVAL192", "haval192,3", 24),
+    (12, "HAVAL160", "haval160,3", 20),
+    (13, "HAVAL128", "haval128,3", 16),
+    (14, "TIGER128", "tiger128,3", 16),
+    (15, "TIGER160", "tiger160,3", 20),
+    (16, "MD4", "md4", 16),
+    (17, "SHA256", "sha256", 32),
+    (18, "ADLER32", "adler32", 4),
+    (19, "SHA224", "sha224", 28),
+    (20, "SHA512", "sha512", 64),
+    (21, "SHA384", "sha384", 48),
+    (22, "WHIRLPOOL", "whirlpool", 64),
+    (23, "RIPEMD128", "ripemd128", 16),
+    (24, "RIPEMD256", "ripemd256", 32),
+    (25, "RIPEMD320", "ripemd320", 40),
+    (27, "SNEFRU256", "snefru256", 32),
+    (28, "MD2", "md2", 16),
+    (29, "FNV132", "fnv132", 4),
+    (30, "FNV1A32", "fnv1a32", 4),
+    (31, "FNV164", "fnv164", 8),
+    (32, "FNV1A64", "fnv1a64", 8),
+    (33, "JOAAT", "joaat", 4),
+    (34, "CRC32C", "crc32c", 4),
+    (35, "MURMUR3A", "murmur3a", 4),
+    (36, "MURMUR3C", "murmur3c", 16),
+    (37, "MURMUR3F", "murmur3f", 16),
+    (38, "XXH32", "xxh32", 4),
+    (39, "XXH64", "xxh64", 8),
+    (40, "XXH3", "xxh3", 8),
+    (41, "XXH128", "xxh128", 16),
+];
+
+/// The table row for an `MHASH_*` number.
+fn mhash_entry(id: i64) -> Option<&'static (i64, &'static str, &'static str, usize)> {
+    MHASH_ALGOS.iter().find(|e| e.0 == id)
+}
+
+/// The digest state behind an `MHASH_*` number; `Ok(None)` for a number
+/// php does not map. An algorithm php has and rphp does not (tiger, gost,
+/// snefru, haval, murmur3) is an error rather than a made-up digest.
+fn mhash_state(func: &str, id: i64) -> Result<Option<(&'static str, State)>, Unwind> {
+    let Some(&(_, _, algo, _)) = mhash_entry(id) else {
+        return Ok(None);
+    };
+    match State::new(algo.as_bytes()) {
+        Some(st) => Ok(Some((algo, st))),
+        None => Err(Unwind::error(format!(
+            "{func}(): the {algo} algorithm is not available in rphp"
+        ))),
+    }
+}
+
+/// `mhash(int $algo, string $data, ?string $key = null): string|false` —
+/// the raw digest, or an HMAC with a key.
+pub(crate) fn mhash(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctx.deprecated("Function mhash() is deprecated since 8.1")?;
+    let id = args[0].deref().to_int();
+    let data = bytes(&args[1]);
+    let key = args.get(2).filter(|v| !matches!(&*v.deref(), Value::Null)).map(bytes);
+    let Some((algo, mut st)) = mhash_state("mhash", id)? else {
+        return Ok(Value::Bool(false));
+    };
+    let raw = match key {
+        Some(key) => hmac(ctx, algo.as_bytes(), &key, &data, "mhash")?,
+        None => {
+            st.update(&data);
+            st.finish()
+        }
+    };
+    Ok(Value::Str(Str::from_vec(raw)))
+}
+
+/// `mhash_count(): int` — the highest `MHASH_*` number.
+pub(crate) fn mhash_count(ctx: &mut Ctx, _: &mut [Value]) -> NativeResult {
+    ctx.deprecated("Function mhash_count() is deprecated since 8.1")?;
+    Ok(Value::Int(MHASH_ALGOS.last().map_or(0, |e| e.0)))
+}
+
+/// `mhash_get_block_size(int $algo): int|false` — php answers the digest
+/// size here, not the block size.
+pub(crate) fn mhash_get_block_size(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctx.deprecated("Function mhash_get_block_size() is deprecated since 8.1")?;
+    Ok(match mhash_entry(args[0].deref().to_int()) {
+        Some(e) => Value::Int(e.3 as i64),
+        None => Value::Bool(false),
+    })
+}
+
+/// `mhash_get_hash_name(int $algo): string|false`
+pub(crate) fn mhash_get_hash_name(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctx.deprecated("Function mhash_get_hash_name() is deprecated since 8.1")?;
+    Ok(match mhash_entry(args[0].deref().to_int()) {
+        Some(e) => Value::string(e.1.as_bytes()),
+        None => Value::Bool(false),
+    })
+}
+
+/// `mhash_keygen_s2k(int $algo, string $password, string $salt, int $length): string|false`
+/// — OpenPGP's salted S2K: the salt padded or cut to eight bytes, and one
+/// digest per output block, each prefixed with one more NUL than the last.
+pub(crate) fn mhash_keygen_s2k(ctx: &mut Ctx, args: &mut [Value]) -> NativeResult {
+    ctx.deprecated("Function mhash_keygen_s2k() is deprecated since 8.1")?;
+    let id = args[0].deref().to_int();
+    let password = bytes(&args[1]);
+    let mut salt = bytes(&args[2]);
+    let length = args[3].deref().to_int() as i32;
+    if length <= 0 {
+        return Err(Unwind::value_error(
+            "mhash_keygen_s2k(): Argument #4 ($length) must be a greater than 0",
+        ));
+    }
+    salt.resize(8, 0);
+    let Some((algo, _)) = mhash_state("mhash_keygen_s2k", id)? else {
+        return Ok(Value::Bool(false));
+    };
+    let length = length as usize;
+    let mut key = Vec::with_capacity(length);
+    let mut i = 0;
+    while key.len() < length {
+        let mut st = State::new(algo.as_bytes()).expect("checked above");
+        st.update(&vec![0u8; i]);
+        st.update(&salt);
+        st.update(&password);
+        key.extend_from_slice(&st.finish());
+        i += 1;
+    }
+    key.truncate(length);
+    Ok(Value::Str(Str::from_vec(key)))
 }
 
 // ---- helpers ----------------------------------------------------------------

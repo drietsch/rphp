@@ -154,7 +154,7 @@ pub use date::bridge as date_bridge;
 pub use exec::{SpawnPolicy, SpawnRequest, POLICY_SLOT as SPAWN_POLICY_SLOT};
 pub use file::{stream_fd, StreamFd};
 pub use url::{parse_query, register_variable};
-pub use weak::new_internal_iterator;
+pub use weak::{new_internal_iterator, new_live_internal_iterator};
 
 pub fn register(r: &mut Registry) {
     for m in MODULES {

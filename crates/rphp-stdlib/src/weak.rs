@@ -163,7 +163,14 @@ impl WeakMapState {
 struct InternalIterState {
     items: Vec<(Value, Value)>,
     pos: usize,
+    /// A live producer instead of a snapshot (`IntlBreakIterator`):
+    /// called with `true` to rewind, `false` to step; it returns the new
+    /// `(key, value)`, `None` once exhausted.
+    live: Option<LiveStep>,
 }
+
+/// The producer behind a live `InternalIterator`.
+pub type LiveStep = Box<dyn FnMut(bool) -> Option<(Value, Value)>>;
 
 /// Run `f` on the instance's payload, installing `T::default()` first when
 /// there is none (an instance built by [`Interp::instantiate`], e.g. by
@@ -404,8 +411,25 @@ pub fn new_internal_iterator(ctx: &mut Ctx, items: Vec<(Value, Value)>) -> Objec
         .class_by_name(b"InternalIterator")
         .expect("InternalIterator is registered");
     let obj = ctx.instantiate(cid);
-    obj.set_payload(Payload::Native(Box::new(InternalIterState { items, pos: 0 })));
+    obj.set_payload(Payload::Native(Box::new(InternalIterState { items, pos: 0, live: None })));
     obj
+}
+
+/// Build an `InternalIterator` whose elements `step` produces as the loop
+/// goes (php's `zend_create_internal_iterator_zval` over an object's own
+/// `get_iterator`).
+pub fn new_live_internal_iterator(ctx: &mut Ctx, step: LiveStep) -> Object {
+    let obj = new_internal_iterator(ctx, Vec::new());
+    let _ = obj.with_payload::<InternalIterState, _>(|s| s.live = Some(step));
+    obj
+}
+
+/// Step (or rewind) a live iterator; `false` when it is a snapshot.
+fn live_step(s: &mut InternalIterState, rewind: bool) -> bool {
+    let Some(f) = s.live.as_mut() else { return false };
+    s.items = f(rewind).into_iter().collect();
+    s.pos = 0;
+    true
 }
 
 /// `InternalIterator::__construct()` — private in php.
@@ -433,7 +457,11 @@ fn internal_iterator_key(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> Na
 
 fn internal_iterator_next(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let _ = o.with_payload::<InternalIterState, _>(|s| s.pos += 1);
+    let _ = o.with_payload::<InternalIterState, _>(|s| {
+        if !live_step(s, false) {
+            s.pos += 1;
+        }
+    });
     Ok(Value::Null)
 }
 
@@ -447,7 +475,11 @@ fn internal_iterator_valid(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> 
 
 fn internal_iterator_rewind(_: &mut Ctx, o: Option<&Object>, _: &mut [Value]) -> NativeResult {
     let o = this(o)?;
-    let _ = o.with_payload::<InternalIterState, _>(|s| s.pos = 0);
+    let _ = o.with_payload::<InternalIterState, _>(|s| {
+        if !live_step(s, true) {
+            s.pos = 0;
+        }
+    });
     Ok(Value::Null)
 }
 

@@ -1,0 +1,34 @@
+# Only intended for internal use
+# rphp: CLDR 48 source without its `:: fullwidth-halfwidth;` step, which
+# ICU 78 (the php oracle) does not apply either.
+# Make sure Han are normalized, including characters that contain them.
+# The first set in the filter is computed with http://unicode.org/cldr/utility/list-unicodeset.jsp?a=[:tonfkd:/XXX/:]-[:Ideographic:]-[:sc=Han:]
+# Where XXX is the resolved [:Ideographic:][:sc=Han:]. It needs updating with each Unicode release!
+:: [[、。々《-』〜・㆒-㆟㈠-㉇㊀-㊰㋀-㋋ ㍘-㍰㍻-㍿㏠-㏾🈐-🈒🈔-🈺🉀-🉈🉐🉑][:Ideographic:][:sc=Han:]] nfkc;
+｡ → '.';
+。→ '.';
+、→ ',';
+､→ ',';
+《→ '«';
+》→ '»';
+〈 → '‹';
+〉→ '›';
+「→ '‘';
+」→ '’';
+｢→ '‘';
+｣→ '’';
+『→ '“';
+』→ '”';
+・→ '‧';
+･ → '‧';
+々→ '⓶';
+〜→ '~';
+$terminalPunct = [\.\,\:\;\?\!．，：？！｡、；[:Pe:][:Pf:]];
+$initialPunct = [[:Ps:][:Pi:]];
+# add space between any Han or terminal punctuation and letters, and
+# between letters and Han or initial punct
+[[:Ideographic:] $terminalPunct] {} [:Letter:] → ' ' ;
+[:Letter:] [:Mark:]* {} [[:Ideographic:] $initialPunct] → ' ' ;
+# remove spacing between ideographs and other letters
+← [:Ideographic:] { ' ' } [:Letter:] ;
+← [:Letter:] [:Mark:]* { ' ' } [:Ideographic:] ;

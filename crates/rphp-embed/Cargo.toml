@@ -25,4 +25,5 @@ rphp-ext-intl.workspace = true
 rphp-ext-bcmath.workspace = true
 rphp-ext-xml.workspace = true
 rphp-ext-posix.workspace = true
+rphp-ext-openssl.workspace = true
 rphp-value.workspace = true

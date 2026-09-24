@@ -370,6 +370,7 @@ impl Engine {
         rphp_ext_bcmath::register(&mut Registry(&mut it));
         rphp_ext_xml::register(&mut Registry(&mut it));
         rphp_ext_posix::register(&mut Registry(&mut it));
+        rphp_ext_openssl::register(&mut Registry(&mut it));
         // `Generator` is the engine's own class but implements the stdlib's
         // `Iterator`, so it is registered after the extensions (E8).
         rphp_runtime::register_generator_class(&mut Registry(&mut it));

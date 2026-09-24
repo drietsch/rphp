@@ -1,0 +1,27 @@
+[package]
+name = "rphp-ext-openssl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rphp-runtime.workspace = true
+rphp-value.workspace = true
+rphp-ext-api.workspace = true
+spki.workspace = true
+pem-rfc7468.workspace = true
+const-oid.workspace = true
+rsa.workspace = true
+p256.workspace = true
+p384.workspace = true
+p521.workspace = true
+ecdsa.workspace = true
+signature.workspace = true
+# `oid` gives each digest its AssociatedOid, which is the DigestInfo prefix
+# RSA PKCS#1 v1.5 puts in front of the hash.
+sha1 = { workspace = true, features = ["oid"] }
+sha2 = { workspace = true, features = ["oid"] }
+md-5 = { workspace = true, features = ["oid"] }
+ripemd = { workspace = true, features = ["oid"] }
+sha3 = { workspace = true, features = ["oid"] }

@@ -19,6 +19,7 @@ members = [
     "crates/rphp-ext-pdo",
     "crates/rphp-ext-dom",
     "crates/rphp-ext-intl",
+    "crates/rphp-ext-openssl",
     "crates/rphp-ext-api",
     "crates/rphp-ext-bcmath",
     "crates/rphp-ext-xml",
@@ -61,6 +62,7 @@ rphp-sapi-fcgi = { path = "crates/rphp-sapi-fcgi" }
 rphp-ext-pdo = { path = "crates/rphp-ext-pdo" }
 rphp-ext-dom = { path = "crates/rphp-ext-dom" }
 rphp-ext-intl = { path = "crates/rphp-ext-intl" }
+rphp-ext-openssl = { path = "crates/rphp-ext-openssl" }
 rphp-ext-api = { path = "crates/rphp-ext-api" }
 rphp-ext-bcmath = { path = "crates/rphp-ext-bcmath" }
 rphp-ext-xml = { path = "crates/rphp-ext-xml" }
@@ -146,6 +148,25 @@ fixed_decimal = "0.7"
 writeable = "0.6"
 idna = "1.1"
 unicode_names2 = "2"
+# openssl (ADR-038): RustCrypto, so the extension links no C library and
+# `#![forbid(unsafe_code)]` holds. `spki`/`pem-rfc7468` read a public key's
+# SubjectPublicKeyInfo and dispatch on its algorithm OID; `rsa` verifies
+# PKCS#1 v1.5; `p256`/`p384`/`p521` the ECDSA curves php's `prime256v1`,
+# `secp384r1` and `secp521r1` name. `md-5` and `sha1` are here because
+# `openssl_verify()` still answers for the digests php declares.
+spki = { version = "0.7", features = ["alloc", "pem"] }
+pem-rfc7468 = { version = "0.7", features = ["alloc"] }
+const-oid = "0.9"
+rsa = { version = "0.9", features = ["sha2"] }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+p384 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+p521 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+ecdsa = "0.16"
+signature = "2"
+sha1 = "0.10"
+md-5 = "0.10"
+ripemd = "0.1"
+sha3 = "0.10"
 
 # Dependencies are compiled with optimization even in a dev build: the crypto
 # and regex crates are the slow part of the test suite, and an unoptimized

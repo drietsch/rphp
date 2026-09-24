@@ -438,6 +438,20 @@ ADR-014 … ADR-035 were appended as one batch from the approved Symfony-8 roadm
 
 ---
 
+## ADR-038 — `ext/openssl` on RustCrypto, verifying half first; the digest set is php's constants plus SHA-3, and `openssl_error_string()` carries OpenSSL 3's codes
+
+**Context.** ADR-032 left `openssl` unplaced: mbstring/iconv went pure Rust, the dom family bound libxml2, and the crypto extension was not needed by any rung. It is needed now — Pimcore 12 compiles a product-registration check into every installed container and that check is `openssl_verify()` over an EC public key, so a kernel that cannot verify a signature cannot boot (guardian-runner roadmap M1). Linking OpenSSL would be the first C dependency outside PCRE2 and the first one with a version-dependent observable surface.
+
+**Decision.** `crates/rphp-ext-openssl`, pure Rust over **RustCrypto**, `#![forbid(unsafe_code)]`: `spki` + `pem-rfc7468` read a SubjectPublicKeyInfo and dispatch on its algorithm OID, `rsa` verifies PKCS#1 v1.5, and `p256`/`p384`/`p521` verify ECDSA **from the SEC1 point** and through `verify_prehash`, so a digest longer than the field is truncated as OpenSSL truncates it. Wave one is the **verifying half** — `openssl_verify`, `openssl_pkey_get_public` (and its `openssl_get_publickey` alias), `openssl_free_key`, `openssl_error_string` — and nothing else: `register_functions` registers only a signature the crate implements, so `function_exists()` answers honestly for the other 59 and the signing, cipher and certificate waves add rows to the same table. The **digest set** is php's seven `OPENSSL_ALGO_*` values plus the SHA-3 family by name; MD4 is declared and **unavailable**, answering `-1` and queueing the two provider errors, which is what php over OpenSSL 3 does. **`openssl_error_string()`** hands out OpenSSL 3's own codes (`error:1E08010C:DECODER routines::unsupported`) for the failures this crate causes, and queues nothing for the ones it cannot.
+
+**Rationale.** The extension's observable surface is small and sharply defined — three ints, one `false`, one warning per failure class — and RustCrypto covers it exactly, which is worth more than OpenSSL's breadth for a rung that needs one signature checked. Verifying first is the smallest thing that unblocks a real application. Naming OpenSSL's error codes is mimicry, but the alternative is an error queue that is empty where php's is not, and code reads `openssl_error_string()` to decide whether something failed.
+
+**Known narrower than php.** A digest OpenSSL knows and this build does not — BLAKE2, SM3, the SHAKEs — is reported as `Unknown digest algorithm` where php would verify. `OPENSSL_VERSION_TEXT` comes from the manifest and names an OpenSSL this crate does not link; it is kept because the differential is the point and a version string that differs breaks every comparison that reads it.
+
+**Status.** Accepted (2026-09-24 — the user chose RustCrypto for the whole extension; proposed 2026-09-22 for guardian-runner roadmap M1). Places the `openssl` of ADR-032. **Affected:** `08-stdlib-ext.md` (the extension roster).
+
+---
+
 ## Affirmed baseline decisions (re-confirmed, unchanged)
 
 These were scrutinized and kept as the baseline states them; the sub-specs deepen rather than change them.
